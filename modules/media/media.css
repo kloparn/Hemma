@@ -225,3 +225,16 @@
 .media-orig { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
 .media-orig p { margin: 0; }
 .modal-f:empty + .media-orig { margin-top: 0; padding-top: 0; border-top: 0; }
+
+/* "continue watching": an x on the poster drops your progress in it */
+.media-going { position: relative; min-width: 0; }
+.media-going-x { position: absolute; top: 6px; right: 6px; margin: 0; }
+.media-going-x button {
+  display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%;
+  background: rgba(0, 0, 0, .6); color: #fff; cursor: pointer; box-shadow: var(--shadow);
+}
+.media-going-x button:hover, .media-going-x button:focus-visible { background: var(--danger); }
+.media-going-x .i { width: 15px; height: 15px; stroke-width: 2.6; }
+.media-minis .media-going-x { top: 4px; right: 4px; }
+.media-minis .media-going-x button { width: 24px; height: 24px; }
+.media-minis .media-going-x .i { width: 13px; height: 13px; }

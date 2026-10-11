@@ -429,6 +429,8 @@ name; HEVC MKVs get a Convert button and become MP4 copies Safari plays (checked
 has a "Why C?" section. Later: "keep only the most compatible version" of an original + its copy (button +
 optional automatic after converting; 53 of 53 real pairs matched), subtitles attach to copies-only videos (they
 didn't before), the copy's first read shows on the progress bar.
+Then: an x on "Continue watching" cards (/media shelf + the home card; media.c going_card, action media.forget)
+drops that person's progress in the video - others' stays; display accounts get no x.
 Open for the owner: license, donation links, project URL (README/docs placeholders).
 Next ideas: builder-style UI helpers / less raw HTML (owner asked), MKV→MP4 remux on the fly
 for Safari/iPhone, "Open in VLC" links, router integration, DLNA, recurring calendar events,
