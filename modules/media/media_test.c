@@ -96,6 +96,23 @@ TEST(media_continue_watching_and_watched_ticks) {
     /* nobody else sees Adam's progress */
     int eva = th_person("Eva");
     CHECK(!strstr(th_page(eva, "/media"), "Continue watching"));
+    /* an x takes it out of the list: Adam's progress goes, Eva's stays */
+    CHECK_HAS(html = th_page(adam, "/media"), "id=\"media-going-");
+    CHECK_HAS(html, "data-a=\"media.forget\"");
+    CHECK_HAS(th_page(adam, "/"), "data-a=\"media.forget\""); /* the home card too */
+    snprintf(form, sizeof form, "id=%016llx&pos=300&dur=1200", (unsigned long long)ep1->id);
+    CHECK(th_act(eva, "media.progress", form).ok);
+    snprintf(form, sizeof form, "id=%016llx", (unsigned long long)ep1->id);
+    ThResult fr = th_act(adam, "media.forget", form);
+    CHECK(fr.ok);
+    CHECK_HAS(fr.toast, "Removed Garden Show S01E01 from Continue watching");
+    CHECK(!strstr(th_page(adam, "/media"), "Continue watching"));
+    CHECK(!media_watch_get(adam, ep1->id));
+    CHECK(!strstr(th_page(adam, url("/media/watch/%s", ep1->id)), "data-resume")); /* from the start next time */
+    CHECK(media_watch_get(eva, ep1->id) && media_watch_get(eva, ep1->id)->pos == 300);
+    CHECK_HAS(th_page(eva, "/media"), "Continue watching");
+    snprintf(form, sizeof form, "id=%016llx&pos=120&dur=1200", (unsigned long long)ep1->id);
+    CHECK(th_act(adam, "media.progress", form).ok);
     /* finishing it (92%+) moves it out of "continue watching" */
     snprintf(form, sizeof form, "id=%016llx&pos=1150&dur=1200", (unsigned long long)ep1->id);
     CHECK(th_act(adam, "media.progress", form).ok);

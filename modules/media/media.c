@@ -135,6 +135,8 @@ static void video_card(Ctx *c, Buf *b, const MediaFile *f) {
     buf_puts(b, "</small></span></a>");
 }
 
+static void going_card(Ctx *c, Buf *b, const MediaFile *f, bool small); /* (below, next to mini) */
+
 /* --------------------------------------------------------------- pictures */
 
 /* Admins pick a series' or film's picture: one image from this device, sent like an upload
@@ -324,7 +326,7 @@ static void page_home(Ctx *c, Buf *b) {
     int ngoing = in_progress(c, going, countof(going));
     if (ngoing) {
         shelf_head(b, "Continue watching", NULL);
-        for (int i = 0; i < ngoing; i++) video_card(c, b, going[i]);
+        for (int i = 0; i < ngoing; i++) going_card(c, b, going[i], false);
         shelf_end(b);
     }
     shelf_head(b, "Recently added", NULL);
@@ -985,6 +987,27 @@ static void mini(Ctx *c, Buf *b, const MediaFile *f) {
     buf_puts(b, "</small></span></a>");
 }
 
+/* A "continue watching" card: the poster, and an x that drops this person's progress in it (the
+   video then starts from the beginning, and leaves the list). Everyone else's progress stays. */
+static void going_card(Ctx *c, Buf *b, const MediaFile *f, bool small) {
+    if (!c->me || c->me->role == ROLE_DISPLAY) { /* a wall display only looks */
+        if (small) mini(c, b, f);
+        else video_card(c, b, f);
+        return;
+    }
+    H(b, "<div class=\"media-going\" id=\"media-going-%X\">", f->id);
+    if (small) mini(c, b, f);
+    else video_card(c, b, f);
+    ui_form(b, "media.forget", "media-going-x");
+    H(b, "<input type=\"hidden\" name=\"id\" value=\"%X\"><button title=\"Remove from Continue watching\" "
+         "aria-label=\"Remove %s from Continue watching\">",
+      f->id, f->name.title);
+    ui_icon(b, "x");
+    buf_puts(b, "</button>");
+    ui_form_end(b);
+    buf_puts(b, "</div>");
+}
+
 static void widget(Ctx *c, Buf *b, int where) {
     const MediaIndex *ix = media_lib();
     if (where == WIDGET_HOME && ix->nroots == 0) {
@@ -1001,7 +1024,10 @@ static void widget(Ctx *c, Buf *b, int where) {
     for (int i = 0; !resuming && i < ix->nrecent && n < 4; i++) list[n++] = &ix->files[ix->recent[i]];
     ui_card(b, resuming ? "Continue watching" : "Recently added", "/media", "Watch");
     buf_puts(b, "<div class=\"media-minis\">");
-    for (int i = 0; i < n; i++) mini(c, b, list[i]);
+    for (int i = 0; i < n; i++) {
+        if (resuming) going_card(c, b, list[i], true);
+        else mini(c, b, list[i]);
+    }
     buf_puts(b, "</div>");
     ui_card_end(b);
 }
@@ -1143,6 +1169,23 @@ static void act_drop_originals(Ctx *c, Fields *fl) {
     else media_scan_start();
 }
 
+/* "Remove from Continue watching": this person's progress in the video goes (finished ones aren't listed). */
+static void act_forget(Ctx *c, Fields *f) {
+    uint64_t id = 0;
+    if (!media_parse_id(fields_str(f, "id"), &id)) {
+        ctx_fail(c, "That isn't in the library any more");
+        return;
+    }
+    const MediaWatch *w = media_watch_get(c->me->id, id);
+    if (w && !w->done) tbl_del(&T_media_watch, w->id);
+    const MediaFile *v = media_file(id);
+    char what[200] = "it";
+    if (v && v->name.kind == MEDIA_EPISODE)
+        snprintf(what, sizeof what, "%s S%02dE%02d", v->name.title, v->name.season, v->name.episode);
+    else if (v) snprintf(what, sizeof what, "%s", v->name.title);
+    ctx_ok(c, "Removed %s from Continue watching", what);
+}
+
 static void act_drop_auto(Ctx *c, Fields *f) {
     if (!is_admin(c)) {
         ctx_fail(c, "Only an admin can change that");
@@ -1204,7 +1247,7 @@ static const Action actions[] = {
     {"media.search", act_search}, {"media.progress", act_progress}, {"media.watched", act_watched},
     {"media.rescan", act_rescan}, {"media.roots", act_roots},       {"media.prefs", act_prefs},
     {"media.upload_stop", upload_act_stop}, {"media.art_remove", act_art_remove},
-    {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove},
+    {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove}, {"media.forget", act_forget},
     {"media.drop_originals", act_drop_originals}, {"media.drop_auto", act_drop_auto},
     {0},
 };
