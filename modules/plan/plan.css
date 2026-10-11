@@ -1,0 +1,151 @@
+/* modules/plan/plan.css — to-dos, shopping list, calendar. Every class here
+   is prefixed plan-; shared pieces (.card .chip .seg .tick .quick .preview ...)
+   come from web/app.css. */
+
+/* counters in tabs, chips and card headers */
+.plan-n {
+  display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; margin-left: 3px;
+  border-radius: 99px; font-size: 11.5px; font-weight: 700; background: var(--panel-2); color: var(--muted);
+  vertical-align: 1px;
+}
+.plan-tabs a.on .plan-n, .plan-filter .chip.on .plan-n { background: var(--accent-soft); color: var(--accent); }
+.plan-sep { margin: 0 6px; opacity: .55; }
+@keyframes plan-in { from { opacity: 0; transform: translateY(-3px); } }
+@media (max-width: 420px) { .plan-quick .btn span { display: none; } }
+
+/* ------------------------------------------------------------- to-dos */
+
+.plan-filter { margin: -4px 0 16px; }
+.plan-filter .chip .av { margin-left: -5px; }
+.plan-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 16px; align-items: start; }
+.plan-groups .card + .card { margin-top: 0; }
+.plan-grp .card-h { margin-bottom: 4px; }
+.plan-g0 { border-color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); }
+.plan-g0 .card-h h2 { color: var(--danger); }
+.plan-g1 .card-h h2 { color: var(--accent); }
+.plan-done-grp { opacity: .8; }
+
+.plan-tasks { list-style: none; margin: 0; padding: 0; }
+.plan-task { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); animation: plan-in .25s ease-out; }
+.plan-task:last-child { border-bottom: 0; }
+.plan-task-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; border-radius: 8px; }
+a.plan-task-main:hover b { text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 3px; }
+.plan-task-e { flex: none; width: 24px; text-align: center; font-size: 19px; line-height: 1; }
+.plan-task-t { display: flex; flex-direction: column; min-width: 0; }
+.plan-task-t b { font-weight: 600; overflow-wrap: anywhere; }
+.plan-task-t small { color: var(--muted); }
+.plan-late .plan-task-t small { color: var(--danger); font-weight: 650; }
+.plan-task.plan-done .plan-task-t b { text-decoration: line-through; color: var(--muted); font-weight: 500; }
+.plan-task-who { flex: none; }
+.plan-tasks.plan-compact .plan-task { padding: 7px 0; gap: 10px; }
+
+/* ------------------------------------------------------------ shopping */
+
+.plan-shop-sug { margin: -6px 0 16px; align-items: center; }
+.plan-shop-sug-l { font-size: 12.5px; font-weight: 650; color: var(--muted); margin-right: 2px; }
+.plan-shop-sug form.inline { display: inline-flex; }
+.plan-shop-sug .chip { color: var(--muted); }
+.plan-shop-sug .chip:hover { color: var(--text); }
+.plan-shop-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 16px; align-items: start; }
+.plan-shop-cols .card + .card { margin-top: 0; }
+.plan-shop-basket .card-h form { margin-left: auto; }
+.plan-shop { list-style: none; margin: 0; padding: 0; }
+.plan-shop-i { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--line); animation: plan-in .25s ease-out; }
+.plan-shop-i:last-child { border-bottom: 0; }
+form.plan-shop-f { display: flex; flex: 1; min-width: 0; }
+.plan-shop-btn {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 12px 2px;
+  border: 0; background: none; color: inherit; font: inherit; font-size: 16px; font-weight: 550; text-align: left; cursor: pointer;
+}
+.plan-shop-btn:hover .tick { border-color: var(--accent); }
+.plan-shop-t { overflow-wrap: anywhere; }
+.plan-shop-i.plan-done .plan-shop-t { text-decoration: line-through; color: var(--muted); font-weight: 450; }
+.plan-shop-by { flex: none; opacity: .85; }
+.plan-quick .preview .chip { cursor: default; }
+.plan-quick .preview .chip.plan-dup { opacity: .6; }
+.plan-quick .preview .chip small { color: var(--muted); font-weight: 500; }
+.plan-shop-mini { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.plan-shop-mini li { padding: 4px 11px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--line); font-size: 14px; font-weight: 550; }
+
+/* ------------------------------------------------------------ calendar */
+
+.plan-cal { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 20px; align-items: start; }
+.plan-cal-side { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 16px; }
+.plan-cal-side .quick { margin-bottom: 0; }
+.plan-cal-new { justify-content: center; }
+@media (max-width: 1000px) {
+  .plan-cal { grid-template-columns: 1fr; }
+  .plan-cal-side { position: static; }
+}
+.plan-mm { padding: 14px; }
+.plan-mm-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.plan-mm-grid { display: grid; grid-template-columns: 24px repeat(7, 1fr); gap: 2px; text-align: center; }
+.plan-mm-hd { font-size: 11px; font-weight: 700; color: var(--muted); padding: 4px 0; }
+.plan-mm-wk { display: grid; place-items: center; font-size: 10.5px; color: var(--muted); opacity: .75; }
+.plan-mm-d {
+  position: relative; display: grid; place-items: center; aspect-ratio: 1; max-height: 44px; border-radius: 10px;
+  text-decoration: none; font-size: 14px; font-weight: 550; font-variant-numeric: tabular-nums;
+}
+.plan-mm-d:hover { background: var(--panel-2); }
+.plan-mm-d.plan-out { color: var(--muted); opacity: .5; }
+.plan-mm-d.plan-today span { color: var(--accent); font-weight: 800; }
+.plan-mm-d.plan-sel { background: var(--accent); }
+.plan-mm-d.plan-sel span { color: var(--accent-ink); }
+.plan-dots { position: absolute; left: 0; right: 0; bottom: 4px; display: flex; justify-content: center; gap: 2px; }
+.plan-dots i { --h: 160; width: 4px; height: 4px; border-radius: 50%; background: hsl(var(--h) 60% 52%); }
+.plan-dots i:not([style]) { background: var(--accent); }
+.plan-mm-d.plan-sel .plan-dots i { background: var(--accent-ink); }
+
+.plan-cal-main { padding: 4px 18px 12px; }
+.plan-ag-week {
+  padding: 14px 0 4px; border-bottom: 1px solid var(--line);
+  font-size: 11.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--muted);
+}
+.plan-ag-day { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.plan-ag-day:last-child { border-bottom: 0; }
+.plan-ag-day h3 { display: flex; flex-direction: column; font-size: 15px; }
+.plan-ag-day h3 small { color: var(--muted); font-weight: 500; font-size: 12.5px; }
+.plan-ag-day.plan-today h3 { color: var(--accent); }
+.plan-ag-none { padding: 2px 0; }
+@media (max-width: 600px) {
+  .plan-cal-main { padding: 2px 14px 10px; }
+  .plan-ag-day { grid-template-columns: 1fr; gap: 8px; }
+  .plan-ag-day h3 { flex-direction: row; align-items: baseline; gap: 8px; }
+}
+.plan-evs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.plan-ev {
+  --h: 160; display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: 12px;
+  background: var(--panel-2); border-left: 4px solid hsl(var(--h) 55% 55%); animation: plan-in .25s ease-out;
+}
+.plan-ev:not([style]) { border-left-color: var(--accent); }
+.plan-ev-time { flex: none; width: 96px; font-size: 13px; font-weight: 650; color: var(--muted); font-variant-numeric: tabular-nums; }
+.plan-ev-main { flex: 1; min-width: 0; display: flex; flex-direction: column; text-decoration: none; color: inherit; }
+.plan-ev-main b { font-weight: 600; overflow-wrap: anywhere; }
+.plan-ev-main small { color: var(--muted); overflow-wrap: anywhere; }
+.plan-ev-who { flex: none; }
+/* things from other modules (bookings ...) via the shared agenda: lighter, dashed edge */
+.plan-ext { background: transparent; border: 1px dashed var(--line-2); border-left: 4px dashed hsl(var(--h) 45% 60%); }
+.plan-ext:not([style]) { border-left-color: var(--muted); }
+.plan-ext .plan-ev-main small { text-transform: uppercase; letter-spacing: .04em; font-size: 11px; font-weight: 650; }
+.plan-dots i.plan-dot-ext { background: transparent; box-shadow: inset 0 0 0 1.2px hsl(var(--h) 55% 50%); }
+@media (max-width: 420px) { .plan-ev-time { width: 78px; } }
+
+.plan-check { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; width: fit-content; }
+.plan-check input { width: 18px; height: 18px; accent-color: var(--accent); }
+
+/* -------------------------------------------------------------- widgets */
+
+.plan-w .plan-evs.plan-compact + .plan-tasks { margin-top: 8px; }
+.plan-w .plan-evs.plan-compact .plan-ev { padding: 6px 10px; }
+.plan-w .plan-evs.plan-compact .plan-ev-time { width: 86px; }
+.plan-more { font-size: 13px; margin-top: 6px; }
+.plan-w-empty { padding: 2px 0; }
+
+/* the wall display reads these from across the room */
+.plan-wall { font-size: 19px; }
+.plan-wall .card-h h2 { font-size: 22px; }
+.plan-wall .plan-task-t small, .plan-wall .plan-ev-main small { font-size: 15px; }
+.plan-wall .plan-task-e { font-size: 24px; width: 30px; }
+.plan-wall .tick { width: 30px; height: 30px; }
+.plan-wall .plan-ev-time, .plan-wall .plan-evs.plan-compact .plan-ev-time { width: 130px; font-size: 17px; }
+.plan-wall .plan-shop-mini li { font-size: 19px; padding: 6px 15px; }

@@ -1,0 +1,122 @@
+/* modules/board — the fridge door. Every class is prefixed board- because all
+   module stylesheets share one bundle. */
+
+/* ---- post box ---- */
+.board-post { padding: 12px 14px; margin-bottom: 24px; transition: border-color .12s, box-shadow .12s; }
+.board-post:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent), var(--shadow); }
+.board-post textarea { border: 0; background: transparent; padding: 6px 4px; min-height: 70px; font-size: 16px; resize: vertical; }
+.board-post textarea:focus { box-shadow: none; }
+.board-post-o {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+  margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--line);
+}
+.board-post-o .hues { gap: 6px; }
+.board-post-o .hue span { width: 22px; height: 22px; }
+.board-post-go { margin-left: auto; }
+.board-pin-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; font-size: 14px; color: var(--muted); }
+.board-pin-toggle span { display: inline-flex; align-items: center; gap: 4px; }
+.board-pin-toggle input { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+.board-pin-toggle .i { width: 16px; height: 16px; }
+
+/* "keep it for": radio pills */
+.board-keep { display: inline-flex; gap: 2px; padding: 3px; border-radius: 11px; background: var(--panel-2); border: 1px solid var(--line); }
+.board-keep.wrap { flex-wrap: wrap; }
+.board-keep-o { position: relative; display: inline-flex; align-items: center; }
+.board-keep-o > input[type=radio] { position: absolute; opacity: 0; pointer-events: none; }
+.board-keep-o span { display: block; padding: 4px 10px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.board-keep-o > input:checked + span { background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+.board-keep-o > input:focus + span { outline: 2px solid var(--accent); outline-offset: 1px; }
+.board-keep-o > input:focus:not(:focus-visible) + span { outline: none; }
+.board-until { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.board-until input[type=date] { width: auto; min-height: 36px; padding: 5px 10px; }
+
+/* ---- notes ---- */
+.board-h {
+  display: flex; align-items: center; gap: 6px; margin: 4px 2px 14px;
+  font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+}
+.board-h .i { width: 15px; height: 15px; }
+/* A top-aligned grid rather than CSS columns: notes read left-to-right in
+   order (pinned, then newest), and multicol mis-paints the overhanging pin
+   when it moves a note to the next column. */
+.board-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px 18px; align-items: start; margin-bottom: 26px; }
+.board-note {
+  --h: 45; --tilt: 0deg;
+  position: relative; display: block; margin: 0; padding: 16px 16px 8px;
+  border-radius: 4px 4px 18px 4px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .38), rgba(255, 255, 255, 0) 45%), hsl(var(--h) 92% 86%);
+  color: hsl(var(--h) 45% 16%);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, .06), 0 12px 22px -14px rgba(60, 40, 0, .55);
+  transform: rotate(var(--tilt)); transition: transform .16s ease;
+}
+.board-note:nth-child(4n+1) { --tilt: -.7deg; }
+.board-note:nth-child(4n+2) { --tilt: .5deg; }
+.board-note:nth-child(4n+3) { --tilt: -.25deg; }
+.board-note:nth-child(4n) { --tilt: .8deg; }
+.board-note:hover, .board-note:focus-within { transform: rotate(0deg) translateY(-2px); }
+.board-note-pin {
+  position: absolute; top: -7px; left: 50%; width: 15px; height: 15px; margin-left: -7px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ff9b8c, #c9352e 62%, #8f1f1a);
+  box-shadow: 0 3px 4px rgba(0, 0, 0, .35);
+}
+.board-note-text { font-size: 15.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.board-note-text a { color: inherit; font-weight: 650; text-decoration-thickness: 1.5px; text-underline-offset: 2px; }
+.board-note-exp { display: inline-flex; align-items: center; gap: 4px; margin-top: 8px; font-size: 12.5px; font-weight: 650; opacity: .8; }
+.board-note-exp .i { width: 14px; height: 14px; }
+.board-note-f { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12.5px; }
+.board-note-m { opacity: .82; min-width: 0; }
+.board-note-m b { font-weight: 700; }
+/* actions float over the top-right corner on hover; touch screens get just the
+   pencil (the edit sheet has pin + remove) */
+.board-note-x {
+  position: absolute; top: 6px; right: 6px; display: flex; gap: 1px; padding: 2px; border-radius: 10px;
+  background: hsl(var(--h) 92% 86%); box-shadow: 0 2px 8px rgba(0, 0, 0, .12);
+  opacity: 0; transition: opacity .15s;
+}
+.board-note:hover .board-note-x, .board-note:focus-within .board-note-x { opacity: 1; }
+.board-note-x .icon-btn { width: 30px; height: 30px; color: inherit; border-radius: 8px; }
+.board-note-x .icon-btn:hover { background: rgba(0, 0, 0, .09); }
+.board-note-x .i { width: 17px; height: 17px; }
+.board-hidden { color: var(--muted); font-size: 14px; margin-top: 6px; }
+.board-hidden a { font-weight: 650; color: var(--text); }
+
+/* ---- widget: mini notes (home dashboard + wall) ---- */
+.board-minis { display: flex; flex-direction: column; gap: 8px; }
+.board-mini {
+  --h: 45; padding: 9px 12px; border-radius: 10px 10px 14px 10px;
+  background: hsl(var(--h) 92% 87%); color: hsl(var(--h) 45% 16%);
+}
+.board-mini p { font-weight: 550; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.board-mini p a { color: inherit; }
+.board-mini small { display: flex; align-items: center; gap: 4px; margin-top: 3px; opacity: .72; }
+.board-mini small .i { width: 13px; height: 13px; }
+
+@media (prefers-color-scheme: dark) {
+  .board-note {
+    background: linear-gradient(180deg, rgba(255, 255, 255, .05), rgba(255, 255, 255, 0) 45%), hsl(var(--h) 34% 24%);
+    color: hsl(var(--h) 70% 92%);
+    box-shadow: 0 1px 1px rgba(0, 0, 0, .3), 0 14px 24px -14px rgba(0, 0, 0, .8);
+  }
+  .board-note-x { background: hsl(var(--h) 34% 24%); box-shadow: 0 2px 10px rgba(0, 0, 0, .45); }
+  .board-note-x .icon-btn:hover { background: rgba(255, 255, 255, .1); }
+  .board-mini { background: hsl(var(--h) 32% 23%); color: hsl(var(--h) 70% 92%); }
+}
+
+/* the wall display is always dark, whatever the system theme */
+.wall .board-mini { background: hsl(var(--h) 32% 23%); color: hsl(var(--h) 70% 92%); }
+.wall .board-mini p { font-size: 17px; -webkit-line-clamp: 4; line-clamp: 4; }
+
+@media (hover: none) {
+  .board-note-x { opacity: .8; background: transparent; box-shadow: none; }
+  .board-note-x form { display: none; }
+  .board-note-text { padding-right: 24px; }
+}
+
+@media (max-width: 600px) {
+  .board-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px 12px; }
+  .board-note { padding: 14px 13px 6px; }
+  .board-note-text { font-size: 15px; }
+  .board-post-go { width: 100%; }
+  .board-post-o .hues { gap: 5px; }
+  .board-post-o .hue span { width: 20px; height: 20px; }
+}

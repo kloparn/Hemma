@@ -1,0 +1,28 @@
+/* modules/people — household, your account, recovery codes */
+
+.people-pw { margin-top: 10px; }
+.people-pw summary { cursor: pointer; font-weight: 650; padding: 4px 0; }
+.people-pw[open] summary { margin-bottom: 10px; }
+
+/* /people/codes: shown once, copied, downloaded or printed */
+.people-codes {
+  list-style: none; padding: 0; margin: 4px 0 18px;
+  display: grid; grid-template-columns: 1fr; grid-gap: 8px 14px; gap: 8px 14px;
+  counter-reset: code;
+}
+@media (min-width: 560px) { .people-codes { grid-template-columns: 1fr 1fr; } }
+.people-codes li {
+  counter-increment: code; display: flex; align-items: baseline;
+  padding: 10px 14px; border-radius: 12px; background: var(--panel-2); border: 1px solid var(--line);
+}
+.people-codes li::before { content: counter(code) "."; color: var(--muted); font-size: 13px; min-width: 1.5em; margin-right: 10px; text-align: right; }
+.people-codes code { font-size: 18px; font-weight: 650; letter-spacing: .06em; -webkit-user-select: all; user-select: all; }
+.people-codes-a { margin: 18px 0 12px; }
+.people-codes-done .btn { width: 100%; }
+
+@media print {
+  .people-codes-card { box-shadow: none; border: 0; }
+  .people-codes-card .welcome-logo, .people-codes-a, .people-codes-done, #toasts { display: none; }
+  .people-codes { grid-template-columns: 1fr 1fr; }
+  .people-codes li { background: none; border: 1px dashed #888; }
+}

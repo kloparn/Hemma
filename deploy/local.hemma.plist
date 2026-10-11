@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  deploy/local.hemma.plist - start Hemma when you log in to your Mac (a launchd agent).
+  Step by step: docs/macos.md. In short, with Hemma in ~/Hemma (hemma, hemma.env, data/):
+
+    sed "s|/Users/YOU|$HOME|g" deploy/local.hemma.plist > ~/Library/LaunchAgents/local.hemma.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.hemma.plist
+
+  Restart: launchctl kickstart -k gui/$(id -u)/local.hemma
+  Stop:    launchctl bootout gui/$(id -u)/local.hemma
+  Log:     tail -f ~/Hemma/hemma.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>local.hemma</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOU/Hemma/hemma</string>
+        <string>--data</string>
+        <string>/Users/YOU/Hemma/data</string>
+        <string>--env</string>
+        <string>/Users/YOU/Hemma/hemma.env</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/YOU/Hemma</string>
+
+    <!-- start at login, and again if it stops -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <!-- without this, launchd throttles a background job's CPU and disk: a server needs neither -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOU/Hemma/hemma.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOU/Hemma/hemma.log</string>
+</dict>
+</plist>

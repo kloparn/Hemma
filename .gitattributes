@@ -1,0 +1,10 @@
+# Keep LF line endings in the repository and in every checkout: shell scripts, the
+# Makefile and the systemd unit break on a Raspberry Pi when a Windows clone turns
+# them into CRLF ("set: Illegal option -").
+* text=auto eol=lf
+
+# Windows-only scripts may stay CRLF in a Windows checkout
+*.ps1 text eol=crlf
+
+# Vendored code: not part of the language statistics
+third_party/** linguist-vendored

@@ -1,0 +1,218 @@
+/* modules/media — the home cinema. Every class here starts with "media-"
+   (all module CSS shares one bundle); shared vocabulary comes from web/app.css. */
+
+.media-tools { justify-content: space-between; }
+.media-search { flex: 1; max-width: 360px; min-width: 200px; }
+.media-search input { background: var(--panel); border-radius: 12px; }
+.media-sort { margin-bottom: 14px; }
+.media-center { text-align: center; }
+.media-small { font-size: 13px; }
+.media-scanning { gap: 7px; }
+.media-spin {
+  width: 11px; height: 11px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent;
+  animation: media-spin .8s linear infinite;
+}
+@keyframes media-spin { to { transform: rotate(360deg); } }
+.media-code { font: 12.5px var(--mono); padding: 1px 5px; border-radius: 6px; background: var(--panel-2); }
+
+/* ---- shelves and grids of posters ---- */
+.media-row { margin: 6px 0 26px; }
+.media-row-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.media-row-h h2 { font-size: 18px; }
+.media-row-h a { color: var(--muted); text-decoration: none; font-weight: 600; font-size: 13.5px; }
+.media-row-h a:hover { color: var(--accent); }
+.media-shelf {
+  display: grid; grid-auto-flow: column; grid-auto-columns: 146px; gap: 14px;
+  overflow-x: auto; padding: 4px 2px 10px; margin: -4px -2px 0; scroll-snap-type: x proximity; scrollbar-width: thin;
+}
+.media-shelf > * { scroll-snap-align: start; }
+.media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 20px 14px; margin-bottom: 18px; }
+@media (max-width: 600px) {
+  .media-shelf { grid-auto-columns: 118px; gap: 10px; }
+  .media-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 16px 10px; }
+  .media-art-t { font-size: 14px !important; }
+}
+
+.media-poster { display: flex; flex-direction: column; gap: 7px; min-width: 0; text-decoration: none; color: var(--text); }
+.media-art {
+  --h: 220;
+  position: relative; display: flex; flex-direction: column; justify-content: flex-end; gap: 4px;
+  aspect-ratio: 2 / 3; padding: 12px; overflow: hidden; border-radius: 12px; color: #fff;
+  background:
+    radial-gradient(120% 70% at 85% 0%, hsl(calc(var(--h) + 40) 70% 62% / .55), transparent 60%),
+    linear-gradient(160deg, hsl(var(--h) 48% 42%), hsl(calc(var(--h) + 25) 52% 16%));
+  box-shadow: var(--shadow); transition: transform .15s, box-shadow .15s;
+}
+.media-art img { position: absolute; top: 0; right: 0; bottom: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+.media-poster:hover .media-art, .media-mini:hover .media-art { transform: translateY(-3px); box-shadow: var(--shadow-lg); }
+.media-art-k {
+  position: absolute; top: 11px; left: 12px; font-size: 10.5px; font-weight: 800;
+  letter-spacing: .1em; text-transform: uppercase; opacity: .75;
+}
+.media-art-t {
+  font-size: 17px; font-weight: 800; line-height: 1.12; letter-spacing: -.01em; text-wrap: balance;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, .35);
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+}
+.media-art-y { font-size: 12.5px; font-weight: 700; opacity: .8; }
+.media-art-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; background: rgba(0, 0, 0, .45); }
+.media-art-bar i { display: block; height: 100%; background: var(--accent); }
+.media-art-done {
+  position: absolute; top: 8px; right: 8px; display: grid; place-items: center; width: 26px; height: 26px;
+  border-radius: 50%; background: var(--accent); color: var(--accent-ink); box-shadow: var(--shadow);
+}
+.media-art-done .i { width: 15px; height: 15px; stroke-width: 3; }
+.media-cap { font-size: 13.5px; font-weight: 650; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-cap small { display: block; color: var(--muted); font-weight: 500; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- series ---- */
+.media-back { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 14px; color: var(--muted); text-decoration: none; font-weight: 600; }
+.media-back:hover { color: var(--text); }
+.media-back .i { width: 18px; height: 18px; }
+.media-sdetail { display: grid; grid-template-columns: 170px 1fr; gap: 24px; align-items: end; margin-bottom: 22px; }
+.media-sdetail-art .media-art { width: 100%; }
+.media-sdetail-t h1 { font-size: 32px; margin-bottom: 6px; }
+.media-sdetail-t .sub { color: var(--muted); margin-bottom: 18px; }
+@media (max-width: 600px) {
+  .media-sdetail { grid-template-columns: 110px 1fr; gap: 14px; }
+  .media-sdetail-t h1 { font-size: 23px; }
+  .media-sdetail-t .btn.big { padding: 10px 14px; font-size: 15px; }
+}
+.media-seasons { margin-bottom: 14px; }
+
+/* ---- pictures: the link under a series' art, and the dialog (admins) ---- */
+.media-pic-edit {
+  display: inline-flex; align-items: center; gap: 5px; margin-top: 8px;
+  color: var(--muted); font-size: 13px; font-weight: 650; text-decoration: none;
+}
+.media-pic-edit:hover { color: var(--accent); }
+.media-pic-edit .i { width: 15px; height: 15px; }
+/* minmax(0, 1fr): the file picker's natural width must not push the column off a phone */
+.media-pic { display: grid; grid-template-columns: 140px minmax(0, 1fr); grid-gap: 18px; gap: 18px; align-items: start; }
+.media-pic-art .media-art { width: 100%; }
+.media-pic input[type=file] { max-width: 100%; }
+@media (max-width: 600px) {
+  .media-pic { grid-template-columns: 92px minmax(0, 1fr); grid-gap: 12px; gap: 12px; }
+  .media-pic-art .media-art-t { font-size: 13px; }
+}
+
+.media-eps { list-style: none; margin: 0 0 24px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.media-ep {
+  display: flex; align-items: center; gap: 12px; padding: 8px 14px 8px 8px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+}
+.media-ep-up { border-color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.media-ep-done .media-ep-t b { color: var(--muted); }
+.media-ep-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 14px; text-decoration: none; color: var(--text); }
+.media-ep-n {
+  display: grid; place-items: center; flex: none; width: 46px; height: 46px; border-radius: 11px;
+  background: var(--panel-2); font-weight: 800; font-size: 17px; color: var(--muted);
+}
+.media-ep-up .media-ep-n { background: var(--accent); color: var(--accent-ink); }
+.media-ep-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.media-ep-t b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-ep-t small { color: var(--muted); }
+.media-warn { color: var(--warn); font-weight: 650; }
+.media-ep-bar { display: block; height: 4px; margin-top: 4px; border-radius: 4px; background: var(--panel-2); overflow: hidden; }
+.media-ep-bar i { display: block; height: 100%; background: var(--accent); }
+.media-eps-compact .media-ep { padding: 6px 12px 6px 6px; }
+.media-eps-compact .media-ep-n { width: 36px; height: 36px; font-size: 14px; }
+/* two episodes in one file: "12–13" */
+.media-ep-n.media-ep-nn { font-size: 12px; letter-spacing: -0.3px; }
+.media-eps-compact .media-ep-n.media-ep-nn { font-size: 10px; }
+
+/* ---- folders ---- */
+.media-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 16px; font-weight: 600; }
+.media-crumbs a { text-decoration: none; color: var(--accent); }
+.media-crumbs span { color: var(--muted); }
+.media-folders { list-style: none; margin: 0 0 20px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.media-folders a {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px;
+  background: var(--panel); border: 1px solid var(--line); text-decoration: none; color: var(--text); font-weight: 600;
+}
+.media-folders a:hover { border-color: var(--line-2); }
+.media-folders a span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-folders a small { color: var(--muted); font-weight: 500; }
+.media-folders .i { color: var(--accent); }
+
+/* ---- player ---- */
+.media-player-box { margin: 0 -2px 16px; }
+.media-player {
+  display: block; width: 100%; max-height: 74vh; aspect-ratio: 16 / 9; background: #000;
+  border-radius: 16px; box-shadow: var(--shadow-lg);
+}
+@media (max-width: 600px) {
+  .media-player-box { margin: 0 -16px 14px; }
+  .media-player { border-radius: 0; max-height: none; }
+}
+.media-watch-info { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+.media-watch-t h1 { font-size: 24px; }
+.media-watch-t .sub { color: var(--muted); margin-top: 4px; }
+.media-watched { color: var(--accent); border-color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); background: var(--accent-soft); }
+.media-playable { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 13.5px; }
+.media-tech { color: var(--muted); font-family: var(--mono); font-size: 12px; text-transform: uppercase; }
+.media-convert { margin: 4px 0 18px; padding: 12px 16px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+.media-convert summary { cursor: pointer; font-weight: 650; }
+.media-convert p { margin: 8px 0; }
+.media-convert pre {
+  margin: 8px 0; padding: 10px 12px; border-radius: 10px; background: var(--panel-2); overflow-x: auto;
+  font: 12.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all;
+}
+
+/* ---- settings ---- */
+.media-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; margin: 0 0 14px; }
+.media-stats div { padding: 10px 12px; border-radius: 12px; background: var(--panel-2); }
+.media-stats dt { font-size: 12px; color: var(--muted); font-weight: 650; }
+.media-stats dd { margin: 2px 0 0; font-size: 20px; font-weight: 800; }
+.media-tips { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.media-tips li { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+
+/* ---- widget minis (home dashboard, wall display) ---- */
+.media-minis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.media-mini { display: flex; flex-direction: column; gap: 6px; text-decoration: none; color: var(--text); min-width: 0; }
+.media-mini .media-art { padding: 8px; border-radius: 10px; }
+.media-mini .media-art-t { font-size: 12.5px; -webkit-line-clamp: 3; }
+.media-mini .media-art-y { font-size: 11px; }
+.media-mini-cap { font-size: 12.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-mini-cap small { display: block; color: var(--muted); font-weight: 500; }
+
+/* ---- adding videos (upload.c): the browser sends, the server shows progress ---- */
+.media-up h3 { font-size: 15px; margin: 0 0 10px; }
+.media-up-bar {
+  appearance: none; display: block; width: 100%; height: 10px; border: 0; border-radius: 99px;
+  overflow: hidden; background: var(--panel-2);
+}
+.media-up-bar::-webkit-progress-bar { background: var(--panel-2); border-radius: 99px; }
+.media-up-bar::-webkit-progress-value { background: var(--accent); border-radius: 99px; transition: width .6s ease; }
+.media-up-bar::-moz-progress-bar { background: var(--accent); border-radius: 99px; }
+.media-up-nums { margin: 8px 0 4px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.media-up-now { margin: 0 0 8px; overflow-wrap: anywhere; }
+.media-up-list { margin: 8px 0; }
+.media-up-list summary { cursor: pointer; color: var(--muted); font-size: 13.5px; }
+.media-up-list ul { margin: 8px 0 0; padding-left: 18px; max-height: 260px; overflow: auto; font-size: 13px; }
+.media-up-list li { margin: 3px 0; overflow-wrap: anywhere; }
+.media-up-list li.bad { color: var(--danger); }
+.media-up form { margin-top: 10px; }
+
+/* Older TV browsers (Samsung before ~2023) lack aspect-ratio: posters keep a height anyway */
+@supports not (aspect-ratio: 1 / 1) {
+  .media-art { min-height: 200px; }
+}
+
+/* The library's disk in the sidebar (and on More, for phones): free space, a bar, used of total */
+.media-disk {
+  display: block; padding: 9px 10px 8px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--text); text-decoration: none;
+}
+.media-disk:hover { border-color: var(--line-2); }
+.media-disk-l {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+}
+.media-disk-l b { text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--text); white-space: nowrap; }
+.media-disk-bar { display: block; height: 6px; margin: 7px 0 5px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+.media-disk-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+.media-disk.warn .media-disk-bar i { background: var(--warn); }
+.media-disk.bad .media-disk-bar i { background: var(--danger); }
+.media-disk.bad .media-disk-l b { color: var(--danger); }
+.media-disk small { display: block; color: var(--muted); font-size: 12px; }

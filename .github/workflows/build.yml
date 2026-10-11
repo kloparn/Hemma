@@ -1,0 +1,22 @@
+# Builds Hemma and runs the whole test suite on Linux and macOS with the system C compiler
+# (the Makefile route), on every push and pull request. The Windows build and the
+# cross-compiled Raspberry Pi binaries are made with build.ps1 and zig.
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make
+      - name: Test
+        run: make test

@@ -1,0 +1,9 @@
+{
+  "name": "Hemma",
+  "short_name": "Hemma",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f1ea",
+  "theme_color": "#2f7362",
+  "icons": [{ "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

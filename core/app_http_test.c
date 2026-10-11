@@ -1,0 +1,473 @@
+/* End-to-end over real sockets: the whole app on a loopback port, driven like
+ * a browser would — sign in, pages, the WebSocket wire, the JSON API, sign out.
+ * (This layer once hid a bug where response headers picked up heap garbage.) */
+#include "../tests/harness.h"
+#include "assets.h"
+#include "auth.h"
+#include "codec.h"
+#include "server.h"
+#include "ws.h"
+
+static volatile int g_done;
+static void serve(void *arg) {
+    (void)arg;
+    app_serve();
+    g_done = 1;
+}
+
+static sock_t dial(int port) {
+    sock_t s = tcp_connect_nb(0x7F000001, port);
+    pollfd_t pf = {.fd = s, .events = POLLOUT};
+    if (s == SOCK_BAD || plat_poll(&pf, 1, 2000) != 1 || !tcp_connect_done(s)) return SOCK_BAD;
+    return s;
+}
+
+static void send_all(sock_t s, const char *p, size_t n) {
+    while (n) {
+        long k = sock_send(s, p, n);
+        if (k > 0) p += k, n -= (size_t)k;
+        else plat_sleep_ms(1);
+    }
+}
+
+/* One request on a fresh connection; returns the whole response (status line .. body). */
+static void request(int port, const char *raw, Buf *out) {
+    buf_reset(out);
+    sock_t s = dial(port);
+    if (s == SOCK_BAD) return;
+    send_all(s, raw, strlen(raw));
+    int64_t end = now_ms() + 4000;
+    while (now_ms() < end) {
+        pollfd_t pf = {.fd = s, .events = POLLIN};
+        if (plat_poll(&pf, 1, 50) != 1) continue;
+        char tmp[8192];
+        long k = sock_recv(s, tmp, sizeof tmp);
+        if (k > 0) buf_put(out, tmp, (size_t)k);
+        else if (k == 0 || !sock_again(sock_errno())) break;
+        /* stop once Content-Length bytes of body arrived */
+        const char *hdr_end = strstr(buf_cstr(out), "\r\n\r\n");
+        const char *cl = strstr(buf_cstr(out), "Content-Length: ");
+        if (hdr_end && cl && cl < hdr_end) {
+            long long n = strtoll(cl + 16, NULL, 10);
+            if ((long long)(out->len - (size_t)(hdr_end + 4 - out->p)) >= n) break;
+        }
+    }
+    sock_close(s);
+}
+
+static const char *body_of(const Buf *resp) {
+    const char *e = resp->p ? strstr(resp->p, "\r\n\r\n") : NULL;
+    return e ? e + 4 : "";
+}
+
+/* The cookie value from a Set-Cookie header ("" if none). */
+static void cookie_of(const Buf *resp, char *out, size_t cap) {
+    out[0] = '\0';
+    const char *c = resp->p ? strstr(resp->p, "Set-Cookie: hemma=") : NULL;
+    if (!c) return;
+    c += 18;
+    size_t n = strcspn(c, ";\r\n");
+    str_ncopy(out, cap, c, n);
+}
+
+static size_t client_frame(uint8_t *out, const char *p, size_t n) {
+    size_t h = 0;
+    out[h++] = 0x81;
+    if (n < 126) out[h++] = (uint8_t)(0x80 | n);
+    else {
+        out[h++] = 0x80 | 126;
+        out[h++] = (uint8_t)(n >> 8);
+        out[h++] = (uint8_t)n;
+    }
+    uint8_t mask[4] = {9, 8, 7, 6};
+    memcpy(out + h, mask, 4);
+    h += 4;
+    for (size_t i = 0; i < n; i++) out[h + i] = (uint8_t)(p[i] ^ mask[i & 3]);
+    return h + n;
+}
+
+TEST(app_http_sign_in_pages_wire_and_sign_out) {
+    if (!module_find("book")) return; /* uses the booking module for an action */
+    th_boot();
+    auth_configure("e2e-salt", 1000);
+    int adam = th_person("Adam");
+    Person p = *person_get(adam);
+    str_copy(p.username, sizeof p.username, "adam");
+    auth_hash("correct horse", p.pass, sizeof p.pass);
+    p.role = ROLE_ADMIN;
+    tbl_put(&T_person, &p);
+
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    Buf r = {0};
+    char req[1024], cookie[64];
+
+    /* signed out: every page is the sign-in page, and it's well-formed HTTP */
+    request(port, "GET /book HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", &r);
+    CHECK_HAS(buf_cstr(&r), "HTTP/1.1 200 OK");
+    CHECK(str_starts(body_of(&r), "<!doctype html>")); /* nothing between the headers and the page */
+    CHECK_HAS(body_of(&r), "action=\"/login\"");
+    request(port, "GET /media/file/0123456789abcdef HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", &r);
+    CHECK(!strstr(buf_cstr(&r), "206 Partial")); /* module endpoints are closed to strangers */
+
+    /* wrong password -> back to the form with an error */
+    const char *bad = "username=adam&password=nope&next=%2Fbook";
+    snprintf(req, sizeof req,
+             "POST /login HTTP/1.1\r\nHost: t\r\nContent-Type: application/x-www-form-urlencoded\r\n"
+             "Content-Length: %zu\r\nConnection: close\r\n\r\n%s",
+             strlen(bad), bad);
+    request(port, req, &r);
+    CHECK_HAS(buf_cstr(&r), "303 See Other");
+    CHECK_HAS(buf_cstr(&r), "Location: /login?e=1&u=adam&next=%2Fbook");
+    cookie_of(&r, cookie, sizeof cookie);
+    CHECK_STR(cookie, "");
+
+    /* a cross-site form post is refused */
+    const char *good = "username=adam&password=correct+horse&next=%2Fbook&remember=1";
+    snprintf(req, sizeof req,
+             "POST /login HTTP/1.1\r\nHost: t\r\nOrigin: http://evil.example\r\nContent-Length: %zu\r\n"
+             "Connection: close\r\n\r\n%s",
+             strlen(good), good);
+    request(port, req, &r);
+    CHECK_HAS(buf_cstr(&r), "403");
+
+    /* right password -> cookie + back to where we were */
+    snprintf(req, sizeof req,
+             "POST /login HTTP/1.1\r\nHost: t\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0) Chrome/130\r\n"
+             "Content-Length: %zu\r\nConnection: close\r\n\r\n%s",
+             strlen(good), good);
+    request(port, req, &r);
+    CHECK_HAS(buf_cstr(&r), "Location: /book");
+    CHECK_HAS(buf_cstr(&r), "HttpOnly");
+    CHECK_HAS(buf_cstr(&r), "Max-Age=31536000");
+    cookie_of(&r, cookie, sizeof cookie);
+    CHECK_INT(strlen(cookie), 32);
+
+    /* signed in: real pages */
+    snprintf(req, sizeof req, "GET /book HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nConnection: close\r\n\r\n",
+             cookie);
+    request(port, req, &r);
+    CHECK(str_starts(body_of(&r), "<!doctype html>"));
+    CHECK_HAS(body_of(&r), "data-mod=\"book\"");
+    CHECK_HAS(body_of(&r), "</html>");
+
+    /* the JSON API with the same cookie */
+    const char *json = "{\"name\":\"Car\"}";
+    snprintf(req, sizeof req,
+             "POST /api/book.preset HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nContent-Type: application/json\r\n"
+             "Content-Length: %zu\r\nConnection: close\r\n\r\n%s",
+             cookie, strlen(json), json);
+    request(port, req, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    snprintf(req, sizeof req, "GET /api/person HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nConnection: close\r\n\r\n",
+             cookie);
+    request(port, req, &r);
+    CHECK_HAS(body_of(&r), "\"username\":\"adam\"");
+    CHECK(!strstr(body_of(&r), "pbkdf2")); /* password hashes never leave the server */
+
+    /* the wire: upgrade with the cookie, say hello, get the live page */
+    sock_t ws = dial(port);
+    CHECK(ws != SOCK_BAD);
+    snprintf(req, sizeof req,
+             "GET /ws HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nCookie: hemma=%s\r\n"
+             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+             cookie);
+    send_all(ws, req, strlen(req));
+    uint8_t frame[512];
+    const char *hello = "{\"t\":\"hello\",\"url\":\"/book\"}";
+    size_t fn = client_frame(frame, hello, strlen(hello));
+    send_all(ws, (const char *)frame, fn);
+    buf_reset(&r);
+    for (int64_t end = now_ms() + 3000; now_ms() < end && !strstr(buf_cstr(&r), "Car");) {
+        pollfd_t pf = {.fd = ws, .events = POLLIN};
+        if (plat_poll(&pf, 1, 50) != 1) continue;
+        char tmp[16384];
+        long k = sock_recv(ws, tmp, sizeof tmp);
+        if (k > 0) buf_put(&r, tmp, (size_t)k);
+        else if (k == 0) break;
+    }
+    CHECK_HAS(buf_cstr(&r), "101 Switching Protocols");
+    CHECK_HAS(buf_cstr(&r), "[\"morph\",");
+    CHECK_HAS(buf_cstr(&r), "Car"); /* the preset added over the API is on the live page */
+    sock_close(ws);
+
+    /* sign out: the session ends and the cookie is cleared */
+    snprintf(req, sizeof req,
+             "POST /logout HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+             cookie);
+    request(port, req, &r);
+    CHECK_HAS(buf_cstr(&r), "Max-Age=0");
+    snprintf(req, sizeof req, "GET / HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nConnection: close\r\n\r\n", cookie);
+    request(port, req, &r);
+    CHECK_HAS(body_of(&r), "action=\"/login\"");
+
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    th_halt();
+}
+
+/* ---- the wire: who re-renders what ---- */
+
+static int account(const char *name, const char *user, const char *pw, int role) {
+    int id = th_person(name);
+    Person p = *person_get(id);
+    str_copy(p.username, sizeof p.username, user);
+    auth_hash(pw, p.pass, sizeof p.pass);
+    p.role = role;
+    tbl_put(&T_person, &p);
+    return id;
+}
+
+static void sign_in(int port, const char *form, char *cookie, size_t cap) {
+    char req[512];
+    Buf r = {0};
+    snprintf(req, sizeof req,
+             "POST /login HTTP/1.1\r\nHost: t\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s", strlen(form),
+             form);
+    request(port, req, &r);
+    cookie_of(&r, cookie, cap);
+    buf_free(&r);
+}
+
+/* Reads what arrives until `needle` shows up (true) or `ms` pass; needle NULL = read for ms. */
+static bool ws_wait(sock_t s, Buf *b, const char *needle, int ms) {
+    for (int64_t end = now_ms() + ms; now_ms() < end;) {
+        if (needle && b->len && strstr(buf_cstr(b), needle)) return true;
+        pollfd_t pf = {.fd = s, .events = POLLIN};
+        if (plat_poll(&pf, 1, 20) != 1) continue;
+        char tmp[16384];
+        long k = sock_recv(s, tmp, sizeof tmp);
+        if (k > 0) {
+            for (long i = 0; i < k; i++) if (!tmp[i]) tmp[i] = ' '; /* frame headers may hold NULs */
+            buf_put(b, tmp, (size_t)k);
+        } else if (k == 0 || !sock_again(sock_errno())) break;
+    }
+    return needle && strstr(buf_cstr(b), needle);
+}
+
+static sock_t ws_open(int port, const char *cookie) {
+    sock_t s = dial(port);
+    if (s == SOCK_BAD) return s;
+    char req[512];
+    snprintf(req, sizeof req,
+             "GET /ws HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n%s%s%s"
+             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+             cookie[0] ? "Cookie: hemma=" : "", cookie, cookie[0] ? "\r\n" : "");
+    send_all(s, req, strlen(req));
+    Buf b = {0};
+    ws_wait(s, &b, "\r\n\r\n", 2000);
+    buf_free(&b);
+    return s;
+}
+
+static void ws_say(sock_t s, const char *json) {
+    uint8_t f[1024];
+    size_t n = client_frame(f, json, strlen(json));
+    send_all(s, (const char *)f, n);
+}
+
+TEST(app_wire_renders_only_the_screens_that_changed) {
+    /* review: hello/nav from any socket - signed out too - re-rendered every screen in the
+       house, and every click morphed every other screen (the "Here now" tooltip) */
+    if (!module_find("people")) return;
+    th_boot();
+    auth_configure("e2e-salt", 1000);
+    g_fake_now = dt_make(2026, 10, 11, 12, 0); /* a minute that never ends: no minute tick re-renders */
+    account("Adam", "adam", "correct horse", ROLE_ADMIN);
+    account("Eva", "eva", "eva password", ROLE_MEMBER);
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], eva[64];
+    sign_in(port, "username=adam&password=correct+horse", adam, sizeof adam);
+    sign_in(port, "username=eva&password=eva+password", eva, sizeof eva);
+    CHECK_INT(strlen(adam), 32);
+    CHECK_INT(strlen(eva), 32);
+
+    /* adam's screen on the household page */
+    Buf a = {0}, b = {0}, e = {0};
+    sock_t sa = ws_open(port, adam);
+    ws_say(sa, "{\"t\":\"hello\",\"url\":\"/people\"}");
+    CHECK(ws_wait(sa, &a, "[\"morph\",", 3000));
+    plat_sleep_ms(150);
+
+    /* a stranger's socket: hello, navs, a refused action, close - only its own screen renders */
+    long before = app_renders();
+    sock_t sb = ws_open(port, "");
+    ws_say(sb, "{\"t\":\"hello\",\"url\":\"/\"}");
+    CHECK(ws_wait(sb, &b, "action=\\\"/login\\\"", 3000));
+    char msg[200];
+    for (int i = 0; i < 4; i++) {
+        snprintf(msg, sizeof msg, "{\"t\":\"nav\",\"url\":\"/x%d\"}", i);
+        ws_say(sb, msg);
+        plat_sleep_ms(20);
+    }
+    ws_say(sb, "{\"t\":\"act\",\"a\":\"household.save\",\"id\":1,\"url\":\"/x3\",\"f\":[[\"name\",\"Pwned\"]]}");
+    CHECK(ws_wait(sb, &b, "Sign in first", 3000));
+    plat_sleep_ms(150);
+    long stranger = app_renders() - before;
+    CHECK(stranger >= 1 && stranger <= 6); /* its own: hello, navs, the refusal - never adam's too */
+    CHECK_STR(app_name(), "Hemma");
+    before = app_renders();
+    sock_close(sb);
+    plat_sleep_ms(300);
+    CHECK_INT(app_renders() - before, 0); /* a stranger leaving changes nothing for anyone */
+
+    /* presence still reaches other screens: eva opening and closing one */
+    buf_reset(&a);
+    sock_t se = ws_open(port, eva);
+    ws_say(se, "{\"t\":\"hello\",\"url\":\"/more\"}");
+    CHECK(ws_wait(se, &e, "[\"morph\",", 3000));
+    CHECK(ws_wait(sa, &a, "@eva \xC2\xB7 online on 1 screen", 3000)); /* adam's household page: eva online */
+    /* eva clicking around re-renders her screen and the pages that say where people are -
+       not adam's other pages (none here: the household page is one of them) */
+    buf_reset(&a);
+    before = app_renders();
+    ws_say(se, "{\"t\":\"nav\",\"url\":\"/people\"}");
+    CHECK(ws_wait(se, &e, "[\"url\",\"/people\"", 3000));
+    plat_sleep_ms(150);
+    CHECK(app_renders() - before <= 2);
+    buf_reset(&a);
+    sock_close(se);
+    CHECK(ws_wait(sa, &a, "[\"morph\",", 3000)); /* eva's screen closed: adam's page updates */
+
+    /* a nav to where the screen already is: no render; a tap (push) just scrolls to the top */
+    buf_reset(&a);
+    plat_sleep_ms(150);
+    before = app_renders();
+    ws_say(sa, "{\"t\":\"nav\",\"url\":\"/people\",\"pop\":1}");
+    ws_say(sa, "{\"t\":\"nav\",\"url\":\"/people\"}");
+    CHECK(ws_wait(sa, &a, "[[\"url\",\"/people\",", 3000));
+    CHECK_HAS(buf_cstr(&a), ",1]]");
+    CHECK(!strstr(buf_cstr(&a), "[\"morph\","));
+    CHECK_INT(app_renders() - before, 0);
+
+    /* a flood of navs: a burst, then the screen catches up on the tick - with the last URL */
+    buf_reset(&a);
+    before = app_renders();
+    int64_t t0 = now_ms();
+    for (int i = 0; i < 60; i++) {
+        snprintf(msg, sizeof msg, "{\"t\":\"nav\",\"url\":\"/nowhere?i=%d\"}", i);
+        ws_say(sa, msg);
+        plat_sleep_ms(3);
+    }
+    CHECK(ws_wait(sa, &a, "[\"url\",\"/nowhere?i=59\"", 3000));
+    long flood = app_renders() - before, took = (long)(now_ms() - t0);
+    /* 15 at once, then 5 a second, plus one catch-up per tick (about a second apart) */
+    long allowed = 16 + took / 200 + took / 1000 + 2;
+    if (flood < 1 || flood > allowed) test_fail(__FILE__, __LINE__, "%ld renders for 60 navs in %ld ms", flood, took);
+
+    /* the first hello may say which page it holds (data-h): then nothing is resent */
+    char req[300];
+    Buf r = {0};
+    snprintf(req, sizeof req, "GET /more HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nConnection: close\r\n\r\n", adam);
+    request(port, req, &r);
+    const char *dh = strstr(buf_cstr(&r), "data-h=\"");
+    CHECK(dh != NULL);
+    char h[17] = "";
+    if (dh) str_ncopy(h, sizeof h, dh + 8, 16);
+    CHECK_INT(strspn(h, "0123456789abcdef"), 16);
+    sock_t sf = ws_open(port, adam);
+    Buf f = {0};
+    snprintf(msg, sizeof msg, "{\"t\":\"hello\",\"url\":\"/more\",\"h\":\"%s\"}", h);
+    ws_say(sf, msg);
+    CHECK(ws_wait(sf, &f, "[\"url\",\"/more\"", 3000));
+    ws_wait(sf, &f, "[\"morph\",", 400);
+    CHECK(!strstr(buf_cstr(&f), "[\"morph\","));
+    sock_close(sf);
+    sock_t sg = ws_open(port, adam); /* a page that isn't the one it holds gets the whole page */
+    buf_reset(&f);
+    ws_say(sg, "{\"t\":\"hello\",\"url\":\"/more\",\"h\":\"0000000000000000\"}");
+    CHECK(ws_wait(sg, &f, "[\"morph\",", 3000));
+    sock_close(sg);
+    sock_close(sa);
+
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&a);
+    buf_free(&b);
+    buf_free(&e);
+    buf_free(&f);
+    buf_free(&r);
+    th_halt();
+}
+
+TEST(app_api_needs_a_member_or_admin) {
+    /* review: wall tablets (display accounts) could read every table over /api; the 401 went
+       out as "401 Unknown" and asked strangers to "pick who you are" */
+    th_boot();
+    auth_configure("e2e-salt", 1000);
+    account("Adam", "adam", "correct horse", ROLE_ADMIN);
+    account("Hallway", "hallway", "tablet-pass-1", ROLE_DISPLAY);
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], hall[64], req[300];
+    sign_in(port, "username=adam&password=correct+horse", adam, sizeof adam);
+    sign_in(port, "username=hallway&password=tablet-pass-1", hall, sizeof hall);
+    Buf r = {0};
+    request(port, "GET /api/person HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 401 Unauthorized\r\n"));
+    CHECK_HAS(body_of(&r), "{\"error\":\"sign in first\"}");
+    snprintf(req, sizeof req, "GET /api/person HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nConnection: close\r\n\r\n",
+             hall);
+    request(port, req, &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 403 Forbidden\r\n"));
+    CHECK(!strstr(body_of(&r), "adam"));
+    snprintf(req, sizeof req, "GET /api HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nConnection: close\r\n\r\n", hall);
+    request(port, req, &r);
+    CHECK_HAS(buf_cstr(&r), " 403 ");
+    snprintf(req, sizeof req, "GET /api/person HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nConnection: close\r\n\r\n",
+             adam);
+    request(port, req, &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 200 OK\r\n"));
+    CHECK_HAS(body_of(&r), "\"username\":\"adam\"");
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    th_halt();
+}
+
+/* Static files go out gzipped to browsers that say they take it (the build adds a ".gz" twin);
+   the rest get them as they are. */
+TEST(app_serves_assets_gzipped_to_browsers_that_take_it) {
+    bool twin = false;
+    for (int i = 0; i < g_nassets; i++) twin |= g_assets[i].path && !strcmp(g_assets[i].path, "/wire.js.gz");
+    th_boot();
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    Buf r = {0};
+    request(port, "GET /static/wire.js HTTP/1.1\r\nHost: t\r\nAccept-Encoding: gzip, deflate, br\r\nConnection: close\r\n\r\n",
+            &r);
+    CHECK_HAS(buf_cstr(&r), "200 OK");
+    CHECK_HAS(buf_cstr(&r), "Vary: Accept-Encoding");
+    if (twin) { /* (a build without gzip at hand has no twins) */
+        CHECK_HAS(buf_cstr(&r), "Content-Encoding: gzip");
+        const unsigned char *b = (const unsigned char *)body_of(&r);
+        CHECK(b[0] == 0x1f && b[1] == 0x8b);
+    }
+    request(port, "GET /static/wire.js HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", &r);
+    CHECK(!strstr(buf_cstr(&r), "Content-Encoding"));
+    CHECK_HAS(body_of(&r), "Hemma's browser wire");
+    request(port, "GET /static/wire.js.gz HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", &r);
+    CHECK_HAS(buf_cstr(&r), "404");
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    th_halt();
+}

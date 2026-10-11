@@ -1,0 +1,357 @@
+#include "../../core/auth.h"
+#include "../../tests/harness.h"
+
+static void boot(void) {
+    th_boot();
+    auth_configure("test-server-salt", 1000);
+}
+
+static int admin(const char *name, const char *user) {
+    int id = th_person(name);
+    Person p = *person_get(id);
+    str_copy(p.username, sizeof p.username, user);
+    auth_hash("correct horse", p.pass, sizeof p.pass);
+    p.role = ROLE_ADMIN;
+    tbl_put(&T_person, &p);
+    return id;
+}
+
+TEST(people_admin_adds_people_with_and_without_sign_in) {
+    boot();
+    int adam = admin("Adam", "adam");
+    CHECK(th_act(adam, "people.save", "name=Love&hue=10").ok); /* a toddler: no sign-in */
+    Person *love = person_get(2);
+    CHECK(love && !love->username[0] && !love->pass[0]);
+    ThResult r = th_act(adam, "people.save", "name=Eva&username=Eva&password=short&role=0");
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "8 characters");
+    CHECK(!th_act(adam, "people.save", "name=Eva&username=eva").ok);                       /* needs a password */
+    CHECK(!th_act(adam, "people.save", "name=Eva&username=e+v&password=longenough1").ok);  /* bad username */
+    CHECK(!th_act(adam, "people.save", "name=Eva&password=longenough1").ok);               /* password, no user */
+    CHECK(th_act(adam, "people.save", "name=Eva&username=Eva&password=longenough1&role=0").ok);
+    Person *eva = person_by_username("eva");
+    CHECK(eva != NULL);
+    CHECK_STR(eva->username, "eva");
+    CHECK(auth_check("longenough1", eva->pass));
+    CHECK(!th_act(adam, "people.save", "name=Eve&username=eva&password=longenough2").ok); /* username taken */
+    CHECK(!th_act(adam, "people.save", "name=adam&hue=1").ok);                            /* name taken */
+    th_halt();
+}
+
+TEST(people_members_can_only_edit_themselves) {
+    boot();
+    int adam = admin("Adam", "adam");
+    CHECK(th_act(adam, "people.save", "name=Eva&username=eva&password=longenough1").ok);
+    int eva = person_by_username("eva")->id;
+    char f[160];
+    snprintf(f, sizeof f, "id=%d&name=Eva+B&hue=40&role=1&username=evil&password=hackhackhack", eva);
+    CHECK(th_act(eva, "people.save", f).ok); /* her own profile ... */
+    Person *e = person_get(eva);
+    CHECK_STR(e->name, "Eva B");
+    CHECK_INT(e->role, ROLE_MEMBER); /* ... but no admin fields */
+    CHECK_STR(e->username, "eva");
+    CHECK(auth_check("longenough1", e->pass));
+    snprintf(f, sizeof f, "id=%d&name=Hacked", adam);
+    CHECK(!th_act(eva, "people.save", f).ok);
+    CHECK(!th_act(eva, "people.save", "name=Newbie").ok);
+    CHECK(!th_act(eva, "people.delete", "id=1").ok);
+    CHECK(!th_act(eva, "household.save", "name=Mine").ok);
+    CHECK(!th_act(eva, "people.signout", "id=1").ok);
+    CHECK_STR(person_get(adam)->name, "Adam");
+    th_halt();
+}
+
+TEST(people_keep_one_admin_who_can_sign_in) {
+    boot();
+    int adam = admin("Adam", "adam");
+    char f[100];
+    snprintf(f, sizeof f, "id=%d&name=Adam&username=", adam); /* the only admin dropping their sign-in */
+    CHECK(!th_act(adam, "people.save", f).ok);
+    CHECK_STR(person_get(adam)->username, "adam");
+    snprintf(f, sizeof f, "id=%d&name=Adam&username=adam&role=0", adam); /* own role can't be changed */
+    CHECK(th_act(adam, "people.save", f).ok);
+    CHECK_INT(person_get(adam)->role, ROLE_ADMIN);
+    th_halt();
+}
+
+TEST(people_change_password_signs_out_other_devices) {
+    boot();
+    int adam = admin("Adam", "adam");
+    char a[33], b[33];
+    session_create(adam, true, "Mozilla/5.0 (Windows NT 10.0) Chrome/130", a);
+    session_create(adam, false, "Mozilla/5.0 (iPhone) Safari/605", b);
+    CHECK_INT(tbl_count(&T_session), 2);
+    CHECK(!th_act(adam, "people.password", "current=wrong&new=newpassword1&again=newpassword1").ok);
+    CHECK(!th_act(adam, "people.password", "current=correct+horse&new=newpassword1&again=different1").ok);
+    CHECK(!th_act(adam, "people.password", "current=correct+horse&new=short&again=short").ok);
+    ThResult r = th_act(adam, "people.password", "current=correct+horse&new=newpassword1&again=newpassword1");
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "2 other devices");
+    CHECK(auth_check("newpassword1", person_get(adam)->pass));
+    CHECK_INT(tbl_count(&T_session), 0); /* the test's own session isn't stored */
+    th_halt();
+}
+
+TEST(people_admin_removes_people_and_their_sessions) {
+    boot();
+    int adam = admin("Adam", "adam");
+    CHECK(th_act(adam, "people.save", "name=Eva&username=eva&password=longenough1").ok);
+    int eva = person_by_username("eva")->id;
+    char sid[33], f[32];
+    session_create(eva, true, NULL, sid);
+    snprintf(f, sizeof f, "id=%d", eva);
+    CHECK(th_act(adam, "people.signout", f).ok);
+    CHECK_INT(tbl_count(&T_session), 0);
+    session_create(eva, true, NULL, sid);
+    CHECK(th_act(adam, "people.delete", f).ok);
+    CHECK(person_get(eva) == NULL);
+    CHECK_INT(tbl_count(&T_session), 0);
+    snprintf(f, sizeof f, "id=%d", adam);
+    CHECK(!th_act(adam, "people.delete", f).ok); /* not yourself */
+    th_halt();
+}
+
+TEST(people_display_accounts_are_not_household_members) {
+    boot();
+    int adam = admin("Adam", "adam");
+    CHECK(th_act(adam, "people.save", "name=Hallway&username=hallway&password=tablet-pass-1&role=2").ok);
+    CHECK_INT(account_count(), 2);
+    CHECK_INT(person_count(), 1); /* not listed among people (who's home, pickers ...) */
+    CHECK_STR(person_at(0)->name, "Adam");
+    int tablet = person_by_username("hallway")->id;
+    CHECK(!th_act(tablet, "people.password", "current=tablet-pass-1&new=whatever123&again=whatever123").ok);
+    CHECK_HAS(th_page(adam, "/people"), "@hallway · Display");
+    th_halt();
+}
+
+TEST(people_household_page) {
+    boot();
+    int adam = admin("Adam", "adam");
+    CHECK(th_act(adam, "people.save", "name=Eva&hue=10").ok);
+    char sid[33];
+    session_create(adam, true, "Mozilla/5.0 (Windows NT 10.0) Chrome/130", sid);
+    const char *h = th_page(adam, "/people");
+    CHECK_HAS(h, "@adam · Admin");
+    CHECK_HAS(h, "no sign-in");
+    CHECK_HAS(h, "Chrome on Windows");
+    CHECK_HAS(h, "action=\"/logout\"");
+    CHECK_HAS(th_page(adam, "/people?edit=2"), "Remove Eva");
+    CHECK_HAS(th_page(adam, "/people?add=1"), "Signing in");
+    CHECK(th_act(adam, "household.save", "name=Villa+Villekulla").ok);
+    CHECK_STR(app_name(), "Villa Villekulla");
+    th_halt();
+}
+
+TEST(people_admin_edit_changes_only_what_was_sent) {
+    /* review: {"id":2,"name":"Boss B."} over the API used to clear the username and password,
+       demote the admin and sign them out */
+    boot();
+    int adam = admin("Adam", "adam");
+    int boss = admin("Boss", "boss");
+    CHECK(th_act(adam, "people.save", "name=Love&hue=10&emoji=%F0%9F%A6%8A").ok);
+    char sid[33], f[96];
+    session_create(boss, true, NULL, sid);
+    snprintf(f, sizeof f, "id=%d&name=Boss+B.", boss);
+    CHECK(th_act(adam, "people.save", f).ok);
+    Person *b = person_get(boss);
+    CHECK_STR(b->name, "Boss B.");
+    CHECK_STR(b->username, "boss");
+    CHECK_INT(b->role, ROLE_ADMIN);
+    CHECK(auth_check("correct horse", b->pass));
+    CHECK_INT(tbl_count(&T_session), 1); /* still signed in */
+    int love = person_find("Love")->id;
+    snprintf(f, sizeof f, "id=%d&name=Love+L", love);
+    CHECK(th_act(adam, "people.save", f).ok);
+    CHECK_INT(person_get(love)->hue, 10); /* profile fields that weren't sent stay too */
+    CHECK_STR(person_get(love)->emoji, "\xF0\x9F\xA6\x8A");
+    /* what is sent still applies, including an explicit empty username */
+    snprintf(f, sizeof f, "id=%d&name=Boss&role=0", boss);
+    CHECK(th_act(adam, "people.save", f).ok);
+    CHECK_INT(person_get(boss)->role, ROLE_MEMBER);
+    snprintf(f, sizeof f, "id=%d&name=Boss&username=", boss);
+    CHECK(th_act(adam, "people.save", f).ok);
+    CHECK_STR(person_get(boss)->username, "");
+    CHECK(!person_get(boss)->pass[0]);
+    CHECK_INT(tbl_count(&T_session), 0);
+    th_halt();
+}
+
+TEST(people_adding_many_keeps_the_author) {
+    /* review: adding the 17th, 33rd ... person grows the table; the action used to read
+       c->me through the stale pointer afterwards */
+    boot();
+    int adam = admin("Adam", "adam");
+    char f[48];
+    for (int i = 0; i < 70; i++) {
+        snprintf(f, sizeof f, "name=Guest+%d&hue=%d", i, i);
+        CHECK(th_act(adam, "people.save", f).ok);
+    }
+    int joined = 0;
+    for (int i = 0; i < tbl_count(&T_activity); i++) {
+        Activity *a = tbl_at(&T_activity, i);
+        if (!strstr(a->text, "joined the household")) continue;
+        joined++;
+        if (a->who != adam) {
+            test_fail(__FILE__, __LINE__, "\"%s\" credited to %d, not %d", a->text, a->who, adam);
+            return;
+        }
+    }
+    CHECK_INT(joined, 70);
+    th_halt();
+}
+
+TEST(people_password_check_is_throttled) {
+    boot();
+    int adam = admin("Adam", "adam");
+    for (int i = 0; i < 5; i++)
+        CHECK(!th_act(adam, "people.password", "current=guess&new=newpassword1&again=newpassword1").ok);
+    ThResult r = th_act(adam, "people.password", "current=correct+horse&new=newpassword1&again=newpassword1");
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Too many tries");
+    CHECK(auth_check("correct horse", person_get(adam)->pass)); /* unchanged */
+    th_halt();
+}
+
+TEST(people_admin_sets_own_password_only_under_your_account) {
+    /* review: people.save id=<self>&password=X changed the admin's own password without the
+       current one (people.password asks for it) and left their other devices signed in */
+    boot();
+    int adam = admin("Adam", "adam");
+    char a[33], b[33], f[128];
+    session_create(adam, true, "Mozilla/5.0 (Windows NT 10.0) Chrome/130", a);
+    session_create(adam, false, "Mozilla/5.0 (iPhone) Safari/605", b);
+    snprintf(f, sizeof f, "id=%d&name=Adam&password=hijacked-pass-1", adam);
+    ThResult r = th_act(adam, "people.save", f);
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Your account");
+    CHECK(auth_check("correct horse", person_get(adam)->pass));
+    CHECK_INT(tbl_count(&T_session), 2);
+    snprintf(f, sizeof f, "id=%d&name=Adam+A&hue=30", adam); /* the rest of the profile still saves */
+    CHECK(th_act(adam, "people.save", f).ok);
+    CHECK_STR(person_get(adam)->name, "Adam A");
+    /* the dialog doesn't offer the field for yourself - but does for others */
+    snprintf(f, sizeof f, "/people?edit=%d", adam);
+    const char *h = th_page(adam, f);
+    CHECK_HAS(h, "Change your own password under <b>Your account</b>");
+    CHECK(!strstr(h, "name=\"password\""));
+    CHECK(th_act(adam, "people.save", "name=Eva&username=eva&password=longenough1").ok);
+    int eva = person_by_username("eva")->id;
+    snprintf(f, sizeof f, "/people?edit=%d", eva);
+    CHECK_HAS(th_page(adam, f), "name=\"password\"");
+    /* an admin setting someone else's password ends that person's sessions (not their own) */
+    char e1[33], e2[33];
+    session_create(eva, true, NULL, e1);
+    session_create(eva, false, NULL, e2);
+    snprintf(f, sizeof f, "id=%d&name=Eva&password=fresh-pass-12", eva);
+    CHECK(th_act(adam, "people.save", f).ok);
+    CHECK(auth_check("fresh-pass-12", person_get(eva)->pass));
+    int evas = 0, adams = 0;
+    for (int i = 0; i < tbl_count(&T_session); i++) {
+        Session *s = tbl_at(&T_session, i);
+        evas += s->person == eva;
+        adams += s->person == adam;
+    }
+    CHECK_INT(evas, 0);
+    CHECK_INT(adams, 2);
+    th_halt();
+}
+
+TEST(people_password_checks_share_the_address_budget) {
+    /* wrong passwords from this device for any username count before the current-password
+       check hashes anything (each check costs a password hash on the event loop) */
+    boot();
+    int adam = admin("Adam", "adam");
+    int who = 0, wait = 0;
+    char user[32];
+    for (int i = 0; i < 10; i++) { /* th_act runs as 127.0.0.1 */
+        snprintf(user, sizeof user, "nobody-%d", i);
+        auth_login(user, "x", 0x7F000001, now_sec(), &who, &wait);
+    }
+    ThResult r = th_act(adam, "people.password", "current=correct+horse&new=newpassword1&again=newpassword1");
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Too many tries");
+    CHECK(!th_act(adam, "people.codes", "current=correct+horse").ok);
+    CHECK(auth_check("correct horse", person_get(adam)->pass));
+    th_halt();
+}
+
+TEST(people_recovery_codes_on_the_account_card) {
+    boot();
+    int adam = admin("Adam", "adam");
+    const char *h = th_page(adam, "/people");
+    CHECK_HAS(h, "Recovery codes");
+    CHECK_HAS(h, "None yet");
+    CHECK_HAS(h, "data-a=\"people.codes\"");
+    /* making codes asks for the password (throttled like changing it) */
+    ThResult r = th_act(adam, "people.codes", "current=wrong");
+    CHECK(!r.ok);
+    CHECK_INT(auth_codes_left(adam), 0);
+    r = th_act(adam, "people.codes", "current=correct+horse");
+    CHECK(r.ok);
+    CHECK_STR(r.redirect, "/people/codes");
+    CHECK_INT(auth_codes_left(adam), AUTH_CODES);
+    h = th_page(adam, "/people/codes");
+    CHECK_HAS(h, "Save these now");
+    CHECK_HAS(h, "download=\"hemma-recovery-codes.txt\"");
+    CHECK_HAS(h, "data-a=\"people.codes_saved\"");
+    CHECK_HAS(h, "username (<b>adam</b>)");
+    int shown = 0;
+    for (const char *p = h; (p = strstr(p, "<li><code>")) != NULL; p += 10) shown++;
+    CHECK_INT(shown, AUTH_CODES);
+    CHECK_HAS(th_page(adam, "/people"), "waiting to be saved");
+    CHECK(th_act(adam, "people.codes_saved", "").ok);
+    h = th_page(adam, "/people/codes");
+    CHECK_HAS(h, "only shown right after");
+    CHECK(!strstr(h, "<li><code>"));
+    h = th_page(adam, "/people");
+    CHECK_HAS(h, "8 of 8 left");
+    CHECK(!strstr(h, "waiting to be saved"));
+    CHECK_HAS(h, "Your old codes stop working");
+    th_halt();
+}
+
+TEST(people_members_make_their_own_codes_and_lose_them_with_their_sign_in) {
+    boot();
+    int adam = admin("Adam", "adam");
+    CHECK(th_act(adam, "people.save", "name=Eva&username=eva&password=longenough1").ok);
+    int eva = person_by_username("eva")->id;
+    CHECK(th_act(eva, "people.codes", "current=longenough1").ok); /* created by an admin, codes of her own */
+    CHECK_INT(auth_codes_left(eva), AUTH_CODES);
+    CHECK_HAS(th_page(eva, "/people/codes"), "username (<b>eva</b>)");
+    char f[96];
+    snprintf(f, sizeof f, "id=%d&name=Eva&username=", eva); /* no sign-in any more: no codes either */
+    CHECK(th_act(adam, "people.save", f).ok);
+    CHECK_INT(auth_codes_left(eva), 0);
+    CHECK(th_act(adam, "people.save", "name=Hallway&username=hallway&password=tablet-pass-1&role=2").ok);
+    int tablet = person_by_username("hallway")->id;
+    CHECK(!strstr(th_page(tablet, "/people"), "Recovery codes")); /* display accounts have none */
+    CHECK(!th_act(tablet, "people.codes", "current=tablet-pass-1").ok);
+    CHECK_INT(auth_codes_left(tablet), 0);
+    CHECK(th_act(adam, "people.codes", "current=correct+horse").ok);
+    int boss = admin("Boss", "boss");
+    Session s = {0};
+    str_copy(s.token, sizeof s.token, "boss-phone");
+    s.person = boss;
+    CHECK(auth_codes_new(boss, &s));
+    snprintf(f, sizeof f, "id=%d", boss); /* removed from the household: the codes go too */
+    CHECK(th_act(adam, "people.delete", f).ok);
+    CHECK_INT(auth_codes_left(boss), 0);
+    CHECK_INT(auth_codes_left(adam), AUTH_CODES);
+    th_halt();
+}
+
+TEST(people_page_after_a_recovery) {
+    boot();
+    int adam = admin("Adam", "adam");
+    Session s = {0};
+    str_copy(s.token, sizeof s.token, "x");
+    s.person = adam;
+    auth_codes_new(adam, &s);
+    CHECK_HAS(th_page(adam, "/people?recovered=1"), "You have 8 recovery codes left.");
+    char codes[AUTH_CODES][AUTH_CODE_LEN];
+    auth_codes_fresh(&s, codes);
+    int who = 0, wait = 0;
+    for (int i = 0; i < 7; i++) auth_recover("adam", codes[i], 0x0A000001, 1800000000 + i, &who, &wait);
+    CHECK_HAS(th_page(adam, "/people?recovered=1"), "You have 1 recovery code left - make new ones");
+    th_halt();
+}

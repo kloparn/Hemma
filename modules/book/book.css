@@ -1,0 +1,153 @@
+/* modules/book — bookings */
+
+.book-res-e { font-size: .95em; }
+
+/* overview tiles */
+.book-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 12px; margin-bottom: 18px; }
+.book-tile {
+  --h: 200;
+  display: flex; flex-direction: column; gap: 4px; padding: 16px; border-radius: var(--radius);
+  background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); text-decoration: none;
+  position: relative; overflow: hidden; transition: transform .12s, border-color .12s;
+}
+.book-tile::before { content: ""; position: absolute; top: 0; right: 0; bottom: auto; left: 0; height: 4px; background: hsl(var(--h) 60% 55%); }
+.book-tile:hover { transform: translateY(-2px); border-color: hsl(var(--h) 45% 60%); }
+.book-tile-e { font-size: 30px; line-height: 1.1; }
+.book-tile b { font-size: 16px; }
+.book-tile small { color: var(--muted); line-height: 1.35; }
+.book-st { font-weight: 650; }
+.book-st.book-free { color: var(--ok); }
+.book-st.book-busy { color: var(--warn); }
+
+.book-presets { justify-content: flex-start; }
+.book-presets.center { justify-content: center; margin-top: -8px; }
+.book-res-switch { margin: -6px 0 14px; }
+
+/* quick bar extras */
+.preview .book-why { margin-left: auto; font-weight: 600; color: var(--danger); }
+.preview .book-why.ok { color: var(--ok); }
+form.book-alt { margin: -10px 0 16px; }
+
+/* ----------------------------------------------------------- week grid */
+.book-grid-card { padding: 14px 14px 18px; }
+.book-grid-card .toolbar { margin-bottom: 10px; }
+.book-wk-nav { display: flex; align-items: center; gap: 4px; }
+.book-wk-range { margin-left: 6px; font-size: 15.5px; }
+.book-wk-scroll { overflow-x: auto; margin: 0 -4px; padding: 0 4px; scroll-snap-type: x proximity; scroll-padding-left: 46px; }
+.book-wk { --row-h: 22px; --rows: 30; min-width: 720px; }
+.book-wk-head, .book-wk-body { display: grid; grid-template-columns: 46px repeat(7, minmax(0, 1fr)); }
+.book-wk-head { position: sticky; top: 0; z-index: 3; padding-bottom: 6px; }
+.book-wk-dh { text-align: center; color: var(--muted); font-size: 12.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+.book-wk-dh b { display: block; font-size: 19px; color: var(--text); letter-spacing: 0; }
+.book-wk-dh.book-today b { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); }
+.book-wk-times { position: relative; height: calc(var(--rows) * var(--row-h)); }
+.book-wk-times span {
+  position: absolute; right: 8px; top: calc(var(--top) * var(--row-h) - 8px);
+  font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.book-wk-times span:first-child { top: 0; }
+.book-wk-col {
+  position: relative; display: grid; grid-template-rows: repeat(var(--rows), var(--row-h));
+  border-left: 1px solid var(--line); scroll-snap-align: start;
+}
+.book-wk-col:last-child { border-right: 1px solid var(--line); }
+.book-wk-col.book-today { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.book-wk-s { display: block; border-top: 1px dashed var(--line); border-top: 1px dashed color-mix(in srgb, var(--line) 70%, transparent); }
+.book-wk-s.book-hr { border-top: 1px solid var(--line); }
+a.book-wk-s:hover { background: var(--accent-soft); box-shadow: inset 0 0 0 1.5px var(--accent); border-radius: 6px; }
+.book-wk-s.book-past { background: repeating-linear-gradient(-45deg, transparent 0 6px, color-mix(in srgb, var(--line) 45%, transparent) 6px 7px); }
+.book-wk-b {
+  position: absolute; left: 3px; right: 3px; z-index: 2;
+  top: calc(var(--top) * var(--row-h) + 1px); height: calc(var(--len) * var(--row-h) - 2px);
+  display: flex; flex-direction: column; gap: 1px; padding: 4px 7px; border-radius: 8px; overflow: hidden;
+  text-decoration: none; font-size: 12.5px; line-height: 1.25; box-shadow: var(--shadow);
+  border-left: 3px solid hsl(var(--h) 60% 45%);
+  animation: pop .2s ease-out;
+}
+.book-wk-b b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.book-wk-b small { font-size: 11.5px; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.book-wk-b .book-n { font-style: italic; }
+.book-wk-b.book-mine { box-shadow: 0 0 0 2px hsl(var(--h) 60% 50%), var(--shadow); }
+.book-wk-b.book-done { opacity: .55; }
+.book-wk-b:hover { filter: brightness(1.05); z-index: 4; }
+.book-wk-now {
+  position: absolute; left: -1px; right: -1px; z-index: 3; top: calc(var(--top) * var(--row-h));
+  height: 2px; background: var(--danger); pointer-events: none;
+}
+.book-wk-now::before { content: ""; position: absolute; left: -5px; top: -4px; width: 10px; height: 10px; border-radius: 50%; background: var(--danger); }
+
+/* ----------------------------------------------------- whole-day month grid */
+.book-mo-head, .book-mo-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.book-mo-head span { text-align: center; color: var(--muted); font-size: 12.5px; font-weight: 650; text-transform: uppercase; padding-bottom: 4px; }
+.book-mo-d {
+  position: relative; min-height: 74px; padding: 6px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--panel); display: flex; flex-direction: column; gap: 4px;
+}
+.book-mo-d.book-past { opacity: .5; }
+.book-mo-d.book-today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.book-mo-d.book-taken { background: var(--panel-2); }
+.book-mo-n { font-size: 13px; font-weight: 700; color: var(--muted); }
+.book-mo-free { position: absolute; top: 0; right: 0; bottom: 0; left: 0; display: grid; place-items: center; color: transparent; border-radius: 12px; }
+.book-mo-free:hover { color: var(--accent); background: var(--accent-soft); }
+.book-mo-b {
+  display: flex; align-items: center; gap: 4px; padding: 3px 6px; border-radius: 8px;
+  text-decoration: none; font-size: 12px; font-weight: 650; min-height: 26px;
+}
+.book-mo-b span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 600px) {
+  .book-mo-head, .book-mo-grid { gap: 3px; }
+  .book-mo-d { min-height: 54px; padding: 4px; border-radius: 9px; }
+  .book-mo-b span { display: none; }
+}
+
+/* ------------------------------------------------------------ upcoming */
+.book-up { list-style: none; margin: 0; padding: 0; }
+.book-up-day { font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 12px 0 4px; }
+.book-up-day:first-child { padding-top: 0; }
+.book-up-row {
+  display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+  padding: 9px 10px; margin: 0 -10px; border-radius: 10px; text-decoration: none;
+}
+.book-up-row:hover { background: var(--panel-2); }
+.book-up-row.book-now .book-up-t { color: var(--warn); }
+.book-up-t { font-variant-numeric: tabular-nums; font-weight: 650; }
+.book-up-r { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.book-up-r small { color: var(--muted); }
+@media (max-width: 600px) { .book-up-row { grid-template-columns: 92px minmax(0, 1fr) auto; } .book-up-row .who span { display: none; } }
+
+/* ------------------------------------------------------------- modals */
+.book-bk-detail { display: flex; gap: 14px; align-items: flex-start; margin: 6px 0 16px; }
+.book-bk-who { font-size: 18px; }
+.book-bk-when { font-weight: 600; margin: 2px 0 6px; }
+.book-bk-note { margin-bottom: 6px; font-style: italic; }
+.book-rules { color: var(--muted); font-size: 13.5px; background: var(--panel-2); border-radius: 10px; padding: 8px 12px; }
+
+/* ------------------------------------------------------------- widget */
+.book-res-now { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.book-res-pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px 5px 8px; border-radius: 99px;
+  background: var(--accent-soft); background: color-mix(in srgb, var(--ok) 13%, transparent); text-decoration: none; font-size: 13px; font-weight: 650;
+}
+.book-res-pill span { color: var(--ok); }
+.book-res-pill.book-busy { background: var(--panel-2); background: color-mix(in srgb, var(--warn) 15%, transparent); }
+.book-res-pill.book-busy span { color: var(--warn); }
+
+/* ---- phones: the hour column stays put while the days swipe; ~3 days per screen ---- */
+.book-wk-head > span:first-child, .book-wk-times {
+  position: sticky; left: 0; z-index: 2; background: var(--panel);
+  box-shadow: -4px 0 0 var(--panel); /* also covers the scroller's 4px edge padding */
+}
+.book-wk-dh, .book-wk-col { scroll-snap-align: start; }
+@media (max-width: 600px) {
+  /* 100vw minus page (2×16) + card (2×14) padding and the 46px hour column, shared by 3 days */
+  .book-wk { min-width: calc(46px + 7 * (100vw - 106px) / 3); }
+  .book-wk-b b { font-size: 12.5px; }
+  .book-wk-b small { font-size: 11px; }
+
+  /* overview: one compact row per thing instead of tall tiles */
+  .book-tiles { grid-template-columns: 1fr; gap: 8px; }
+  .book-tile { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; align-items: center; padding: 12px 14px 12px 16px; }
+  .book-tile::before { top: 0; right: auto; bottom: 0; left: 0; width: 4px; height: auto; }
+  .book-tile-e { grid-row: span 2; font-size: 28px; }
+  .book-tile b, .book-tile small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}

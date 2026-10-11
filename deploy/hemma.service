@@ -1,0 +1,60 @@
+# /etc/systemd/system/hemma.service — installed by deploy/install-pi.sh
+[Unit]
+Description=Hemma household hub
+After=network-online.target local-fs.target remote-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hemma
+Group=hemma
+WorkingDirectory=/var/lib/hemma
+# Settings and secrets come from a root-owned file the service can read but not change
+# (/etc/hemma/hemma.env, 0640 root:hemma). Hemma never reads a .env from its own,
+# writable, working directory.
+ExecStart=/opt/hemma/hemma --data /var/lib/hemma --env /etc/hemma/hemma.env
+Restart=on-failure
+RestartSec=2
+
+# Port 80 without running as root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Hardening. The file system is read-only for Hemma except its database folder and the
+# media library folders that uploads go into. install-pi.sh lists those in a drop-in,
+# /etc/systemd/system/hemma.service.d/media.conf:
+#   [Service]
+#   ReadWritePaths="-/mnt/media"
+# Media anywhere else (also under /home) stays readable for streaming.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/hemma
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+# IPv4/IPv6 for the web server, LAN discovery (UDP probes, reverse DNS, Wake-on-LAN);
+# netlink for the interface list (getifaddrs); unix sockets for libc helpers.
+# No raw/packet sockets: neighbours are read from /proc/net/arp (keep /proc/net visible:
+# don't add ProcSubset=pid or PrivateNetwork).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# New files (the database, uploads) are private to the hemma user. If other programs
+# (Samba, Kodi, ...) read the media folders too, set UMask=0022 in the media drop-in.
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

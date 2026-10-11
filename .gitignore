@@ -1,0 +1,83 @@
+# Hemma - what never goes into the repository.
+# Source, docs, deploy scripts, web assets and the vendored SQLite are tracked; everything a
+# build, a test run or a household produces is not.
+
+# ---- build output (one folder per parallel worker: build-book, build-plan, ...)
+build/
+build-*/
+*.exe
+*.obj
+*.o
+*.a
+*.lib
+*.pdb
+*.ilk
+*.wasm
+hemma
+hemma-pi*
+/nul
+
+# ---- runtime data: the SQLite database and its WAL, wherever --data points
+data/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# ---- media: the household's videos never belong here (libraries live outside the repo)
+/media/
+/library/
+/uploads/
+*.part
+*.mkv
+*.mp4
+*.m4v
+*.webm
+*.avi
+*.mov
+*.wmv
+*.mpg
+*.mpeg
+*.m2ts
+*.vob
+*.iso
+*.srt
+*.vtt
+*.sub
+*.idx
+
+# ---- dev tool output (avdump / ac3dump / aaccheck / h264check / muxcheck)
+*.wav
+*.ac3
+*.aac
+*.flac
+*.264
+*.h264
+*.yuv
+*.pcm
+*.y4m
+/frames/
+/out/
+*.log
+*.tmp
+tmp/
+
+# ---- secrets and machine-specific settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+CLAUDE.local.md
+.claude/settings.local.json
+
+# ---- editors / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,245 @@
+/* core/app.h — everything a feature module gets from the core.
+ *
+ * A module is a folder under modules/ that defines a `Module` and registers
+ * it with MODULE(). It renders pages with H() (html.h) and the components in
+ * ui.h, keeps its data in store tables, and mutates data only inside Actions.
+ * After an action the core re-renders every open screen and morphs the
+ * difference into the browser — modules never write partial DOM updates.
+ *
+ * Pointer rule: rows returned by the store (Person*, Session*, ...) are only
+ * valid until the next insert into that same table. Keep ids, not pointers. */
+#ifndef HEMMA_APP_H
+#define HEMMA_APP_H
+
+#include "base.h"
+#include "html.h"
+#include "http.h"
+#include "server.h"
+#include "store.h"
+
+/* ------------------------------------------------------------- people */
+
+enum { ROLE_MEMBER = 0, ROLE_ADMIN = 1, ROLE_DISPLAY = 2 }; /* display = read-only (wall tablets) */
+
+typedef struct {
+    int id;
+    char name[48];
+    char emoji[16]; /* avatar emoji; initials are used when empty */
+    int hue;        /* 0..359: the person's colour everywhere */
+    int64_t created;
+    char username[33]; /* lower-case sign-in name; "" = this person can't sign in (e.g. a toddler) */
+    char pass[128];    /* password hash (core/auth.c); never leaves the server */
+    int role;
+    int64_t last_login;
+} Person;
+
+typedef struct {
+    int id;
+    char token[65]; /* SHA-256 of the cookie value: the cookie itself is never stored */
+    int person;
+    int64_t created, seen;
+    char agent[64]; /* "Chrome on Windows" — for the signed-in devices list */
+    bool remember;
+} Session;
+
+extern Table T_person, T_session;
+Person *person_get(int id);
+/* The household's people (display accounts such as a wall tablet are not people). */
+int person_count(void);
+Person *person_at(int i);
+Person *person_find(const char *name); /* case-insensitive name, or unique prefix */
+/* Every account, display ones included (household admin). */
+int account_count(void);
+Person *account_at(int i);
+
+/* ------------------------------------------------------------ context */
+
+typedef struct Client Client;
+enum { TOAST_OK, TOAST_INFO, TOAST_ERR };
+
+typedef struct Ctx {
+    Session *sess;
+    Person *me;     /* NULL until the visitor picked who they are */
+    Client *client; /* live WebSocket client; NULL for plain HTTP */
+    uint32_t ip;    /* visitor's IPv4 (host order) */
+    int64_t now;
+    char url[600];  /* current page: path + query, e.g. "/book?r=2" */
+    char path[300]; /* decoded path, e.g. "/book" */
+    Fields q;       /* query parameters */
+    /* set by renderers */
+    char title[96];
+    bool bare; /* render without the app chrome (wall display, fullscreen player) */
+    /* set by actions */
+    char redirect[600];
+    int toast_kind;
+    char toast[240];
+    bool failed;
+} Ctx;
+
+const char *ctx_q(const Ctx *c, const char *key); /* "" when absent */
+long long ctx_qint(const Ctx *c, const char *key, long long dflt);
+void ctx_title(Ctx *c, const char *fmt, ...) FMT(2, 3);
+void ctx_ok(Ctx *c, const char *fmt, ...) FMT(2, 3);   /* success toast */
+void ctx_info(Ctx *c, const char *fmt, ...) FMT(2, 3); /* neutral toast */
+void ctx_fail(Ctx *c, const char *fmt, ...) FMT(2, 3); /* error toast; the form keeps its input */
+void ctx_redirect(Ctx *c, const char *fmt, ...) FMT(2, 3);
+/* Current URL with some query parameters replaced or removed:
+ *   ctx_url(c, &b, "w", "2026-10-12", "new", NULL, NULL);   // NULL value removes, NULL key ends */
+void ctx_url(const Ctx *c, Buf *out, ...);
+
+/* Sessions (core/auth.c signs people in; the household module manages them). */
+bool session_create(int person, bool remember, const char *user_agent, char sid_out[33]);
+void session_end(const char *sid);                 /* by cookie value */
+int sessions_drop(int person, const Session *keep); /* sign a person out everywhere (but `keep`) */
+static inline bool is_admin(const Ctx *c) { return c->me && c->me->role == ROLE_ADMIN; }
+/* Per-screen scratch state for live previews (survives re-renders of that screen). */
+const char *ctx_live(const Ctx *c, const char *key);
+void ctx_set_live(Ctx *c, const char *key, const char *val);
+
+/* ------------------------------------------------------------ modules */
+
+typedef struct {
+    const char *name; /* global: "<module>.<verb>", e.g. "book.create" */
+    void (*run)(Ctx *c, Fields *f);
+} Action;
+
+/* Shared agenda: anything with a time (bookings, events, due chores) can show
+ * up in other modules' calendars and overviews without them knowing each other. */
+typedef struct {
+    int64_t start, end; /* end == start for a moment in time */
+    bool allday;
+    char title[120];
+    char icon[16]; /* emoji */
+    char link[160];
+    int who;            /* person, 0 = everyone */
+    char kind[24];      /* what it is, shown small ("Booking"); empty = the module's title */
+    const char *module; /* filled in by agenda_collect() */
+} AgendaItem;
+
+typedef struct {
+    AgendaItem *items;
+    int n, cap;
+} Agenda;
+
+void agenda_add(Agenda *a, const AgendaItem *it);
+/* Everything overlapping [from, to) from every module except `except` (NULL = all), sorted by start. */
+void agenda_collect(Ctx *c, int64_t from, int64_t to, const char *except, Agenda *out);
+void agenda_free(Agenda *a);
+
+enum { WIDGET_HOME, WIDGET_WALL };
+enum { MOD_PUBLIC = 1 }; /* usable without picking a person (e.g. the wall display) */
+
+typedef struct Module {
+    const char *id;    /* URL prefix "/<id>"; the module with id "home" owns "/" */
+    const char *title; /* navigation label and default page title */
+    const char *icon;  /* ui_icon() name */
+    int nav;           /* position in the navigation, 0 = not listed */
+    int flags;
+    void (*init)(void);           /* register tables — runs before the store loads */
+    void (*start)(void);          /* after the store loaded */
+    void (*stop)(void);
+    void (*tick)(int64_t now_ms); /* ~10 Hz on the event loop: keep it quick */
+    void (*page)(Ctx *c, Buf *b); /* render /<id> and /<id>/... */
+    const Action *actions;        /* terminated by {0} */
+    bool (*http)(Ctx *c, Conn *conn, HttpReq *r); /* raw endpoints (files, streams); true = handled */
+    void (*widget)(Ctx *c, Buf *b, int where);    /* cards for the home dashboard / wall display */
+    int widget_order;
+    void (*agenda)(Ctx *c, int64_t from, int64_t to, Agenda *out); /* timed things for shared agendas */
+    /* A small block at the foot of the sidebar, above the profile (phones: on the More page).
+       Every page shows it: keep it quick (cached numbers, no disk or network work). */
+    void (*side)(Ctx *c, Buf *b);
+} Module;
+
+void module_register(const Module *m);
+#define MODULE(var)                                                                                                    \
+    __attribute__((constructor)) static void module_register_##var(void) { module_register(&var); }
+int module_count(void);
+const Module *module_at(int i); /* sorted by nav, then id */
+const Module *module_find(const char *id);
+
+/* ---------------------------------------------------- live propagation */
+
+void app_changed(void); /* data changed: re-render every open screen (diffed; cheap) */
+long app_renders(void); /* live screens rendered so far (tests and measurements) */
+void app_changed_where(const char *url_prefix); /* only screens showing e.g. "/media" (progress bars) */
+/* Ticks come about once a second while screens are open and every 5 s when
+   none are. A module that needs its tick sooner (pacing packets, polling a
+   worker) asks from its tick; the request lasts for one tick. */
+void app_wake_in(int ms);
+/* Any thread: tick (modules' tick hooks) right away - a worker finished something to show. */
+void app_tick_soon(void);
+/* Toast on every open screen except the one belonging to `except` (may be NULL). */
+void app_notify(const Ctx *except, int kind, const char *fmt, ...) FMT(3, 4);
+/* Toast only on one person's open screens (e.g. "Adam assigned you: Vacuum"). */
+void app_notify_person(int person, int kind, const char *fmt, ...) FMT(3, 4);
+
+/* ------------------------------------------------------------ presence */
+
+int presence_screens(int person);       /* open screens right now */
+/* Title of the page they are looking at, or NULL. Navigating re-renders only that screen
+   plus screens on "/" and "/people"; elsewhere this is only fresh after the minute tick -
+   so show it on those two pages (the home dashboard does), not in shared chrome. */
+const char *presence_page(int person);
+void presence_set_home(int person, bool home, int64_t since); /* fed by the net module */
+bool presence_is_home(int person, int64_t *since);
+/* Drop what is known about `person` (0 = everyone), e.g. when discovery is
+   switched off or their last device is unassigned: they show as unknown again. */
+void presence_forget(int person);
+bool presence_tracking(void); /* true once a module reports home/away */
+bool presence_known(int person); /* has anyone reported home/away for this person? (e.g. they have a device) */
+/* "Whose device is this?" — a module that knows devices (net) can answer. */
+void presence_set_guesser(int (*guess)(uint32_t ip));
+int presence_guess(uint32_t ip); /* person id or 0 */
+
+/* ------------------------------------------------------------ settings */
+
+const char *setting(const char *key, const char *dflt);
+long long setting_int(const char *key, long long dflt);
+void setting_set(const char *key, const char *val);
+void setting_set_int(const char *key, long long v);
+/* per-person preferences (theme, favourite resource, wall layout, ...) */
+const char *pref(int person, const char *key, const char *dflt);
+void pref_set(int person, const char *key, const char *val);
+
+/* ------------------------------------------------------------ activity */
+
+typedef struct {
+    int id;
+    int64_t ts;
+    int who;
+    char icon[16]; /* emoji */
+    char text[200];
+    char link[160];
+} Activity;
+extern Table T_activity;
+void activity_add(int who, const char *icon, const char *link, const char *fmt, ...) FMT(4, 5);
+
+/* --------------------------------------------------------------- misc */
+
+bool app_testing(void); /* true under tests: don't open sockets, scan disks or start threads */
+void app_set_testing(bool on);
+const char *app_name(void);        /* household name, default "Hemma" */
+const char *app_asset_version(void); /* changes whenever web/ assets change */
+bool app_dev_mode(void);
+
+/* Bring the core up without a server (used by app_main and tests/harness.c):
+ * registers core tables, runs module init hooks, opens the store, runs start hooks. */
+bool app_boot(const char *data_dir);
+void app_halt(void);                       /* stop hooks + close the store */
+void app_ctx(Ctx *c, int person, const char *url); /* context as a person (0 = anonymous visitor) */
+void app_ctx_free(Ctx *c);
+void app_render(Ctx *c, Buf *out);         /* the <div id="app"> for c->url */
+bool app_action(Ctx *c, const char *name, Fields *f); /* false if no such action */
+void app_serve(void); /* after app_boot + server_listen: run the event loop until server_stop() */
+
+/* Entry points used by main.c */
+typedef struct {
+    const char *host;
+    int port;
+    const char *data_dir;
+    const char *web_dir; /* serve web/ from disk (live CSS/JS editing + auto-reload); NULL = embedded */
+    const char *env_file; /* the settings file (--env, default ".env"): a new install's secret goes there */
+} AppConfig;
+int app_main(const AppConfig *cfg);
+
+#endif
