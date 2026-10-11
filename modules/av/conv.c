@@ -1,4 +1,4 @@
-/* modules/av/conv.c — MKV -> MP4 that plays everywhere. See conv.h. */
+/* modules/av/conv.c — MKV -> MP4 that plays everywhere (HEVC: on Apple devices and newer browsers). See conv.h. */
 #include "conv.h"
 
 #include <stdio.h>
@@ -12,6 +12,7 @@
 #include "mpeg2.h"
 
 #define NS 1000000000LL
+#define COPY_SURVEY_PM 300 /* copying: the first read (every timestamp) is about a third of the work */
 #define ANALYZE_FRAMES 240 /* per window (~8 s), four windows decide between inverse telecine and deinterlacing */
 #define CMIN(a, b) ((a) < (b) ? (a) : (b))
 #define CMAX(a, b) ((a) > (b) ? (a) : (b))
@@ -38,6 +39,7 @@ typedef struct {
     Mkv *mkv;
     const MkvTrack *vt, *at;
     bool vcode, acode; /* re-encode (true) or copy (false) */
+    bool hevc;         /* copying HEVC rather than H.264 */
     int64_t v0, a0;    /* first video / audio pts (ns) */
     int64_t duration;  /* ns */
     Mp4 *mp4;
@@ -142,7 +144,7 @@ static bool decoded(Conv *c) {
     return !c->failed;
 }
 
-/* ---- video: copy (H.264 in MKV) ---- */
+/* ---- video: copy (H.264 or HEVC in MKV) ---- */
 
 static int cmp_i64(const void *a, const void *b) {
     int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
@@ -256,6 +258,8 @@ static bool survey(Conv *c, Mpeg2Frame *first, DeintStats *ds) {
             if (c->at && fr.track == c->at->number && c->a0 == MKV_NOPTS && fr.pts != MKV_NOPTS) c->a0 = fr.pts;
             if (fr.track != c->vt->number) continue;
             if (c->v0 == MKV_NOPTS && fr.pts != MKV_NOPTS) c->v0 = fr.pts;
+            if (fr.pts != MKV_NOPTS && c->duration > 0) /* a big film takes minutes to read on a Pi: show it */
+                set_progress(c, (int)CMIN(COPY_SURVEY_PM - 1, CMAX(0, (fr.pts - c->v0) * COPY_SURVEY_PM / c->duration)));
             if (c->nvpts == cap) {
                 cap = cap ? cap * 2 : 4096;
                 int64_t *p = realloc(c->vpts, (size_t)cap * sizeof *c->vpts);
@@ -314,7 +318,7 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         const char *kind = c->dmode == DEINT_IVTC ? "film" : c->dmode == DEINT_PASS ? "progressive" : "video";
         snprintf(c->j->what, sizeof c->j->what, "DVD video (%s, %.3f fps) → H.264", kind, (double)c->out_num / c->out_den);
     } else {
-        if (!c->vt->priv_len) return fail(c, "The H.264 track has no setup data", NULL);
+        if (!c->vt->priv_len) return fail(c, "The video track has no setup data", NULL);
         /* decode order is file order; presentation times are the pts. dts = the sorted
            pts, shifted so that pts - dts never goes negative (B-frames). */
         c->dts = malloc((size_t)c->nvpts * sizeof *c->dts);
@@ -322,7 +326,7 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         memcpy(c->dts, c->vpts, (size_t)c->nvpts * sizeof *c->dts);
         qsort(c->dts, (size_t)c->nvpts, sizeof *c->dts, cmp_i64);
         for (int i = 0; i < c->nvpts; i++) c->vshift = CMAX(c->vshift, c->dts[i] - c->vpts[i]);
-        vt.codec = MP4_H264;
+        vt.codec = c->hevc ? MP4_HEVC : MP4_H264;
         vt.timescale = 90000;
         vt.config = c->vt->priv;
         vt.config_len = c->vt->priv_len;
@@ -331,7 +335,7 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         if (c->vt->disp_width && c->vt->disp_height && c->vt->disp_unit == 0)
             sar_of(c->vt->width, c->vt->height, c->vt->disp_width, c->vt->disp_height, &vt.sar_num, &vt.sar_den);
         vt.start = ticks(c->vshift, 90000); /* the first picture at movie time 0 */
-        snprintf(c->j->what, sizeof c->j->what, "H.264 copied");
+        snprintf(c->j->what, sizeof c->j->what, c->hevc ? "HEVC copied" : "H.264 copied");
     }
     snprintf(vt.lang, sizeof vt.lang, "und");
     c->vtrack = mp4_add_track(c->mp4, &vt);
@@ -391,8 +395,10 @@ static bool main_pass(Conv *c) {
             } else {
                 copy_video(c, &fr);
             }
-            if (fr.pts != MKV_NOPTS && c->duration > 0)
-                set_progress(c, (int)CMIN(999, CMAX(0, (fr.pts - c->v0) * 1000 / c->duration)));
+            if (fr.pts != MKV_NOPTS && c->duration > 0) {
+                int64_t base = c->vcode ? 0 : COPY_SURVEY_PM;
+                set_progress(c, (int)CMIN(999, base + CMAX(0, (fr.pts - c->v0) * (1000 - base) / c->duration)));
+            }
             if (c->j->limit_ns && fr.pts != MKV_NOPTS && c->v0 != MKV_NOPTS && fr.pts - c->v0 >= c->j->limit_ns) break;
         } else if (c->at && fr.track == c->at->number) {
             if (c->acode) code_audio(c, &fr);
@@ -426,7 +432,7 @@ static bool main_pass(Conv *c) {
 /* Room for the MP4 index, kept right after the header (written last, so players can start at
    once). A bound for how THIS file gets written, not for any MP4 (mp4_moov_bound's 44 bytes a
    sample left ~7 MB of padding in every copy): per video sample stsz 4 + stts 8 + stss 4, and
-   ctts 8 more when H.264 with B-frames is copied; per sound sample stsz 4 (one duration: one
+   ctts 8 more when H.264/HEVC with B-frames is copied; per sound sample stsz 4 (one duration: one
    stts entry); per chunk stsc 12 + co64 8, where chunks change with every switch between the
    tracks - at most twice the smaller track's count. Pictures: the copied count is exact (the
    survey saw every frame); re-encoded ones at most twice the source rate (field-rate
@@ -472,6 +478,7 @@ bool av_convert(AvConvJob *j) {
     if (!c->vt) unsupported(c, "There's no picture to convert", NULL);
     else if (c->vt->compressed) unsupported(c, "The picture is compressed or encrypted inside the file", NULL);
     else if (!strcmp(c->vt->codec, "V_MPEG2") || !strcmp(c->vt->codec, "V_MPEG1")) c->vcode = true;
+    else if (!strcmp(c->vt->codec, "V_MPEGH/ISO/HEVC")) c->hevc = true; /* copied: Safari plays it in MP4, never in MKV */
     else if (strcmp(c->vt->codec, "V_MPEG4/ISO/AVC") != 0) unsupported(c, "Can't convert %s video yet", c->vt->codec);
     if (!c->failed && first_audio && !c->at) { /* sound, but none we can convert: say why for the first */
         if (first_audio->compressed) unsupported(c, "The sound is compressed or encrypted inside the file", NULL);

@@ -1,5 +1,5 @@
 /* modules/av/mp4.c — see mp4.h. Box layouts follow ISO/IEC 14496-12 (ISO
- * BMFF), 14496-15 (avcC), 14496-14 (esds), "Encapsulation of FLAC in ISO-BMFF"
+ * BMFF), 14496-15 (avcC, hvcC), 14496-14 (esds), "Encapsulation of FLAC in ISO-BMFF"
  * (dfLa) and ETSI TS 102 366 Annex F (dac3). */
 #include "mp4.h"
 
@@ -191,19 +191,44 @@ int64_t mp4_moov_bound(int64_t samples, int64_t chunks) {
     return 8192 + samples * 24 + chunks * 20;
 }
 
+static bool is_video(int codec) { return codec == MP4_H264 || codec == MP4_HEVC; }
+
+/* 'hvc1' says every parameter set is in the hvcC (14496-15 8.4.1): its VPS/SPS/PPS arrays get
+   array_completeness = 1, as Apple's players expect. A record that doesn't parse stays as it is. */
+static void hvcc_complete(uint8_t *p, size_t n) {
+    size_t at[64], k = 0, i = 23;
+    if (n < 23) return;
+    for (int a = 0; a < p[22]; a++) {
+        if (i + 3 > n || k == 64) return;
+        at[k++] = i;
+        unsigned count = (unsigned)p[i + 1] << 8 | p[i + 2];
+        i += 3;
+        for (unsigned u = 0; u < count; u++) {
+            if (i + 2 > n) return;
+            i += 2 + ((size_t)p[i] << 8 | p[i + 1]);
+            if (i > n) return;
+        }
+    }
+    for (size_t a = 0; a < k; a++) {
+        int type = p[at[a]] & 0x3F;
+        if (type >= 32 && type <= 34) p[at[a]] |= 0x80;
+    }
+}
+
 bool mp4_set_config(Mp4 *m, int track, const uint8_t *config, size_t n) {
     if (track < 0 || track >= m->ntrk || (m->begun && (m->flags & MP4_FRAGMENTED))) return false;
     Trk *t = &m->trk[track];
     uint8_t *c = n ? malloc(n) : NULL;
     if (n && !c) return false;
     if (n) memcpy(c, config, n);
+    if (n && t->t.codec == MP4_HEVC) hvcc_complete(c, n);
     free(t->cfg);
     t->cfg = c, t->cfg_len = n;
     return true;
 }
 
 int mp4_add_track(Mp4 *m, const Mp4Track *tr) {
-    if (m->begun || m->ntrk == MP4_MAX_TRACKS || !tr->timescale || tr->codec < MP4_H264 || tr->codec > MP4_AC3) return -1;
+    if (m->begun || m->ntrk == MP4_MAX_TRACKS || !tr->timescale || tr->codec < MP4_H264 || tr->codec > MP4_HEVC) return -1;
     int i = m->ntrk;
     Trk *t = &m->trk[i];
     memset(t, 0, sizeof *t);
@@ -348,8 +373,10 @@ static void audio_entry(Bb *b, const Trk *t, uint32_t bits) {
 static void sample_entry(Bb *b, const Trk *t) {
     size_t e;
     switch (t->t.codec) {
-    case MP4_H264: {
-        e = box(b, "avc1");
+    case MP4_H264:
+    case MP4_HEVC: {
+        bool hevc = t->t.codec == MP4_HEVC;
+        e = box(b, hevc ? "hvc1" : "avc1");
         put_zero(b, 6);
         put16(b, 1);
         put_zero(b, 16);
@@ -363,7 +390,7 @@ static void sample_entry(Bb *b, const Trk *t) {
         put_bytes(b, name, 32);
         put16(b, 0x0018);
         put16(b, 0xFFFF);
-        size_t c = box(b, "avcC");
+        size_t c = box(b, hevc ? "hvcC" : "avcC");
         put_bytes(b, t->cfg, t->cfg_len);
         end(b, c);
         if (t->t.sar_num > 0 && t->t.sar_den > 0) {
@@ -478,7 +505,7 @@ static void stbl(Mp4 *m, Bb *b, const Trk *t, bool co64) {
 }
 
 static void trak(Mp4 *m, Bb *b, const Trk *t, bool co64) {
-    bool video = t->t.codec == MP4_H264;
+    bool video = is_video(t->t.codec);
     uint64_t mdur = track_movie_duration(t);
     size_t k = box(b, "trak");
     bool v1 = mdur > 0xFFFFFFFFu;
@@ -616,7 +643,7 @@ bool mp4_fragment(Mp4 *m) {
             const FragSample *fs = &t->frag[s];
             put32(&b, fs->duration);
             put32(&b, fs->size);
-            put32(&b, t->t.codec == MP4_H264 ? fs->flags : 0x02000000);
+            put32(&b, is_video(t->t.codec) ? fs->flags : 0x02000000);
             if (t->any_cts) put32(&b, (uint32_t)fs->cts);
         }
         end(&b, h);

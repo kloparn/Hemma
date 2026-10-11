@@ -3,6 +3,7 @@
  *
  *   MPEG-2 / MPEG-1 (DVD rips) -> mpeg2 -> deint -> h264enc  \
  *   H.264                      -> copied as it is             >  mp4 (faststart)
+ *   HEVC (x265 films)          -> copied as 'hvc1'           /   (plays in Safari; other browsers need HEVC hardware)
  *   Dolby AC-3                 -> ac3 (stereo) -> aac         /
  *   AAC                        -> copied
  *

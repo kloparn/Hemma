@@ -731,7 +731,7 @@ static void index_finish(MediaIndex *ix) {
             if (f->type == MF_SUB) {
                 for (int v = g0; v < g1; v++) {
                     MediaFile *vid = &F[ents[v].idx];
-                    if (vid->type == MF_VIDEO &&
+                    if (vid->type == MF_VIDEO && vid->role != MF_WEBCOPY && /* a copy's subtitles are its original's */
                         media_sub_for(base_of(vid->rel), base_of(f->rel), f->lang, sizeof f->lang)) {
                         f->video = vid->id;
                         break;
@@ -1266,4 +1266,28 @@ void media_watch_set_done(int person, uint64_t id, bool done, int64_t now) {
     rec.updated = now;
     rec.saved = now;
     tbl_put(&T_media_watch, &rec);
+}
+
+void media_watch_move(uint64_t from, uint64_t to) {
+    char hf[17], ht[17];
+    media_id_hex(from, hf);
+    media_id_hex(to, ht);
+    for (int i = tbl_count(&T_media_watch) - 1; i >= 0; i--) {
+        if (i >= tbl_count(&T_media_watch)) continue; /* (a delete below shortened the table) */
+        MediaWatch rec = *(const MediaWatch *)tbl_at(&T_media_watch, i);
+        if (!str_eq(rec.item, hf)) continue;
+        const MediaWatch *there = media_watch_get(rec.person, to);
+        if (there) { /* progress in both: keep what says more - watched, or further along */
+            MediaWatch keep = *there;
+            if (!keep.done && (rec.done || rec.pos > keep.pos)) {
+                keep.done = rec.done, keep.pos = rec.pos, keep.dur = rec.dur, keep.updated = rec.updated;
+                tbl_put(&T_media_watch, &keep);
+            }
+            tbl_del(&T_media_watch, rec.id);
+        } else {
+            str_copy(rec.item, sizeof rec.item, ht);
+            tbl_put(&T_media_watch, &rec);
+        }
+        g_wcount = -1; /* the (person, id) map: build it again */
+    }
 }

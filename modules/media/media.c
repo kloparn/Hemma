@@ -8,6 +8,7 @@
 #include "../../core/ui.h"
 #include "library.h"
 #include "convert.h"
+#include "remove.h"
 #include "upload.h"
 
 static int64_t g_disks_at; /* when the disks under the library were last measured (see "disk space") */
@@ -631,6 +632,58 @@ static void page_browse(Ctx *c, Buf *b) {
     free(subs);
 }
 
+/* ----------------------------------------------------------------- removing */
+
+/* Admins take a film (or another video) out of the library for good: remove.c deletes its files
+   - and its own folder, when it has one. Episodes belong to their series and aren't removed one by one. */
+static bool can_remove(const Ctx *c, const MediaFile *f) {
+    return is_admin(c) && f->type == MF_VIDEO && f->role == MF_MAIN && f->name.kind != MEDIA_EPISODE;
+}
+
+static void size_text(int64_t n, char *out, size_t cap) {
+    if (n >= 1000LL * 1048576) snprintf(out, cap, "%.1f GB", (double)n / 1073741824.0);
+    else if (n >= 1048576) snprintf(out, cap, "%lld MB", (long long)(n / 1048576));
+    else snprintf(out, cap, "%lld KB", (long long)((n + 1023) / 1024));
+}
+
+static void remove_modal(Ctx *c, Buf *b, const MediaFile *f, const char *close) {
+    (void)c;
+    RemovePlan p;
+    if (!media_remove_plan(f, &p)) {
+        media_remove_free(&p);
+        return;
+    }
+    char size[24];
+    size_text(p.bytes, size, sizeof size);
+    ui_modal(b, "Remove from the library", close);
+    H(b, "<p><b>%s</b>", f->name.title);
+    if (f->name.year) H(b, " (%d)", f->name.year);
+    buf_puts(b, " is deleted from the disk - for everyone in the household, and it can't be undone.</p>");
+    if (p.folder[0])
+        H(b, "<p class=\"muted\">Its folder <code class=\"media-code\">%s</code> goes with everything in it: %d file%s, "
+             "%s.</p>",
+          p.folder, p.files, p.files == 1 ? "" : "s", size);
+    else H(b, "<p class=\"muted\">%d file%s, %s:</p>", p.files, p.files == 1 ? "" : "s", size);
+    buf_puts(b, "<ul class=\"media-rm-list\">");
+    int shown = 0;
+    size_t skip = p.folder[0] ? strlen(p.folder) + 1 : 0;
+    for (int i = 0; i < p.n && shown < 12; i++) {
+        if (p.items[i].dir) continue;
+        const char *rel = p.items[i].rel;
+        H(b, "<li><code class=\"media-code\">%s</code></li>", strlen(rel) > skip ? rel + skip : rel);
+        shown++;
+    }
+    if (p.files > shown) H(b, "<li class=\"muted\">and %d more</li>", p.files - shown);
+    buf_puts(b, "</ul>");
+    ui_form(b, "media.remove", "inline");
+    H(b, "<input type=\"hidden\" name=\"id\" value=\"%X\"><div class=\"modal-f\"><a class=\"btn\" "
+         "href=\"%s\">Keep it</a><button class=\"btn danger\">Delete from the disk</button></div>",
+      f->id, close);
+    ui_form_end(b);
+    ui_modal_end(b);
+    media_remove_free(&p);
+}
+
 static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     uint64_t id = 0;
     const MediaFile *f = media_parse_id(idhex, &id) ? media_file(id) : NULL;
@@ -730,14 +783,25 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         ui_icon(b, "edit");
         buf_puts(b, "<span>Picture</span></a>");
     }
+    if (can_remove(c, f)) {
+        H(b, "<a class=\"btn\" href=\"/media/watch/%X?remove=1\" title=\"Delete it from the library\">", f->id);
+        ui_icon(b, "trash");
+        buf_puts(b, "<span>Remove</span></a>");
+    }
     buf_puts(b, "</div></div>");
 
     static const char *const cls[] = {"", "ok", "warn", "bad"};
     const MediaFile *pf = media_playable(f); /* the play-everywhere copy, when there is one */
     Playable pl = pf->probe.playable;
+    /* an HEVC copy is as far as Hemma goes (no HEVC decoder): say where it plays, not just "may not" */
+    bool hevc = pl == PLAY_MAYBE && str_eq(pf->probe.vcodec, "hevc") && !str_eq(pf->probe.container, "mkv");
     H(b, "<div class=\"media-playable\"><span class=\"badge %s\">%s</span>", cls[CLAMP((int)pl, 0, 3)],
-      media_playable_label(pl));
-    if (pf != f) buf_puts(b, "<span class=\"muted\">Converted copy</span>");
+      hevc ? "Plays on newer devices" : media_playable_label(pl));
+    if (hevc)
+        H(b, "<span class=\"muted\">%sHEVC video: Safari on iPhone, iPad and Mac, and Chrome or Edge on most computers "
+             "and phones from the last few years</span>",
+          pf != f ? "Converted copy · " : "");
+    else if (pf != f) buf_puts(b, "<span class=\"muted\">Converted copy</span>");
     else if (pl != PLAY_YES && pf->probe.why[0]) H(b, "<span class=\"muted\">%s</span>", pf->probe.why);
     if (pf->probe.container[0] || pf->probe.vcodec[0]) {
         H(b, "<span class=\"media-tech\">%s", pf->probe.container);
@@ -752,12 +816,15 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         buf_puts(b, "<div class=\"media-convert\">");
         if (convert_queued(f->id)) buf_puts(b, "<p class=\"muted\">Being made playable everywhere - see the library settings.</p>");
         else if (is_admin(c)) {
+            bool hevc = str_eq(f->probe.vcodec, "hevc");
             H(b, "<p class=\"muted\">%s</p>",
-              need == CONV_REMUX ? "A new container makes this play on iPhones and every TV too - quick, nothing is re-encoded."
-                                 : "Hemma can convert this once into a copy that plays on every browser, iPhone and TV.");
+              hevc ? "Safari (iPhone, iPad, Mac) can't open MKV files: a new container fixes that - quick, the picture isn't "
+                     "re-encoded. HEVC still needs a device that can decode it (most from the last few years)."
+              : need == CONV_REMUX ? "A new container makes this play on iPhones and every TV too - quick, nothing is re-encoded."
+                                   : "Hemma can convert this once into a copy that plays on every browser, iPhone and TV.");
             char hex[17];
             media_id_hex(f->id, hex);
-            ui_act(b, "media.convert", "btn", "Make it play everywhere", "id", hex, NULL);
+            ui_act(b, "media.convert", "btn", hevc ? "Make it play in Safari too" : "Make it play everywhere", "id", hex, NULL);
         } else buf_puts(b, "<p class=\"muted\">An admin can make this play everywhere (Watch → settings).</p>");
         buf_puts(b, "</div>");
     } else if (pl == PLAY_NO && pf == f) {
@@ -794,6 +861,11 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         snprintf(close, sizeof close, "/media/watch/%016llx", (unsigned long long)f->id);
         art_modal(c, b, f->id, f->name.title, f->name.year, f->name.kind == MEDIA_OTHER ? "Video" : NULL, f->poster,
                   close);
+    }
+    if (str_eq(ctx_q(c, "remove"), "1") && can_remove(c, f)) {
+        char close[64];
+        snprintf(close, sizeof close, "/media/watch/%016llx", (unsigned long long)f->id);
+        remove_modal(c, b, f, close);
     }
 }
 
@@ -873,7 +945,8 @@ static void page_settings(Ctx *c, Buf *b) {
     ui_card(b, "What plays where", NULL, NULL);
     buf_puts(b, "<ul class=\"media-tips\"><li><span class=\"badge ok\">Plays in browsers</span> MP4 or WebM with H.264/VP9 "
                 "video and AAC/MP3/Opus sound.</li><li><span class=\"badge warn\">May not play everywhere</span> MKV, "
-                "HEVC, or Dolby (AC-3) sound — fine in Chrome/Edge or Safari, not all of them.</li>"
+                "HEVC, or Dolby (AC-3) sound — fine in Chrome/Edge or Safari, not all of them. An HEVC film converted here "
+                "(<i>Plays on newer devices</i>) plays in Safari and on most devices from the last few years.</li>"
                 "<li><span class=\"badge bad\">Needs conversion</span> MPEG-2 (DVD rips), AVI/XviD, DTS sound. Hemma "
                 "converts MKV files with MPEG-2 or H.264 video and Dolby or AAC sound itself (<i>Play everywhere</i> "
                 "above); the copies play on every browser, iPhone and TV.</li></ul>");
@@ -989,6 +1062,97 @@ static void act_art_remove(Ctx *c, Fields *f) {
     else ctx_info(c, "There was no picture to remove");
 }
 
+static void act_remove(Ctx *c, Fields *fl) {
+    uint64_t id = 0;
+    if (!is_admin(c)) {
+        ctx_fail(c, "Only an admin can remove things from the library");
+        return;
+    }
+    const MediaFile *f = media_parse_id(fields_str(fl, "id"), &id) ? media_file(id) : NULL;
+    if (!f) {
+        ctx_fail(c, "That isn't in the library any more");
+        return;
+    }
+    if (convert_queued(f->id)) {
+        ctx_fail(c, "It's being converted right now - stop that first (Library settings)");
+        return;
+    }
+    RemovePlan p = {0};
+    if (!can_remove(c, f) || !media_remove_plan(f, &p)) {
+        media_remove_free(&p);
+        ctx_fail(c, "Only films and other videos can be removed here");
+        return;
+    }
+    char title[160], hex[17], size[24], video[1024] = "";
+    snprintf(title, sizeof title, f->name.year ? "%s (%d)" : "%s", f->name.title, f->name.year);
+    media_id_hex(f->id, hex);
+    media_full_path(f, video, sizeof video);
+    bool movie = f->name.kind == MEDIA_MOVIE;
+    size_text(p.bytes, size, sizeof size);
+    int failed = 0;
+    media_remove_run(&p, &failed);
+    media_remove_free(&p);
+    if (failed && path_stat(video, NULL, NULL, NULL)) { /* the video itself is still there (playing somewhere?) */
+        ctx_fail(c, "Couldn't delete it - is it playing somewhere? Try again in a moment.");
+    } else {
+        for (int i = tbl_count(&T_media_watch) - 1; i >= 0; i--) { /* everyone's progress in it */
+            const MediaWatch *w = tbl_at(&T_media_watch, i);
+            if (str_eq(w->item, hex)) tbl_del(&T_media_watch, w->id);
+        }
+        activity_add(c->me->id, "🗑️", movie ? "/media/movies" : "/media/browse", "removed %s from the library", title);
+        if (failed) ctx_info(c, "Removed %s - %d leftover file%s couldn't be deleted", title, failed, failed == 1 ? "" : "s");
+        else ctx_ok(c, "Removed %s - %s freed", title, size);
+        ctx_redirect(c, "%s", movie ? "/media/movies" : "/media/browse");
+    }
+    g_disks_at = 0; /* the sidebar's disk space: look again */
+    if (app_testing()) media_scan_sync();
+    else media_scan_start();
+}
+
+/* Videos with two versions (an original and its converted copy): the one that plays in fewer
+   places is deleted (remove.c media_lesser_version) - usually the original, whose progress moves
+   to the copy. */
+static void act_drop_originals(Ctx *c, Fields *fl) {
+    (void)fl;
+    if (!is_admin(c)) {
+        ctx_fail(c, "Only an admin can delete originals");
+        return;
+    }
+    const MediaIndex *ix = media_lib();
+    int done = 0, failed = 0;
+    int64_t bytes = 0;
+    for (int i = 0; i < ix->nfiles; i++) { /* (deleting doesn't change the index until the rescan) */
+        const MediaFile *better = NULL, *lesser = media_lesser_version(&ix->files[i], &better);
+        if (!lesser || convert_queued(ix->files[i].id)) continue;
+        if (media_drop_version(lesser, better)) done++, bytes += lesser->size;
+        else failed++;
+    }
+    char size[24];
+    size_text(bytes, size, sizeof size);
+    if (done) {
+        log_info("media: %s kept only the most compatible versions: %d files deleted (%s)", c->me->name, done, size);
+        if (failed) ctx_info(c, "Deleted %d files (%s) - %d couldn't be deleted", done, size, failed);
+        else ctx_ok(c, "Deleted %d file%s - %s freed", done, done == 1 ? "" : "s", size);
+    } else if (failed) {
+        ctx_fail(c, "Couldn't delete them (in use, or no permission?)");
+    } else {
+        ctx_info(c, "Nothing to delete: no video has two versions");
+    }
+    g_disks_at = 0; /* the sidebar's disk space: look again */
+    if (app_testing()) media_scan_sync();
+    else media_scan_start();
+}
+
+static void act_drop_auto(Ctx *c, Fields *f) {
+    if (!is_admin(c)) {
+        ctx_fail(c, "Only an admin can change that");
+        return;
+    }
+    bool on = str_eq(fields_str(f, "on"), "1");
+    setting_set_int("media.drop_originals", on);
+    ctx_ok(c, on ? "After each conversion only the most compatible version stays" : "Both versions stay after converting");
+}
+
 static void act_roots(Ctx *c, Fields *f) {
     if (!is_admin(c)) { /* server-side folders: admins only */
         ctx_fail(c, "Only an admin can change the library folders");
@@ -1040,7 +1204,8 @@ static const Action actions[] = {
     {"media.search", act_search}, {"media.progress", act_progress}, {"media.watched", act_watched},
     {"media.rescan", act_rescan}, {"media.roots", act_roots},       {"media.prefs", act_prefs},
     {"media.upload_stop", upload_act_stop}, {"media.art_remove", act_art_remove},
-    {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop},
+    {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove},
+    {"media.drop_originals", act_drop_originals}, {"media.drop_auto", act_drop_auto},
     {0},
 };
 

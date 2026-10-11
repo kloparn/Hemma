@@ -82,10 +82,29 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  the scan looks first (library.c media_art_target/_current/_prune); the page dialog is ?pic=1.
   media/convert.c "play everywhere": MKV -> <name>.web.mp4 next to the original (H.264 + AAC, faststart),
                  by av/conv.c (the same engine browsers run): MPEG-2 decoded, inverse-telecined/deinterlaced
-                 (av/deint, chosen by sampling 4 windows) and re-encoded; H.264 copied; AC-3 -> AAC; AAC
-                 copied. convert.c = files + the queue: one file per worker thread
+                 (av/deint, chosen by sampling 4 windows) and re-encoded; H.264 copied; HEVC copied as 'hvc1'
+                 (hvcC arrays marked complete - what Safari needs; no HEVC decoder here, so it plays on Apple
+                 devices and browsers with HEVC hardware, not everywhere; Convert says "play in Safari too", the watch page
+                 badge "Plays on newer devices");
+                 AC-3 -> AAC; AAC copied. convert.c = files + the queue: one file per worker thread
                  (cores-2, max 12, background priority); the library pairs x.web.mp4 with x.* (MediaFile.web,
                  role MF_WEBCOPY hides the copy) and /media/file/<id> streams the copy (media_playable()).
+                 Progress: copying reads the whole file once for timestamps first (COPY_SURVEY_PM = the first 30%
+                 of the bar - minutes for a film on a Pi's SD card), then writes.
+                 TWO VERSIONS (owner's rule: the one that plays in fewer places goes, the more compatible stays):
+                 remove.c media_lesser_version() pairs x.* with x.web.mp4 when both last as long (2 s / 1%),
+                 ranks them with media_compat_cost() (playable severity, then box/HEVC/audio; a tie keeps the
+                 copy). Library settings: "Keep only the most compatible version" (media.drop_originals) and
+                 "Do that by itself after each conversion" (setting media.drop_originals, off by default;
+                 convert.c settle_finished -> convert_replace_original checks the new copy file itself).
+                 Deleting an original moves everyone's progress to the copy (library.c media_watch_move).
+                 Subtitles: x.en.srt belongs to x.mkv while it exists, else to x.web.mp4 (media_sub_for knows .web.mp4).
+  media/remove.c admins delete a film or other video (watch page "Remove" -> ?remove=1 dialog listing every
+                 file -> media.remove): the video, its copy, subtitles, picture - or its OWN folder as a whole
+                 (folder name parses to the film's title/year, nothing inside but the film and extras - the
+                 library never indexes extras, so belongs() asks the name parser; a link (DirEntry.is_link),
+                 >400 entries or >4 levels deep keeps the folder). Empty parents go, never a top-level folder
+                 ("Movies"). Also drops watch progress, logs to the activity feed. Episodes: not here.
   av/            pure-C codec library, no MODULE(), libc only (no core/ deps, no globals) so it also
                  builds for wasm32: mkv.* (Matroska demuxer: cues/bisect seeking, lacing, unknown
                  sizes), mpeg2.* (MPEG-2 MP@ML + MPEG-1 video decoder, display-order frames, IEEE 1180
@@ -308,7 +327,9 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
 
 - C11 (`-std=gnu11`), `-Wall -Wextra`, zero warnings. 4-space indent, `snake_case`.
 - Fixed-size char arrays for record strings; copy with `str_copy` (UTF-8 safe).
-- HTML only via `H()`/`html_esc` (escapes by default; `%r` = trusted raw HTML).
+- HTML only via `H()`/`html_esc` (escapes by default; `%r` = trusted raw HTML). H() knows only %s %r %u (URL-
+  encoded) %d/%L (+ width, e.g. %02d) %X (a 64-bit id as 16 hex digits) %c %%: anything else (`%016llx`, `%lu`)
+  is printed as-is WITHOUT taking its argument, so every later argument shifts - a crash. Use snprintf for those.
 - Don't call a static helper the same as a core function (e.g. `file_read_at` clashed once).
 - The debug test build traps on undefined behaviour (UBSan): never left-shift a negative value
   (multiply instead); it caught three such shifts in the H.264 encoder.
@@ -362,7 +383,7 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,
 agenda, JSON API), people/household, home, book, plan, board, wall, net, media (library, player, Range
 streaming, progress, uploads that convert on the sending device, disc rips, pictures), tv.
-395 tests green (1.6M checks), incl. end-to-end socket tests (core/app_http_test.c, core/auth_setup_test.c;
+398 tests green (1.6M checks), incl. end-to-end socket tests (core/app_http_test.c, core/auth_setup_test.c;
 media/upload_test.c with a dropped-and-resumed 3 MB upload).
 Platforms: the Windows build and the Pi aarch64 build run in daily use (a Pi 3B+ since 2026-10-10). Linux
 x86-64, Pi armv6 and macOS (arm64/x64) builds compile without warnings but have never run, and the Makefile
@@ -402,6 +423,12 @@ Done 2026-10-11: storage meter (owner asked: "used space - space left" above the
 hook, admins only, links to /media/settings: free space + bar + "used of total" per disk holding a library
 folder (path_disk_space; folders on the same disk shown once), cached and refreshed every 30 s from tick
 (and right after the folders change); bar turns warn at 85 % used, danger at 95 % or under 2 GB free.
+Done 2026-10-11 (afternoon, owner asked): uploads skip episodes/films the library already has under another
+name; HEVC MKVs get a Convert button and become MP4 copies Safari plays (checked on a real 1080p x265 10-bit film:
+3.6 GB in 55 s, plays and seeks in Chrome); admins remove films from the watch page (media/remove.c); README
+has a "Why C?" section. Later: "keep only the most compatible version" of an original + its copy (button +
+optional automatic after converting; 53 of 53 real pairs matched), subtitles attach to copies-only videos (they
+didn't before), the copy's first read shows on the progress bar.
 Open for the owner: license, donation links, project URL (README/docs placeholders).
 Next ideas: builder-style UI helpers / less raw HTML (owner asked), MKV→MP4 remux on the fly
 for Safari/iPhone, "Open in VLC" links, router integration, DLNA, recurring calendar events,

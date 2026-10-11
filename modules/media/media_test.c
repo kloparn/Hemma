@@ -1,6 +1,8 @@
 /* Media pages, actions, widgets and the streaming endpoint logic. */
 #include "../../core/plat.h"
 #include "../../tests/harness.h"
+#include "../av/mp4.h"
+#include "convert.h"
 #include "library.h"
 
 static void put(const char *root, const char *rel, const char *text) {
@@ -442,3 +444,225 @@ TEST(media_sidebar_shows_the_library_disk_to_admins) {
     CHECK(!strstr(th_page(eva, "/book"), "media-disk")); /* members don't manage the disk */
     th_halt();
 }
+
+static bool there(const char *rel) {
+    char path[1024];
+    snprintf(path, sizeof path, "%s/%s", g_root, rel);
+    return path_stat(path, NULL, NULL, NULL);
+}
+
+static const char *id_form(uint64_t id) {
+    static char form[40];
+    char hex[17];
+    media_id_hex(id, hex);
+    snprintf(form, sizeof form, "id=%s", hex);
+    return form;
+}
+
+TEST(media_admins_remove_films_and_their_own_folders) {
+    int adam = boot_with_library();
+    Person p = *person_get(adam);
+    p.role = ROLE_ADMIN;
+    tbl_put(&T_person, &p);
+    int eva = th_person("Eva");
+    const char *own = "Movies/Hocus Pocus (1993) (1080p BluRay x265) REPACK";
+    put(g_root, "Movies/Hocus Pocus (1993) (1080p BluRay x265) REPACK/Hocus Pocus (1993) (1080p BluRay x265).mkv", "hp");
+    put(g_root, "Movies/Hocus Pocus (1993) (1080p BluRay x265) REPACK/Hocus Pocus (1993) (1080p BluRay x265).web.mp4", "c");
+    put(g_root, "Movies/Hocus Pocus (1993) (1080p BluRay x265) REPACK/Hocus Pocus (1993) (1080p BluRay x265).en.srt",
+        "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
+    put(g_root, "Movies/Hocus Pocus (1993) (1080p BluRay x265) REPACK/release.nfo", "nfo");
+    put(g_root, "Movies/Hocus Pocus (1993) (1080p BluRay x265) REPACK/Extras/Trailer.mkv", "t");
+    put(g_root, "Movies/Kill Bill (2003) CD1.mkv", "kb1"); /* flat in "Movies" */
+    put(g_root, "Movies/Kill Bill (2003) CD1.srt", "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
+    put(g_root, "Movies/Kill Bill (2003) CD2.mkv", "kb2");
+    put(g_root, "Movies/Dune (2021)/Dune (2021).mkv", "d1"); /* a folder that holds another film too */
+    put(g_root, "Movies/Dune (2021)/Dune Part Two (2024).mkv", "d2");
+    media_scan_sync();
+    const MediaFile *hp = find("x265).mkv"), *ep = find("S01E01.Seeds.mp4");
+    CHECK(hp && ep);
+    if (!hp || !ep) return;
+    uint64_t hp_id = hp->id, ep_id = ep->id;
+
+    /* the button and the dialog are the admin's, for films and other videos (episodes belong to their series) */
+    CHECK_HAS(th_page(adam, url("/media/watch/%s", hp_id)), "?remove=1");
+    CHECK(!strstr(th_page(eva, url("/media/watch/%s", hp_id)), "?remove=1"));
+    CHECK(!strstr(th_page(adam, url("/media/watch/%s", ep_id)), "?remove=1"));
+    const char *dlg = th_page(adam, url("/media/watch/%s?remove=1", hp_id));
+    CHECK_HAS(dlg, "Its folder <code class=\"media-code\">Movies/Hocus Pocus (1993) (1080p BluRay x265) REPACK</code> goes "
+                   "with everything in it: 5 files");
+    CHECK_HAS(dlg, "<code class=\"media-code\">Extras/Trailer.mkv</code>");
+    CHECK_HAS(dlg, "media.remove");
+    CHECK(!strstr(th_page(eva, url("/media/watch/%s?remove=1", hp_id)), "media.remove"));
+
+    /* members can't, episodes can't */
+    CHECK(!th_act(eva, "media.remove", id_form(hp_id)).ok);
+    CHECK(!th_act(adam, "media.remove", id_form(ep_id)).ok);
+    CHECK(there(own));
+
+    /* the film's own folder goes as a whole; "Movies" stays; so does nobody's progress in it */
+    media_watch_report(eva, hp_id, 100, 5000, false, now_ms());
+    CHECK(media_watch_get(eva, hp_id) != NULL);
+    ThResult r = th_act(adam, "media.remove", id_form(hp_id));
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "Removed Hocus Pocus (1993)");
+    CHECK_STR(r.redirect, "/media/movies");
+    CHECK(!there(own));
+    CHECK(there("Movies/Kill Bill (2003) CD2.mkv"));
+    CHECK(!media_file(hp_id));
+    CHECK(!media_watch_get(eva, hp_id));
+    const Activity *a = tbl_at(&T_activity, tbl_count(&T_activity) - 1);
+    CHECK_HAS(a->text, "removed Hocus Pocus (1993) from the library");
+
+    /* in a shared folder only the film's own files go: CD2 (another file) stays */
+    const MediaFile *kb = find("Kill Bill (2003) CD1.mkv");
+    CHECK(kb != NULL);
+    if (kb) CHECK(th_act(adam, "media.remove", id_form(kb->id)).ok);
+    CHECK(!there("Movies/Kill Bill (2003) CD1.mkv"));
+    CHECK(!there("Movies/Kill Bill (2003) CD1.srt"));
+    CHECK(there("Movies/Kill Bill (2003) CD2.mkv"));
+
+    /* a folder named after the film but holding another one keeps that one */
+    const MediaFile *dune = find("Dune (2021).mkv");
+    CHECK(dune != NULL);
+    if (dune) {
+        CHECK(!strstr(th_page(adam, url("/media/watch/%s?remove=1", dune->id)), "Its folder"));
+        CHECK(th_act(adam, "media.remove", id_form(dune->id)).ok);
+    }
+    CHECK(!there("Movies/Dune (2021)/Dune (2021).mkv"));
+    CHECK(there("Movies/Dune (2021)/Dune Part Two (2024).mkv"));
+    th_halt();
+}
+
+/* A real (tiny) MP4 the probe can read: one picture lasting `seconds`, H.264 or HEVC. */
+static bool mp4_put(void *ctx, const void *p, size_t n) { return fwrite(p, 1, n, (FILE *)ctx) == n; }
+static bool mp4_put_at(void *ctx, int64_t off, const void *p, size_t n) {
+    FILE *f = ctx;
+    fflush(f);
+    bool ok = file_seek(f, off) && fwrite(p, 1, n, f) == n;
+    fflush(f);
+    return fseek(f, 0, SEEK_END) == 0 && ok;
+}
+
+static void put_video(const char *rel, bool hevc, int seconds) {
+    char path[1024], dir[1024];
+    snprintf(path, sizeof path, "%s/%s", g_root, rel);
+    str_copy(dir, sizeof dir, path);
+    *strrchr(dir, '/') = '\0';
+    dir_make(dir);
+    FILE *f = file_open(path, "wb");
+    Mp4Out out = {f, mp4_put, mp4_put_at};
+    Mp4 *m = mp4_new(&out, 0, 4096);
+    static const uint8_t cfg[] = {1, 0x42, 0, 0x1E, 0xFF, 0xE0, 0};
+    Mp4Track t = {.codec = hevc ? MP4_HEVC : MP4_H264, .timescale = 1000, .config = cfg, .config_len = sizeof cfg,
+                  .width = 64, .height = 48};
+    mp4_add_track(m, &t);
+    mp4_begin(m);
+    static const uint8_t frame[16] = {0, 0, 0, 12};
+    mp4_sample(m, 0, frame, sizeof frame, (uint32_t)seconds * 1000, 0, true);
+    mp4_finish(m);
+    mp4_free(m);
+    fclose(f);
+}
+
+static int subs_of(uint64_t video) {
+    const MediaIndex *ix = media_lib();
+    int n = 0;
+    for (int i = 0; i < ix->nfiles; i++) n += ix->files[i].type == MF_SUB && ix->files[i].video == video;
+    return n;
+}
+
+/* An original and its converted copy are two versions of one video: the one that plays in fewer
+   places goes, the other stays - with everyone's progress and the subtitles. */
+TEST(media_keeps_only_the_most_compatible_version) {
+    int adam = boot_with_library();
+    Person p = *person_get(adam);
+    p.role = ROLE_ADMIN;
+    tbl_put(&T_person, &p);
+    int eva = th_person("Eva");
+    const char *srt = "1\n00:00:01,000 --> 00:00:02,000\nHej\n";
+    put_video("Movies/Big (1988)/Big (1988).mp4", true, 60);      /* HEVC original... */
+    put_video("Movies/Big (1988)/Big (1988).web.mp4", false, 60); /* ...H.264 copy: plays in more places */
+    put(g_root, "Movies/Big (1988)/Big (1988).en.srt", srt);
+    put_video("Movies/Odd (2001)/Odd (2001).mp4", false, 60); /* the other way round: the copy goes */
+    put_video("Movies/Odd (2001)/Odd (2001).web.mp4", true, 60);
+    put_video("Movies/Cut (2002)/Cut (2002).mp4", true, 60); /* a cut-off copy: both stay */
+    put_video("Movies/Cut (2002)/Cut (2002).web.mp4", false, 20);
+    put_video("Movies/Solo (2003)/Solo (2003).web.mp4", false, 60); /* only a copy, with subtitles */
+    put(g_root, "Movies/Solo (2003)/Solo (2003).sv.srt", srt);
+    media_scan_sync();
+    const MediaFile *big = find("Big (1988).mp4"), *bigc = find("Big (1988).web.mp4"), *solo = find("Solo (2003).web.mp4");
+    CHECK(big && bigc && solo);
+    if (!big || !bigc || !solo) return;
+    uint64_t big_id = big->id, bigc_id = bigc->id;
+    CHECK_INT((int)big->probe.duration_ms, 60000);
+    CHECK(big->web == bigc_id);
+
+    /* subtitles: a copy on its own has them; next to its original they are the original's */
+    CHECK_INT(subs_of(solo->id), 1);
+    CHECK_INT(subs_of(big_id), 1);
+
+    /* the library settings offer it (admins only) */
+    const char *page = th_page(adam, "/media/settings");
+    CHECK_HAS(page, "2 videos have two versions");
+    CHECK_HAS(page, "Keep only the most compatible version");
+    CHECK_HAS(page, "name=\"on\" value=\"1\" data-auto>");
+    CHECK(!th_act(eva, "media.drop_originals", "").ok);
+
+    media_watch_report(eva, big_id, 30, 60, false, now_ms());
+    ThResult r = th_act(adam, "media.drop_originals", "");
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "Deleted 2 files");
+    CHECK(!there("Movies/Big (1988)/Big (1988).mp4"));
+    CHECK(there("Movies/Big (1988)/Big (1988).web.mp4"));
+    CHECK(there("Movies/Odd (2001)/Odd (2001).mp4"));
+    CHECK(!there("Movies/Odd (2001)/Odd (2001).web.mp4"));
+    CHECK(there("Movies/Cut (2002)/Cut (2002).mp4"));
+    CHECK(there("Movies/Cut (2002)/Cut (2002).web.mp4"));
+    CHECK(!media_watch_get(eva, big_id)); /* Eva's 30 seconds moved to the copy */
+    const MediaWatch *w = media_watch_get(eva, bigc_id);
+    CHECK(w && w->pos == 30);
+    bigc = media_file(bigc_id); /* (rescanned) the copy plays in its own right now, with the subtitles */
+    CHECK(bigc && bigc->role == MF_MAIN);
+    CHECK_INT(subs_of(bigc_id), 1);
+
+    /* an HEVC copy (as far as Hemma goes) says where it plays rather than just "may not" */
+    put_video("Movies/Hev (2006)/Hev (2006).mp4", true, 60);
+    put_video("Movies/Hev (2006)/Hev (2006).web.mp4", true, 60);
+    media_scan_sync();
+    const MediaFile *hev = find("Hev (2006).mp4");
+    CHECK(hev != NULL);
+    if (hev) {
+        page = th_page(adam, url("/media/watch/%s", hev->id));
+        CHECK_HAS(page, ">Plays on newer devices</span>");
+        CHECK_HAS(page, "Converted copy · HEVC video: Safari on iPhone, iPad and Mac");
+    }
+
+    /* the setting, and what it does right after a conversion: the copy file itself is checked */
+    CHECK(th_act(adam, "media.drop_auto", "on=1").ok);
+    CHECK_INT((int)setting_int("media.drop_originals", 0), 1);
+    CHECK(th_act(adam, "media.drop_auto", "").ok);
+    CHECK_INT((int)setting_int("media.drop_originals", 1), 0);
+    put_video("Movies/Auto (2004)/Auto (2004).mp4", true, 60);
+    put_video("Movies/Short (2005)/Short (2005).mp4", true, 60);
+    media_scan_sync();
+    const MediaFile *au = find("Auto (2004).mp4"), *sh = find("Short (2005).mp4");
+    CHECK(au && sh);
+    if (!au || !sh) return;
+    uint64_t au_id = au->id, sh_id = sh->id;
+    put_video("Movies/Auto (2004)/Auto (2004).web.mp4", false, 60); /* just made: not in the library yet */
+    put_video("Movies/Short (2005)/Short (2005).web.mp4", false, 30);
+    char src[1024], dst[1024];
+    snprintf(src, sizeof src, "%s/Movies/Auto (2004)/Auto (2004).mp4", g_root);
+    snprintf(dst, sizeof dst, "%s/Movies/Auto (2004)/Auto (2004).web.mp4", g_root);
+    media_watch_report(eva, au_id, 12, 60, false, now_ms());
+    CHECK(convert_replace_original(au_id, src, dst));
+    CHECK(!there("Movies/Auto (2004)/Auto (2004).mp4"));
+    w = media_watch_get(eva, media_make_id(g_root, "Movies/Auto (2004)/Auto (2004).web.mp4"));
+    CHECK(w && w->pos == 12);
+    snprintf(src, sizeof src, "%s/Movies/Short (2005)/Short (2005).mp4", g_root);
+    snprintf(dst, sizeof dst, "%s/Movies/Short (2005)/Short (2005).web.mp4", g_root);
+    CHECK(!convert_replace_original(sh_id, src, dst)); /* half as long: the original stays */
+    CHECK(there("Movies/Short (2005)/Short (2005).mp4"));
+    th_halt();
+}
+

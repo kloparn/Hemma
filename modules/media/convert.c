@@ -11,6 +11,7 @@
 #include "../../core/ui.h"
 #include "../av/conv.h"
 #include "convert.h"
+#include "remove.h"
 
 #define MAX_WORKERS 12
 
@@ -28,6 +29,9 @@ ConvertNeed convert_need(const MediaFile *f) {
     if (str_eq(p->vcodec, "mpeg2") && (aac || ac3)) return CONV_TRANSCODE;
     if (str_eq(p->vcodec, "h264") && ac3) return CONV_TRANSCODE; /* picture copied, sound re-encoded */
     if (str_eq(p->vcodec, "h264") && aac) return CONV_REMUX;
+    /* HEVC stays HEVC (no decoder here): moved into an MP4, which Safari - iPhone, iPad, Mac - plays */
+    if (str_eq(p->vcodec, "hevc") && ac3) return CONV_TRANSCODE;
+    if (str_eq(p->vcodec, "hevc") && aac) return CONV_REMUX;
     return CONV_NONE;
 }
 
@@ -122,6 +126,7 @@ typedef struct {
     int state;
     ConvertJob job; /* a running worker writes job.permille / err / what; the rest only under g_cl */
     int64_t started, ended; /* unix seconds */
+    bool settled; /* done, and its original dealt with ("delete each original once its copy is made") */
 } ConvItem;
 
 /* Items are allocated one by one so a worker's item never moves; only waiting
@@ -264,7 +269,56 @@ void convert_act_stop(Ctx *c, Fields *f) {
     ctx_ok(c, "Stopping - finished videos stay, the one in progress is dropped");
 }
 
+bool convert_replace_original(uint64_t id, const char *src, const char *dst) {
+    const MediaFile *o = media_file(id);
+    MediaProbe pr;
+    char rel[420];
+    if (!o || !media_probe_file(dst, &pr) || !media_copy_lasts(o->probe.duration_ms, pr.duration_ms)) {
+        log_warn("convert: kept the original %s - its copy doesn't last as long", src);
+        return false;
+    }
+    if (media_compat_cost(&pr) > media_compat_cost(&o->probe)) { /* (never for copies made here) */
+        log_warn("convert: kept the original %s - it plays in more places than its copy", src);
+        return false;
+    }
+    convert_web_path(o->rel, rel, sizeof rel);
+    if (!media_drop_original(src, o->id, media_make_id(media_lib()->roots[o->root], rel))) {
+        log_warn("convert: couldn't delete the original %s", src);
+        return false;
+    }
+    log_info("convert: deleted the original %s - its copy plays in its place", src);
+    return true;
+}
+
+/* Setting "media.drop_originals": each finished copy takes its original's place - checked on
+   the copy file itself, before the library has even seen it (the rescan comes after). */
+static void settle_finished(void) {
+    typedef struct {
+        uint64_t id;
+        char src[1024], dst[1024];
+    } Done;
+    bool drop = setting_int("media.drop_originals", 0) == 1;
+    Done *todo = NULL;
+    int n = 0;
+    lock_take(&g_cl);
+    for (int i = 0; i < g_nitems; i++) {
+        ConvItem *it = g_items[i];
+        if (it->state != CQ_DONE || it->settled) continue;
+        it->settled = true;
+        if (!drop) continue;
+        todo = xrealloc(todo, (size_t)(n + 1) * sizeof *todo);
+        todo[n].id = it->id;
+        str_copy(todo[n].src, sizeof todo[n].src, it->job.src);
+        str_copy(todo[n].dst, sizeof todo[n].dst, it->job.dst);
+        n++;
+    }
+    lock_give(&g_cl);
+    for (int i = 0; i < n; i++) convert_replace_original(todo[i].id, todo[i].src, todo[i].dst);
+    free(todo);
+}
+
 void convert_tick(int64_t now) {
+    settle_finished();
     int64_t sig = 0;
     int done = 0, running;
     lock_take(&g_cl);
@@ -305,9 +359,11 @@ void convert_stop(void) {
 void convert_card(Ctx *c, Buf *b) {
     if (!is_admin(c)) return;
     const MediaIndex *ix = media_lib();
-    int need = 0, remux = 0;
-    int64_t bytes = 0;
+    int need = 0, remux = 0, extra = 0;
+    int64_t bytes = 0, extra_bytes = 0;
     for (int i = 0; i < ix->nfiles; i++) {
+        const MediaFile *lesser = media_lesser_version(&ix->files[i], NULL);
+        if (lesser) extra++, extra_bytes += lesser->size;
         if (!bulk_need(&ix->files[i])) continue;
         ConvertNeed n = convert_need(&ix->files[i]);
         need++;
@@ -322,7 +378,7 @@ void convert_card(Ctx *c, Buf *b) {
         done += g_items[i]->state == CQ_DONE;
         failed += g_items[i]->state == CQ_FAILED;
     }
-    if (!need && !g_nitems) {
+    if (!need && !g_nitems && !extra) {
         lock_give(&g_cl);
         return;
     }
@@ -370,5 +426,29 @@ void convert_card(Ctx *c, Buf *b) {
         ui_act(b, "media.convert", "btn primary", label, NULL, NULL, NULL);
     }
     buf_puts(b, "</div>");
+
+    /* originals their copies can stand in for: a button for those there, a setting for the next */
+    buf_puts(b, "<div class=\"media-orig\">");
+    if (extra) {
+        char sz[24], q[240];
+        double gb = (double)extra_bytes / 1073741824.0;
+        snprintf(sz, sizeof sz, gb >= 10 ? "%.0f GB" : "%.1f GB", gb);
+        H(b, "<p>%d video%s %s two versions, the original and a converted copy. The less compatible one%s "
+             "take%s %s.</p>",
+          extra, extra == 1 ? "" : "s", extra == 1 ? "has" : "have", extra == 1 ? "" : "s", extra == 1 ? "s" : "", sz);
+        snprintf(q, sizeof q, "Delete %d file%s (%s)? For each video the version that plays in the most places "
+                              "stays, and everyone's progress stays with it. This can't be undone.",
+                 extra, extra == 1 ? "" : "s", sz);
+        ui_form_confirm(b, "media.drop_originals", "inline", q);
+        buf_puts(b, "<button class=\"btn danger\">Keep only the most compatible version</button>");
+        ui_form_end(b);
+    }
+    ui_form(b, "media.drop_auto", "inline");
+    H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"on\" value=\"1\" data-auto%r> Do that by itself "
+         "after each conversion</label>",
+      setting_int("media.drop_originals", 0) == 1 ? " checked" : "");
+    ui_form_end(b);
+    buf_puts(b, "<p class=\"muted media-small\">A copy keeps the picture and one sound track: other sound tracks (a "
+                "director's commentary, other languages) go with the original.</p></div>");
     ui_card_end(b);
 }

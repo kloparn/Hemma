@@ -297,8 +297,10 @@ bool media_sub_for(const char *video, const char *sub, char *lang, size_t cap) {
     char vb[512], sb[512];
     fold_copy(vb, sizeof vb, video);
     fold_copy(sb, sizeof sb, sub);
+    size_t vn = strlen(vb);
     char *dot = strrchr(vb, '.');
-    if (dot && dot != vb) *dot = 0;
+    if (vn > 8 && str_ends(vb, ".web.mp4")) vb[vn - 8] = 0; /* a play-everywhere copy: "x.web.mp4" has x.en.srt */
+    else if (dot && dot != vb) *dot = 0;
     dot = strrchr(sb, '.');
     if (dot) *dot = 0;
     size_t n = strlen(vb);

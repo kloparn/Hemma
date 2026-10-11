@@ -415,16 +415,78 @@ TEST(conv_copies_h264_as_it_is) {
     free(in.p), free(out.p);
 }
 
+/* HEVC (x265 films) can't be decoded here, but Safari plays it - only not inside MKV. So the
+   frames move into an MP4 as they are: 'hvc1' with the MKV's hvcC record (parameter-set arrays
+   marked complete, as Apple wants), decode order kept, B-frames as composition offsets. */
+TEST(conv_copies_hevc_for_safari) {
+    static const uint8_t hvcc[] = {
+        1, 0x22, 0x20, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 0x5D, 0xF0, 0, 0xFC, 0xFD, 0xFA, 0xFA, 0, 0, 0x0F, /* Main 10 */
+        3,                                                                                            /* arrays */
+        0x20, 0, 1, 0, 2, 0x40, 0x01, /* VPS */
+        0x21, 0, 1, 0, 2, 0x42, 0x01, /* SPS */
+        0x22, 0, 1, 0, 2, 0x44, 0x01, /* PPS */
+    };
+    W in;
+    Tracks t = {"V_MPEGH/ISO/HEVC", hvcc, sizeof hvcc, 64, 48, NULL, NULL, 0};
+    size_t seg = start_file(&in, &t, 1000);
+    size_t cl = w_open(&in, 0x1F43B675);
+    w_uint(&in, 0xE7, 0);
+    static const int order[] = {0, 3, 1, 2, 6, 4, 5, 9, 7, 8}; /* I P B B ...: file order is decode order */
+    uint8_t frame[64];
+    for (int k = 0; k < 10; k++) {
+        for (int i = 0; i < (int)sizeof frame; i++) frame[i] = (uint8_t)(k * 16 + i);
+        frame[0] = frame[1] = frame[2] = 0, frame[3] = (uint8_t)(sizeof frame - 4); /* one length-prefixed NAL */
+        w_simple(&in, 1, frame_ms(order[k]), k == 0, frame, sizeof frame);
+    }
+    w_close(&in, cl);
+    w_close(&in, seg);
+
+    W out;
+    AvConvJob j = {0};
+    Seen s;
+    CHECK(run(&in, &out, &j, &s));
+    CHECK_STR(j.what, "HEVC copied");
+    int n[2];
+    counts(&out, n);
+    CHECK_INT(n[0], 10);
+    size_t moov = box(&out, "moov");
+    CHECK(moov != 0);
+    const uint8_t *m = out.p + moov, *end = m + be32(m);
+    const uint8_t *entry = NULL, *cfg = NULL, *ctts = NULL;
+    for (const uint8_t *q = m; q + 4 <= end; q++) {
+        if (!entry && !memcmp(q, "hvc1", 4)) entry = q;
+        if (!cfg && !memcmp(q, "hvcC", 4)) cfg = q + 4;
+        if (!ctts && !memcmp(q, "ctts", 4)) ctts = q;
+    }
+    CHECK(entry != NULL);
+    bool avc = false;
+    for (const uint8_t *q = m; q + 4 <= end; q++) avc |= !memcmp(q, "avc1", 4) || !memcmp(q, "avcC", 4);
+    CHECK(!avc);
+    CHECK(cfg != NULL);
+    if (cfg) {
+        CHECK(!memcmp(cfg, hvcc, 22)); /* the record as MKV had it... */
+        CHECK_INT(cfg[23], 0xA0);       /* ...with its VPS, SPS and PPS arrays marked complete */
+        CHECK_INT(cfg[30], 0xA1);
+        CHECK_INT(cfg[37], 0xA2);
+        CHECK(!memcmp(cfg + 28, hvcc + 28, 2)); /* NAL bytes untouched */
+    }
+    CHECK(ctts != NULL); /* B-frames: shown in another order than decoded */
+    /* the pictures are the original bytes, in file order */
+    size_t mdat = box(&out, "mdat");
+    CHECK(mdat && (out.p[mdat + 8 + 4] == 4 || out.p[mdat + 16 + 4] == 4));
+    free(in.p), free(out.p);
+}
+
 TEST(conv_says_what_it_cannot_convert) {
     W in, out;
     AvConvJob j = {0};
     Seen s;
-    Tracks hevc = {"V_MPEGH/ISO/HEVC", NULL, 0, 64, 48, NULL, NULL, 0};
-    size_t seg = start_file(&in, &hevc, 1000);
+    Tracks av1 = {"V_AV1", NULL, 0, 64, 48, NULL, NULL, 0};
+    size_t seg = start_file(&in, &av1, 1000);
     w_close(&in, seg);
     CHECK(!run(&in, &out, &j, &s));
     CHECK(j.unsupported);
-    CHECK_HAS(j.err, "V_MPEGH/ISO/HEVC");
+    CHECK_HAS(j.err, "V_AV1");
     CHECK_INT((int)out.len, 0); /* nothing written */
     free(in.p), free(out.p);
 
