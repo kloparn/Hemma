@@ -94,7 +94,8 @@ long file_sendfile(sock_t s, FILE *f, int64_t off, size_t n);
 typedef struct DirIter DirIter;
 typedef struct {
     char name[512]; /* UTF-8, no path */
-    bool is_dir;
+    bool is_dir;    /* a directory, or a link to one (is_dir then says what it points at) */
+    bool is_link;   /* a symbolic link / junction: never follow it when deleting things */
     int64_t size, mtime;
 } DirEntry;
 DirIter *dir_open(const char *path);

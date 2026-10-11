@@ -216,3 +216,12 @@
 .media-disk.bad .media-disk-bar i { background: var(--danger); }
 .media-disk.bad .media-disk-l b { color: var(--danger); }
 .media-disk small { display: block; color: var(--muted); font-size: 12px; }
+
+/* removing a film: the files that go */
+.media-rm-list { margin: 4px 0 14px; padding-left: 18px; max-height: 220px; overflow: auto; font-size: .9em; }
+.media-rm-list li { margin: 2px 0; overflow-wrap: anywhere; }
+
+/* originals that converted copies can stand in for (library settings) */
+.media-orig { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.media-orig p { margin: 0; }
+.modal-f:empty + .media-orig { margin-top: 0; padding-top: 0; border-top: 0; }

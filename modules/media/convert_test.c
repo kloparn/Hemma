@@ -26,7 +26,13 @@ TEST(convert_knows_what_each_file_needs) {
     CHECK_INT(convert_need(&f), CONV_TRANSCODE);
     f = video("mp4", "h264", "aac"); /* plays everywhere already */
     CHECK_INT(convert_need(&f), CONV_NONE);
-    f = video("mkv", "hevc", "aac"); /* not something we can encode yet */
+    f = video("mkv", "hevc", "aac"); /* HEVC is copied into an MP4: Safari plays that, never MKV */
+    CHECK_INT(convert_need(&f), CONV_REMUX);
+    f = video("mkv", "hevc", "ac3");
+    CHECK_INT(convert_need(&f), CONV_TRANSCODE);
+    f = video("mkv", "hevc", "dts");
+    CHECK_INT(convert_need(&f), CONV_NONE);
+    f = video("mkv", "av1", "aac");
     CHECK_INT(convert_need(&f), CONV_NONE);
     f = video("mkv", "h264", "dts");
     CHECK_INT(convert_need(&f), CONV_NONE);

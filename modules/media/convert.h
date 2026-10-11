@@ -38,5 +38,8 @@ void convert_card(Ctx *c, Buf *b);          /* library settings: what needs conv
 void convert_act_start(Ctx *c, Fields *f);  /* media.convert: id=<hex> for one video, else all */
 void convert_act_stop(Ctx *c, Fields *f);   /* media.convert_stop */
 bool convert_queued(uint64_t id);           /* waiting or being converted */
+/* The copy at dst lasts as long as the original (library id, file src): delete the original, its
+   progress moves to the copy. What "delete each original once its copy is made" does per file. */
+bool convert_replace_original(uint64_t id, const char *src, const char *dst);
 
 #endif

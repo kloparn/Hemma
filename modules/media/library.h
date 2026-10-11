@@ -148,5 +148,7 @@ MediaWatch *media_watch_get(int person, uint64_t id);
  * it just became done. Returns true when the done state changed. */
 bool media_watch_report(int person, uint64_t id, int pos, int dur, bool ended, int64_t now);
 void media_watch_set_done(int person, uint64_t id, bool done, int64_t now);
+/* An original gave way to its copy (remove.c): everyone's progress and watched ticks move to it. */
+void media_watch_move(uint64_t from, uint64_t to);
 
 #endif

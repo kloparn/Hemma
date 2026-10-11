@@ -18,8 +18,8 @@ the tablet in the hallway shows it straight away.
 ## Why Hemma?
 
 - **One small program, nothing else to install.** Hemma is written almost entirely in C,
-  close to the hardware. It is a single file of about 2.5 MB with its own built-in
-  database (SQLite). There's no Node, Python, Java or Docker, and no web server to set up.
+  close to the hardware ([why C?](#why-c)). It is a single file of about 2.3 MB with its own
+  built-in database (SQLite). There's no Node, Python, Java or Docker, and no web server to set up.
 - **Runs happily on a $15 computer.** Because it is so light, a Raspberry Pi (Zero 2, 3, 4
   or 5), an old laptop or a small home server is plenty. Some measurements:
   - On a Raspberry Pi 3B+ in daily use it needs about **2.4 MB of memory**.
@@ -35,6 +35,39 @@ the tablet in the hallway shows it straight away.
   outside accounts, no ads and no tracking. Your data is one database file on your own
   computer.
 
+## Why C?
+
+A home server is a small computer that stays on for years, often in a cupboard, with nobody
+looking after it. Hemma is written in C, both the server and the code that draws its pages,
+because C suits that job better than anything else:
+
+- **Nothing sits between Hemma and the hardware.** There's no interpreter, no virtual machine
+  and no garbage collector. A Node.js or Python app needs its runtime and tens of megabytes of
+  memory before it does any work. Hemma uses **about 2.4 MB** on a Raspberry Pi, so even a
+  Pi Zero 2 (512 MB) has room to spare.
+- **One file that just runs.** C compiles to a single program for each kind of computer:
+  Raspberry Pi, Linux, Windows and Mac. Installing Hemma means copying one file. Nothing to
+  `npm install` or `pip install`, and no runtime update that can break it next year.
+- **Almost no outside code.** The only library Hemma doesn't write itself is SQLite, which is
+  also C. A big package tree (hundreds of packages from strangers) is one of the most common
+  ways software gets broken or hacked. Hemma doesn't have one.
+- **Fast where it counts.** Hemma converts videos itself: DVD rips become MP4s that every
+  phone and TV can play. Its video decoders and encoders are written in C for Hemma, and a
+  22-minute DVD episode converts in under five minutes on one PC core.
+- **The same code runs in your browser.** C compiles to WebAssembly, so when you upload a
+  video, *your computer* runs Hemma's converter and only the finished, smaller copy travels
+  to the Pi. One codebase runs on the Pi, the PC and inside the browser.
+- **Built to last.** C programs from decades ago still compile today, and there's a C compiler
+  for practically every chip. A household server shouldn't need rewriting when a framework
+  goes out of fashion.
+- **Cheap to run.** When nobody is using it, Hemma wakes up about **0.2 times a second**.
+  The Pi stays cool and quiet and draws only a few watts.
+
+C asks for care in return: one careless line can crash the program or open a security hole.
+Hemma pays that back with **close to 400 automated tests** (about 1.6 million checks), debug
+builds that stop at the first sign of undefined behaviour, HTML that is escaped by default,
+and several full code reviews so far.
+
 ## What's inside
 
 | Section | What it does |
@@ -42,7 +75,7 @@ the tablet in the hallway shows it straight away.
 | **Home** | A greeting, who's home, a card from every section and the latest news |
 | **Book** | Shared things like the car, laundry, guest room or sauna. It has a week view, warns about clashes and understands quick text like *"car fri 14-17 ikea"* (in English or Swedish) |
 | **Plan** | Chores with repeats and people (*"vacuum @sam fri every week"*), a shared shopping list that remembers what you often buy, and a calendar that also shows bookings |
-| **Watch** | Your movie and series drive as a little cinema. It sorts series into seasons, has search and subtitles, and remembers where you stopped. It can convert videos a browser can't play (like DVD rips) into a copy that plays everywhere. Admins can upload whole folders from a browser: the uploading computer makes those copies itself, so only the small copy travels and the Pi does no heavy lifting. An upload picks up where it stopped if the connection drops |
+| **Watch** | Your movie and series drive as a little cinema. It sorts series into seasons, has search and subtitles, and remembers where you stopped. It can convert videos a browser can't play (like DVD rips) into a copy that plays everywhere, and moves HEVC films into a file Safari on iPhone, iPad and Mac can play. Admins can upload whole folders from a browser: the uploading computer makes those copies itself, so only the small copy travels and the Pi does no heavy lifting. An upload picks up where it stopped if the connection drops, and skips episodes and films you already have. Admins can remove a film for good, folder and all |
 | **TV** | "90s TV": channels that play your shows non-stop on a shared clock, with a TV guide |
 | **Board** | The fridge door: notes with pins and colours that disappear when they're out of date |
 | **Network** | The devices on your network, who owns which, who's home (from phones on the Wi-Fi) and Wake-on-LAN |

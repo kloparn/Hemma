@@ -648,6 +648,7 @@ bool dir_next(DirIter *it, DirEntry *e) {
         if (it->fd.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) continue;
         if (!narrow(nm, e->name, sizeof e->name)) continue;
         e->is_dir = (it->fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        e->is_link = (it->fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
         e->size = ((int64_t)it->fd.nFileSizeHigh << 32) | it->fd.nFileSizeLow;
         e->mtime = filetime_unix(it->fd.ftLastWriteTime);
         return true;
@@ -683,10 +684,12 @@ bool dir_next(DirIter *it, DirEntry *e) {
         Buf full = {0};
         buf_printf(&full, "%s/%s", it->path, nm);
         struct stat st;
+        bool link = lstat(buf_cstr(&full), &st) == 0 && S_ISLNK(st.st_mode);
         bool ok = stat(buf_cstr(&full), &st) == 0;
         buf_free(&full);
         if (!ok) continue; /* dangling symlink etc. */
         str_copy(e->name, sizeof e->name, nm);
+        e->is_link = link;
         e->is_dir = S_ISDIR(st.st_mode);
         e->size = (int64_t)st.st_size;
         e->mtime = (int64_t)st.st_mtime;
