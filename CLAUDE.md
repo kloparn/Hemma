@@ -84,7 +84,8 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  by av/conv.c (the same engine browsers run): MPEG-2 decoded, inverse-telecined/deinterlaced
                  (av/deint, chosen by sampling 4 windows) and re-encoded; H.264 copied; HEVC copied as 'hvc1'
                  (hvcC arrays marked complete - what Safari needs; no HEVC decoder here, so it plays on Apple
-                 devices and browsers with HEVC hardware, not everywhere; Convert says "play in Safari too");
+                 devices and browsers with HEVC hardware, not everywhere; Convert says "play in Safari too", the watch page
+                 badge "Plays on newer devices");
                  AC-3 -> AAC; AAC copied. convert.c = files + the queue: one file per worker thread
                  (cores-2, max 12, background priority); the library pairs x.web.mp4 with x.* (MediaFile.web,
                  role MF_WEBCOPY hides the copy) and /media/file/<id> streams the copy (media_playable()).

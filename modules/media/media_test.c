@@ -625,6 +625,18 @@ TEST(media_keeps_only_the_most_compatible_version) {
     CHECK(bigc && bigc->role == MF_MAIN);
     CHECK_INT(subs_of(bigc_id), 1);
 
+    /* an HEVC copy (as far as Hemma goes) says where it plays rather than just "may not" */
+    put_video("Movies/Hev (2006)/Hev (2006).mp4", true, 60);
+    put_video("Movies/Hev (2006)/Hev (2006).web.mp4", true, 60);
+    media_scan_sync();
+    const MediaFile *hev = find("Hev (2006).mp4");
+    CHECK(hev != NULL);
+    if (hev) {
+        page = th_page(adam, url("/media/watch/%s", hev->id));
+        CHECK_HAS(page, ">Plays on newer devices</span>");
+        CHECK_HAS(page, "Converted copy · HEVC video: Safari on iPhone, iPad and Mac");
+    }
+
     /* the setting, and what it does right after a conversion: the copy file itself is checked */
     CHECK(th_act(adam, "media.drop_auto", "on=1").ok);
     CHECK_INT((int)setting_int("media.drop_originals", 0), 1);

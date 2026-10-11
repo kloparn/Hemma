@@ -793,9 +793,15 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     static const char *const cls[] = {"", "ok", "warn", "bad"};
     const MediaFile *pf = media_playable(f); /* the play-everywhere copy, when there is one */
     Playable pl = pf->probe.playable;
+    /* an HEVC copy is as far as Hemma goes (no HEVC decoder): say where it plays, not just "may not" */
+    bool hevc = pl == PLAY_MAYBE && str_eq(pf->probe.vcodec, "hevc") && !str_eq(pf->probe.container, "mkv");
     H(b, "<div class=\"media-playable\"><span class=\"badge %s\">%s</span>", cls[CLAMP((int)pl, 0, 3)],
-      media_playable_label(pl));
-    if (pf != f) buf_puts(b, "<span class=\"muted\">Converted copy</span>");
+      hevc ? "Plays on newer devices" : media_playable_label(pl));
+    if (hevc)
+        H(b, "<span class=\"muted\">%sHEVC video: Safari on iPhone, iPad and Mac, and Chrome or Edge on most computers "
+             "and phones from the last few years</span>",
+          pf != f ? "Converted copy · " : "");
+    else if (pf != f) buf_puts(b, "<span class=\"muted\">Converted copy</span>");
     else if (pl != PLAY_YES && pf->probe.why[0]) H(b, "<span class=\"muted\">%s</span>", pf->probe.why);
     if (pf->probe.container[0] || pf->probe.vcodec[0]) {
         H(b, "<span class=\"media-tech\">%s", pf->probe.container);
@@ -939,7 +945,8 @@ static void page_settings(Ctx *c, Buf *b) {
     ui_card(b, "What plays where", NULL, NULL);
     buf_puts(b, "<ul class=\"media-tips\"><li><span class=\"badge ok\">Plays in browsers</span> MP4 or WebM with H.264/VP9 "
                 "video and AAC/MP3/Opus sound.</li><li><span class=\"badge warn\">May not play everywhere</span> MKV, "
-                "HEVC, or Dolby (AC-3) sound — fine in Chrome/Edge or Safari, not all of them.</li>"
+                "HEVC, or Dolby (AC-3) sound — fine in Chrome/Edge or Safari, not all of them. An HEVC film converted here "
+                "(<i>Plays on newer devices</i>) plays in Safari and on most devices from the last few years.</li>"
                 "<li><span class=\"badge bad\">Needs conversion</span> MPEG-2 (DVD rips), AVI/XviD, DTS sound. Hemma "
                 "converts MKV files with MPEG-2 or H.264 video and Dolby or AAC sound itself (<i>Play everywhere</i> "
                 "above); the copies play on every browser, iPhone and TV.</li></ul>");
