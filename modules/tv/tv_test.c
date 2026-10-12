@@ -426,12 +426,27 @@ TEST(tv_channel_page_tunes_into_the_live_moment) {
     CHECK_HAS(h, want);
     CHECK_HAS(h, "data-resume=\"125\"");
     CHECK_HAS(h, "data-next=\"/tv/1\"");
-    CHECK_HAS(h, "data-static");
+    /* one video element for good: the next programme (or channel) morphs into it - full screen stays */
+    snprintf(want, sizeof want, "<video id=\"tv-video\" class=\"tv-video\" src=\"/media/file/%016llx\"",
+             (unsigned long long)file_id("Series/Alpha/Season 1/Alpha.S01E01.Pilot.mp4"));
+    CHECK_HAS(h, want);
+    snprintf(want, sizeof want, "data-static=\"%016llx-%lld\" data-onair",
+             (unsigned long long)file_id("Series/Alpha/Season 1/Alpha.S01E01.Pilot.mp4"), (long long)(g_fake_now - 125));
+    CHECK_HAS(h, want);
+    /* full screen is the screen (the player's bar stays over the picture) */
+    CHECK_HAS(h, "<div class=\"tv-screen\" id=\"tv-screen\">");
+    CHECK_HAS(h, "id=\"tv-screen-fs\" data-fullscreen=\"tv-screen\" data-static hidden");
     CHECK_HAS(h, "autoplay");
-    /* live (owner): no controls to pause or wind it - data-onair keeps it at "now"; only the sound */
+    /* live (owner): nothing to pause or wind it with - data-onair keeps it at "now"; the player's live
+       bar has the sound and full screen only (and goes with the programme: the same data-static) */
     CHECK_HAS(h, "data-onair");
     CHECK(!strstr(h, " controls"));
-    CHECK_HAS(h, "data-mute data-static aria-pressed=\"false\"><span class=\"tv-mute-on\">Sound on</span>");
+    snprintf(want, sizeof want, "<div class=\"pl pl-live\" id=\"tv-screen-pl\" data-player=\"tv-video\" data-static=\"%016llx-%lld\"",
+             (unsigned long long)file_id("Series/Alpha/Season 1/Alpha.S01E01.Pilot.mp4"), (long long)(g_fake_now - 125));
+    CHECK_HAS(h, want);
+    CHECK_HAS(h, "<span class=\"pl-onair\">Live</span>");
+    CHECK_HAS(h, "data-p=\"mute\"");
+    CHECK(!strstr(h, "data-p=\"play\"") && !strstr(h, "data-p=\"seek\"") && !strstr(h, "data-p=\"back\""));
     CHECK_HAS(h, "CH 01");
     CHECK_HAS(h, "data-key=\"ArrowUp\"");
     CHECK_HAS(h, "Coming up");
@@ -601,8 +616,9 @@ TEST(tv_channel_full_screen_for_the_tv) {
     CHECK_HAS(h, "data-resume=\"125\"");
     CHECK_HAS(h, "data-next=\"/tv/1?tv=1&amp;back=%2Fscreens%2F2\"");
     CHECK_HAS(h, "autoplay");
-    CHECK_HAS(h, "aria-pressed=\"false\" autofocus>"); /* OK on the remote: the sound (live: nothing to pause) */
+    CHECK_HAS(h, "data-p=\"mute\" aria-label=\"Sound (M)\" title=\"Sound (M)\" autofocus>"); /* OK on the remote: the sound */
     CHECK(!strstr(h, " controls"));
+    CHECK_HAS(h, "data-fullscreen=\"tv-screen\""); /* the TV's browser can drop its own bars too */
     CHECK_HAS(h, "href=\"/tv/2?tv=1&amp;back=%2Fscreens%2F2\" data-key=\"ArrowUp\""); /* the remote's channel keys */
     CHECK_HAS(h, "href=\"/tv/2?tv=1&amp;back=%2Fscreens%2F2\" data-key=\"ArrowDown\"");
     CHECK_HAS(h, "data-key=\"2\" title=\"Films\"");

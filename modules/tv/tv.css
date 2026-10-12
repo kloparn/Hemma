@@ -72,16 +72,11 @@ a.tv-g-row:hover .tv-g-lane { background: var(--panel-2); }
   box-shadow: 0 0 0 4px #0d0b09, 0 0 0 6px rgba(255, 255, 255, .05);
 }
 .tv-video { position: absolute; top: 0; right: 0; bottom: 0; left: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
-/* live TV has no controls (no pausing, no winding): the sound is the one thing to change */
-.tv-mute {
-  position: absolute; left: 22px; bottom: 18px; z-index: 5; padding: 8px 16px; border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, .28); background: rgba(0, 0, 0, .6); color: #fff;
-  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
-}
-.tv-mute:hover { background: rgba(0, 0, 0, .8); }
-.tv-mute:focus { outline: 3px solid #fff; outline-offset: 3px; }
-.tv-mute[aria-pressed="true"] .tv-mute-on, .tv-mute[aria-pressed="false"] .tv-mute-off { display: none; }
-.tv-full-screen .tv-mute { left: 36px; bottom: 30px; font-size: 22px; padding: 12px 26px; }
+/* live TV's player (ui_player .pl-live): Live, the sound and full screen - no pausing, no winding */
+.tv-set .pl-bar { padding: 30px 18px 12px; }
+/* the screen in full screen: the whole display, no tube corners */
+.tv-screen:fullscreen { aspect-ratio: auto; border-radius: 0; box-shadow: none; }
+.tv-screen:-webkit-full-screen { border-radius: 0; box-shadow: none; }
 .tv-scan {
   position: absolute; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; z-index: 2;
   background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0) 0 2px, rgba(0, 0, 0, .22) 2px 3px);

@@ -187,7 +187,13 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  (?tv=1&back=<path> on /media/watch/<id>, /media/series/<id>, /tv/<n>): bare, always dark,
                  Back first (data-esc), back checked by media_safe_back (else "/"); the player autoplays +
                  autofocuses, resumes for the viewer, data-next keeps tv/back; a channel: ArrowUp/Down
-                 change channel, 1-9 pick one. On a screen (kind != 0) tiles link to TV mode with back =
+                 change channel, 1-9 pick one. PLAYERS (owner, 2026-10-12: full screen must survive the
+                 next episode): our own controls (media_controls -> ui_player, subtitles from media_subs;
+                 tv: a live UiPlayer), the box (#media-box / #tv-screen) goes full screen, the <video>
+                 keeps one id with data-static="<file>" (tv: "<file>-<airing start>"; the overlay has the
+                 same key) so the next one morphs into it; an
+                 episode with a next one gets media_upnext() (MEDIA_UPNEXT_S = 30: "Next episode in N s",
+                 Play now, Hide; tv=true: data-arrows + autofocus). On a screen (kind != 0) tiles link to TV mode with back =
                  c->path. Everything personal is ctx_viewer(c); media.progress (live), media.watched and
                  media.forget are .display and do nothing without a viewer; display accounts get real
                  posters and streams (/media/* only asks for a session).
@@ -466,9 +472,31 @@ that direction - Left/Right stay on the row, Up/Down go to the nearest row; afte
 returns near where it was, else [autofocus] / the first focusable; inputs keep their arrows - don't put it
 around a <video>) · `video[data-onair]` (a live broadcast - owner, 2026-10-12: no controls; plays at
 data-resume + the time since the page came, a pause resumes, winding/speed snap back, a browser blocking
-sound starts it muted) · `[data-mute]` (toggles the on-air video's sound; the choice carries to the next
-programme; aria-pressed = muted) · `form[data-a]` · `[data-live]` · `[data-auto]` (submit on change) ·
-`[data-esc]` (Escape) · `[data-key="/"]` (shortcut) · `[data-static]` (never morphed) ·
+sound starts it muted; the same element stays from programme to programme, and so does its sound) ·
+`[data-player="<video id>"]` (ui_player(): the player's OWN controls - owner, 2026-10-12: one
+set of buttons in every browser and for the TV's remote. The overlay sits in the video's box with the same
+data-static key as the video; hidden + the video's `controls` until wire.js wires it (no-JS fallback). State
+on the overlay: data-on (bar shown: a move, a key, paused; 3 still seconds of playing hide it - not while
+paused, a menu is open, the mouse is on the bar, or a live channel is muted), data-paused, data-wait,
+data-muted. Parts [data-p]: play back fwd seek at dur mute vol subs; [data-sub="<srclang>"] menu items
+(the pick carries into the next episode, v._sub). Keys (registered BEFORE [data-arrows]): Space/K, Left/
+Right ±10 s, M, F; on a computer they stay the video's even on a focused bar button; UiPlayer.tv puts
+data-arrows on the bar (a remote moves along it; Down/Up on the picture go to the bar, Up on the seek bar
+back). A mouse click on the picture plays/pauses, a tap shows/hides the bar. Live (.pl-live): Live badge,
+sound ("Sound off" in words and the bar stays while muted), full screen) · `[data-fullscreen="id"]` (the
+player's full-screen button: #id - the box, so the bar and the card show too - full screen and back;
+double-click on the video too; arrives hidden, shown where the browser can - an iPhone can't put a page
+element full screen: its video's webkitEnterFullscreen (Apple's player) instead; while full screen
+`<html data-idle>` hides the pointer after 3 still seconds; Escape then only leaves full screen, never
+[data-esc]. Chrome driven by DevTools (the chrome-devtools MCP) keeps ANY full screen inside its window:
+check real full screen in a normal browser) ·
+`[data-upnext="S"]` (the page's "next episode" card for its video[data-next]: unhidden in the last S
+seconds, `[data-count]` = seconds left, `[data-hide]` puts it away for that video, a link in it reports
+the video watched BEFORE the nav goes; an [autofocus] in it takes the focus from the video) ·
+`form[data-a]` · `[data-live]` · `[data-auto]` (submit on change) ·
+`[data-esc]` (Escape) · `[data-key="/"]` (shortcut) · `[data-static]` (never morphed; `data-static="v"`:
+skipped while v stays, a new v morphs the SAME element in place and settles it again - how a player
+keeps full screen into the next episode/programme/channel: stable ids media-video / tv-video) ·
 `a[data-native]` (full load) · `form[data-keep]` (don't reset) · `form[data-confirm]` (asked before
 any submit, socket or not) · `form[data-upload="/base"]` (files: POST base/plan, then one PUT per file
 to base/<batch>/<i>?at=<offset>, resuming from GET base/<batch>/<i>; a todo entry `[i, at, end]` sends
@@ -493,6 +521,10 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
 - Don't call a static helper the same as a core function (e.g. `file_read_at` clashed once).
 - Morphing keys elements by their id ATTRIBUTE (`getAttribute('id')` in wire.js): `form.id` returns a
   form's `<input name="id">` - it once made every form with an id field rebuild on each morph (typed text lost).
+- A live/act message's `url` becomes the screen's url on the server (app.c on_ws_message): one sent
+  after a nav but carrying the old page's url moves the screen back (it undid "Play now" once). Send
+  such reports before the nav. A focused element a morph hides stays document.activeElement until the
+  next frame: wire.js `unfocused()` counts it as nothing focused.
 - The debug test build traps on undefined behaviour (UBSan): never left-shift a negative value
   (multiply instead); it caught three such shifts in the H.264 encoder.
 - `far` and `near` are macros on Windows (windef.h): don't use them as variable names.
@@ -557,8 +589,12 @@ CI sanitizers + converter fuzzing, conversions keep room + never share a .part w
 version 0.3.0 + commit stamp + CHANGELOG.md. New (owner asked): the System page (checks, getting started,
 live log, help), clearer installer and startup output, /healthz. 456 tests green (1.64M checks).
 0.3.0 merged to main (PR #16), not tagged yet (the owner runs `git tag v0.3.0` + a GitHub release from
-CHANGELOG.md). 0.4.0 in progress (the GUI redesign): round 1 = Watch absorbs TV, Screens (the TV view with
-"Who's watching?"), grouped "Recently added", per-series poster colours. Next: the Wall as a screen kind
+CHANGELOG.md). 0.4.0 in progress (the GUI redesign): round 1 (merged, PR #17) = Watch absorbs TV, Screens (the
+TV view with "Who's watching?"), grouped "Recently added", per-series poster colours, live TV can't be paused.
+Then (owner asked): full screen survives the next episode, a "Next episode in N s" card, full screen for Live
+TV (survives programme and channel changes); then Hemma's own player controls (ui_player + wire.js
+[data-player]) instead of each browser's, and the fix for live TV playing on, unseen, after leaving it.
+Next: the Wall as a screen kind
 (blocks for clock, who's home, today, bookings, shopping list, notes), then calmer cards (hide empty ones).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,

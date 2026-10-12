@@ -402,16 +402,21 @@ static void screen(Ctx *c, Buf *b, const Channel *ch, const TvPlan *p, const cha
     TvSlot s;
     bool on = tv_now(p, ch->epoch, c->now, &s);
     int64_t mark = on ? s.start : 0; /* fresh ids per airing: the static and the OSD play again */
-    buf_puts(b, "<div class=\"tv-screen\">");
+    /* full screen is the screen (the player's bar stays over the picture); the video is one
+       element for good (data-static="<programme>"): the next programme or channel morphs into it,
+       so full screen stays */
+    buf_puts(b, "<div class=\"tv-screen\" id=\"tv-screen\">");
     if (on && !s.gap) {
-        /* live (owner): no controls - it can't be paused or wound (wire.js data-onair keeps it at
-           "now"); the only thing a viewer changes is the sound. TV mode: OK on the remote = sound. */
+        /* live (owner): it can't be paused or wound (wire.js data-onair keeps it at "now"); the
+           player's live bar has the sound and full screen only. TV mode: OK on the remote = sound. */
+        char key[48];
+        snprintf(key, sizeof key, "%016llx-%lld", (unsigned long long)s.file, (long long)mark);
         H(b,
-          "<video id=\"tv-v-%X-%L\" class=\"tv-video\" src=\"/media/file/%X\" autoplay playsinline "
-          "preload=\"auto\" data-static data-onair data-resume=\"%L\" data-next=\"/tv/%d%r\"></video>"
-          "<button type=\"button\" class=\"tv-mute\" id=\"tv-mute\" data-mute data-static aria-pressed=\"false\"%r>"
-          "<span class=\"tv-mute-on\">Sound on</span><span class=\"tv-mute-off\">Sound off</span></button>",
-          s.file, (long long)mark, s.file, (long long)s.offset, ch->number, tvq, *tvq ? " autofocus" : "");
+          "<video id=\"tv-video\" class=\"tv-video\" src=\"/media/file/%X\" autoplay playsinline preload=\"auto\" "
+          "data-static=\"%s\" data-onair data-resume=\"%L\" data-next=\"/tv/%d%r\"></video>",
+          s.file, key, (long long)s.offset, ch->number, tvq);
+        UiPlayer pl = {.box = "tv-screen", .video = "tv-video", .key = key, .live = true, .focus_sound = *tvq != 0, .tv = *tvq != 0};
+        ui_player(b, &pl);
     } else if (on) {
         TvSlot nx;
         const MediaFile *nf = tv_now(p, ch->epoch, s.next, &nx) ? media_file(nx.file) : NULL;

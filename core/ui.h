@@ -11,7 +11,8 @@
 #include "app.h"
 
 /* icons: home calendar list play note wifi users plus x left right trash clock monitor power search
- *        settings edit bell check arrow logo pin film tv sparkle folder pulse */
+ *        settings edit bell check arrow logo pin film tv sparkle folder pulse expand shrink
+ *        go pause back10 fwd10 sound muted cc (the player's) */
 void ui_icon(Buf *b, const char *name);
 
 /* Avatars: emoji or initials on the person's colour. size: "xs" "sm" "md" "lg" "xl". */
@@ -27,6 +28,25 @@ void ui_head_end(Buf *b);
 void ui_card(Buf *b, const char *title, const char *more_href, const char *more_label);
 void ui_card_end(Buf *b);
 void ui_empty(Buf *b, const char *emoji, const char *title, const char *text);
+/* A video player's own controls (wire.js [data-player], web/app.css .pl): drawn over the <video> inside
+   `box` (position: relative; the element that goes full screen, so whatever else is drawn over the
+   video shows there too). The same in every browser and for a TV's remote. It arrives hidden: without
+   wire.js the video keeps the browser's controls (render it with `controls`; wire.js takes them off). */
+typedef struct {
+    const char *lang, *label; /* the <track>'s srclang, the words in the menu */
+    bool on;                  /* shown now (the <track> is default) */
+} UiSub;
+typedef struct {
+    const char *box, *video; /* ids */
+    const char *key;         /* data-static: the video's own - a new one (the next episode) starts over */
+    bool live;               /* a broadcast (video[data-onair]): a Live badge, sound, full screen only */
+    int seconds;             /* its length, shown until the video knows (0 = unknown) */
+    const UiSub *subs;       /* subtitle choices besides Off (none: no subtitles button) */
+    int nsubs;
+    bool focus_sound;        /* autofocus the sound button (a live channel on a TV: OK = sound) */
+    bool tv;                 /* a remote: arrows move between the bar's buttons (else they're the video's) */
+} UiPlayer;
+void ui_player(Buf *b, const UiPlayer *p);
 
 /* Forms */
 void ui_form(Buf *b, const char *action, const char *cls); /* <form method=post action="/a/x" data-a="x"> */

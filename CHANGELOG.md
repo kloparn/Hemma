@@ -18,12 +18,26 @@ The look, round one.
   and your progress follows you (it asks again after 4 hours without use). Videos and
   channels open full screen with a Back button.
 - **Live TV is live**: a channel can't be paused, wound or sped up any more - it always
-  plays what's on now. The only thing to change is the sound (a Sound on / Sound off
-  button; OK on the remote). If the TV won't start it with sound, it starts muted.
+  plays what's on now. Only the sound is yours to change (OK on the remote). If the TV
+  won't start it with sound, it starts muted and says "Sound off".
+- **Hemma's own video player**: the same controls in every browser and on the TV - play,
+  10 s back and forward, a seek bar, time, subtitles, sound and full screen. They fade
+  while you watch and come back with a move or a key. Keys: Space or K, Left/Right,
+  M, F; on the TV, OK plays and pauses, Left/Right wind, Down goes to the buttons. A
+  click on the picture pauses, a tap shows the buttons, a double-click goes full screen.
+  Live TV gets the same bar with just Live, the sound and full screen.
+- **Binge-friendly series**: full screen stays full screen when the next episode starts. In
+  the last 30 seconds a "Next episode in 12 s" card offers Play now (and Hide); otherwise
+  the next one just starts. On the TV the card takes the focus, so OK plays it now. A
+  subtitle language you pick stays on for the next episodes.
+- **Full screen for Live TV**: changing channel, or the next programme starting, stays in
+  full screen.
 
 ### Fixes
 
 - Forms with typed-in text no longer lose it when another screen's change arrives.
+- Leaving a Live TV channel no longer leaves its sound playing in the background (each
+  visit added one more voice).
 
 ## 0.3.0 (2026-10-12)
 

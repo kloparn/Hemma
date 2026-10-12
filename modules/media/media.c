@@ -43,6 +43,33 @@ void media_tracks(const Ctx *c, Buf *b, const MediaFile *f) {
     }
 }
 
+/* The same tracks as a player's subtitle menu: same order, same one on. */
+static int media_subs(const Ctx *c, const MediaFile *f, UiSub *out, int max) {
+    const MediaIndex *ix = media_lib();
+    int v = ctx_viewer(c);
+    const char *want = v ? pref(v, "media.sublang", "") : "";
+    bool defaulted = false;
+    int n = 0;
+    for (int i = 0; i < ix->nfiles && n < max; i++) {
+        const MediaFile *sub = &ix->files[i];
+        if (sub->type != MF_SUB || sub->video != f->id) continue;
+        bool def = !defaulted && *want && str_ieq(sub->lang, want);
+        defaulted |= def;
+        out[n++] = (UiSub){sub->lang[0] ? sub->lang : "und", lang_name(sub->lang), def};
+    }
+    return n;
+}
+
+void media_controls(const Ctx *c, Buf *b, const MediaFile *f, bool tv) {
+    UiSub subs[16];
+    char key[17];
+    media_id_hex(f->id, key);
+    int64_t ms = f->probe.duration_ms ? f->probe.duration_ms : media_playable(f)->probe.duration_ms;
+    UiPlayer p = {.box = "media-box", .video = "media-video", .key = key, .seconds = (int)(ms / 1000), .subs = subs, .tv = tv};
+    p.nsubs = media_subs(c, f, subs, countof(subs));
+    ui_player(b, &p);
+}
+
 static const char *query(const Ctx *c) {
     const char *q = ctx_live(c, "media.q");
     return *q ? q : ctx_q(c, "q");
@@ -791,6 +818,18 @@ static void remove_modal(Ctx *c, Buf *b, const MediaFile *f, const char *close) 
     media_remove_free(&p);
 }
 
+void media_upnext(Buf *b, const MediaFile *next, const char *href, bool tv) {
+    H(b, "<div class=\"media-upnext\" id=\"media-upnext\" data-upnext=\"%d\" data-static=\"%X\" hidden%r>"
+         "<p class=\"media-upnext-t\"><small>Next episode in <span data-count>%d</span> s</small><b>",
+      MEDIA_UPNEXT_S, next->id, tv ? " data-arrows" : "", MEDIA_UPNEXT_S);
+    media_ep_code(b, next);
+    buf_puts(b, " · ");
+    media_ep_title(b, next);
+    H(b, "</b></p><div class=\"media-upnext-a\"><a class=\"btn primary\" href=\"%r\"%r>", href, tv ? " autofocus" : "");
+    ui_icon(b, "right");
+    buf_puts(b, "<span>Play now</span></a><button type=\"button\" class=\"btn\" data-hide>Hide</button></div></div>");
+}
+
 static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     uint64_t id = 0;
     const MediaFile *f = media_parse_id(idhex, &id) ? media_file(id) : NULL;
@@ -824,13 +863,18 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         H(b, "%s</a>", f->name.kind == MEDIA_MOVIE ? "Movies" : "Folders");
     }
 
-    /* the player: data-static keeps live re-renders away from it */
+    /* the player: data-static="<the video>" keeps live re-renders away from it, and the next
+       episode morphs into the same element - full screen (the box: the card shows over it) stays.
+       Our own controls (media_controls); the browser's only without wire.js */
     bool autoplay = str_eq(ctx_q(c, "auto"), "1");
-    H(b, "<div class=\"media-player-box\"><video id=\"media-v-%X\" class=\"media-player\" src=\"/media/file/%X\" controls "
-         "preload=\"metadata\" playsinline data-static data-id=\"%X\" data-report=\"media.progress\"",
+    Buf go = {0};
+    if (next) H(&go, "/media/watch/%X?auto=1", next->id);
+    H(b, "<div class=\"media-player-box\" id=\"media-box\"><video id=\"media-video\" class=\"media-player\" "
+         "src=\"/media/file/%X\" controls preload=\"metadata\" playsinline data-static=\"%X\" data-id=\"%X\" "
+         "data-report=\"media.progress\"",
       f->id, f->id, f->id);
     if (w && !w->done && w->pos > 10 && !autoplay) H(b, " data-resume=\"%d\"", w->pos);
-    if (next) H(b, " data-next=\"/media/watch/%X?auto=1\"", next->id);
+    if (next) H(b, " data-next=\"%r\"", buf_cstr(&go));
     if (autoplay) buf_puts(b, " autoplay");
     uint64_t poster = f->poster ? f->poster : s ? s->poster : 0;
     if (poster) {
@@ -840,7 +884,11 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     }
     buf_putc(b, '>');
     media_tracks(c, b, f);
-    buf_puts(b, "</video></div>");
+    buf_puts(b, "</video>");
+    if (next) media_upnext(b, next, buf_cstr(&go), false);
+    media_controls(c, b, f, false);
+    buf_puts(b, "</div>");
+    buf_free(&go);
 
     /* about it */
     buf_puts(b, "<div class=\"media-watch-info\"><div class=\"media-watch-t\">");
