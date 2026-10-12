@@ -76,12 +76,20 @@ a.tv-g-row:hover .tv-g-lane { background: var(--panel-2); }
 .tv-mute {
   position: absolute; left: 22px; bottom: 18px; z-index: 5; padding: 8px 16px; border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, .28); background: rgba(0, 0, 0, .6); color: #fff;
-  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity .3s;
 }
 .tv-mute:hover { background: rgba(0, 0, 0, .8); }
 .tv-mute:focus { outline: 3px solid #fff; outline-offset: 3px; }
 .tv-mute[aria-pressed="true"] .tv-mute-on, .tv-mute[aria-pressed="false"] .tv-mute-off { display: none; }
 .tv-full-screen .tv-mute { left: 36px; bottom: 30px; font-size: 22px; padding: 12px 26px; }
+/* Full screen (ui_fullscreen) across from the sound - the channel number has the top right */
+.fs-btn.tv-fs { top: auto; right: 22px; bottom: 18px; }
+.tv-full-screen .fs-btn.tv-fs { right: 36px; bottom: 30px; font-size: 22px; padding: 12px 26px; }
+.tv-full-screen .tv-fs .i { width: 24px; height: 24px; }
+html[data-idle] .tv-mute { opacity: 0; }
+/* the screen in full screen: the whole display, no tube corners */
+.tv-screen:fullscreen { aspect-ratio: auto; border-radius: 0; box-shadow: none; }
+.tv-screen:-webkit-full-screen { border-radius: 0; box-shadow: none; }
 .tv-scan {
   position: absolute; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; z-index: 2;
   background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0) 0 2px, rgba(0, 0, 0, .22) 2px 3px);

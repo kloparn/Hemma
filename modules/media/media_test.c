@@ -136,10 +136,15 @@ TEST(media_player_page_has_tracks_next_and_badges) {
     int adam = boot_with_library();
     const MediaFile *flower = find("Flower.mp4");
     const char *html = th_page(adam, url("/media/watch/%s", flower->id));
-    CHECK_HAS(html, "<video id=\"media-v-");
-    CHECK_HAS(html, "class=\"media-player\"");
-    CHECK_HAS(html, "data-static");
+    /* one player element for good: the box goes full screen (not the video: the card shows over it) */
+    CHECK_HAS(html, "<div class=\"media-player-box\" id=\"media-box\"><video id=\"media-video\" class=\"media-player\"");
+    CHECK_HAS(html, "controls controlslist=\"nofullscreen\"");
+    char want[120];
+    snprintf(want, sizeof want, "data-static=\"%016llx\"", (unsigned long long)flower->id);
+    CHECK_HAS(html, want);
+    CHECK_HAS(html, "id=\"media-box-fs\" data-fullscreen=\"media-box\" data-static hidden aria-pressed=\"false\"");
     CHECK_HAS(html, "data-report=\"media.progress\"");
+    CHECK(!strstr(html, "data-upnext")); /* a film: nothing comes next */
     CHECK_HAS(html, "srclang=\"sv\" label=\"Svenska\"");
     CHECK_HAS(html, "srclang=\"en\" label=\"English\"");
     CHECK(!strstr(html, " default>"));
@@ -156,6 +161,16 @@ TEST(media_player_page_has_tracks_next_and_badges) {
     CHECK_HAS(html, next);
     CHECK_HAS(html, "More episodes");
     CHECK_HAS(th_page(adam, url("/media/watch/%s?auto=1", ep2->id)), " autoplay");
+    /* ... and say so near the end: "Next episode in 30 s", Play now, Hide (wire.js shows it) */
+    html = th_page(adam, url("/media/watch/%s", ep1->id));
+    snprintf(want, sizeof want, "id=\"media-upnext\" data-upnext=\"30\" data-static=\"%016llx\" hidden>",
+             (unsigned long long)ep2->id);
+    CHECK_HAS(html, want);
+    CHECK_HAS(html, "Next episode in <span data-count>30</span> s</small><b>S01E02 · Roots</b>");
+    snprintf(want, sizeof want, "<a class=\"btn primary\" href=\"/media/watch/%016llx?auto=1\"><svg",
+             (unsigned long long)ep2->id);
+    CHECK_HAS(html, want); /* (no autofocus off a TV: Space still pauses) */
+    CHECK_HAS(html, "<button type=\"button\" class=\"btn\" data-hide>Hide</button>");
     /* tiny fake files can't be probed: the page says so honestly */
     CHECK_HAS(html, "badge");
     CHECK_HAS(th_page(adam, "/media/watch/0000000000000001"), "isn&#39;t in the library");

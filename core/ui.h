@@ -11,7 +11,7 @@
 #include "app.h"
 
 /* icons: home calendar list play note wifi users plus x left right trash clock monitor power search
- *        settings edit bell check arrow logo pin film tv sparkle folder pulse */
+ *        settings edit bell check arrow logo pin film tv sparkle folder pulse expand shrink */
 void ui_icon(Buf *b, const char *name);
 
 /* Avatars: emoji or initials on the person's colour. size: "xs" "sm" "md" "lg" "xl". */
@@ -27,6 +27,10 @@ void ui_head_end(Buf *b);
 void ui_card(Buf *b, const char *title, const char *more_href, const char *more_label);
 void ui_card_end(Buf *b);
 void ui_empty(Buf *b, const char *emoji, const char *title, const char *text);
+/* "Full screen" for #target - a player and whatever is drawn over it (wire.js [data-fullscreen]; id
+   "<target>-fs"). It arrives hidden: wire.js shows it where the browser can go full screen. Place it
+   inside target (web/app.css .fs-btn: top right; cls moves it). */
+void ui_fullscreen(Buf *b, const char *target, const char *cls);
 
 /* Forms */
 void ui_form(Buf *b, const char *action, const char *cls); /* <form method=post action="/a/x" data-a="x"> */

@@ -20,6 +20,12 @@ The look, round one.
 - **Live TV is live**: a channel can't be paused, wound or sped up any more - it always
   plays what's on now. The only thing to change is the sound (a Sound on / Sound off
   button; OK on the remote). If the TV won't start it with sound, it starts muted.
+- **Binge-friendly series**: full screen stays full screen when the next episode starts. In
+  the last 30 seconds a "Next episode in 12 s" card offers Play now (and Hide); otherwise
+  the next one just starts. On the TV the card takes the focus, so OK plays it now.
+- **Full screen for Live TV** (and a Full screen button on every player): the sound button
+  and the channel keys keep working in full screen, and changing channel stays there.
+  Double-click the picture to go full screen and back.
 
 ### Fixes
 

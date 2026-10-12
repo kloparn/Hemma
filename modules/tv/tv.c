@@ -402,16 +402,19 @@ static void screen(Ctx *c, Buf *b, const Channel *ch, const TvPlan *p, const cha
     TvSlot s;
     bool on = tv_now(p, ch->epoch, c->now, &s);
     int64_t mark = on ? s.start : 0; /* fresh ids per airing: the static and the OSD play again */
-    buf_puts(b, "<div class=\"tv-screen\">");
+    /* full screen is the screen (the sound button stays over the picture); the video is one
+       element for good (data-static="<programme>"): the next programme or channel morphs into it,
+       so full screen stays */
+    buf_puts(b, "<div class=\"tv-screen\" id=\"tv-screen\">");
     if (on && !s.gap) {
         /* live (owner): no controls - it can't be paused or wound (wire.js data-onair keeps it at
            "now"); the only thing a viewer changes is the sound. TV mode: OK on the remote = sound. */
         H(b,
-          "<video id=\"tv-v-%X-%L\" class=\"tv-video\" src=\"/media/file/%X\" autoplay playsinline "
-          "preload=\"auto\" data-static data-onair data-resume=\"%L\" data-next=\"/tv/%d%r\"></video>"
+          "<video id=\"tv-video\" class=\"tv-video\" src=\"/media/file/%X\" autoplay playsinline "
+          "preload=\"auto\" data-static=\"%X-%L\" data-onair data-resume=\"%L\" data-next=\"/tv/%d%r\"></video>"
           "<button type=\"button\" class=\"tv-mute\" id=\"tv-mute\" data-mute data-static aria-pressed=\"false\"%r>"
           "<span class=\"tv-mute-on\">Sound on</span><span class=\"tv-mute-off\">Sound off</span></button>",
-          s.file, (long long)mark, s.file, (long long)s.offset, ch->number, tvq, *tvq ? " autofocus" : "");
+          s.file, s.file, (long long)mark, (long long)s.offset, ch->number, tvq, *tvq ? " autofocus" : "");
     } else if (on) {
         TvSlot nx;
         const MediaFile *nf = tv_now(p, ch->epoch, s.next, &nx) ? media_file(nx.file) : NULL;
@@ -430,6 +433,7 @@ static void screen(Ctx *c, Buf *b, const Channel *ch, const TvPlan *p, const cha
         else buf_puts(b, "This channel has nothing to air yet.");
         buf_puts(b, "</span></div></div>");
     }
+    ui_fullscreen(b, "tv-screen", "tv-fs");
     H(b, "<div class=\"tv-scan\"></div><div class=\"tv-static\" id=\"tv-s-%d-%L\"></div>", ch->number, (long long)mark);
     H(b, "<div class=\"tv-osd\" id=\"tv-o-%d-%L\"><span class=\"tv-osd-n\">CH %02d</span>", ch->number,
       (long long)mark, ch->number);

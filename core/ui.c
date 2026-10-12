@@ -44,6 +44,8 @@ static const struct {
              "height=\"7\" rx=\"2\"/><rect x=\"3.5\" y=\"13.5\" width=\"7\" height=\"7\" rx=\"2\"/><rect x=\"13.5\" "
              "y=\"13.5\" width=\"7\" height=\"7\" rx=\"2\"/>"},
     {"pulse", "<path d=\"M3 12h4l2.5-6 5 12 2.5-6h4\"/>"},
+    {"expand", "<path d=\"M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5\"/>"},
+    {"shrink", "<path d=\"M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5\"/>"},
     {"logo", "<path d=\"M4 11 12 4l8 7v8.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19.5z\"/><path d=\"M12 "
              "17.5s-3.2-1.9-3.2-4a1.7 1.7 0 0 1 3.2-.8 1.7 1.7 0 0 1 3.2.8c0 2.1-3.2 4-3.2 4z\"/>"},
 };
@@ -139,6 +141,16 @@ void ui_empty(Buf *b, const char *emoji, const char *title, const char *text) {
     H(b, "<div class=\"empty\"><div class=\"empty-e\">%s</div><h3>%s</h3>", emoji, title);
     if (text) H(b, "<p>%s</p>", text);
     buf_puts(b, "</div>");
+}
+
+void ui_fullscreen(Buf *b, const char *target, const char *cls) {
+    H(b, "<button type=\"button\" class=\"fs-btn%r%s\" id=\"%s-fs\" data-fullscreen=\"%s\" data-static hidden "
+         "aria-pressed=\"false\"><span class=\"fs-on\">",
+      cls ? " " : "", cls ? cls : "", target, target);
+    ui_icon(b, "expand");
+    buf_puts(b, "<span>Full screen</span></span><span class=\"fs-off\">");
+    ui_icon(b, "shrink");
+    buf_puts(b, "<span>Exit full screen</span></span></button>");
 }
 
 /* ----------------------------------------------------------------- forms */

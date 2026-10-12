@@ -385,6 +385,16 @@ TEST(media_tv_mode_pages_are_bare_with_a_way_back) {
              (unsigned long long)ep2->id);
     CHECK_HAS(h, want);
     CHECK_HAS(h, "Next episode · S01E02");
+    /* one player element (the next episode morphs into it: full screen stays), the box full screen */
+    CHECK_HAS(h, "<div class=\"media-tv-player\" id=\"media-box\"><video id=\"media-video\" class=\"media-tv-video\"");
+    CHECK_HAS(h, "data-fullscreen=\"media-box\"");
+    /* near the end the card takes the focus: OK on the remote plays the next one now */
+    snprintf(want, sizeof want, "data-upnext=\"%d\" data-static=\"%016llx\" hidden data-arrows>", MEDIA_UPNEXT_S,
+             (unsigned long long)ep2->id);
+    CHECK_HAS(h, want);
+    snprintf(want, sizeof want, "href=\"/media/watch/%016llx?tv=1&amp;auto=1&amp;back=%%2Fscreens%%2F2\" autofocus>",
+             (unsigned long long)ep2->id);
+    CHECK_HAS(h, want);
     snprintf(want, sizeof want, "href=\"/media/series/%016llx?tv=1&amp;back=%%2Fscreens%%2F2\"",
              (unsigned long long)garden->id);
     CHECK_HAS(h, want); /* All episodes */
@@ -396,7 +406,7 @@ TEST(media_tv_mode_pages_are_bare_with_a_way_back) {
     /* a film: no next, no series */
     snprintf(url, sizeof url, "/media/watch/%016llx?tv=1&back=%%2Fscreens%%2F2", (unsigned long long)flower->id);
     h = th_page(adam, url);
-    CHECK(!strstr(h, "data-next") && !strstr(h, "All episodes"));
+    CHECK(!strstr(h, "data-next") && !strstr(h, "All episodes") && !strstr(h, "data-upnext"));
 
     /* Back only ever leads to this site's own pages */
     static const char *const evil[] = {"%2F%2Fevil.example", "%2F%5Cevil", "https%3A%2F%2Fevil.example", ""};

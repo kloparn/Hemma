@@ -309,14 +309,17 @@ void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f) {
     media_tv_back(c, back, sizeof back);
     media_tv_open(c, b, back, "media-tv-watch");
 
-    /* data-static: live re-renders leave the playing video alone; its own id per video, so the
-       next episode (data-next) is a new player */
+    /* data-static="<the video>": live re-renders leave the playing video alone, and the next
+       episode (data-next) morphs into the same element - so a full screen stays full screen */
     bool fresh = str_eq(ctx_q(c, "auto"), "1"); /* came on after the previous episode: from the top */
-    H(b, "<video id=\"media-tv-v-%X\" class=\"media-tv-video\" src=\"/media/file/%X\" controls autoplay playsinline "
-         "preload=\"auto\" tabindex=\"0\" autofocus data-static data-id=\"%X\" data-report=\"media.progress\"",
+    Buf go = {0};
+    if (next) H(&go, "/media/watch/%X?tv=1&amp;auto=1&amp;back=%u", next->id, back);
+    H(b, "<div class=\"media-tv-player\" id=\"media-box\"><video id=\"media-video\" class=\"media-tv-video\" "
+         "src=\"/media/file/%X\" controls controlslist=\"nofullscreen\" autoplay playsinline preload=\"auto\" tabindex=\"0\" "
+         "autofocus data-static=\"%X\" data-id=\"%X\" data-report=\"media.progress\"",
       f->id, f->id, f->id);
     if (w && !w->done && w->pos > 10 && !fresh) H(b, " data-resume=\"%d\"", w->pos);
-    if (next) H(b, " data-next=\"/media/watch/%X?tv=1&amp;auto=1&amp;back=%u\"", next->id, back);
+    if (next) H(b, " data-next=\"%r\"", buf_cstr(&go));
     uint64_t poster = media_picture(f);
     if (poster) {
         buf_puts(b, " poster=\"");
@@ -326,6 +329,9 @@ void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f) {
     buf_putc(b, '>');
     media_tracks(c, b, f);
     buf_puts(b, "</video>");
+    if (next) media_upnext(b, next, buf_cstr(&go), true);
+    ui_fullscreen(b, "media-box", "media-tv-fs");
+    buf_puts(b, "</div>");
 
     buf_puts(b, "<div class=\"media-tv-info\">");
     if (s) {
@@ -345,7 +351,7 @@ void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f) {
     watching_as(c, b);
     buf_puts(b, "<div class=\"media-tv-acts\">");
     if (next) {
-        H(b, "<a class=\"btn big\" href=\"/media/watch/%X?tv=1&amp;auto=1&amp;back=%u\">", next->id, back);
+        H(b, "<a class=\"btn big\" href=\"%r\">", buf_cstr(&go));
         buf_puts(b, "<span>Next episode · ");
         media_ep_code(b, next);
         buf_puts(b, "</span>");
@@ -366,6 +372,7 @@ void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f) {
         buf_puts(b, "<span>All episodes</span></a>");
     }
     buf_puts(b, "</div></div></div>");
+    buf_free(&go);
 }
 
 /* A series on the TV: the next episode as one big button (it has the focus: OK plays), then

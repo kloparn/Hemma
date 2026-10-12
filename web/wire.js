@@ -6,7 +6,9 @@
 //   4. shows toasts and reports media progress ([data-report]).
 // Without it everything still works as plain links and POST forms.
 // Markup hooks: form[data-a] action · [data-live] live input · [data-auto] submit on change
-//               [data-esc] Escape target · [data-key] keyboard shortcut · [data-static] never morphed
+//               [data-esc] Escape target · [data-key] keyboard shortcut · [data-static] never morphed;
+//               [data-static="v"] never while v stays, a new v morphs it in place (the element stays:
+//               a player in full screen stays there into the next episode)
 //               a[data-native] full page load · form[data-keep] don't reset · form[data-confirm]
 //               form[data-upload] send the chosen files (see upload() below); with
 //               data-convert/data-wasm the server's converter (C, as WebAssembly) can make
@@ -18,6 +20,11 @@
 //               whatever is closest across); Enter then opens it as usual. With nothing focused
 //               (a page load, a morph that took it away) [autofocus] - or the first focusable
 //               inside it, when it's a container - else the first focusable gets the focus
+//               [data-fullscreen="id"] a button: #id (a player and what's over it) full screen and
+//               back; double-clicking the picture too. Arrives hidden, shown where the browser can
+//               [data-upnext="S"] the card for the page's video[data-next]: shown in its last S
+//               seconds, [data-count] counting them down; a link in it goes on now, [data-hide]
+//               puts it away; an [autofocus] in it takes the focus from the video (a remote's OK)
 (() => {
   'use strict';
   const root = document.documentElement;
@@ -160,6 +167,7 @@
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      if (fsEl()) return; // the browser leaves full screen; going back too would be one step too many
       const x = document.querySelector('[data-esc]');
       if (x) { e.preventDefault(); x.click(); }
       return;
@@ -254,8 +262,8 @@
   // took the focused thing away (a tile that went), whatever is nearest to where it was; on a
   // fresh page (or area) its start.
   function arrowsSettle(was) {
-    const area = document.querySelector('[data-arrows]'), t = document.activeElement;
-    if (!area || (t && t !== document.body)) return;
+    const area = document.querySelector('[data-arrows]');
+    if (!area || !unfocused()) return;
     let pick = null;
     if (was && was.area === area && was.url === here()) {
       let bestD = Infinity;
@@ -489,7 +497,10 @@
       return;
     }
     if (from.nodeType !== 1) return;
-    if (from.hasAttribute('data-static') && to.hasAttribute('data-static') && key(from) === key(to)) return;
+    if (from.hasAttribute('data-static') && to.hasAttribute('data-static') && key(from) === key(to)) {
+      if (from.getAttribute('data-static') === to.getAttribute('data-static')) return;
+      fresh.push(from); // the same element with something new in it (a video's next one): settled again
+    }
     attrs(from, to);
     if (from.nodeName === 'TEXTAREA') {
       if (from.defaultValue !== to.textContent) from.defaultValue = to.textContent;
@@ -548,15 +559,23 @@
     }
   }
 
-  // New nodes: focus [autofocus] (when nothing else has focus) and wire media.
+  // Nothing has the focus - or what has it is no longer drawn (a morph just hid it: the browser
+  // only lets go of it at the next frame).
+  const unfocused = () => {
+    const t = document.activeElement;
+    return !t || t === document.body || !t.getClientRects().length;
+  };
+  // New nodes: focus [autofocus] (when nothing else has focus), wire media, show full-screen buttons.
+  const within = (el, sel) => (el.matches(sel) ? [el] : el.querySelectorAll(sel));
   function settle() {
     const els = fresh;
     fresh = [];
     for (const el of els) {
       if (el.nodeType !== 1) continue;
       const af = el.matches('[autofocus]') ? el : el.querySelector('[autofocus]');
-      if (af && (!document.activeElement || document.activeElement === document.body)) af.focus();
-      for (const m of el.matches('video,audio') ? [el] : el.querySelectorAll('video,audio')) media(m);
+      if (af && unfocused()) af.focus();
+      for (const m of within(el, 'video,audio')) media(m);
+      for (const b of within(el, '[data-fullscreen]')) fsButton(b);
     }
   }
 
@@ -573,17 +592,16 @@
   }
 
   // <video data-onair data-resume="S">: a live broadcast (a TV channel). It plays where the
-  // programme is now - S when the page came, plus the time since - and can't be paused, wound
-  // or sped up: it jumps back to now and plays on. Only the sound is the viewer's ([data-mute]);
-  // their choice carries over to the next programme. A browser that won't start it with sound
-  // starts it muted.
+  // programme is now - S when it came (m._at, m._t0: see media()), plus the time since - and can't
+  // be paused, wound or sped up: it jumps back to now and plays on. Only the sound is the viewer's
+  // ([data-mute]); their choice carries over to the next programme. A browser that won't start it
+  // with sound starts it muted.
   let onairMuted = false;
   const muteShow = (v) => {
     for (const b of document.querySelectorAll('[data-mute]')) b.setAttribute('aria-pressed', v.muted ? 'true' : 'false');
   };
-  function onair(m, at) {
-    const t0 = performance.now();
-    const now = () => at + (performance.now() - t0) / 1000;
+  function onair(m) {
+    const now = () => m._at + (performance.now() - m._t0) / 1000;
     const snap = () => {
       if (m.duration && Math.abs(m.currentTime - now()) > 2) m.currentTime = Math.min(now(), m.duration - 0.5);
     };
@@ -596,8 +614,6 @@
         m.play().catch(() => {});
       });
     };
-    m.muted = onairMuted;
-    muteShow(m);
     m.addEventListener('loadedmetadata', () => { snap(); go(); });
     m.addEventListener('pause', () => { if (!m.ended) { snap(); go(); } });
     m.addEventListener('seeked', snap); // its own jump lands within 2 s: no loop
@@ -617,29 +633,38 @@
     muteShow(v);
   });
 
-  // <video data-resume="123" data-report="media.progress" data-id="..." data-next="/tv/1">
+  // <video data-resume="123" data-report="media.progress" data-id="..." data-next="/tv/1">.
+  // Wired once; when a morph brings the same element a new video (data-static="v": the next
+  // episode, the next programme) it starts over with that one's data-resume - and the element
+  // stays, so a full screen does too. The listeners read the data-* attributes as they are then.
   function media(m) {
-    if (m._wired) return;
-    m._wired = true;
-    const resume = parseFloat(m.dataset.resume || '0');
-    if (m.hasAttribute('data-onair')) {
-      onair(m, resume);
-    } else if (resume > 0) {
-      // "continue watching" (data-report) skips a resume point in the last seconds;
-      // live playback (e.g. a TV channel) always joins at the exact offset.
-      const guard = m.dataset.report ? 5 : 0;
+    const src = m.getAttribute('src') || '';
+    if (m._src === src) return;
+    const again = m._src !== undefined;
+    m._src = src;
+    m._at = parseFloat(m.dataset.resume || '0');
+    m._t0 = performance.now();
+    m._last = 0;
+    m._away = false; // the "next episode" card put away
+    if (m.hasAttribute('data-onair')) { m.muted = onairMuted; muteShow(m); }
+    if (again) return;
+    if (m.hasAttribute('data-onair')) onair(m);
+    else {
+      // "continue watching" (data-report) skips a resume point in the last seconds
       m.addEventListener('loadedmetadata', () => {
-        if (!m.duration || resume < m.duration - guard) m.currentTime = resume;
-      }, { once: true });
+        const at = m._at, guard = m.dataset.report ? 5 : 0;
+        m._at = 0;
+        if (at > 0 && (!m.duration || at < m.duration - guard)) m.currentTime = at;
+      });
     }
-    let last = 0;
-    const tell = (ended) => m.dataset.report && send({
+    const tell = m._tell = (ended) => m.dataset.report && m.duration && send({
       t: 'live', a: m.dataset.report, url: here(),
       f: [['id', m.dataset.id || ''], ['pos', String(Math.floor(m.currentTime || 0))],
           ['dur', String(Math.floor(m.duration || 0))], ['ended', ended ? '1' : '']],
     });
     m.addEventListener('timeupdate', () => {
-      if (Math.abs(m.currentTime - last) >= 15) { last = m.currentTime; tell(false); }
+      if (Math.abs(m.currentTime - m._last) >= 15) { m._last = m.currentTime; tell(false); }
+      upnext(m);
     });
     m.addEventListener('pause', () => { if (!m.ended) tell(false); });
     m.addEventListener('ended', () => {
@@ -648,7 +673,78 @@
     });
   }
 
+  // [data-upnext="S"]: the page's "next episode" card. It shows in the video's last S seconds and
+  // counts them down; at the end the video goes on as always (data-next). With [autofocus] in it
+  // (a TV) it takes the focus from the video, so OK goes on now; put away, the focus goes back.
+  function upnext(m) {
+    const card = m.dataset.next && document.querySelector('[data-upnext]');
+    if (!card) return;
+    const s = parseFloat(card.dataset.upnext) || 0, left = m.duration - m.currentTime;
+    const show = !m._away && m.duration > s * 3 && left <= s;
+    if (show) for (const n of card.querySelectorAll('[data-count]')) n.textContent = String(Math.max(0, Math.ceil(left)));
+    if (show === !card.hidden) return;
+    const t = document.activeElement;
+    card.hidden = !show;
+    if (show) {
+      const af = card.querySelector('[autofocus]');
+      if (af && (!t || t === document.body || t === m)) af.focus();
+    } else if (card.contains(t)) m.focus();
+  }
+  // (capturing: "this one is watched" has to go before the link's nav - the server takes a live
+  // message's url as where the screen is, and the old page's url after the nav would undo it)
+  document.addEventListener('click', (e) => {
+    const card = e.target.closest && e.target.closest('[data-upnext]');
+    const m = card && document.querySelector('video[data-next]');
+    if (!m) return;
+    if (e.target.closest('[data-hide]')) { e.preventDefault(); m._away = true; upnext(m); }
+    else if (e.target.closest('a[href]') && m._tell) m._tell(true); // on to the next one: this one is watched
+  }, true);
+
+  // ------------------------------------------------------------- full screen
+  // [data-fullscreen="id"]: #id in full screen - the player with what's drawn over it (the video
+  // element alone would hide the card, the sound button). aria-pressed says whether it is.
+  const fsOK = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+  const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+  function fsButton(b) {
+    if (fsOK && b.hidden) b.hidden = false;
+    const f = fsEl();
+    b.setAttribute('aria-pressed', f && f.getAttribute('id') === b.dataset.fullscreen ? 'true' : 'false');
+  }
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest && e.target.closest('[data-fullscreen]');
+    if (!b) return;
+    e.preventDefault();
+    const box = fsEl() ? null : document.getElementById(b.dataset.fullscreen);
+    const go = box ? box.requestFullscreen || box.webkitRequestFullscreen : document.exitFullscreen || document.webkitExitFullscreen;
+    const p = go && go.call(box || document);
+    if (p && p.catch) p.catch(() => {});
+  });
+  document.addEventListener('dblclick', (e) => { // on the picture, like a player's own
+    const v = e.target.closest && e.target.closest('video');
+    if (!v) return;
+    for (const b of document.querySelectorAll('[data-fullscreen]')) {
+      const box = document.getElementById(b.dataset.fullscreen);
+      if (b.hidden || !box || !box.contains(v)) continue;
+      e.preventDefault(); // (not the video's own full screen as well)
+      b.click();
+      return;
+    }
+  });
+  // Full screen and a few seconds without the mouse or a key: <html data-idle> (the buttons over
+  // the picture fade, the pointer hides) until the next move.
+  let idle = 0;
+  const wake = () => {
+    clearTimeout(idle);
+    if (root.hasAttribute('data-idle')) root.removeAttribute('data-idle');
+    if (fsEl()) idle = setTimeout(() => { if (fsEl()) root.setAttribute('data-idle', ''); }, 3000);
+  };
+  const fsChange = () => { document.querySelectorAll('[data-fullscreen]').forEach(fsButton); wake(); };
+  document.addEventListener('fullscreenchange', fsChange);
+  document.addEventListener('webkitfullscreenchange', fsChange);
+  for (const t of ['mousemove', 'mousedown', 'touchstart', 'keydown']) addEventListener(t, wake, true);
+
   document.querySelectorAll('video,audio').forEach(media);
+  document.querySelectorAll('[data-fullscreen]').forEach(fsButton);
   starts();
   gaps();
   arrowsSettle(null);

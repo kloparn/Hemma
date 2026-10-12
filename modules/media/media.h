@@ -58,6 +58,11 @@ int media_episodes_in(const MediaSeries *s); /* both halves of a "S01E01-E02" co
 void media_ep_code(Buf *b, const MediaFile *f); /* "S01E02", "S01E01–E02" */
 void media_ep_title(Buf *b, const MediaFile *f); /* its title, or "Episode 3" */
 void media_tracks(const Ctx *c, Buf *b, const MediaFile *f); /* <track>s of its subtitles */
+/* The "Next episode in N s" card over a player (wire.js [data-upnext]): shown in the video's last
+   MEDIA_UPNEXT_S seconds, Play now (href: escaped already) and Hide; at the end the video goes on
+   by itself. tv: the remote's OK plays now (Play now takes the focus, arrows move in the card). */
+#define MEDIA_UPNEXT_S 30
+void media_upnext(Buf *b, const MediaFile *next, const char *href, bool tv);
 
 /* "Recently added", newest first, with a series' new episodes as one entry: episodes of one series
    that came within a week of each other ("70's Show · 8 new episodes"); films and other videos as
