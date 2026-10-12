@@ -1,0 +1,78 @@
+/* modules/system — the System page (checks, getting started, the log, help) and its home card.
+   Every class starts with system-; shared ones (.card .row .badge .chip .notice ...) come from web/app.css. */
+
+.system-tabs { margin-bottom: 14px; }
+
+/* the one-line summary on top */
+.notice.system-good { color: var(--ok); }
+.notice.system-look { color: var(--warn); }
+
+/* checks */
+.system-checks .row { align-items: flex-start; }
+.system-ct { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.system-cd { margin-top: 2px; overflow-wrap: anywhere; }
+.system-check.system-ok .system-cd, .system-check.system-info .system-cd { color: var(--muted); }
+.system-todo { margin-top: 4px; font-weight: 600; overflow-wrap: anywhere; }
+a.system-todo, a.system-more { color: var(--accent); text-decoration: none; }
+a.system-todo:hover, a.system-more:hover { text-decoration: underline; }
+.system-more { margin-top: 2px; font-size: 13.5px; }
+.system-check.system-bad .system-todo { color: var(--danger); }
+.system-again { margin-top: 14px; }
+
+/* getting started */
+.system-step { align-items: flex-start; }
+.system-tick {
+  display: grid; place-items: center; flex: none; width: 26px; height: 26px; margin-top: 1px; border-radius: 50%;
+  border: 2px solid var(--line-2); color: var(--accent-ink);
+}
+.system-tick .i { width: 15px; height: 15px; stroke-width: 3; }
+.system-done .system-tick { background: var(--accent); border-color: var(--accent); }
+.system-done .system-st { color: var(--muted); font-weight: 600; text-decoration: line-through; }
+a.system-st { font-weight: 650; color: var(--text); }
+.system-step small { margin-top: 2px; overflow-wrap: anywhere; }
+.system-step-a { margin-top: 8px; }
+.system-start-f { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.system-start-f p { margin: 0; font-weight: 600; color: var(--ok); }
+
+/* the log */
+.system-tools { gap: 8px; }
+.system-search { flex: 1; min-width: 180px; margin: 0; }
+.system-verbose { margin: 0 0 10px; }
+.system-n { margin: 6px 0 8px; }
+.system-log {
+  list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel); font-family: var(--mono); font-size: 12.5px; line-height: 1.45;
+}
+.system-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 5px 10px; border-bottom: 1px solid var(--line); }
+.system-line:last-child, .system-div:last-child { border-bottom: 0; }
+.system-line time { color: var(--muted); white-space: nowrap; }
+.system-line .badge { font-family: var(--font); font-size: 11px; padding: 0 7px; }
+.system-tx { flex: 1 1 16em; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.system-tx.system-rule { white-space: nowrap; overflow: hidden; color: var(--muted); }
+.system-w { background: var(--panel-2); }
+.system-e { background: var(--danger-soft); }
+.system-e .system-tx { color: var(--danger); }
+.system-d .system-tx { color: var(--muted); }
+.system-old { opacity: .62; }
+.system-div {
+  padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--accent-soft); color: var(--accent);
+  font-family: var(--font); font-weight: 650; font-size: 13px; text-align: center; overflow-wrap: anywhere;
+}
+
+/* help */
+.system-cmds, .system-paths, .system-faq { list-style: none; margin: 8px 0 12px; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.system-cmds li, .system-paths li { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.system-cmds code, .system-paths code {
+  display: block; padding: 6px 10px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line);
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all;
+}
+.system-cmds span, .system-paths span { color: var(--muted); font-size: 13.5px; }
+.system-help code { overflow-wrap: anywhere; }
+.system-help p { margin: 0 0 10px; }
+.system-help p:last-child { margin-bottom: 0; }
+
+/* the home dashboard's card (only while something needs a look) */
+.system-widget { border-color: var(--warn); }
+.system-widget-bad { border-color: var(--danger); }
+.system-wl { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.system-wl span { color: var(--muted); }

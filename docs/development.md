@@ -46,9 +46,10 @@ browser-side video converter (`av.wasm`) is built when zig is available. Without
 |---|---|
 | Windows x86-64 | The development platform: built and the full test suite run here |
 | Raspberry Pi OS 64-bit (aarch64) | Cross-compiled; runs in daily use on a Pi 3B+ |
-| Linux x86-64, ARM64, ARMv6/7 | Cross-compiled (static) without warnings |
-| macOS arm64 / x86-64 | Cross-compiled without warnings (server and test suite); not yet run on a real Mac |
-| `make` with gcc on Linux/Pi, `make` on macOS | Expected to work; not yet confirmed on every system |
+| Linux x86-64 | Built with `make` and the full test suite run on every push (GitHub CI, Ubuntu), also under AddressSanitizer + UBSan |
+| Linux ARM64, ARMv6/7 | Cross-compiled (static) without warnings |
+| macOS | Built with `make` and the full test suite run on every push (GitHub CI); cross-compiled from Windows too |
+| `make` with gcc on a Pi | Expected to work; not yet confirmed |
 
 Platform-specific code lives in `core/plat.c`/`plat.h` (sockets, files, threads,
 randomness) and `core/lan.c` (network interface, ARP/neighbour table), plus two clock
@@ -60,7 +61,10 @@ everything else.
 Tests sit next to the code as `*_test.c` and register themselves (`tests/test.h`). The
 runner links all of them. `tests/harness.h` boots the whole core without a network
 server, so module tests can sign people in, run actions and check the rendered pages.
-There are over 350 tests, including end-to-end tests over real sockets. Keep the suite green.
+There are over 400 tests, including end-to-end tests over real sockets. Keep the suite green.
+GitHub CI runs them on Linux and macOS, again under AddressSanitizer + UBSan, and fuzzes the
+video converter for 90 seconds (`tools/convfuzz.c`: a libFuzzer target; build it with
+`-DCONVFUZZ_MAIN` for a replay/mutate driver that works with zig on Windows too).
 
 ```powershell
 .\build.ps1 test            # everything

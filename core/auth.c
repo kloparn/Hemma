@@ -19,14 +19,9 @@ void auth_configure(const char *server_salt, int iterations) {
 /* The secret ("pepper") is mixed into every password hash and recovery code, and lives
    outside the database on purpose: a copied hemma.db alone can't be used to guess
    passwords. So it goes into the settings file - never the data folder. */
-static bool salt_line(const char *line) { /* "HEMMA_AUTH_SALT=...", "export HEMMA_AUTH_SALT = ..." */
-    while (*line == ' ' || *line == '\t') line++;
-    if (str_starts(line, "export ")) line += 7;
-    while (*line == ' ' || *line == '\t') line++;
-    if (!str_starts(line, "HEMMA_AUTH_SALT")) return false;
-    line += 15;
-    while (*line == ' ' || *line == '\t') line++;
-    return *line == '=';
+static bool salt_line(const char *line) { /* read the way env.c reads it: a BOM, "export ", spaces (issue #12) */
+    char key[32];
+    return env_line_key(line, key, sizeof key) && str_eq(key, "HEMMA_AUTH_SALT");
 }
 
 int auth_ensure_secret(const char *env_file, char *why, size_t cap) {
@@ -61,6 +56,7 @@ int auth_ensure_secret(const char *env_file, char *why, size_t cap) {
         char line[512];
         str_ncopy(line, sizeof line, p, n < sizeof line ? n : sizeof line - 1);
         if (!placed && salt_line(line)) {
+            if (str_starts(line, "\xEF\xBB\xBF")) buf_puts(&out, "\xEF\xBB\xBF"); /* keep the file's BOM */
             buf_printf(&out, "%sHEMMA_AUTH_SALT=%s\n", note, hex);
             placed = true;
         } else {
@@ -165,11 +161,57 @@ Person *person_by_username(const char *username) {
     return NULL;
 }
 
+Person *person_for_sign_in(const char *typed) {
+    Person *p = person_by_username(typed);
+    if (p) return p;
+    char t[64], want[64], got[64];
+    str_copy(t, sizeof t, typed ? typed : "");
+    str_trim(t);
+    if (!t[0]) return NULL;
+    fold_copy(want, sizeof want, t);
+    Person *hit = NULL;
+    for (int i = 0; i < account_count(); i++) {
+        Person *q = account_at(i);
+        if (!q->username[0] || !q->pass[0]) continue;
+        fold_copy(got, sizeof got, q->name);
+        if (!str_eq(got, want)) continue;
+        if (hit) return NULL; /* two accounts go by that name: only their usernames tell them apart */
+        hit = q;
+    }
+    return hit;
+}
+
 /* ------------------------------------------------------------- bootstrap */
 
 #define SET_BOOTSTRAPPED "auth.bootstrapped" /* 1 once the household has had an admin */
 #define SET_RESET_DONE "auth.reset_done"     /* hash of the last HEMMA_ADMIN_RESET user + password */
 #define PREF_TEMP "auth.temp"                /* per person: "1" = signed in with a server-side temporary password */
+#define SET_SALT_CHECK "auth.salt_check"     /* a fingerprint of the secret the passwords were made with */
+
+/* A start with a different HEMMA_AUTH_SALT (another machine's settings file, a lost line) used
+   to fail every sign-in with nothing in the log but "failed sign-in" (issue #3). The
+   fingerprint can't be turned back into the secret. */
+static void salt_fingerprint(char out[17]) {
+    static const char what[] = "hemma: which secret";
+    uint8_t mac[32];
+    hmac_sha256(g_salt, strlen(g_salt), what, sizeof what - 1, mac);
+    hex_encode(mac, 8, out);
+}
+
+/* The secret just made or matched a password: it's the household's. */
+static void salt_proven(void) {
+    char fp[17];
+    salt_fingerprint(fp);
+    if (!str_eq(setting(SET_SALT_CHECK, ""), fp)) setting_set(SET_SALT_CHECK, fp);
+}
+
+bool auth_salt_mismatch(void) {
+    const char *was = setting(SET_SALT_CHECK, "");
+    char fp[17];
+    if (!auth_ready() || !was[0]) return false;
+    salt_fingerprint(fp);
+    return !str_eq(was, fp);
+}
 
 static const char *env_nonempty(const char *key) {
     const char *v = env(key, NULL);
@@ -219,6 +261,7 @@ static int make_admin(const char *uname, const char *name, const char *pw, Made 
     if (!auth_hash(pw, rec.pass, sizeof rec.pass)) return 0;
     rec.role = ROLE_ADMIN;
     tbl_put(&T_person, &rec); /* p/same may dangle from here on: only rec is used */
+    salt_proven();
     return rec.id;
 }
 
@@ -324,6 +367,33 @@ typedef struct {
     int64_t last, until;
 } Thr;
 
+/* Every password check is a PBKDF2 hash on the event loop (~1 s on a Pi 3), and one host can
+   bring hundreds of addresses (issue #5). Checks for (address, user) pairs that never signed in
+   share a budget of loop time - a quarter of it, in bursts of up to HASH_BURST_MS - so a flood
+   of guesses slows signing in from new places, never the pages of people already in. */
+#define HASH_SHARE 4
+#define HASH_BURST_MS 4000
+static int64_t g_hash_budget = HASH_BURST_MS, g_hash_at; /* ms left; monotonic ms it was last topped up */
+static int64_t g_hash_said;                               /* when the log last said it ran out */
+
+static int64_t hash_budget(void) {
+    int64_t now = now_ms();
+    if (!g_hash_at) g_hash_at = now;
+    int64_t gained = (now - g_hash_at) / HASH_SHARE;
+    g_hash_budget += gained;
+    g_hash_at += gained * HASH_SHARE; /* the remainder keeps counting: frequent calls still refill */
+    if (g_hash_budget >= HASH_BURST_MS) {
+        g_hash_budget = HASH_BURST_MS;
+        g_hash_at = now;
+    }
+    return g_hash_budget;
+}
+
+void auth_set_hash_budget(int ms) {
+    g_hash_budget = ms;
+    g_hash_at = now_ms();
+}
+
 static Thr g_pair[PAIR_SLOTS], g_account[ACCOUNT_SLOTS], g_recheck[ACCOUNT_SLOTS], g_addr[ADDR_SLOTS];
 static struct {
     uint64_t key;
@@ -338,6 +408,8 @@ void auth_reset_throttle(void) {
     memset(g_recheck, 0, sizeof g_recheck);
     memset(g_addr, 0, sizeof g_addr);
     memset(g_known, 0, sizeof g_known);
+    auth_set_hash_budget(HASH_BURST_MS);
+    g_hash_said = 0;
     fresh_reset();
 }
 
@@ -442,21 +514,23 @@ typedef struct {
     Person *p; /* NULL = no such account */
     uint32_t ip;
     uint64_t uk, kpair, kacct, kknown, kaddr;
+    bool known; /* this address signed in as this user before */
     Thr *pair;
 } Try;
 
 /* Seconds to wait before this guess may be checked (0 = go ahead). Cheap: nothing is
    hashed before the answer is "go ahead". */
-static int try_begin(Try *t, const char *username, uint32_t ip, int64_t now) {
-    normalize_username(username, t->user, sizeof t->user);
-    t->p = person_by_username(t->user);
+static int try_begin(Try *t, const char *typed, uint32_t ip, int64_t now) {
+    t->p = person_for_sign_in(typed);
+    if (t->p) str_copy(t->user, sizeof t->user, t->p->username); /* "Adam" and "admin": one budget */
+    else normalize_username(typed, t->user, sizeof t->user);
     t->ip = ip;
     t->uk = hash64_str(t->user);
     t->kpair = thr_key('p', ip, t->user);
     t->kacct = thr_key('a', 0, t->user);
     t->kknown = thr_key('k', ip, t->user);
     t->kaddr = thr_key('i', ip, "");
-    bool known = known_has(t->kknown);
+    bool known = t->known = known_has(t->kknown);
     /* Another account's success never clears these: failures are per (address, user). The
        account-wide lock (only real accounts have one) spares addresses it signed in from before. */
     t->pair = thr_find(g_pair, PAIR_SLOTS, t->kpair);
@@ -473,7 +547,14 @@ static int try_begin(Try *t, const char *username, uint32_t ip, int64_t now) {
 static void try_failed(Try *t, int64_t now) {
     addr_failed(t->ip, t->kaddr, now);
     thr_fail(thr_take(g_pair, PAIR_SLOTS, t->kpair, t->uk, now), PAIR_LIMIT, now);
-    if (t->p) thr_fail(thr_take(g_account, ACCOUNT_SLOTS, t->kacct, t->uk, now), ACCOUNT_LIMIT, now);
+    if (!t->p) return;
+    Thr *a = thr_take(g_account, ACCOUNT_SLOTS, t->kacct, t->uk, now);
+    bool was_locked = a && a->until > now;
+    thr_fail(a, ACCOUNT_LIMIT, now);
+    if (a && !was_locked && a->until > now) /* logged like the address lock (issue #3) */
+        log_warn("%d wrong passwords or codes for \"%s\" from different addresses: new addresses wait %d min before "
+                 "the next try (ones it signed in from before don't)",
+                 a->fails, t->user, (int)((a->until - now + 59) / 60));
 }
 
 static void try_passed(Try *t, int64_t now) {
@@ -489,6 +570,18 @@ LoginResult auth_login(const char *username, const char *password, uint32_t ip, 
         if (wait_s) *wait_s = w;
         return LOGIN_THROTTLED;
     }
+    if (!t.known && hash_budget() <= 0) { /* too many checks lately: new places wait a moment */
+        if (!g_hash_said || now_ms() - g_hash_said > 10 * 60 * 1000) {
+            g_hash_said = now_ms();
+            log_warn("lots of sign-in tries right now: new devices wait a few seconds between them");
+        }
+        /* It counts against the address: a flood that keeps asking to grab each refill the
+           moment it comes locks its own addresses out instead (review). */
+        thr_fail(thr_take(g_addr, ADDR_SLOTS, t.kaddr, 0, now), ADDR_LIMIT, now);
+        if (wait_s) *wait_s = (int)MAX(1, ((1 - g_hash_budget) * HASH_SHARE + 999) / 1000);
+        return LOGIN_BUSY;
+    }
+    int64_t t0 = now_ms();
     Person *p = t.p;
     bool ok;
     if (p && p->pass[0]) {
@@ -499,11 +592,13 @@ LoginResult auth_login(const char *username, const char *password, uint32_t ip, 
         auth_check(password ? password : "", dummy);
         ok = false;
     }
+    g_hash_budget -= now_ms() - t0;
     if (!ok) {
         try_failed(&t, now);
         return LOGIN_WRONG;
     }
     try_passed(&t, now);
+    salt_proven();
     Person rec = *p;
     rec.last_login = now;
     if (auth_needs_rehash(rec.pass)) { /* upgrade old hashes while we know the password */
@@ -527,6 +622,7 @@ LoginResult auth_recheck(const Person *p, const char *password, uint32_t ip, int
     }
     if (p->pass[0] && auth_check(password ? password : "", p->pass)) {
         if (e) memset(e, 0, sizeof *e);
+        salt_proven();
         return LOGIN_OK;
     }
     thr_fail(thr_take(g_recheck, ACCOUNT_SLOTS, key, 0, now), PAIR_LIMIT, now);
@@ -542,6 +638,7 @@ int auth_set_password(int person, const char *password, const Session *keep) {
     Person rec = *p;
     if (!auth_hash(password, rec.pass, sizeof rec.pass)) return -1;
     tbl_put(&T_person, &rec);
+    salt_proven();
     auth_forget_failures(rec.username);
     if (auth_temporary(person)) pref_set(person, PREF_TEMP, "");
     return sessions_drop(person, keep);
@@ -838,6 +935,10 @@ void auth_init(void) {
 void auth_start(void) {
     db_exec(RESET_TABLE_SQL);
     g_data_version = -1;
+    if (auth_salt_mismatch())
+        log_warn("HEMMA_AUTH_SALT isn't the secret this household's passwords were made with, so nobody can sign "
+                 "in. Put the original HEMMA_AUTH_SALT line back into the settings file (from a backup) and "
+                 "restart Hemma - see \"Locked out\" in docs/accounts.md");
     /* codes of people who were removed or can't sign in any more */
     for (int i = tbl_count(&T_recovery) - 1; i >= 0; i--) {
         RecoveryCode *rc = tbl_at(&T_recovery, i);
@@ -974,6 +1075,11 @@ static bool anyone_can_sign_in(void) {
 
 static void wait_notice(Ctx *c, Buf *b) {
     long long w = ctx_qint(c, "w", 60);
+    if (*ctx_q(c, "busy")) { /* the hashing budget (LOGIN_BUSY), not a lock */
+        H(b, "<p class=\"notice bad\" role=\"alert\">Lots of sign-in tries right now. Wait %L second%r and try again.</p>",
+          MAX(1, w), w > 1 ? "s" : "");
+        return;
+    }
     H(b, "<p class=\"notice bad\" role=\"alert\">Too many tries. Wait %L minute%r and try again.</p>",
       MAX(1, (w + 59) / 60), w > 60 ? "s" : "");
 }
@@ -1079,8 +1185,8 @@ static void forgot_page(Ctx *c, Buf *b) {
     const char *u = ctx_q(c, "u");
     buf_puts(b, "<form method=\"post\" action=\"/forgot\" class=\"stack\">");
     H(b,
-      "<label class=\"field\"><span>Username</span><input name=\"username\" autocomplete=\"username\" "
-      "autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" required maxlength=\"32\" value=\"%s\"%r>"
+      "<label class=\"field\"><span>Username or name</span><input name=\"username\" autocomplete=\"username\" "
+      "autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" required maxlength=\"48\" value=\"%s\"%r>"
       "</label><label class=\"field\"><span>Recovery code</span><input name=\"code\" autocomplete=\"off\" "
       "autocapitalize=\"characters\" autocorrect=\"off\" spellcheck=\"false\" required maxlength=\"40\" "
       "placeholder=\"XXXX-XXXX-XXXX\"%r></label>",
@@ -1097,26 +1203,31 @@ static void signin_page(Ctx *c, Buf *b) {
     ctx_title(c, "Sign in");
     Person *guess = person_get(presence_guess(c->ip));
     const char *u = ctx_q(c, "u");
+    const char *next = ctx_q(c, "next");
+    if (!*next) next = str_starts(c->path, "/login") ? "/" : c->url;
     bool welcome_back = false;
-    if (!*u && guess && guess->username[0]) {
+    if (!*u && guess && guess->username[0] && !*ctx_q(c, "other")) {
         u = guess->username;
         welcome_back = true;
     }
     if (welcome_back) H(b, "<h1>Welcome back, %s</h1>", guess->name);
     else buf_puts(b, "<h1>Sign in</h1>");
     H(b, "<p class=\"sub\">to %s</p>", app_name());
+    /* the guess is this address's last person: on a shared or reassigned device that's someone
+       else (issue #3), so signing in as another person is one tap away */
+    if (welcome_back)
+        H(b, "<p class=\"small center\">Not %s? <a href=\"/login?other=1&amp;next=%u\">Sign in as someone else</a></p>",
+          guess->name, next);
     long long e = ctx_qint(c, "e", 0);
     if (e == 1) buf_puts(b, "<p class=\"notice bad\" role=\"alert\">That username and password don't match.</p>");
     else if (e == 2) wait_notice(c, b);
     else if (e == 3) buf_puts(b, "<p class=\"notice\">You're signed out.</p>");
     else if (e == 4) buf_puts(b, "<p class=\"notice\">This Hemma already has an admin. Sign in, or ask them to add you.</p>");
-    const char *next = ctx_q(c, "next");
-    if (!*next) next = str_starts(c->path, "/login") ? "/" : c->url;
     buf_puts(b, "<form method=\"post\" action=\"/login\" class=\"stack\">");
     ui_hidden(b, "next", next);
     H(b,
-      "<label class=\"field\"><span>Username</span><input name=\"username\" autocomplete=\"username\" "
-      "autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" required maxlength=\"32\" value=\"%s\"%r>"
+      "<label class=\"field\"><span>Username or name</span><input name=\"username\" autocomplete=\"username\" "
+      "autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" required maxlength=\"48\" value=\"%s\"%r>"
       "</label><label class=\"field\"><span>Password</span><input type=\"password\" name=\"password\" "
       "autocomplete=\"current-password\" required maxlength=\"200\"%r></label>",
       u, *u ? "" : " autofocus", *u ? " autofocus" : "");
@@ -1163,12 +1274,21 @@ static void redirect(Conn *conn, const char *location, const char *cookie) {
 
 /* Signs `person` in on this browser with a fresh session (any other session cookie it
    carried ends: no session fixation). Writes the Set-Cookie header line into cookie. */
+/* The Set-Cookie line for a session: "keep me signed in" lasts a year - an admin's a month,
+   the most the server keeps an admin's session (ADMIN_SESSION_DAYS, issue #5). */
+static void session_cookie(char *out, size_t cap, const char *sid, int person, bool remember) {
+    const Person *p = person_get(person);
+    long age = !remember ? 0 : p && p->role == ROLE_ADMIN ? ADMIN_SESSION_DAYS * 86400L : 31536000L;
+    char max_age[32] = "";
+    if (age) snprintf(max_age, sizeof max_age, " Max-Age=%ld;", age);
+    snprintf(out, cap, "Set-Cookie: hemma=%s; Path=/;%s SameSite=Lax; HttpOnly\r\n", sid, max_age);
+}
+
 static void fresh_session(HttpReq *r, int person, bool remember, char sid[40], char *cookie, size_t cap) {
     char old[40];
     if (http_cookie(r, "hemma", old, sizeof old)) session_end(old);
     session_create(person, remember, http_header(r, "User-Agent"), sid);
-    snprintf(cookie, cap, "Set-Cookie: hemma=%s; Path=/;%s SameSite=Lax; HttpOnly\r\n", sid,
-             remember ? " Max-Age=31536000;" : "");
+    session_cookie(cookie, cap, sid, person, remember);
 }
 
 static const char *password_error(const char *pw, const char *again) {
@@ -1195,6 +1315,9 @@ static void setup_post(Conn *conn, HttpReq *r, Fields *f) {
     str_trim(home);
     const char *pw = fields_str(f, "password");
     int wait = thr_wait(e, now);
+    /* every slot holds someone's fresh failures, so this one couldn't be counted: it waits, the
+       way sign-in does (issue #5: the setup code's throttle used to fail open) */
+    if (!e && thr_full(g_pair, PAIR_SLOTS, now)) wait = MAX(wait, FULL_WAIT_S);
     char want[SETUP_CHARS + 1], got[SETUP_CHARS + 1];
     bool code_ok = setup_code_now(want) && symbols(fields_str(f, "code"), got, SETUP_CHARS) &&
                    ct_equal(want, got, SETUP_CHARS);
@@ -1252,7 +1375,7 @@ static void setup_post(Conn *conn, HttpReq *r, Fields *f) {
 
 /* POST /forgot: username + recovery code + a new password. */
 static void forgot_post(Conn *conn, HttpReq *r, Fields *f) {
-    char user[40];
+    char user[64]; /* a username or a name */
     normalize_username(fields_str(f, "username"), user, sizeof user);
     const char *pw = fields_str(f, "password");
     const char *err = password_error(pw, fields_str(f, "again"));
@@ -1334,7 +1457,7 @@ bool auth_http(Ctx *c, Conn *conn, HttpReq *r) {
         fields_free(&f);
         return true;
     }
-    char next[600], user[40];
+    char next[600], user[64]; /* a username or a name */
     auth_safe_next(fields_str(&f, "next"), next, sizeof next);
     normalize_username(fields_str(&f, "username"), user, sizeof user);
     int pid = 0, wait = 0, cookie_person = c->me && c->sess && c->sess->token[0] ? c->me->id : 0;
@@ -1349,7 +1472,7 @@ bool auth_http(Ctx *c, Conn *conn, HttpReq *r) {
                session so the other tab stays signed in; just honour "keep me signed in" */
             Session s = *c->sess;
             s.remember = remember;
-            s.seen = now_sec();
+            s.seen = s.created = now_sec(); /* the password again: an admin's 30 days start over */
             tbl_put(&T_session, &s);
             str_copy(sid, sizeof sid, old);
         } else {
@@ -1357,8 +1480,7 @@ bool auth_http(Ctx *c, Conn *conn, HttpReq *r) {
             session_create(pid, remember, http_header(r, "User-Agent"), sid);
         }
         char cookie[160];
-        snprintf(cookie, sizeof cookie, "Set-Cookie: hemma=%s; Path=/;%s SameSite=Lax; HttpOnly\r\n", sid,
-                 remember ? " Max-Age=31536000;" : "");
+        session_cookie(cookie, sizeof cookie, sid, pid, remember);
         Person *p = person_get(pid);
         log_info("%s signed in from %s", p ? p->username : "?", conn->peer);
         /* a temporary password from the server: straight to choosing their own */
@@ -1367,12 +1489,15 @@ bool auth_http(Ctx *c, Conn *conn, HttpReq *r) {
         app_changed();
     } else {
         Buf loc = {0};
-        buf_printf(&loc, "/login?e=%d&u=", res == LOGIN_THROTTLED ? 2 : 1);
+        bool wait_more = res == LOGIN_THROTTLED || res == LOGIN_BUSY;
+        buf_printf(&loc, "/login?e=%d&u=", wait_more ? 2 : 1);
         url_encode(&loc, user, false);
-        if (res == LOGIN_THROTTLED) buf_printf(&loc, "&w=%d", wait);
+        if (wait_more) buf_printf(&loc, "&w=%d%s", wait, res == LOGIN_BUSY ? "&busy=1" : "");
         buf_puts(&loc, "&next=");
         url_encode(&loc, next, false);
-        if (res == LOGIN_WRONG) log_info("failed sign-in for \"%s\" from %s", user, conn->peer);
+        if (res == LOGIN_WRONG)
+            log_info("failed sign-in for \"%s\" from %s%s", user, conn->peer,
+                     auth_salt_mismatch() ? " (HEMMA_AUTH_SALT isn't the passwords' secret - see the warning at start)" : "");
         redirect(conn, buf_cstr(&loc), NULL);
         buf_free(&loc);
     }

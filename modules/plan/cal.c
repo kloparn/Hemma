@@ -453,7 +453,7 @@ void plan_act_event_save(Ctx *c, Fields *f) {
         }
     }
     int who = (int)fields_int(f, "who", 0);
-    e.who = person_get(who) ? who : 0;
+    e.who = person_real(who) ? who : 0; /* pickers list real people only */
     str_copy(e.note, sizeof e.note, fields_str(f, "note"));
     str_trim(e.note);
     tbl_put(&T_event, &e);

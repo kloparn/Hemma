@@ -414,7 +414,8 @@ static void dvd_close(Dvd *d) {
 }
 
 static DeintIn din(const Mpeg2Frame *f) {
-    return (DeintIn){f->y, f->u, f->v, f->stride_y, f->stride_c, f->progressive_frame, f->top_field_first, f->repeat_first_field, f->pts};
+    return (DeintIn){f->y, f->u, f->v, f->stride_y, f->stride_c, f->width, f->height, f->progressive_frame, f->top_field_first,
+                     f->repeat_first_field, f->pts};
 }
 
 static int cmd_analyze(const char *path, double seconds) {
@@ -497,7 +498,8 @@ static int cmd_bench(const char *path, double seconds, int repeat) {
             memcpy(p + ys + (size_t)y * (size_t)(w / 2), f.u + (size_t)y * (size_t)f.stride_c, (size_t)(w / 2));
             memcpy(p + ys + cs + (size_t)y * (size_t)(w / 2), f.v + (size_t)y * (size_t)f.stride_c, (size_t)(w / 2));
         }
-        ins[n] = (DeintIn){p, p + ys, p + ys + cs, w, w / 2, f.progressive_frame, f.top_field_first, f.repeat_first_field, f.pts};
+        ins[n] = (DeintIn){p, p + ys, p + ys + cs, w, w / 2, w, h, f.progressive_frame, f.top_field_first, f.repeat_first_field,
+                           f.pts};
         n++;
     }
     static const char *const names[] = {"yadif", "bob", "ivtc", "pass"};

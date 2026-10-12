@@ -10,6 +10,7 @@
 #include "convert.h"
 #include "remove.h"
 #include "upload.h"
+#include "health.h"
 
 static int64_t g_disks_at; /* when the disks under the library were last measured (see "disk space") */
 
@@ -871,6 +872,43 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     }
 }
 
+/* Who may rescan the library: admins, and the members an admin lets (setting "media.rescanners",
+   their ids comma-separated - a setting only the admin-only media.rescanners writes, not a pref
+   people set for themselves). Display accounts never. An id counts only while it is a member's
+   who can sign in: one who left (ids are never handed out again) or changed role drops out. */
+#define RESCANNERS "media.rescanners"
+
+static bool can_sign_in_member(const Person *p) { return p && p->role == ROLE_MEMBER && p->username[0]; }
+
+static bool rescan_granted(int person) {
+    if (!can_sign_in_member(person_get(person))) return false;
+    for (const char *s = setting(RESCANNERS, ""); *s;) {
+        char *end;
+        long v = strtol(s, &end, 10);
+        if (end == s) end++; /* a separator */
+        else if (v == person) return true;
+        s = end;
+    }
+    return false;
+}
+
+static bool can_rescan(const Ctx *c) { return is_admin(c) || (c->me && rescan_granted(c->me->id)); }
+
+static void rescanners_form(Buf *b) { /* admins: who else may rescan */
+    int members = 0;
+    for (int i = 0; i < person_count(); i++) members += can_sign_in_member(person_at(i));
+    if (!members) return; /* nobody but admins to choose from */
+    ui_form(b, "media.rescanners", "stack");
+    buf_puts(b, "<p class=\"muted media-small\">Admins can always rescan. Who else may:</p>");
+    for (int i = 0; i < person_count(); i++) {
+        const Person *p = person_at(i);
+        if (!can_sign_in_member(p)) continue;
+        H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"p\" value=\"%d\" data-auto%r> %s</label>", p->id,
+          rescan_granted(p->id) ? " checked" : "", p->name);
+    }
+    ui_form_end(b);
+}
+
 static void page_settings(Ctx *c, Buf *b) {
     const MediaIndex *ix = media_lib();
     ctx_title(c, "Library settings");
@@ -924,7 +962,8 @@ static void page_settings(Ctx *c, Buf *b) {
         H(b, ", took %d ms (%d new or changed files read). Hemma rescans every 30 minutes.", ix->scan_ms, ix->probed);
     } else buf_puts(b, "Showing the library as it was last time; a fresh scan starts on its own.");
     buf_puts(b, "</p>");
-    ui_act(b, "media.rescan", "btn", "Rescan now", NULL, NULL, NULL);
+    if (can_rescan(c)) ui_act(b, "media.rescan", "btn", "Rescan now", NULL, NULL, NULL);
+    if (is_admin(c)) rescanners_form(b);
     ui_card_end(b);
 
     if (c->me) {
@@ -1057,6 +1096,10 @@ static void act_watched(Ctx *c, Fields *f) {
 }
 
 static void act_rescan(Ctx *c, Fields *f) {
+    if (!can_rescan(c)) {
+        ctx_fail(c, "Rescanning is for admins - ask one to rescan, or to let you do it");
+        return;
+    }
     if (app_testing()) {
         media_scan_sync();
         ctx_ok(c, "Library scanned");
@@ -1196,6 +1239,27 @@ static void act_drop_auto(Ctx *c, Fields *f) {
     ctx_ok(c, on ? "After each conversion only the most compatible version stays" : "Both versions stay after converting");
 }
 
+/* media.rescanners: p=<id> for each member who may rescan too (the whole list, every time). */
+static void act_rescanners(Ctx *c, Fields *f) {
+    if (!is_admin(c)) {
+        ctx_fail(c, "Only an admin can choose who may rescan");
+        return;
+    }
+    int ids[FIELDS_MAX], n = 0;
+    for (int i = 0; i < f->n; i++) {
+        long long id = str_eq(f->k[i], "p") ? str_int_or(f->v[i], 0) : 0;
+        bool dup = false;
+        for (int k = 0; k < n; k++) dup |= ids[k] == id;
+        if (!dup && id > 0 && id < INT32_MAX && can_sign_in_member(person_get((int)id))) ids[n++] = (int)id;
+    }
+    Buf list = {0};
+    for (int k = 0; k < n; k++) buf_printf(&list, "%s%d", k ? "," : "", ids[k]);
+    setting_set(RESCANNERS, buf_cstr(&list));
+    buf_free(&list);
+    if (n) ctx_ok(c, "%d member%s may rescan the library too", n, n == 1 ? "" : "s");
+    else ctx_ok(c, "Only admins may rescan the library");
+}
+
 static void act_roots(Ctx *c, Fields *f) {
     if (!is_admin(c)) { /* server-side folders: admins only */
         ctx_fail(c, "Only an admin can change the library folders");
@@ -1229,6 +1293,7 @@ static void act_roots(Ctx *c, Fields *f) {
     }
     setting_set("media.roots", keep.len ? buf_cstr(&keep) : "");
     g_disks_at = 0; /* the sidebar's disk space: look again */
+    media_health_reset(); /* and the System page's checks */
     buf_free(&keep);
     if (app_testing()) media_scan_sync();
     else media_scan_start();
@@ -1244,22 +1309,27 @@ static void act_prefs(Ctx *c, Fields *f) {
 }
 
 static const Action actions[] = {
-    {"media.search", act_search}, {"media.progress", act_progress}, {"media.watched", act_watched},
+    {"media.search", act_search, true}, {"media.progress", act_progress, true}, {"media.watched", act_watched},
     {"media.rescan", act_rescan}, {"media.roots", act_roots},       {"media.prefs", act_prefs},
     {"media.upload_stop", upload_act_stop}, {"media.art_remove", act_art_remove},
     {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove}, {"media.forget", act_forget},
     {"media.drop_originals", act_drop_originals}, {"media.drop_auto", act_drop_auto},
+    {"media.rescanners", act_rescanners},
     {0},
 };
 
 /* ------------------------------------------------------------- lifecycle */
 
-static void init(void) { store_register(&T_media_watch); }
+static void init(void) {
+    T_media_watch.api_owner = "person"; /* /api: watch history is for its person (and admins) */
+    store_register(&T_media_watch);
+}
 
 static void start(void) {
     media_stream_resume();
     upload_start();
     media_lib_start();
+    media_health_reset();
 }
 
 static void stop(void) {
@@ -1329,6 +1399,7 @@ static void tick(int64_t now) {
     media_lib_tick(now);
     upload_tick(now);
     convert_tick(now);
+    media_health_tick(now);
     if (!g_disks_at || now - g_disks_at >= 30000) disks_refresh(now);
 }
 
@@ -1349,5 +1420,6 @@ static const Module media = {
     .http = http,
     .widget = widget,
     .widget_order = 50,
+    .health = media_health,
 };
 MODULE(media)

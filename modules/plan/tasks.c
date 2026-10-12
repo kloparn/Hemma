@@ -398,7 +398,7 @@ void plan_act_task_save(Ctx *c, Fields *f) {
     plan_capitalise(title);
     str_copy(t.title, sizeof t.title, title);
     int who = (int)fields_int(f, "who", 0);
-    t.who = person_get(who) ? who : 0;
+    t.who = person_real(who) ? who : 0; /* pickers list real people only */
     const char *due = fields_str(f, "due");
     int y = 0, m = 0, d = 0;
     if (due[0] && !parse_ymd(due, &y, &m, &d)) {

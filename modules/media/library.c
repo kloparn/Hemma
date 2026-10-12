@@ -5,6 +5,7 @@
 #include "../../core/db.h"
 #include "../../core/plat.h"
 #include "../../core/app.h"
+#include "room.h"
 
 #include <stdatomic.h>
 
@@ -238,6 +239,11 @@ static void walk(Scan *sc, int root, const char *abs, const char *rel_dir, int d
             continue;
         }
         atomic_fetch_add(&g_seen, 1);
+        if (str_iends(e.name, ".conv.part")) { /* the converter's half-made copy: a crash's leftover goes */
+            join_path(abs, e.name, sub, sizeof sub);
+            convert_drop_leftover(sub);
+            continue;
+        }
         char type = media_is_video_ext(e.name) ? MF_VIDEO
                     : media_is_sub_ext(e.name) ? MF_SUB
                     : media_is_image_ext(e.name) ? MF_IMAGE

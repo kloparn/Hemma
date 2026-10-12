@@ -481,6 +481,10 @@ bool file_write_private(const char *path, const void *data, size_t n) {
 #ifdef _WIN32
     return file_write_atomic(path, data, n); /* inherits the folder's permissions */
 #else
+    /* A settings file that is a link (into a config folder, a backup) keeps being one: the
+       file it points to gets the new contents, not a fresh file in place of the link (issue #12). */
+    char *real = realpath(path, NULL);
+    if (real) path = real;
     Buf tmp = {0};
     buf_printf(&tmp, "%s.tmp", path);
     remove(buf_cstr(&tmp));
@@ -496,6 +500,7 @@ bool file_write_private(const char *path, const void *data, size_t n) {
     ok = ok && file_replace(buf_cstr(&tmp), path);
     if (!ok) remove(buf_cstr(&tmp));
     buf_free(&tmp);
+    free(real);
     return ok;
 #endif
 }

@@ -20,6 +20,6 @@ void upload_stop(void); /* module stop: running transfers give up (their .part f
 /* "Show/Season 1/x.mkv" -> the same, every part checked (no "..", no names
    Windows can't store, valid UTF-8). False when anything is off. */
 bool upload_clean_rel(const char *in, char *out, size_t cap);
-void upload_test_free_space(int64_t bytes); /* tests: pretend the disk has this much room (-1 = ask it) */
+void upload_test_free_space(int64_t bytes); /* tests: media_test_free_space (room.h) */
 
 #endif

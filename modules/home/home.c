@@ -74,8 +74,8 @@ static void page(Ctx *c, Buf *b) {
 
     const Module *w[64];
     int nw = 0;
-    for (int i = 0; i < module_count() && nw < countof(w); i++)
-        if (module_at(i)->widget) w[nw++] = module_at(i);
+    for (int i = 0; i < module_count() && nw < countof(w); i++) /* an admin's section shows only to admins */
+        if (module_at(i)->widget && module_visible(module_at(i), c)) w[nw++] = module_at(i);
     qsort(w, (size_t)nw, sizeof *w, by_widget_order);
     buf_puts(b, "<div class=\"widgets\">");
     for (int i = 0; i < nw; i++) w[i]->widget(c, b, WIDGET_HOME);

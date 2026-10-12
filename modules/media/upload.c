@@ -20,12 +20,18 @@
  * flat whatever the file size, and the event loop never waits for the disk.
  *
  * Admins only, same-origin only, every name checked part by part, and a plan
- * that doesn't fit on the disk is refused before a byte is sent. The page is
- * rendered here like any other, so progress shows on every screen. */
+ * that doesn't fit on the disk is refused before a byte is sent (room.h: 1 GB stays
+ * free, and running conversions keep the room they need; each PUT checks again). A copy
+ * the server's own converter is making is never taken; one only queued there leaves the
+ * converter's queue - the upload brings it. The converter asks here too (upload_claims).
+ * The page is rendered here like any other, so progress shows on every screen. */
+#include <stdatomic.h>
+
 #include "../../core/assets.h"
 #include "../../core/json.h"
 #include "../../core/ui.h"
 #include "convert.h"
+#include "room.h"
 #include "upload.h"
 
 #define MAX_BATCHES 4
@@ -35,7 +41,6 @@
 #define STALL_MS 60000
 #define KEEP_DONE_S (60 * 60)      /* finished uploads stay on screen this long */
 #define FORGET_IDLE_S (24 * 3600)  /* an abandoned one is forgotten after a day */
-#define RESERVE (1LL << 30)        /* never fill the disk to the last gigabyte */
 #define ART_MAX (25LL << 20)       /* a poster, not a photo archive */
 #define PLAYALL_HEAD (1LL << 20)   /* of a play-all, just this much: its header, with the duration */
 
@@ -53,6 +58,7 @@ typedef struct {
     int conv, pm; /* CV_*; the browser's progress converting it, 0..1000 */
     bool extra;   /* a copy added next to its original ("also send originals"): dropped when it can't be made */
     bool dupe;    /* skipped: the library has this episode or film under another name */
+    bool on_server; /* skipped midway: the server's converter makes this copy (answered like a sent file) */
     int64_t orig; /* the original's size (copies) */
     char ext[8];  /* the original's extension, to fall back to its name */
 } UpFile;
@@ -73,31 +79,23 @@ typedef struct {
     int64_t rate_at, rate_moved; /* last speed sample: monotonic ms, moved */
 } Batch;
 
-/* Workers update progress, so everything below is guarded by g_lock. */
+/* Workers update progress, so everything below is guarded by g_lock. Lock order: g_lock may
+   be held while asking convert.c (which takes its own), never the other way round. */
 static Lock g_lock = LOCK_INIT;
 static Batch *g_batch[MAX_BATCHES];
 static int g_workers;
 /* files saved ever - a finished batch can be replaced before a tick sees it - so the tick
    rescans when these grow */
 static int g_files_saved, g_pictures_saved;
-static volatile bool g_halt;
-static int64_t g_free_override = -1;
+static atomic_bool g_halt;
 /* main thread only */
-static int64_t g_rescan_at, g_rescan_first, g_shown;
+static int64_t g_rescan_at, g_rescan_first, g_since; /* g_since: when this server started */
+static uint64_t g_shown;
 static int g_done_seen, g_pictures_seen;
 
-void upload_test_free_space(int64_t bytes) { g_free_override = bytes; }
+void upload_test_free_space(int64_t bytes) { media_test_free_space(bytes); }
 
 /* ---------------------------------------------------------------- helpers */
-
-static void fmt_size(int64_t n, char *out, size_t cap) {
-    double v = (double)n;
-    if (v >= 1099511627776.0) snprintf(out, cap, "%.1f TB", v / 1099511627776.0);
-    else if (v >= 10737418240.0) snprintf(out, cap, "%.0f GB", v / 1073741824.0);
-    else if (v >= 1073741824.0) snprintf(out, cap, "%.1f GB", v / 1073741824.0);
-    else if (v >= 1048576.0) snprintf(out, cap, "%.0f MB", v / 1048576.0);
-    else snprintf(out, cap, "%.0f KB", v / 1024.0);
-}
 
 static const Asset *asset_named(const char *path) { /* a file baked into this binary (tools/embed.c) */
     for (int i = 0; i < g_nassets; i++)
@@ -166,12 +164,12 @@ static bool junk(const char *rel) { /* system clutter that comes along with a pi
     return name[0] == '.' || str_ieq(name, "Thumbs.db") || str_ieq(name, "desktop.ini");
 }
 
-static int64_t part_size(const Batch *b, const UpFile *f) {
+static int64_t part_size(const Batch *b, const UpFile *f, int64_t *mtime) {
     char path[1024];
     int64_t size = 0;
     join(path, sizeof path - 8, b->root, f->rel);
     strcat(path, ".part");
-    return path_stat(path, &size, NULL, NULL) ? size : 0;
+    return path_stat(path, &size, mtime, NULL) ? size : 0;
 }
 
 static void drop_part(const Batch *b, const UpFile *f) {
@@ -182,11 +180,14 @@ static void drop_part(const Batch *b, const UpFile *f) {
 }
 
 /* Where file f continues: its half-sent ".part", unless that can't be this file - longer than
-   it (a leftover from another file of that name) or a picture (always one name, poster.jpg,
-   so a leftover is likely another picture): then the leftover goes and it starts over. */
+   it (a leftover from another file of that name), a picture (always one name, poster.jpg,
+   so a leftover is likely another picture), or a copy's ".part" from before this server
+   started (older Hemmas' converter wrote its half-made copies as "x.web.mp4.part" too: never
+   resumed from; a copy whose upload a restart cut off is sent again): then the leftover goes
+   and it starts over. */
 static int64_t resume_point(const Batch *b, const UpFile *f) {
-    int64_t have = part_size(b, f);
-    if (have && (have > f->size || b->art)) {
+    int64_t mtime = 0, have = part_size(b, f, &mtime);
+    if (have && (have > f->size || b->art || (media_is_web_copy(f->rel) && mtime < g_since))) {
         drop_part(b, f);
         have = 0;
     }
@@ -393,6 +394,72 @@ static bool claimed(const char *root, int me, const char *rel) {
     return mine;
 }
 
+/* Running, or planned a moment ago and not yet heard from: what the converter must keep its
+   hands off, and whose bytes still to come hold room on the disk (lock held). */
+static bool live(const Batch *o) {
+    return o && !o->art && !o->stopped && batch_open(o) && (running(o) || now_sec() - o->started < ACTIVE_S);
+}
+
+/* What live uploads have left to send (lock held), except `skip` and `me`'s own uploads that
+   aren't running (a new plan of theirs replaces those). */
+static int holds_locked(MediaHold *out, int max, const Batch *skip, int me) {
+    int n = 0;
+    for (int s = 0; s < MAX_BATCHES && n < max; s++) {
+        const Batch *o = g_batch[s];
+        if (!live(o) || o == skip || (me && o->person == me && !running(o))) continue;
+        str_copy(out[n].root, sizeof out[n].root, o->root);
+        out[n].bytes = MAX(o->total - o->moved, 0);
+        n++;
+    }
+    return n;
+}
+
+int upload_holds(MediaHold *out, int max) {
+    lock_take(&g_lock);
+    int n = holds_locked(out, max, NULL, 0);
+    lock_give(&g_lock);
+    return n;
+}
+
+/* Spare room for upload b's files below root: past the reserve, running conversions and other
+   live uploads (`me`: leave out that person's uploads a new plan replaces). The holds are
+   copied under the lock, the disk is asked outside it: a slow disk mustn't stall the uploads
+   or the pages. Lock NOT held. */
+static int64_t spare_for(const Batch *b, const char *root, int me, int64_t *held) {
+    MediaHold holds[MEDIA_MAX_HOLDS];
+    lock_take(&g_lock);
+    int n = holds_locked(holds, MEDIA_MAX_HOLDS, b, me);
+    lock_give(&g_lock);
+    n += convert_holds(holds + n, MEDIA_MAX_HOLDS - n);
+    return media_room(root, holds, n, held);
+}
+
+/* "No room for the copy: it needs 4 GB, and the drive has 2 GB to spare (Hemma keeps 1 GB free)" */
+static void no_room(char *out, size_t cap, const char *what, int64_t need, int64_t spare, int64_t held) {
+    char n[24], tail[200];
+    media_size_text(need, n, sizeof n);
+    media_room_text(tail, sizeof tail, spare, held);
+    snprintf(out, cap, "No room for %s: it needs %s, and %s", what, n, tail);
+}
+
+bool upload_claims(const char *path) {
+    bool mine = false;
+    lock_take(&g_lock);
+    for (int s = 0; s < MAX_BATCHES && !mine; s++) {
+        const Batch *o = g_batch[s];
+        size_t rl = o ? strlen(o->root) : 0;
+        if (!o || !str_istarts(path, o->root)) continue;
+        const char *rel = path + rl; /* path = root/rel, as join() makes it */
+        if (rl && o->root[rl - 1] != '/' && *rel++ != '/') continue;
+        bool coming = live(o);
+        for (int p = 0; p < o->nfiles && !mine; p++) {
+            const UpFile *x = &o->files[p];
+            mine = (x->state == UP_WRITING || (x->state == UP_QUEUED && coming)) && str_ieq(x->rel, rel);
+        }
+    }
+    lock_give(&g_lock);
+    return mine;
+}
 
 static bool listed(const Batch *b, const char *rel) {
     for (int k = 0; k < b->nfiles; k++)
@@ -448,11 +515,13 @@ static void convert_here(Batch *b, bool keep_originals, int me) {
         f->size = f->saved = 0;
         f->pm = 0;
         join(full, sizeof full, b->root, copy);
-        bool there = path_stat(full, NULL, NULL, NULL);
-        if (there || claimed(b->root, me, copy)) {
+        bool there = path_stat(full, NULL, NULL, NULL), server = !there && convert_making(full);
+        if (there || server || claimed(b->root, me, copy)) {
             f->state = UP_SKIPPED;
             str_copy(f->why, sizeof f->why,
-                     there ? "its play-everywhere copy is already there" : "another upload is sending its copy right now");
+                     there    ? "its play-everywhere copy is already there"
+                     : server ? "Hemma is making its play-everywhere copy on the server right now"
+                              : "another upload is sending its copy right now");
             continue;
         }
         f->state = UP_QUEUED;
@@ -461,6 +530,34 @@ static void convert_here(Batch *b, bool keep_originals, int me) {
 }
 
 static int64_t copy_guess(const UpFile *f) { return f->orig / 2; } /* DVD copies come out at about a third: half is on the safe side */
+
+/* Bytes a queued file still has to send (a copy not made yet: a guess). */
+static int64_t left_to_send(const UpFile *f) { return f->conv == CV_WAIT ? copy_guess(f) : MAX(f->size - f->saved, 0); }
+
+#define MAKING_IT "Hemma is making this copy on the server right now"
+
+/* The server's converter is making this copy, so it comes from there: a plan leaves it out, and
+   an upload that went quiet and comes back hears "sent" for it and goes on with the rest. Its
+   ".part" from an earlier try goes. Lock held (or b not shared yet), and f has no worker. */
+static void leave_to_server(Batch *b, UpFile *f, const char *why) {
+    b->total -= left_to_send(f);
+    drop_part(b, f);
+    f->state = UP_SKIPPED;
+    f->on_server = true;
+    b->skipped++;
+    str_copy(f->why, sizeof f->why, why);
+}
+
+/* Room on the disk for what b has to send (spare_for); false with the reason in err. Lock NOT held. */
+static bool room_for(const Batch *b, int me, char *err, size_t cap) {
+    int64_t held = 0, spare = spare_for(b, b->root, me, &held);
+    if (b->total <= spare) return true;
+    char need[24], tail[200];
+    media_size_text(b->total, need, sizeof need);
+    media_room_text(tail, sizeof tail, spare, held);
+    snprintf(err, cap, "Not enough room: this needs %s, and %s", need, tail);
+    return false;
+}
 
 /* ------------------------------------------------------------------- plan */
 
@@ -621,6 +718,10 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
                                        : "a different file with that name is already there");
             continue;
         }
+        if (media_is_video_ext(f->rel) && convert_making(full)) { /* the server is making this copy: one writer */
+            str_copy(f->why, sizeof f->why, MAKING_IT);
+            continue;
+        }
         char found[400], why[440];
         if (!dupes && media_is_video_ext(f->rel) && media_have(b->root, f->rel, found, sizeof found)) {
             snprintf(why, sizeof why, "the library has it: %s", tail2(found));
@@ -640,20 +741,9 @@ planned:
     for (int k = 0; k < b->nfiles; k++) {
         const UpFile *f = &b->files[k];
         b->skipped += f->state == UP_SKIPPED;
-        if (f->state == UP_QUEUED) b->total += f->conv == CV_WAIT ? copy_guess(f) : f->size - f->saved;
+        if (f->state == UP_QUEUED) b->total += left_to_send(f);
     }
-
-    int64_t room = 0;
-    if (g_free_override >= 0) room = g_free_override;
-    else if (!path_free_space(b->root, &room)) room = INT64_MAX;
-    if (b->total > room - RESERVE) {
-        char need[24], have[24];
-        fmt_size(b->total, need, sizeof need);
-        fmt_size(MAX(room - RESERVE, 0), have, sizeof have);
-        snprintf(err, sizeof err, "Not enough room: this needs %s, and the drive has %s to spare (Hemma keeps 1 GB free)",
-                 need, have);
-        goto out;
-    }
+    if (!room_for(b, c->me->id, err, sizeof err)) goto out;
 
     /* One upload at a time (owner's rule): while one is running - anyone's, in any tab - a new
        one is refused, unless "upload anyway" was ticked; then both run, and the files the running
@@ -701,6 +791,27 @@ planned:
     }
     lock_give(&g_lock);
     if (err[0]) goto out;
+
+    /* Registered, so now a claim that conversions see. The room once more, with all that holds
+       room now: a conversion that started since the first look can't count on the same room
+       (convert.c checks again after marking one running, too). */
+    if (!b->art && !room_for(b, c->me->id, err, sizeof err)) {
+        lock_take(&g_lock);
+        g_batch[slot] = NULL; /* (nobody has its id yet) */
+        lock_give(&g_lock);
+        goto out;
+    }
+    /* Conversions still waiting to make a copy this brings leave the queue: the upload's copy
+       does instead. One that started meanwhile keeps it. */
+    lock_take(&g_lock);
+    for (int k = 0; k < b->nfiles && !b->art; k++) {
+        UpFile *f = &b->files[k];
+        char full[1024];
+        if (f->state != UP_QUEUED || !media_is_video_ext(f->rel)) continue;
+        join(full, sizeof full, b->root, f->rel);
+        if (convert_give_way(full)) leave_to_server(b, f, MAKING_IT);
+    }
+    lock_give(&g_lock);
 
     Buf out = {0};
     char hex[17];
@@ -758,6 +869,14 @@ static void progress(Job *j, int64_t n) {
     lock_give(&g_lock);
 }
 
+static bool halted(const Batch *b) { /* the module stops, or someone pressed Stop on this upload */
+    if (atomic_load(&g_halt)) return true;
+    lock_take(&g_lock);
+    bool s = b->stopped;
+    lock_give(&g_lock);
+    return s;
+}
+
 /* A picture has to start like a JPEG, PNG or WebP file (whatever its name says). */
 static bool picture_bytes(const char *path) {
     unsigned char h[12] = {0};
@@ -799,7 +918,7 @@ static void worker(void *arg) {
     }
     char *buf = fail ? NULL : xmalloc(CHUNK);
     for (int waited = 0; !fail && got < j->len;) {
-        if (g_halt || b->stopped) { /* read without the lock: a stale answer only costs one more chunk */
+        if (halted(b)) {
             fail = "The upload was stopped", status = 410, stop = true;
             break;
         }
@@ -898,6 +1017,15 @@ static void worker(void *arg) {
 
 /* -------------------------------------------------------------- endpoints */
 
+#define MADE_MEANWHILE "Hemma started making this copy on the server meanwhile"
+
+static void reply_ok(Conn *conn) {
+    Buf ok = {0};
+    buf_puts(&ok, "{\"ok\":true}");
+    reply(conn, 200, &ok);
+    buf_free(&ok);
+}
+
 static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     lock_take(&g_lock);
     Batch *b = find(id);
@@ -907,13 +1035,14 @@ static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     bool stop = true;
     if (!b || b->person != c->me->id) err = "That upload is over - start it again to continue", status = 404;
     else if (b->stopped) err = "The upload was stopped", status = 410;
-    else if (i < 0 || i >= b->nfiles || b->files[i].state == UP_SKIPPED) err = "That file isn't part of the upload", status = 404;
+    else if (i < 0 || i >= b->nfiles || (b->files[i].state == UP_SKIPPED && !b->files[i].on_server))
+        err = "That file isn't part of the upload", status = 404;
     else if (b->files[i].state == UP_FAILED) { /* (disk full and the like): say so, don't take it again */
         str_copy(failed, sizeof failed, b->files[i].why);
         err = failed;
     }
+    else if (b->files[i].state == UP_DONE || b->files[i].on_server) err = NULL; /* answered below */
     else if (b->files[i].conv == CV_WAIT) err = "That copy isn't made yet", status = 409;
-    else if (b->files[i].state == UP_DONE) err = NULL; /* already complete: answered below */
     else if (b->files[i].state == UP_WRITING || g_workers >= MAX_WORKERS) err = "busy", status = 503, stop = false;
     if (err || !b) {
         lock_give(&g_lock);
@@ -921,12 +1050,15 @@ static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
         return;
     }
     UpFile *f = &b->files[i];
-    if (f->state == UP_DONE) {
+    char full[1024];
+    join(full, sizeof full, b->root, f->rel);
+    /* (an upload back from a quiet spell: a conversion queued meanwhile for this copy leaves the
+       queue; one already running keeps it, and this file is answered as sent) */
+    if (f->state == UP_DONE || f->on_server || (!b->art && media_is_video_ext(f->rel) && convert_give_way(full))) {
+        if (f->state != UP_DONE && !f->on_server) leave_to_server(b, f, MADE_MEANWHILE);
         lock_give(&g_lock);
-        Buf ok = {0};
-        buf_puts(&ok, "{\"ok\":true}");
-        reply(conn, 200, &ok);
-        buf_free(&ok);
+        reply_ok(conn);
+        app_changed_where("/media");
         return;
     }
     Fields q = {0};
@@ -947,6 +1079,25 @@ static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
         reply_err(conn, 400, true,
                   f->head ? "Hemma was updated meanwhile - reload the page and start the upload again"
                           : "The file changed size since the upload started - start it again");
+        return;
+    }
+    /* Room for the rest: an upload holds room only while it's live, so after a quiet spell (a
+       laptop asleep) conversions may have used it. (The disk is asked outside the lock; nothing
+       else touches this file meanwhile - claims and PUTs are all on the event loop.) */
+    char root[300];
+    str_copy(root, sizeof root, b->root);
+    lock_give(&g_lock);
+    int64_t held = 0, spare = spare_for(b, root, 0, &held);
+    lock_take(&g_lock);
+    if (f->size - at > spare) {
+        char msg[300];
+        no_room(msg, sizeof msg, "the rest of this file", f->size - at, spare, held);
+        f->state = UP_FAILED;
+        str_copy(f->why, sizeof f->why, "not enough room on the drive (Hemma keeps 1 GB free)");
+        b->failed++;
+        lock_give(&g_lock);
+        reply_err(conn, 507, true, msg);
+        app_changed_where("/media");
         return;
     }
     Job *j = xcalloc(1, sizeof *j);
@@ -996,7 +1147,7 @@ static void where(Ctx *c, Conn *conn, uint64_t id, int i) {
     } else if (b->stopped) {
         status = 410;
         buf_puts(&out, "{\"error\":\"The upload was stopped\",\"stop\":true}");
-    } else if (i < 0 || i >= b->nfiles || b->files[i].state == UP_SKIPPED) {
+    } else if (i < 0 || i >= b->nfiles || (b->files[i].state == UP_SKIPPED && !b->files[i].on_server)) {
         status = 404;
         buf_puts(&out, "{\"error\":\"That file isn't part of the upload\",\"stop\":true}");
     } else if (b->files[i].state == UP_FAILED) {
@@ -1006,26 +1157,14 @@ static void where(Ctx *c, Conn *conn, uint64_t id, int i) {
         buf_puts(&out, ",\"stop\":true}");
     } else {
         const UpFile *f = &b->files[i];
-        int64_t at = f->state == UP_DONE ? f->size : f->state == UP_WRITING ? f->saved : resume_point(b, f);
+        int64_t at = f->state == UP_DONE || f->on_server ? f->size
+                     : f->state == UP_WRITING           ? f->saved
+                                                        : resume_point(b, f);
         buf_printf(&out, "{\"at\":%lld%s}", (long long)at, f->state == UP_WRITING ? ",\"busy\":true" : "");
     }
     lock_give(&g_lock);
     reply(conn, status, &out);
     buf_free(&out);
-}
-
-static int64_t room_at(const char *root) {
-    int64_t room = 0;
-    if (g_free_override >= 0) return g_free_override;
-    return path_free_space(root, &room) ? room : INT64_MAX;
-}
-
-/* "No room for the copy: it needs 4 GB, and the drive has 2 GB to spare (Hemma keeps 1 GB free)" */
-static void no_room(char *out, size_t cap, const char *what, int64_t need, int64_t room) {
-    char n[24], h[24];
-    fmt_size(need, n, sizeof n);
-    fmt_size(MAX(room - RESERVE, 0), h, sizeof h);
-    snprintf(out, cap, "No room for %s: it needs %s, and the drive has %s to spare (Hemma keeps 1 GB free)", what, n, h);
 }
 
 /* The browser's side of a copy it makes (see the top): progress, the finished size, or "it
@@ -1035,9 +1174,19 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     fields_parse(&q, r->query, strlen(r->query));
     long long pm = fields_int(&q, "pm", -1), size = fields_int(&q, "size", -1);
     bool original = str_eq(fields_str(&q, "original"), "1");
-    char why[64], msg[200];
+    char why[64], msg[300];
     str_copy(why, sizeof why, fields_str(&q, "why"));
     fields_free(&q);
+
+    int64_t spare = INT64_MAX / 4, held = 0; /* for a copy or an original to come: asked before the lock */
+    if (size >= 0 || original) {
+        char root[300] = "";
+        lock_take(&g_lock);
+        const Batch *sb = find(id);
+        if (sb) str_copy(root, sizeof root, sb->root);
+        lock_give(&g_lock);
+        if (sb) spare = spare_for(sb, root, 0, &held);
+    }
 
     Buf out = {0};
     int status = 200;
@@ -1053,17 +1202,20 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
         buf_puts(&out, "{\"ok\":true}");
     } else if (!f || !f->conv || f->state != UP_QUEUED) err = "That file isn't waiting for a copy", status = 404;
     else if (size >= 0) { /* the copy is ready: size it, then the browser sends it */
-        char part[1100];
-        join(part, sizeof part - 8, b->root, f->rel);
-        strcat(part, ".part");
+        char full[1024], part[1100];
+        join(full, sizeof full, b->root, f->rel);
+        snprintf(part, sizeof part, "%s.part", full);
         if (f->conv == CV_READY && size == f->size) { /* asked again (a lost answer): carry on */
             buf_printf(&out, "{\"at\":%lld}", (long long)resume_point(b, f));
         } else if (f->conv != CV_WAIT) {
             err = "That file is going as it is", status = 409;
         } else if (size <= 0 || size > (1LL << 40)) {
             err = "The browser's copy came out empty", status = 422;
-        } else if (size > room_at(b->root) - RESERVE) {
-            no_room(msg, sizeof msg, "the copy", size, room_at(b->root));
+        } else if (convert_give_way(full)) { /* the server's converter started on it meanwhile */
+            leave_to_server(b, f, MADE_MEANWHILE);
+            buf_puts(&out, "{\"skip\":true}");
+        } else if (size > spare) {
+            no_room(msg, sizeof msg, "the copy", size, spare, held);
             err = msg, status = 507;
         } else {
             b->total += size - copy_guess(f);
@@ -1081,8 +1233,8 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
         join(full, sizeof full, b->root, rel);
         int64_t have = 0;
         bool dir = false, taken = f->extra || path_stat(full, &have, NULL, &dir);
-        if (!taken && f->orig > room_at(b->root) - RESERVE) {
-            no_room(msg, sizeof msg, "the original", f->orig, room_at(b->root));
+        if (!taken && f->orig > spare) {
+            no_room(msg, sizeof msg, "the original", f->orig, spare, held);
             err = msg, status = 507;
         } else if (taken) {
             b->total -= copy_guess(f);
@@ -1200,8 +1352,8 @@ static int batch_permille(const Batch *u) {
 
 static void render_batch(Ctx *c, Buf *b, const Batch *u) {
     char moved[24], total[24], speed[24];
-    fmt_size(u->moved, moved, sizeof moved);
-    fmt_size(u->total, total, sizeof total);
+    media_size_text(u->moved, moved, sizeof moved);
+    media_size_text(u->total, total, sizeof total);
     int todo = u->nfiles - u->skipped, copies = 0, pending = 0, as_is = 0, heads = 0;
     for (int i = 0; i < u->nfiles; i++) {
         const UpFile *f = &u->files[i];
@@ -1221,10 +1373,10 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
     H(b, "<progress class=\"media-up-bar\" max=\"1000\" value=\"%d\"></progress><p class=\"media-up-nums\">%s of %s%s",
       MIN(per_mille, 1000), moved, pending ? "about " : "", total);
     if (open && !waiting && u->rate > 1 && pending) {
-        fmt_size((int64_t)u->rate, speed, sizeof speed);
+        media_size_text((int64_t)u->rate, speed, sizeof speed);
         H(b, " · %s/s", speed);
     } else if (open && !waiting && u->rate > 1) {
-        fmt_size((int64_t)u->rate, speed, sizeof speed);
+        media_size_text((int64_t)u->rate, speed, sizeof speed);
         H(b, " · %s/s", speed);
         int64_t left = (int64_t)((double)(u->total - u->moved) / u->rate);
         if (left > 0) {
@@ -1423,10 +1575,13 @@ void upload_act_stop(Ctx *c, Fields *f) {
 
 /* -------------------------------------------------------------- lifecycle */
 
-void upload_start(void) { g_halt = false; }
+void upload_start(void) {
+    atomic_store(&g_halt, false);
+    g_since = now_sec();
+}
 
 void upload_tick(int64_t now) {
-    int64_t sig = 0;
+    uint64_t sig = 0; /* (unsigned: it wraps, by design) */
     int saved = 0, pictures = 0;
     bool active = false;
     int finished_person = 0, finished_files = 0;
@@ -1462,7 +1617,8 @@ void upload_tick(int64_t now) {
             sig++;
             continue;
         }
-        sig = sig * 31 + b->moved + b->done * 7 + b->failed * 13 + b->workers * 17 + b->stopped + (b->ended != 0) * 3;
+        sig = sig * 31 + (uint64_t)b->moved + (uint64_t)b->done * 7 + (uint64_t)b->failed * 13 +
+              (uint64_t)b->workers * 17 + b->stopped + (b->ended != 0) * 3u;
     }
     saved = g_files_saved;
     pictures = g_pictures_saved;
@@ -1491,7 +1647,7 @@ void upload_tick(int64_t now) {
 }
 
 void upload_stop(void) {
-    g_halt = true;
+    atomic_store(&g_halt, true);
     for (int waited = 0; waited < 3000; waited += 50) { /* let workers close their files */
         lock_take(&g_lock);
         int n = g_workers;
@@ -1507,6 +1663,7 @@ void upload_stop(void) {
         }
     g_files_saved = g_pictures_saved = 0;
     lock_give(&g_lock);
-    g_rescan_at = g_rescan_first = g_shown = 0;
+    g_rescan_at = g_rescan_first = 0;
+    g_shown = 0;
     g_done_seen = g_pictures_seen = 0;
 }

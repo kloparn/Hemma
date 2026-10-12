@@ -2,8 +2,9 @@
 
 Hemma lives on your home network, the one your router makes with its Wi-Fi and cables.
 This page covers the network side: finding the server, giving it an address that never
-changes, names versus numbers, why the address starts with `http://`, and how to reach
-Hemma from outside without putting it on the internet.
+changes, names versus numbers, why the address starts with `http://`, what the Network
+page can and can't tell you, and how to reach Hemma from outside without putting it on
+the internet.
 
 The examples use `192.168.1.50` for the server and `192.168.1.1` for the router. Yours
 will be different, but they usually look similar (`192.168.0.x`, `192.168.1.x` or
@@ -74,9 +75,11 @@ Hemma speaks plain `http://` and never `https://`, on purpose:
 - `https://` needs a certificate that every phone and TV trusts. Those are issued for
   internet names, not for `hemma.local` or `192.168.1.50`. A home-made certificate would
   make every browser show a scary warning.
-- Hemma's traffic never leaves your home, and your Wi-Fi already encrypts what goes
-  through the air. Treat everyone you let onto your Wi-Fi as being "in the house", and
-  give visitors the guest network.
+- Hemma's traffic never leaves your home. The Wi-Fi password keeps people outside out,
+  but it doesn't hide Hemma's traffic from the devices you let in: anyone who knows the
+  Wi-Fi password can read it, and any device on the network could listen in. Treat
+  everyone you let onto your Wi-Fi as being "in the house", and give visitors the guest
+  network.
 
 What this means in practice:
 
@@ -107,6 +110,39 @@ HEMMA_HOSTS=hemma.example.com, .ts.net
 
 A name starting with a dot allows every name under it. Restart Hemma afterwards
 (`sudo systemctl restart hemma` on a Pi or Linux server).
+
+## The Network page: devices and who's home
+
+The *Network* page lists the devices Hemma has seen on your network. By itself Hemma only
+reads the server's own list of neighbours, which sends nothing. When an admin turns on
+*Discovery*, Hemma also sends a tiny packet to each address on your own network every two
+minutes, so quiet phones show up too, and asks the router and the devices for their names.
+
+- **Who's home is a good guess, not proof.** Once an admin has said whose phone is whose,
+  a person counts as home while their phone is seen on the network. A phone left at home
+  says "home", a phone with Wi-Fi off says "away". And nothing on a home network can prove
+  which device is which: any device on it can borrow another one's hardware address (MAC)
+  and look like someone's phone. Don't let locks, alarms or anything else important depend
+  on it.
+- **Names** come from the router or from the device itself, and a device can call itself
+  anything. Hemma only takes a name as the answer to its own question, from the router or
+  from the device at that address, but the names that matter are best set by an admin
+  (the edit button on each device).
+- **The list keeps up to 1,024 devices.** When it's full, Hemma forgets the unnamed devices
+  it hasn't seen for the longest; devices someone opens Hemma from go last. Devices someone
+  named, gave an owner, picked a kind or wrote a note for, or set up for Wake-on-LAN always
+  stay, and so does the router (the one device at the router's address right now). If the
+  list is full of those (or of devices on the network right now), new devices are left out
+  until an admin forgets some; the log says so once.
+- **Cleaning up:** once some unknown devices haven't been seen for a week, admins get a
+  *Forget … unknown devices not seen for a week* button under the list. It leaves everything
+  the household set up alone, and any device that comes back simply shows up again.
+- **New devices** show up in the latest news as one line an hour at most ("12 new devices
+  on the network"); more arriving within the hour are added to that line, and open screens
+  get a pop-up about it at most once an hour. Lots at once is unusual on a home network:
+  have a look at the *Unknown* filter on the Network page.
+- **Long lists** show 100 devices at a time. *Show 100 more* is at the bottom, and the
+  filters at the top (*People's*, *Unknown*) narrow the list down.
 
 ## Keep it inside your home
 

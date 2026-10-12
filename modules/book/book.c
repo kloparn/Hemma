@@ -273,6 +273,10 @@ void book_quick_parse(const char *q, int default_res, int64_t now, Quick *out) {
         out->res = 0;
         return;
     }
+    if (!out->has_when && w.refused[0]) { /* "31 sep", an end before the start: say why */
+        str_copy(out->problem, sizeof out->problem, w.refused);
+        return;
+    }
     if (!out->has_when) {
         snprintf(out->problem, sizeof out->problem, "When? Add a day%s, e.g. “%s fri%s”",
                  res_daily(r) ? "" : " and a time", r->name, res_daily(r) ? "-sun" : " 14-17");
@@ -285,7 +289,10 @@ void book_quick_parse(const char *q, int default_res, int64_t now, Quick *out) {
         return;
     }
     int dflt = r->default_min > 0 ? r->default_min : (res_daily(r) ? 1440 : 60);
-    when_resolve(&w, now, dflt, &s, &e);
+    if (!when_resolve(&w, now, dflt, &s, &e)) { /* never with has_when - but s and e would be garbage */
+        snprintf(out->problem, sizeof out->problem, "When? e.g. “%s fri 14-17”", r->name);
+        return;
+    }
     if (!res_daily(r) && !timed) { /* around-the-clock thing for a whole day/span */
         s = day_start(s);
         if (e - s < 86400) e = add_days(s, 1);
@@ -347,7 +354,7 @@ static bool save_booking(Ctx *c, Resource *r, int id, int who, int64_t s, int64_
         b.created = c->now;
     }
     b.res = r->id;
-    b.who = person_get(who) ? who : (c->me ? c->me->id : 0);
+    b.who = person_real(who) ? who : (c->me ? c->me->id : 0); /* pickers list real people only */
     b.start = s;
     b.end = e;
     str_copy(b.note, sizeof b.note, note ? note : "");
@@ -583,7 +590,7 @@ static void agenda(Ctx *c, int64_t from, int64_t to, Agenda *out) {
 }
 
 static const Action actions[] = {
-    {"book.preview", act_preview}, {"book.quick", act_quick},   {"book.create", act_create},
+    {"book.preview", act_preview, true}, {"book.quick", act_quick},   {"book.create", act_create},
     {"book.cancel", act_cancel},   {"book.preset", act_preset}, {"book.res_save", act_res_save},
     {"book.res_archive", act_res_archive}, {0},
 };

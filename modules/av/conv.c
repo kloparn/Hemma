@@ -14,6 +14,16 @@
 #define NS 1000000000LL
 #define COPY_SURVEY_PM 300 /* copying: the first read (every timestamp) is about a third of the work */
 #define ANALYZE_FRAMES 240 /* per window (~8 s), four windows decide between inverse telecine and deinterlacing */
+/* Timestamps and lengths beyond ~13 days (in ns) are damage and count as missing: every sum
+   and product of them below then stays far from overflowing. */
+#define MAX_TS ((int64_t)1 << 50)
+/* Samples one track may get. Each keeps ~20-40 bytes of index in memory until the end, and a
+   file of tiny blocks (or laced empty frames, hundreds per block) could otherwise need many
+   times its own size in RAM. At most MAX_SAMPLES (9 hours of 60 fps video, 11 hours of AAC),
+   and with a known length at most this many a second of it - far above any real rate. */
+#define MAX_SAMPLES 2000000
+#define VIDEO_PER_S 300 /* frames: real ones top out at 240 fps (60i bobbed: 60) */
+#define AUDIO_PER_S 120 /* AAC blocks: 47 a second at 48 kHz, 100 at 96 kHz */
 #define CMIN(a, b) ((a) < (b) ? (a) : (b))
 #define CMAX(a, b) ((a) > (b) ? (a) : (b))
 
@@ -41,12 +51,14 @@ typedef struct {
     bool vcode, acode; /* re-encode (true) or copy (false) */
     bool hevc;         /* copying HEVC rather than H.264 */
     int64_t v0, a0;    /* first video / audio pts (ns) */
-    int64_t duration;  /* ns */
+    int64_t duration;  /* ns, 0 = unknown */
     Mp4 *mp4;
     int vtrack, atrack;
+    int64_t nv, na, vmax, amax; /* samples written per track, and the most allowed (cap_for) */
     /* video re-encode */
     Mpeg2 *dec;
     Deint *di;
+    int w, h; /* the picture size everything was set up for */
     int dmode, out_num, out_den;
     H264Enc *enc;
     uint8_t *pend; /* the last encoded frame waits for the next to learn its duration */
@@ -95,11 +107,41 @@ static void set_progress(Conv *c, int pm) {
     if (c->j->progress) c->j->progress(c->j->progress_ctx, pm);
 }
 
-static int64_t ticks(int64_t ns, int64_t timescale) { return ns * timescale / NS; }
+/* ns -> ticks, rounded towards zero like ns * timescale / NS but without its overflow: fine for
+   any |ns| below 2^60 and any timescale up to 2^32 (sums of a few MAX_TS-bounded times). */
+static int64_t ticks(int64_t ns, int64_t timescale) { return ns / NS * timescale + ns % NS * timescale / NS; }
 
 static void append(char *s, size_t cap, const char *more) {
     size_t n = strlen(s);
     if (n < cap) snprintf(s + n, cap - n, "%s", more);
+}
+
+/* mkv_next, with timestamps too far out to be real (damage) made missing (see MAX_TS) */
+static int next_frame(Conv *c, MkvFrame *fr) {
+    int r = mkv_next(c->mkv, fr);
+    if (r > 0 && (fr->pts <= -MAX_TS || fr->pts >= MAX_TS)) fr->pts = MKV_NOPTS;
+    return r;
+}
+
+/* The most samples a track gets: MAX_SAMPLES (or the job's own, smaller bound), and with a known
+   length per_s for every second of it (+ some for short clips). */
+static int64_t cap_for(const Conv *c, int per_s) {
+    int64_t cap = c->j->max_samples > 0 ? CMIN(c->j->max_samples, MAX_SAMPLES) : MAX_SAMPLES;
+    if (c->duration > 0) cap = CMIN(cap, (c->duration / NS + 2) * per_s + 1000);
+    return cap;
+}
+
+static bool too_many(Conv *c, bool video) {
+    return unsupported(c, "The file has far too many %s for its length (damaged?)", video ? "pictures" : "sound blocks");
+}
+
+/* Every sample goes out through here, counted against its track's bound. */
+static bool put_sample(Conv *c, int track, const void *p, size_t n, uint32_t dur, int32_t cts, bool key) {
+    bool video = track == c->vtrack;
+    int64_t *count = video ? &c->nv : &c->na;
+    if (++*count > (video ? c->vmax : c->amax)) return too_many(c, video);
+    if (!mp4_sample(c->mp4, track, p, n, dur, cts, key)) return fail(c, "Couldn't write the new file (disk full?)", NULL);
+    return true;
 }
 
 /* ---- video: re-encode ---- */
@@ -108,8 +150,7 @@ static bool put_video(Conv *c, const uint8_t *data, size_t n, int64_t index, boo
     if (c->have_pend) {
         int64_t frames = index - c->pend_index;
         if (frames < 1) frames = 1;
-        if (!mp4_sample(c->mp4, c->vtrack, c->pend, c->npend, (uint32_t)(frames * c->out_den), 0, c->pend_key))
-            return fail(c, "Couldn't write the new file (disk full?)", NULL);
+        if (!put_sample(c, c->vtrack, c->pend, c->npend, (uint32_t)(frames * c->out_den), 0, c->pend_key)) return false;
     }
     if (n > c->cpend) {
         uint8_t *p = realloc(c->pend, n);
@@ -135,8 +176,14 @@ static bool encode_out(Conv *c, const DeintOut *o) {
 static bool decoded(Conv *c) {
     Mpeg2Frame pf;
     while (!c->failed && mpeg2_frame(c->dec, &pf)) {
-        DeintIn in = {pf.y, pf.u, pf.v, pf.stride_y, pf.stride_c, pf.progressive_frame, pf.top_field_first,
-                      pf.repeat_first_field, pf.pts};
+        if (pf.width != c->w || pf.height != c->h) { /* a later sequence header changed the size: the
+                                                        deinterlacer and the encoder are set up for one */
+            char sizes[64];
+            snprintf(sizes, sizeof sizes, "%d×%d, later %d×%d", c->w, c->h, pf.width, pf.height);
+            return unsupported(c, "The picture changes size part-way (%s): can't convert that yet", sizes);
+        }
+        DeintIn in = {pf.y, pf.u, pf.v, pf.stride_y, pf.stride_c, pf.width, pf.height, pf.progressive_frame,
+                      pf.top_field_first, pf.repeat_first_field, pf.pts};
         if (deint_push(c->di, &in) < 0) return fail(c, "The deinterlacer refused a frame", NULL);
         DeintOut o;
         while (!c->failed && deint_pull(c->di, &o)) encode_out(c, &o);
@@ -158,9 +205,7 @@ static bool copy_video(Conv *c, const MkvFrame *fr) {
     int64_t next = i + 1 < c->nvpts ? c->dts[i + 1] : dts + (c->vt->default_duration ? c->vt->default_duration : NS / 25);
     uint32_t dur = (uint32_t)CMAX(1, ticks(next - dts, 90000));
     int32_t cts = (int32_t)ticks(pts - dts + c->vshift, 90000);
-    if (!mp4_sample(c->mp4, c->vtrack, fr->data, fr->size, dur, cts, fr->key))
-        return fail(c, "Couldn't write the new file (disk full?)", NULL);
-    return true;
+    return put_sample(c, c->vtrack, fr->data, fr->size, dur, cts, fr->key);
 }
 
 /* ---- audio ---- */
@@ -175,8 +220,7 @@ static bool push_pcm(Conv *c, const float *pcm, int frames) {
     while (c->nfifo >= AAC_FRAME) {
         int n = aac_encode(c->aac, c->fifo, c->au, (int)sizeof c->au);
         if (n < 0) return fail(c, "The AAC encoder stopped", NULL);
-        if (n > 0 && !mp4_sample(c->mp4, c->atrack, c->au, (size_t)n, AAC_FRAME, 0, true))
-            return fail(c, "Couldn't write the new file (disk full?)", NULL);
+        if (n > 0 && !put_sample(c, c->atrack, c->au, (size_t)n, AAC_FRAME, 0, true)) return false;
         c->nfifo -= AAC_FRAME;
         memmove(c->fifo, c->fifo + AAC_FRAME * 2, (size_t)c->nfifo * 2 * sizeof *c->fifo);
     }
@@ -224,7 +268,7 @@ static int analyze_window(Conv *c, DeintStats *ds, Mpeg2Frame *first, bool *have
     ds->hist = ds->mhist = 0; /* a jump in time: forget the previous window's history */
     ds->nhist = 0;
     ds->have_thumb = false;
-    for (int r; (r = mkv_next(c->mkv, &fr)) > 0;) {
+    for (int r; (r = next_frame(c, &fr)) > 0;) {
         if (stopped(c)) return -1;
         if (opening && c->at && fr.track == c->at->number && c->a0 == MKV_NOPTS && fr.pts != MKV_NOPTS) c->a0 = fr.pts;
         if (fr.track != c->vt->number) continue;
@@ -237,8 +281,8 @@ static int analyze_window(Conv *c, DeintStats *ds, Mpeg2Frame *first, bool *have
         Mpeg2Frame pf;
         while (mpeg2_frame(c->dec, &pf)) {
             if (!*have_first) *first = pf, *have_first = true;
-            DeintIn in = {pf.y, pf.u, pf.v, pf.stride_y, pf.stride_c, pf.progressive_frame, pf.top_field_first,
-                          pf.repeat_first_field, pf.pts};
+            DeintIn in = {pf.y, pf.u, pf.v, pf.stride_y, pf.stride_c, pf.width, pf.height, pf.progressive_frame,
+                          pf.top_field_first, pf.repeat_first_field, pf.pts};
             deint_analyze(ds, &in, pf.width, pf.height);
             got++;
         }
@@ -253,13 +297,14 @@ static bool survey(Conv *c, Mpeg2Frame *first, DeintStats *ds) {
     MkvFrame fr;
     if (!c->vcode) { /* copy: remember every timestamp, in decode (= file) order */
         int cap = 0;
-        for (int r; (r = mkv_next(c->mkv, &fr)) > 0;) {
+        for (int r; (r = next_frame(c, &fr)) > 0;) {
             if (stopped(c)) return fail(c, "Stopped", NULL);
             if (c->at && fr.track == c->at->number && c->a0 == MKV_NOPTS && fr.pts != MKV_NOPTS) c->a0 = fr.pts;
             if (fr.track != c->vt->number) continue;
             if (c->v0 == MKV_NOPTS && fr.pts != MKV_NOPTS) c->v0 = fr.pts;
             if (fr.pts != MKV_NOPTS && c->duration > 0) /* a big film takes minutes to read on a Pi: show it */
                 set_progress(c, (int)CMIN(COPY_SURVEY_PM - 1, CMAX(0, (fr.pts - c->v0) * COPY_SURVEY_PM / c->duration)));
+            if (c->nvpts >= c->vmax) return too_many(c, true); /* before the timestamps outgrow memory */
             if (c->nvpts == cap) {
                 cap = cap ? cap * 2 : 4096;
                 int64_t *p = realloc(c->vpts, (size_t)cap * sizeof *c->vpts);
@@ -289,6 +334,7 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         int k = deint_kind(ds);
         c->dmode = deint_mode_for(k);
         deint_rate(c->dmode, first->rate_num, first->rate_den, &c->out_num, &c->out_den);
+        c->w = first->width, c->h = first->height;
         c->di = deint_new(first->width, first->height, c->dmode);
         H264Params hp = {0};
         hp.width = first->width;
@@ -355,6 +401,9 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
             c->aac = aac_open(&ac, err, sizeof err);
             if (!c->ac3 || !c->aac) return fail(c, "Can't set up the sound encoder: %s", err);
             ac3_set_layout(c->ac3, AC3_LAYOUT_STEREO);
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+            ac3_set_crc_check(c->ac3, false); /* fuzzers: mutated frames reach the decoder (crafted files can carry good CRCs anyway) */
+#endif
             aac_specific_config(c->aac, asc);
             at.config = asc;
             at.config_len = 2;
@@ -363,7 +412,7 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
             c->fifo = malloc((AAC_FRAME + AC3_SAMPLES) * 2 * sizeof *c->fifo);
             if (!c->fifo) return fail(c, "Out of memory", NULL);
             c->a_next = MKV_NOPTS;
-            if (lead < 0) c->skip = -lead * 48000 / NS;
+            if (lead < 0) c->skip = ticks(-lead, 48000);
             append(c->j->what, sizeof c->j->what, " · Dolby → AAC");
         } else {
             at.config = c->at->priv;
@@ -386,7 +435,7 @@ static bool main_pass(Conv *c) {
     mkv_rewind(c->mkv);
     if (c->vcode && !restart_decoder(c)) return false; /* start over with a fresh decoder: the survey consumed frames */
     int r = 0;
-    while (!c->failed && (r = mkv_next(c->mkv, &fr)) > 0) {
+    while (!c->failed && (r = next_frame(c, &fr)) > 0) {
         if (stopped(c)) return fail(c, "Stopped", NULL);
         if (fr.track == c->vt->number) {
             if (c->vcode) {
@@ -395,15 +444,14 @@ static bool main_pass(Conv *c) {
             } else {
                 copy_video(c, &fr);
             }
-            if (fr.pts != MKV_NOPTS && c->duration > 0) {
+            if (fr.pts != MKV_NOPTS && c->v0 != MKV_NOPTS && c->duration > 0) {
                 int64_t base = c->vcode ? 0 : COPY_SURVEY_PM;
                 set_progress(c, (int)CMIN(999, base + CMAX(0, (fr.pts - c->v0) * (1000 - base) / c->duration)));
             }
             if (c->j->limit_ns && fr.pts != MKV_NOPTS && c->v0 != MKV_NOPTS && fr.pts - c->v0 >= c->j->limit_ns) break;
         } else if (c->at && fr.track == c->at->number) {
             if (c->acode) code_audio(c, &fr);
-            else if (!mp4_sample(c->mp4, c->atrack, fr.data, fr.size, AAC_FRAME, 0, true))
-                fail(c, "Couldn't write the new file (disk full?)", NULL);
+            else put_sample(c, c->atrack, fr.data, fr.size, AAC_FRAME, 0, true);
         }
     }
     if (c->failed) return false;
@@ -414,8 +462,8 @@ static bool main_pass(Conv *c) {
         deint_flush(c->di);
         DeintOut o;
         while (!c->failed && deint_pull(c->di, &o)) encode_out(c, &o);
-        if (c->have_pend && !mp4_sample(c->mp4, c->vtrack, c->pend, c->npend, (uint32_t)c->out_den, 0, c->pend_key))
-            return fail(c, "Couldn't write the new file (disk full?)", NULL);
+        if (c->failed || (c->have_pend && !put_sample(c, c->vtrack, c->pend, c->npend, (uint32_t)c->out_den, 0, c->pend_key)))
+            return false;
     }
     if (c->acode && c->a_bad > 50 && c->a_bad > c->a_good) /* not a silent copy that claims success */
         return unsupported(c, "Most of the Dolby sound couldn't be decoded", NULL);
@@ -423,8 +471,7 @@ static bool main_pass(Conv *c) {
         static const float zero[AAC_FRAME * 2];
         if (c->nfifo) push_pcm(c, zero, AAC_FRAME - c->nfifo);
         for (int n; !c->failed && (n = aac_flush(c->aac, c->au, (int)sizeof c->au)) > 0;)
-            if (!mp4_sample(c->mp4, c->atrack, c->au, (size_t)n, AAC_FRAME, 0, true))
-                fail(c, "Couldn't write the new file (disk full?)", NULL);
+            put_sample(c, c->atrack, c->au, (size_t)n, AAC_FRAME, 0, true);
     }
     return !c->failed;
 }
@@ -437,13 +484,16 @@ static bool main_pass(Conv *c) {
    tracks - at most twice the smaller track's count. Pictures: the copied count is exact (the
    survey saw every frame); re-encoded ones at most twice the source rate (field-rate
    deinterlacing). 5% over the stated length for rounding. Too small after all, the writer
-   puts the index at the end instead: still a valid file. */
+   puts the index at the end instead: still a valid file. Never more than the tracks' bounds
+   allow (cap_for), and no more pictures than a quarter of the file's bytes (each needs a start
+   code and a header, and makes at most two): a file claiming days of length gets no huge padding. */
 static int64_t index_room(const Conv *c, const Mpeg2Frame *first) {
     double secs = (c->duration > 0 ? (double)c->duration / NS : 4 * 3600.0) * 1.05 + 2; /* unknown: 4 hours */
     double fps = first->rate_den > 0 ? 2.0 * first->rate_num / first->rate_den : 60;
-    int64_t v = c->vcode ? (int64_t)(secs * CMIN(fps, 120)) + 16 : (int64_t)c->nvpts + 16;
+    int64_t v = c->vcode ? CMIN((int64_t)(secs * CMIN(fps, 120)), CMIN(c->vmax, c->j->in.size / 4)) + 16
+                         : (int64_t)c->nvpts + 16;
     double rate = !c->at ? 0 : c->acode || c->at->rate <= 0 ? 48000 : c->at->rate;
-    int64_t a = (int64_t)(secs * rate / AAC_FRAME) + (c->at ? 16 : 0);
+    int64_t a = c->at ? CMIN((int64_t)(secs * rate / AAC_FRAME), c->amax) + 16 : 0;
     int64_t chunks = a ? 2 * CMIN(v, a) + 2 : 2;
     return 16384 + v * (c->vcode ? 16 : 24) + a * 4 + chunks * 20;
 }
@@ -463,6 +513,9 @@ bool av_convert(AvConvJob *j) {
         return unsupported(c, "Not a readable MKV file: %s", err);
     }
     c->duration = mkv_duration(c->mkv);
+    if (c->duration >= MAX_TS) c->duration = 0; /* damage: unknown */
+    c->vmax = cap_for(c, VIDEO_PER_S);
+    c->amax = cap_for(c, AUDIO_PER_S);
     c->vt = mkv_find_track(c->mkv, MKV_VIDEO);
     /* The sound: the first track we can convert, a default one first - a DTS track ahead of
        the Dolby one shouldn't sink the whole file. */

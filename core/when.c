@@ -8,7 +8,12 @@
  *
  * Calendar arithmetic is done on civil dates (days since 1970-01-01), so it is
  * independent of the machine's time zone and DST; only when_resolve() converts
- * to Unix time via dt_make(). */
+ * to Unix time, via wall_time() (which settles the clock changes itself rather
+ * than leave them to each C library's mktime()).
+ *
+ * A text that names a day that can't be ("31 sep") or a day range that ends
+ * before it starts is refused as a whole: reading the words after it on their
+ * own would quietly book something else. */
 #include "when.h"
 
 /* ------------------------------------------------------------- word lists */
@@ -18,6 +23,11 @@ static const char *const THIS_W[] = {"this", "denna", "coming", NULL};
 static const char *const WEEK_W[] = {"week", "vecka", "veckan", NULL};
 static const char *const WEEKEND_W[] = {"weekend", "helg", "helgen", NULL};
 static const char *const TODAY_W[] = {"today", "idag", "tonight", "ikväll", "ikvall", "inatt", NULL};
+/* Evening days: "tonight", "ikväll", "inatt", "i kväll", "i natt", and any day + an evening noun
+ * ("tomorrow evening", "imorgon kväll", "fri night", "this evening"). */
+static const char *const EVENING_W[] = {"tonight", "ikväll", "ikvall", "inatt", NULL};
+static const char *const EVENING_NOUN[] = {"evening", "night", "kväll", "kvall", "kvällen", "kvallen",
+                                           "natt",    "natten", NULL};
 static const char *const TOMORROW_W[] = {"tomorrow", "tmrw",    "tmr",   "tomorow", "tommorow", "tommorrow",
                                           "imorgon",  "imorn",   "imorrn", "imorron", NULL};
 static const char *const DAT_W[] = {"övermorgon", "overmorgon", NULL};
@@ -38,6 +48,7 @@ static const char *const IN_W[] = {"in", "om", NULL};
 static const char *const DAY_PREFIX[] = {"on", "på", "from", "från", "by", "due", "senast", "between", "mellan", NULL};
 static const char *const TIME_PREFIX[] = {"at", "kl",   "klockan", "from", "från", "between", "mellan",
                                            "by", "vid", "around",  "ca",   "cirka", NULL};
+static const char *const END_TIME_PREFIX[] = {"at", "kl", "klockan", "vid", NULL}; /* "until sunday at 17" */
 static const char *const DUR_PREFIX[] = {"for", "för", "i", "during", "under", NULL};
 static const char *const REPEAT_PREFIX[] = {"on", "på", NULL};
 
@@ -62,11 +73,17 @@ typedef struct {
     int y, m, d;
 } Ymd;
 
+enum { DAY_PLAIN = 1, DAY_EVENING = 2 };
+
 typedef struct {
     Tokens *t;
     int64_t now;
     Ymd today;
     int today_wday; /* 0 = Monday */
+    bool evening;   /* an evening day named anywhere, for a time typed before it ("8 tonight") */
+    int8_t *mark;   /* per token: DAY_PLAIN / DAY_EVENING for the words of the day expressions */
+    int *date_mark; /* the start date's: 0 (none yet), DAY_PLAIN or DAY_EVENING */
+    When *w;        /* for refuse() */
 } P;
 
 /* Token i if it exists and is still free, else "" (which matches nothing). */
@@ -129,6 +146,27 @@ static bool ymd_valid(Ymd a) {
 static Ymd next_wday(Ymd from, int wd) { return ymd_add(from, (wd - ymd_wday(from) + 7) % 7); }
 static Ymd monday_next_week(const P *p) { return ymd_add(p->today, 7 - p->today_wday); }
 
+/* Refuse the whole text: when_parse() returns false and w->refused says why (the first reason
+ * wins). Recognizers return 0 after calling it. */
+static int refuse(const P *p, const char *fmt, ...) FMT(2, 3);
+static int refuse(const P *p, const char *fmt, ...) {
+    if (p->w->refused[0]) return 0;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(p->w->refused, sizeof p->w->refused, fmt, ap);
+    va_end(ap);
+    return 0;
+}
+
+/* r looked like a date but isn't one. */
+static int no_such_day(const P *p, Ymd r) {
+    if (r.y < 1970 || r.y > 2200) return refuse(p, "Pick a year from 1970 to 2200");
+    if (r.d > days_in_month(2000, r.m)) return refuse(p, "There's no %d %s", r.d, month_name(r.m, false));
+    return refuse(p, "There's no %d %s %d", r.d, month_name(r.m, false), r.y); /* 29 Feb, not a leap year */
+}
+
+static int reversed(const P *p) { return refuse(p, "The end date is before the start date"); }
+
 /* Year for a day/month without one: this year unless that is more than a day ago. */
 static Ymd infer_year(const P *p, int m, int d) {
     Ymd r = {p->today.y, m, d};
@@ -136,11 +174,22 @@ static Ymd infer_year(const P *p, int m, int d) {
     return r;
 }
 
-/* "den 12": this month, or the next month that has that day if it already passed. */
-static bool month_day(const P *p, int d, Ymd *out) {
-    Ymd r = {p->today.y, p->today.m, d};
+/* Day d of month m in year y (0 = not typed). A start's year is guessed from today
+ * (infer_year); an end's (start set) is the start's year, or the next one when its month comes
+ * earlier ("28/12-2/1" runs past New Year; "12/10-10/10" stays reversed for the caller to
+ * refuse). A day that can't be refuses the text. */
+static bool make_date(const P *p, int y, int m, int d, const Ymd *start, Ymd *out) {
+    Ymd r = y > 0 ? (Ymd){y, m, d} : start ? (Ymd){start->y + (m < start->m), m, d} : infer_year(p, m, d);
+    if (!ymd_valid(r)) return no_such_day(p, r);
+    *out = r;
+    return true;
+}
+
+/* "den 12": that day in from's month, or the next month that has it if it already passed. */
+static bool month_day(Ymd from, int d, Ymd *out) {
+    Ymd r = {from.y, from.m, d};
     for (int tries = 0; tries < 3; tries++) {
-        if (ymd_valid(r) && (tries > 0 || d >= p->today.d)) {
+        if (ymd_valid(r) && (tries > 0 || d >= from.d)) {
             *out = r;
             return true;
         }
@@ -526,27 +575,39 @@ static int match_repeat(const Tokens *t, int i, int *repeat, int *wday) {
 
 /* ------------------------------------------------------------------- days */
 
-static bool parse_slash(const P *p, const char *s, Ymd *out) {
-    int d = 0, m = 0, y = -1, n;
+/* "12/10", "12/10/26", "12/10/2026" (day/month[/year]; start: see make_date). Other numbers
+ * with a slash ("12/13", "50/50") are no dates, just words; one that can't be ("31/9") refuses. */
+static bool slash_date(const P *p, const char *s, const Ymd *start, Ymd *out) {
+    int d = 0, m = 0, y = 0, n;
     const char *q = s;
     for (n = 0; *q >= '0' && *q <= '9' && n < 3; q++, n++) d = d * 10 + (*q - '0');
     if (n < 1 || n > 2 || *q++ != '/') return false;
     for (n = 0; *q >= '0' && *q <= '9' && n < 3; q++, n++) m = m * 10 + (*q - '0');
     if (n < 1 || n > 2) return false;
-    if (*q == '/') {
+    bool has_y = *q == '/';
+    if (has_y) {
         q++;
-        y = 0;
         for (n = 0; *q >= '0' && *q <= '9' && n < 5; q++, n++) y = y * 10 + (*q - '0');
         if (n == 2) y += 2000;
         else if (n != 4) return false;
     }
-    if (*q) return false;
-    Ymd r = {y, m, d};
-    if (y < 0) {
-        if (m < 1 || m > 12 || d < 1 || d > 31) return false;
-        r = infer_year(p, m, d);
+    if (*q || m < 1 || m > 12 || d < 1 || d > 31) return false;
+    if (has_y && (y < 1970 || y > 2200)) return no_such_day(p, (Ymd){y, m, d}); /* "1/1/0000" too */
+    return make_date(p, y, m, d, start, out);
+}
+
+/* "2026-10-12"; one that can't be ("2026-09-31") refuses the text. */
+static bool iso_date(const P *p, const char *s, Ymd *out) {
+    Ymd r = {0, 0, 0};
+    if (strlen(s) != 10 || s[4] != '-' || s[7] != '-') return false;
+    for (int i = 0; i < 10; i++) {
+        if (i == 4 || i == 7) continue;
+        if (s[i] < '0' || s[i] > '9') return false;
+        int *v = i < 4 ? &r.y : i < 7 ? &r.m : &r.d;
+        *v = *v * 10 + (s[i] - '0');
     }
-    if (!ymd_valid(r)) return false;
+    if (r.m < 1 || r.m > 12 || r.d < 1 || r.d > 31) return false;
+    if (!ymd_valid(r)) return no_such_day(p, r);
     *out = r;
     return true;
 }
@@ -554,23 +615,17 @@ static bool parse_slash(const P *p, const char *s, Ymd *out) {
 /* An optional 4-digit year at token j: returns 1 and sets *y if present. */
 static int opt_year(const Tokens *t, int j, int *y) { return year_num(W(t, j), y) ? 1 : 0; }
 
-static bool make_date(const P *p, int y, int m, int d, Ymd *out) {
-    Ymd r = y > 0 ? (Ymd){y, m, d} : infer_year(p, m, d);
-    if (!ymd_valid(r)) return false;
-    *out = r;
-    return true;
-}
-
-/* One day expression starting at token i. Weekdays count from `ref`
- * (today, or the start of a range); inline ranges ("fri-sun") set *has_end. */
-static int match_day_single(const P *p, int i, Ymd ref, Ymd *out, Ymd *end, bool *has_end) {
+/* One day expression starting at token i: a range's start (start NULL: weekdays and dates
+ * count from today) or its end (from *start). Inline ranges ("fri-sun") set *has_end.
+ * Returns 0 with p->w->refused set for a day that can't be or a range that runs backwards. */
+static int match_day_single(const P *p, int i, const Ymd *start, Ymd *out, Ymd *end, bool *has_end) {
     const Tokens *t = p->t;
     const char *w = W(t, i);
     *has_end = false;
     if (!*w) return 0;
     int wd, d, d2, m, y = 0, k;
     char l[TOK_LEN], r[TOK_LEN];
-    Ymd a, b;
+    Ymd a, b, ref = start ? *start : p->today;
 
     if (any_of(w, NEXT_W)) {
         const char *x = W(t, i + 1);
@@ -588,6 +643,7 @@ static int match_day_single(const P *p, int i, Ymd ref, Ymd *out, Ymd *end, bool
         const char *x = W(t, i + 1);
         if ((wd = weekday_of(x)) >= 0) return *out = next_wday(p->today, wd), 2;
         if (any_of(x, WEEKEND_W)) return weekend(p, out, end), *has_end = true, 2;
+        if (any_of(x, EVENING_NOUN)) return *out = p->today, 2; /* "this evening" */
         return 0;
     }
     if (eq(w, "i")) { /* Swedish: i dag, i morgon, i kväll, i övermorgon, i helgen */
@@ -616,30 +672,36 @@ static int match_day_single(const P *p, int i, Ymd ref, Ymd *out, Ymd *end, bool
             *has_end = true;
             return 1;
         }
-        if (parse_slash(p, l, &a) && parse_slash(p, r, &b)) { /* 12/10-14/10 */
-            if (ymd_days(b) < ymd_days(a)) b.y++;
-            if (!ymd_valid(b)) return 0;
+        if (slash_date(p, l, start, &a)) { /* 12/10-14/10 */
+            if (!slash_date(p, r, &a, &b)) return 0;
+            if (ymd_days(b) < ymd_days(a)) return reversed(p);
             *out = a, *end = b, *has_end = true;
             return 1;
         }
-        if (day_num(l, &d) && parse_slash(p, r, &b)) { /* 12-14/10 */
+        if (day_num(l, &d) && slash_date(p, r, start, &b)) { /* 12-14/10 */
             a = (Ymd){b.y, b.m, d};
-            if (d > b.d && --a.m < 1) a.m = 12, a.y--;
-            if (!ymd_valid(a)) return 0;
+            if (d > b.d) { /* "28-3/10": from the month before - for two weeks at most, else it's reversed */
+                if (--a.m < 1) a.m = 12, a.y--;
+                if (!ymd_valid(a)) return no_such_day(p, a);
+                if (ymd_days(b) - ymd_days(a) > 14) return reversed(p); /* "14-12/10" */
+            }
             *out = a, *end = b, *has_end = true;
             return 1;
         }
+        if (p->w->refused[0]) return 0;
         if (day_num(l, &d) && day_num(r, &d2) && (m = month_of(W(t, i + 1)))) { /* 12-14 okt [2026] */
             k = 2 + opt_year(t, i + 2, &y);
-            if (!make_date(p, y, m, d, &a)) return 0;
+            if (!make_date(p, y, m, d, start, &a)) return 0;
             b = (Ymd){a.y, m, d2};
-            if (!ymd_valid(b) || ymd_days(b) < ymd_days(a)) return 0;
+            if (!ymd_valid(b)) return no_such_day(p, b);
+            if (d2 < d) return reversed(p);
             *out = a, *end = b, *has_end = true;
             return k;
         }
     }
-    if (parse_ymd(w, &a.y, &a.m, &a.d)) return *out = a, 1;
-    if (parse_slash(p, w, &a)) return *out = a, 1;
+    if (iso_date(p, w, &a)) return *out = a, 1;
+    if (slash_date(p, w, start, &a)) return *out = a, 1;
+    if (p->w->refused[0]) return 0;
 
     if (day_num(w, &d)) { /* 12 oct [2026], 12th of october */
         int j = i + 1;
@@ -647,12 +709,12 @@ static int match_day_single(const P *p, int i, Ymd ref, Ymd *out, Ymd *end, bool
         if ((m = month_of(W(t, j)))) {
             k = j + 1 - i;
             k += opt_year(t, j + 1, &y);
-            return make_date(p, y, m, d, out) ? k : 0;
+            return make_date(p, y, m, d, start, out) ? k : 0;
         }
     }
     if ((m = month_of(w)) && day_num(W(t, i + 1), &d)) { /* oct 12[th] [2026] */
         k = 2 + opt_year(t, i + 2, &y);
-        return make_date(p, y, m, d, out) ? k : 0;
+        return make_date(p, y, m, d, start, out) ? k : 0;
     }
     if ((eq(w, "den") || eq(w, "the")) && day_num(W(t, i + 1), &d)) { /* den 12 [oktober], the 12th [of oct] */
         int j = i + 2;
@@ -660,17 +722,18 @@ static int match_day_single(const P *p, int i, Ymd ref, Ymd *out, Ymd *end, bool
         if ((m = month_of(W(t, j)))) {
             k = j + 1 - i;
             k += opt_year(t, j + 1, &y);
-            return make_date(p, y, m, d, out) ? k : 0;
+            return make_date(p, y, m, d, start, out) ? k : 0;
         }
-        return month_day(p, d, out) ? 2 : 0;
+        return month_day(ref, d, out) ? 2 : 0;
     }
-    if (ordinal(w, &d)) return month_day(p, d, out) ? 1 : 0; /* bare "12th" / "12:e" */
+    if (ordinal(w, &d)) return month_day(ref, d, out) ? 1 : 0; /* bare "12th" / "12:e" */
     return 0;
 }
 
-/* A day, optionally followed by a separator and an end day. */
-static int match_day(const P *p, int i, Ymd *out, Ymd *end, bool *has_end) {
-    int k = match_day_single(p, i, p->today, out, end, has_end);
+/* A day, optionally followed by a separator and an end day (never before it). *k1 = the
+ * start day's words. */
+static int match_day(const P *p, int i, Ymd *out, Ymd *end, bool *has_end, int *k1) {
+    int k = *k1 = match_day_single(p, i, NULL, out, end, has_end);
     if (!k || *has_end) return k;
     const Tokens *t = p->t;
     const char *sep = W(t, i + k);
@@ -678,16 +741,15 @@ static int match_day(const P *p, int i, Ymd *out, Ymd *end, bool *has_end) {
     if (any_of(sep, DAY_SEP) || (between && any_of(sep, AND_W))) {
         Ymd e, e2;
         bool he2;
-        int k2 = match_day_single(p, i + k + 1, *out, &e, &e2, &he2);
+        int k2 = match_day_single(p, i + k + 1, out, &e, &e2, &he2);
         if (k2) {
             if (he2) e = e2;
-            if (ymd_days(e) < ymd_days(*out)) e.y++;
-            if (ymd_valid(e)) {
-                *end = e;
-                *has_end = true;
-                return k + 1 + k2;
-            }
+            if (ymd_days(e) < ymd_days(*out)) return reversed(p);
+            *end = e;
+            *has_end = true;
+            return k + 1 + k2;
         }
+        if (p->w->refused[0]) return 0;
     }
     return k;
 }
@@ -748,8 +810,22 @@ static int to_24(int h, int ampm) {
     return h;
 }
 
-/* Single time -> minutes. Bare 1..6 means afternoon: nobody books at 3 am. */
-static int tt_minutes(const TimeTok *tt) {
+/* Single time -> minutes. Bare 1..6 means afternoon: nobody books at 3 am.
+ * A time of an evening day ("tonight 8", "ikväll 7:30", "fri night 11") belongs to that evening
+ * and the night after it: 5..11 are pm, 12 and "midnight" the midnight that ends the day (24:00),
+ * and whatever then falls before 05:00 - 1..4, "00:30", "1am" - is that night after midnight
+ * (24:00 + time: "tonight 1" = 01:00 tomorrow). A leading zero (24-hour clock: "tonight 08"),
+ * am/pm ("tonight 8am") and 13..24 mean what they say otherwise. */
+static int tt_minutes(const TimeTok *tt, bool evening) {
+    if (evening) {
+        int h = tt->ampm                                 ? to_24(tt->h, tt->ampm)
+                : tt->word                               ? (tt->h ? tt->h : 24) /* noon, midnight */
+                : !tt->lead0 && tt->h >= 5 && tt->h <= 11 ? tt->h + 12
+                : !tt->lead0 && tt->h == 12              ? 24
+                                                         : tt->h;
+        if (h < 5) h += 24;
+        return h * 60 + tt->m;
+    }
     int h = to_24(tt->h, tt->ampm);
     if (tt->bare && !tt->lead0 && !tt->word && tt->h >= 1 && tt->h <= 6) h += 12;
     return h * 60 + tt->m;
@@ -761,21 +837,22 @@ static int fwd(int from, int to) { /* forward distance in minutes, 1..1440 */
 }
 
 /* Pick am/pm for ambiguous ends so the range is as short as possible:
- * "2-5pm" = 14-17, "11-1pm" = 11-13, "6-8" = 18-20, "22-2" = 22-02. */
-static void resolve_range(const TimeTok *a, const TimeTok *b, int *s, int *e) {
+ * "2-5pm" = 14-17, "11-1pm" = 11-13, "6-8" = 18-20, "22-2" = 22-02; tonight "7-9" = 19-21. */
+static void resolve_range(const TimeTok *a, const TimeTok *b, bool evening, int *s, int *e) {
     if (!a->ampm && b->ampm && !a->word && !a->lead0 && a->h >= 1 && a->h <= 12) {
-        int bm = tt_minutes(b);
+        int bm = tt_minutes(b, evening);
         int am = to_24(a->h, AMPM_AM) * 60 + a->m, pm = to_24(a->h, AMPM_PM) * 60 + a->m;
+        if (evening && am < 5 * 60) am += 1440; /* tonight "1-3am": after midnight */
         *s = fwd(am, bm) <= fwd(pm, bm) ? am : pm;
         *e = bm;
         return;
     }
-    *s = tt_minutes(a);
+    *s = tt_minutes(a, evening);
     if (!b->ampm && !b->word && !b->lead0 && b->h >= 1 && b->h <= 11) {
         int c1 = b->h * 60 + b->m, c2 = c1 + 12 * 60;
         *e = fwd(*s, c1) <= fwd(*s, c2) ? c1 : c2;
     } else {
-        *e = tt_minutes(b);
+        *e = tt_minutes(b, evening);
     }
 }
 
@@ -796,7 +873,7 @@ static bool has_time_prefix(const Tokens *t, int i) {
 
 /* A time or a time range at token i. Bare single numbers ("14") are only
  * accepted with allow_bare; the caller decides on those in a second pass. */
-static int match_time(const Tokens *t, int i, bool allow_bare, int *s, int *e, bool *has_e) {
+static int match_time(const Tokens *t, int i, bool allow_bare, bool evening, int *s, int *e, bool *has_e) {
     const char *w = W(t, i);
     TimeTok a, b;
     char l[TOK_LEN], r[TOK_LEN];
@@ -809,7 +886,7 @@ static int match_time(const Tokens *t, int i, bool allow_bare, int *s, int *e, b
             b.bare = false;
             k = 2;
         }
-        resolve_range(&a, &b, s, e);
+        resolve_range(&a, &b, evening, s, e);
         *has_e = true;
         return k;
     }
@@ -820,29 +897,90 @@ static int match_time(const Tokens *t, int i, bool allow_bare, int *s, int *e, b
     if (any_of(sep, TIME_SEP) || (between && any_of(sep, AND_W))) {
         int k2 = match_time_single(t, i + k + 1, &b);
         if (k2) {
-            resolve_range(&a, &b, s, e);
+            resolve_range(&a, &b, evening, s, e);
             *has_e = true;
             return k + 1 + k2;
         }
     }
     if (!allow_bare && a.bare && k == 1) return 0;
-    *s = tt_minutes(&a);
+    *s = tt_minutes(&a, evening);
     return k;
 }
 
-/* "until sunday", "till 17", "tills söndag" */
+/* ---------------------------------------------------------------- evenings */
+
+/* Marks tokens [from, to) as the words of a day expression; DAY_EVENING if one is an evening
+ * word ("tonight", "i kväll", "imorgon kväll", "fri night"), else DAY_PLAIN. */
+static int mark_day(const P *p, int from, int to) {
+    int kind = DAY_PLAIN;
+    for (int j = from; j < to && j < p->t->n; j++) {
+        bool eve = any_of(p->t->low[j], EVENING_W) || any_of(p->t->low[j], EVENING_NOUN);
+        p->mark[j] = eve ? DAY_EVENING : DAY_PLAIN;
+        if (eve) kind = DAY_EVENING;
+    }
+    return kind;
+}
+
+/* Is the time at token i an evening one (see tt_minutes)? The day written right before it
+ * decides ("tonight 8", "imorgon kväll kl 8"; in "tonight until tomorrow 10" the 10 is
+ * tomorrow's, 10:00), else the start day, else an evening day anywhere ("8 tonight"). */
+static bool start_evening(const P *p) { return *p->date_mark ? *p->date_mark == DAY_EVENING : p->evening; }
+
+static bool time_evening(const P *p, int i) {
+    int j = i - 1;
+    for (int n = 0; n < 2 && j >= 0 && !p->mark[j] && any_of(p->t->low[j], TIME_PREFIX); n++) j--;
+    if (j >= 0 && p->mark[j]) return p->mark[j] == DAY_EVENING;
+    return start_evening(p);
+}
+
+/* An evening day anywhere in the text, for a time typed before its day ("8 tonight"). */
+static bool evening_named(const Tokens *t) {
+    for (int i = 0; i < t->n; i++) {
+        const char *w = W(t, i);
+        if (any_of(w, EVENING_W)) return true;
+        if (any_of(W(t, i + 1), EVENING_NOUN) &&
+            (eq(w, "i") || any_of(w, TODAY_W) || any_of(w, TOMORROW_W) || any_of(w, I_TOMORROW) ||
+             any_of(w, DAT_W) || any_of(w, THIS_W) || weekday_of(w) >= 0))
+            return true;
+    }
+    return false;
+}
+
+/* After the last day of a written-out range ("fri till sun 17", "until tomorrow kl 10", "tonight
+ * - imorgon kväll 8"), the day words being [from, j): an optional evening noun, then an
+ * optional end time on that day. Marks the day's words; returns the tokens taken from j. */
+static int end_day_tail(const P *p, int from, int j, When *w) {
+    const Tokens *t = p->t;
+    int n = j, q;
+    if (any_of(W(t, n), EVENING_NOUN)) n++; /* "until tomorrow evening" */
+    bool eve = mark_day(p, from, n) == DAY_EVENING;
+    for (q = n; q < n + 2 && any_of(W(t, q), END_TIME_PREFIX); q++) {}
+    TimeTok tt;
+    int kt = w->has_end ? 0 : match_time_single(t, q, &tt);
+    if (kt && !unit_word(W(t, q + kt))) { /* a time, not "2 nights" */
+        w->has_end = true;
+        w->end_min = tt_minutes(&tt, eve);
+        n = q + kt;
+    }
+    return n - j;
+}
+
+/* "until sunday", "till 17", "tills söndag", and "until sunday 17" / "till imorgon kl 10" (the end
+ * time, on that day). From the day mentioned before, else from today. */
 static int match_until(const P *p, int i, When *w) {
     const Tokens *t = p->t;
     if (!any_of(W(t, i), UNTIL_W)) return 0;
     Ymd ref = w->has_date ? (Ymd){w->y, w->m, w->d} : p->today, e, e2;
     bool he;
-    int k = match_day_single(p, i + 1, ref, &e, &e2, &he);
+    int k = match_day_single(p, i + 1, &ref, &e, &e2, &he);
     if (k) {
         if (he) e = e2;
+        if (ymd_days(e) < ymd_days(ref)) return reversed(p); /* "until 5/10" on the 7th */
         w->has_end_date = true;
         w->ey = e.y, w->em = e.m, w->ed = e.d;
-        return 1 + k;
+        return 1 + k + end_day_tail(p, i + 1, i + 1 + k, w);
     }
+    if (p->w->refused[0]) return 0;
     TimeTok tt;
     k = match_time_single(t, i + 1, &tt);
     if (k) {
@@ -850,8 +988,8 @@ static int match_until(const P *p, int i, When *w) {
         if (w->has_start && !tt.ampm && !tt.word && !tt.lead0 && tt.h >= 1 && tt.h <= 11) {
             int c1 = tt.h * 60 + tt.m, c2 = c1 + 12 * 60;
             w->end_min = fwd(w->start_min, c1) <= fwd(w->start_min, c2) ? c1 : c2;
-        } else {
-            w->end_min = tt_minutes(&tt);
+        } else { /* "ikväll till 11": the start day's evening */
+            w->end_min = tt_minutes(&tt, start_evening(p));
         }
         return 1 + k;
     }
@@ -870,21 +1008,25 @@ bool when_parse(Tokens *t, int64_t now, When *w) {
     w->repeat_wday = -1;
     if (!t) return false;
     DateTime dn = dt_local(now);
-    P p = {t, now, {dn.year, dn.mon, dn.day}, dn.wday};
+    int8_t mark[TOK_MAX] = {0};
+    int date_mark = 0;
+    P p = {t, now, {dn.year, dn.mon, dn.day}, dn.wday, evening_named(t), mark, &date_mark, w};
     bool found = false;
     int day_end = -1; /* token index just after the last day expression */
     int dur_end = -1; /* token index just after the last duration */
+    bool claimed[TOK_MAX]; /* the caller's marks, put back if the text is refused */
+    memcpy(claimed, t->used, sizeof claimed);
 
-    for (int i = 0; i < t->n; i++) {
+    for (int i = 0; i < t->n && !w->refused[0]; i++) {
         if (t->used[i]) continue;
-        int k, a, b, mins;
+        int k, k1, a, b, mins;
         bool he;
         Ymd y1, y2;
         if ((k = match_repeat(t, i, &a, &b))) {
             if (!w->repeat) w->repeat = a, w->repeat_wday = b;
             use_prefix(t, i, REPEAT_PREFIX, 1);
             use(t, i, k);
-            if (b >= 0) day_end = i + k;
+            if (b >= 0) day_end = i + k, mark_day(&p, i, i + k);
         } else if ((k = match_relative(t, i, &mins))) {
             if (!w->now) w->now = true, w->rel_min = mins;
             use(t, i, k);
@@ -899,13 +1041,17 @@ bool when_parse(Tokens *t, int64_t now, When *w) {
             use_prefix(t, i, DUR_PREFIX, 1);
             use(t, i, k);
             dur_end = i + k;
-        } else if (!w->has_date && (k = match_day(&p, i, &y1, &y2, &he))) {
+        } else if (!w->has_date && (k = match_day(&p, i, &y1, &y2, &he, &k1))) {
+            if (!he && any_of(W(t, i + k), EVENING_NOUN)) k++, k1++; /* "imorgon kväll", "fri night" */
             set_date(w, y1);
             if (he) w->has_end_date = true, w->ey = y2.y, w->em = y2.m, w->ed = y2.d;
+            date_mark = mark_day(&p, i, i + k1);
+            if (k > k1) k += end_day_tail(&p, i + k1, i + k, w); /* "fri till sun 17": ends Sun 17:00 */
             use_prefix(t, i, DAY_PREFIX, 1);
             use(t, i, k);
             day_end = i + k;
-        } else if (!w->has_start && (k = match_time(t, i, has_time_prefix(t, i), &a, &b, &he))) {
+        } else if (!w->has_start &&
+                   (k = match_time(t, i, has_time_prefix(t, i), time_evening(&p, i), &a, &b, &he))) {
             w->has_start = true;
             w->start_min = a;
             if (he) w->has_end = true, w->end_min = b;
@@ -918,6 +1064,13 @@ bool when_parse(Tokens *t, int64_t now, When *w) {
         }
         found = true;
         i += k - 1;
+    }
+    if (w->refused[0]) { /* nothing but the reason, every word back as the caller had it */
+        When why = {.repeat_wday = -1};
+        memcpy(why.refused, w->refused, sizeof why.refused);
+        *w = why;
+        memcpy(t->used, claimed, sizeof claimed);
+        return false;
     }
 
     /* Second pass: a bare number becomes the start time — preferably the one
@@ -932,9 +1085,21 @@ bool when_parse(Tokens *t, int64_t now, When *w) {
         }
         if (pick >= 0) {
             w->has_start = true;
-            w->start_min = tt_minutes(&best);
+            w->start_min = tt_minutes(&best, time_evening(&p, pick));
             t->used[pick] = true;
             found = true;
+        }
+    }
+    /* Typed between midnight and 05:00, "tonight" is still the night we're in for a time that
+     * hasn't passed (15 minutes' grace): "tonight 12:30" at 00:10 is in 20 minutes, not the next
+     * night; "tonight 11" is still this evening, and "tonight 2" at 03:00 the next night. */
+    int now_min = dn.hour * 60 + dn.min;
+    if (date_mark == DAY_EVENING && dn.hour < 5 && w->y == dn.year && w->m == dn.mon && w->d == dn.day) {
+        if (w->has_start && w->start_min >= 1440 && w->start_min - 1440 >= now_min - 15) {
+            w->start_min -= 1440;
+            if (w->has_end && w->end_min >= 1440) w->end_min -= 1440;
+        } else if (!w->has_start && w->has_end && w->end_min >= 1440 && w->end_min - 1440 > now_min) {
+            w->end_min -= 1440; /* "ikväll till 2" at 00:10: from now until 02:00 */
         }
     }
     if (w->repeat_wday >= 0 && !w->has_date) set_date(w, next_wday(p.today, w->repeat_wday));
@@ -943,41 +1108,80 @@ bool when_parse(Tokens *t, int64_t now, When *w) {
 
 /* ---------------------------------------------------------------- resolve */
 
+/* Seconds from 1970-01-01 00:00 to what the clock shows: civil time as if it were UTC. */
+static int64_t civil_sec(DateTime d) {
+    return (int64_t)days_from_civil(d.year, d.mon, d.day) * 86400 + d.hour * 3600 + d.min * 60 + d.sec;
+}
+
+/* How far the local clock is ahead of UTC at instant t (0 if the C library can't say). */
+static int64_t utc_offset(int64_t t) {
+    int64_t o = civil_sec(dt_local(t)) - t;
+    return o > 86400 || o < -86400 ? 0 : o;
+}
+
+/* The instant the clock here shows `min` minutes after the start of `day` (1440 and up: the
+ * days after). The clock changes are settled here, the same on every C library: a time in the
+ * hour skipped in spring moves forward by the jump (02:30 -> 03:30, what calendars do, RFC 5545);
+ * one in the hour that repeats in autumn means its first pass. The offsets a day before and a
+ * day after give the two candidates (no zone changes its clocks twice within two days). */
+static int64_t wall_time(Ymd day, int min) {
+    int64_t c = (int64_t)ymd_days(day) * 86400 + (int64_t)min * 60;
+    int64_t a = c - utc_offset(c - 86400), b = c - utc_offset(c + 86400);
+    bool va = civil_sec(dt_local(a)) == c, vb = civil_sec(dt_local(b)) == c;
+    if (va && vb) return MIN(a, b);
+    if (vb && !va) return b;
+    return a; /* a, or neither: skipped, and the offset from before the jump moves it on */
+}
+
 bool when_resolve(const When *w, int64_t now, int default_min, int64_t *start, int64_t *end) {
-    if (!(w->has_date || w->has_end_date || w->has_start || w->has_end || w->dur_min || w->now || w->repeat))
+    if (w->refused[0] ||
+        !(w->has_date || w->has_end_date || w->has_start || w->has_end || w->dur_min || w->now || w->repeat))
         return false;
     DateTime n = dt_local(now);
     int64_t now_m = now - n.sec;
-    int y = w->has_date ? w->y : n.year, m = w->has_date ? w->m : n.mon, d = w->has_date ? w->d : n.day;
-    bool is_today = y == n.year && m == n.mon && d == n.day;
+    Ymd today = {n.year, n.mon, n.day}, day = w->has_date ? (Ymd){w->y, w->m, w->d} : today;
     bool allday = false;
+    int smin; /* the start as the clock shows it: minutes after the start of `day` */
     int64_t s, e;
 
     if (w->now) {
         s = now_m + (int64_t)w->rel_min * 60;
+        DateTime ds = dt_local(s);
+        day = (Ymd){ds.year, ds.mon, ds.day};
+        smin = ds.hour * 60 + ds.min;
     } else if (w->has_start) {
-        s = dt_make(y, m, d, w->start_min / 60, w->start_min % 60);
-        if (!w->has_date && s < now - 15 * 60) s = add_days(s, 1);
-    } else if ((w->has_end || w->dur_min) && !w->has_end_date && is_today) {
-        s = now_m; /* "until 17", "2h": from now */
+        smin = w->start_min;
+        s = wall_time(day, smin);
+        if (!w->has_date && s < now - 15 * 60) day = ymd_add(day, 1), s = wall_time(day, smin);
+    } else if ((w->has_end || (w->dur_min && !w->has_end_date)) && ymd_days(day) == ymd_days(today)) {
+        s = now_m; /* "until 17", "2h", "until sunday 17": from now */
+        smin = n.hour * 60 + n.min;
     } else {
-        s = dt_make(y, m, d, 0, 0);
+        smin = 0;
+        s = wall_time(day, 0);
         allday = !w->has_end;
     }
+    /* the clocks jumped over the start, which moved on: a range keeps the length typed */
+    bool skipped = civil_sec(dt_local(s)) != (int64_t)ymd_days(day) * 86400 + (int64_t)smin * 60;
 
     if (w->has_end_date) {
-        e = w->has_end ? dt_make(w->ey, w->em, w->ed, w->end_min / 60, w->end_min % 60)
-                       : dt_make(w->ey, w->em, w->ed + 1, 0, 0);
-        if (e <= s) e = add_days(day_start(s), 1);
+        e = wall_time((Ymd){w->ey, w->em, w->ed}, w->has_end ? w->end_min : 1440);
+        if (e <= s) {
+            DateTime ds = dt_local(s);
+            e = wall_time((Ymd){ds.year, ds.mon, ds.day}, 1440);
+        }
     } else if (w->has_end) {
-        DateTime ds = dt_local(s);
-        e = dt_make(ds.year, ds.mon, ds.day, w->end_min / 60, w->end_min % 60);
-        if (e <= s) e = add_days(e, 1);
+        /* on the clock, not in elapsed time: 01:00-04:00 is 01:00-04:00 even on the night the
+           clocks change, and an end only goes to the next day when it is not after the start */
+        int em = w->end_min;
+        while (em <= smin) em += 1440; /* "22-02" */
+        e = wall_time(day, em);
+        if (skipped || e <= s) e = s + (int64_t)(em - smin) * 60;
     } else if (w->dur_min) {
-        if (w->dur_min % 1440 == 0 && s == day_start(s)) e = add_days(s, w->dur_min / 1440);
+        if (w->dur_min % 1440 == 0 && smin % 1440 == 0) e = wall_time(day, smin + w->dur_min); /* whole days */
         else e = s + (int64_t)w->dur_min * 60;
     } else if (allday) {
-        e = add_days(s, 1);
+        e = wall_time(day, 1440);
     } else {
         e = s + (int64_t)(default_min > 0 ? default_min : 60) * 60;
     }

@@ -47,25 +47,49 @@ typedef struct {
     bool has_end_date;
     int ey, em, ed; /* day ranges: "fri-sun", "12/10-14/10", "until sunday" */
     bool has_start;
-    int start_min; /* minutes after midnight */
+    int start_min; /* minutes after midnight (1440.. = after the next midnight: "tonight 1") */
     bool has_end;
-    int end_min;  /* explicit end time (1440 = 24:00) */
+    int end_min;  /* explicit end time (1440 = 24:00; more = after it) */
     int dur_min;  /* explicit duration ("2h", "90 min", "for 2 hours"), 0 = none */
     bool now;
     int rel_min; /* "now"/"nu" (rel 0) or "in 30 min"/"om 30 min" -> start = now + rel_min */
     int repeat;
     int repeat_wday; /* REPEAT_*; repeat_wday 0=Mon..6=Sun or -1 */
+    char refused[64]; /* why the text was refused (when_parse() returned false), else "" */
 } When;
 
-/* Marks consumed tokens used[]; true if anything date/time-like was found. */
+/* Marks consumed tokens used[]; true if anything date/time-like was found.
+ *
+ * Refuses (returns false, leaves every token as the caller had it, and says why in w->refused)
+ * when the text names a day that can't be - "31 sep", "31/9", "2026-09-31", "29/2/2027" ->
+ * "There's no 31 September" - or a day range whose end comes before its start - "12/10-10/10",
+ * "12/10/2026-10/10/2026", "14-12 okt", "until 5/10" -> "The end date is before the start date".
+ * An end date without a year takes the start's year, or the next one when its month comes
+ * earlier: "28/12-2/1" runs past New Year; "28-3/10" starts the month before only for a range of
+ * two weeks at most ("14-12/10" is refused). Times that pass midnight ("22-02") are fine.
+ * A time after the last day of a written-out range is its end: "fri till sun 17", "until
+ * tomorrow kl 10" (from now, if the start is today).
+ *
+ * Evening days - "tonight", "ikväll", "i kväll", "inatt", "i natt", or a day + "evening"/"night"/
+ * "kväll"/"natt" ("imorgon kväll", "fri night", "this evening") - take that evening and the
+ * night after it: 5..11 = pm, 12 = midnight (24:00), and anything before 05:00 is after that
+ * midnight: "tonight 8" = 20:00, "tonight 12" = 00:00 and "tonight 1" = 01:00 tomorrow,
+ * "imorgon kväll 8" = 20:00 tomorrow. Leading zeros, am/pm and 13..24 stay as typed otherwise
+ * ("tonight 08", "tonight 8am", "tonight 20"). A time belongs to the day written right before it
+ * ("tonight until tomorrow 10" ends at 10:00), else to the start day. Typed between midnight
+ * and 05:00, "tonight" is the night we're in for times that haven't passed ("tonight 12:30" at
+ * 00:10 = in 20 minutes). */
 bool when_parse(Tokens *t, int64_t now, When *w);
 
 /* Absolute times. No date: today, or tomorrow if the start time already passed
  * today by >15 min. No start time: start of day (all-day) unless now/rel or only
- * a duration/end time was given (then from now). End: end_min (if <= start ->
+ * a duration/end time was given for today (then from now). End: end_min (if <= start ->
  * next day), else dur_min, else all-day -> next midnight, else default_min.
  * Day range without times: start = day start, end = day after end date 00:00.
- * Returns false when the When holds nothing at all. */
+ * Clock changes: a start in the hour skipped in spring moves forward by the jump (02:30 ->
+ * 03:30) and keeps the length typed ("02:00-03:00" -> 03:00-04:00), an end in it moves forward
+ * too; in the hour that repeats in autumn a time means its first pass. end > start always.
+ * Returns false when the When holds nothing at all (or was refused). */
 bool when_resolve(const When *w, int64_t now, int default_min, int64_t *start, int64_t *end);
 
 /* Friendly English range text relative to now, using an en dash:

@@ -64,9 +64,10 @@ because C suits that job better than anything else:
   The Pi stays cool and quiet and draws only a few watts.
 
 C asks for care in return: one careless line can crash the program or open a security hole.
-Hemma pays that back with **close to 400 automated tests** (about 1.6 million checks), debug
-builds that stop at the first sign of undefined behaviour, HTML that is escaped by default,
-and several full code reviews so far.
+Hemma pays that back with **over 400 automated tests** (about 1.6 million checks), debug
+builds that stop at the first sign of undefined behaviour, the whole suite run again under
+AddressSanitizer and UBSan on every push, a fuzzer that feeds the video converter damaged
+files, HTML that is escaped by default, and several full code reviews so far.
 
 ## What's inside
 
@@ -78,9 +79,10 @@ and several full code reviews so far.
 | **Watch** | Your movie and series drive as a little cinema. It sorts series into seasons, has search and subtitles, and remembers where you stopped. It can convert videos a browser can't play (like DVD rips) into a copy that plays everywhere, and moves HEVC films into a file Safari on iPhone, iPad and Mac can play. Admins can upload whole folders from a browser: the uploading computer makes those copies itself, so only the small copy travels and the Pi does no heavy lifting. An upload picks up where it stopped if the connection drops, and skips episodes and films you already have. Admins can remove a film for good, folder and all |
 | **TV** | "90s TV": channels that play your shows non-stop on a shared clock, with a TV guide |
 | **Board** | The fridge door: notes with pins and colours that disappear when they're out of date |
-| **Network** | The devices on your network, who owns which, who's home (from phones on the Wi-Fi) and Wake-on-LAN |
+| **Network** | The devices on your network, who owns which, a good guess at who's home (from phones on the Wi-Fi) and Wake-on-LAN |
 | **Wall** | An always-on dashboard for a tablet on the wall, signed in with a read-only *display* account |
 | **Household** | People, sign-ins and roles, and your home's name |
+| **System** | For admins: is everything working (in plain words), a getting-started list that ticks itself off, the server's log live, and what to do when something's wrong |
 
 ## What you need
 
@@ -153,6 +155,7 @@ computers:
 | [Your home network](docs/home-network.md) | A fixed address, names like `hemma.local`, TVs, why it's `http://`, safe access from outside |
 | [SSH](docs/ssh.md) | "My server has no screen, how do I talk to it?" Connecting, keys, copying files, the handful of commands you'll need |
 | [Accounts](docs/accounts.md) | The admin account, adding people, recovery codes, a forgotten password |
+| [Troubleshooting](docs/troubleshooting.md) | Is it working? Where the log is, common problems, what to send when asking for help |
 | [Development](docs/development.md) | Building from source, tests, project layout, how to contribute |
 
 ## How it works
@@ -170,6 +173,14 @@ an account in your household.
 
 ## Questions and problems
 
+**After installing: is it working?** The installer (or Hemma's own window) says
+`Hemma is running.` and where to open it. Inside Hemma, admins open **System** (under
+**More** on a phone): it checks in plain words that everything works, has a
+getting-started list that ticks itself off, shows the log live, and offers it as a
+download when you ask for help. When something's wrong, see
+[docs/troubleshooting.md](docs/troubleshooting.md). Scripts can ask
+`http://<address>/healthz`, which answers `ok`.
+
 **The TV (or a phone) says "page not found", "can't connect" or "invalid response".**
 Type the full address **with `http://` in front** and use the server's number (IP
 address), for example `http://192.168.1.50`. Add `:8080` if you didn't install it on
@@ -183,8 +194,11 @@ either; use the IP address there and bookmark it. The
 that never changes.
 
 **Why not https?** On purpose. Hemma is for your home network only, where `https://`
-would need certificates that your devices don't trust out of the box. Your Wi-Fi is
-already encrypted. If you want to reach Hemma from outside, use a VPN instead (see the
+would need certificates that your devices don't trust out of the box. The catch: everyone
+on your network can read what Hemma sends (on a home Wi-Fi, anyone who knows the Wi-Fi
+password can, and any device on it could listen in). So treat everyone you let onto your
+Wi-Fi as being "in the house", and give visitors the guest network. If you want to reach
+Hemma from outside, use a VPN instead (see the
 [home network guide](docs/home-network.md#reaching-hemma-from-outside-the-safe-way)).
 Never open a port on your router for it.
 

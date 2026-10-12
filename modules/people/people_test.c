@@ -74,6 +74,36 @@ TEST(people_keep_one_admin_who_can_sign_in) {
     th_halt();
 }
 
+TEST(people_keep_an_admin_counted_after_the_change) {
+    /* issue #14: with two admins, Adam blanked his own username (Bea still counted), then removed
+       Bea - and nobody could sign in as an admin any more */
+    boot();
+    int adam = admin("Adam", "adam");
+    int bea = admin("Bea", "bea");
+    char f[120];
+    snprintf(f, sizeof f, "id=%d&name=Adam&username=", adam);
+    CHECK(th_act(adam, "people.save", f).ok); /* fine: Bea can still sign in */
+    CHECK_STR(person_get(adam)->username, "");
+    snprintf(f, sizeof f, "id=%d", bea);
+    ThResult r = th_act(adam, "people.delete", f);
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Keep at least one admin who can sign in");
+    CHECK(person_get(bea) != NULL);
+    snprintf(f, sizeof f, "id=%d&name=Bea&role=0", bea); /* demoting her: the same */
+    CHECK(!th_act(adam, "people.save", f).ok);
+    CHECK_INT(person_get(bea)->role, ROLE_ADMIN);
+    snprintf(f, sizeof f, "id=%d&name=Bea&username=", bea); /* taking her sign-in away: the same */
+    CHECK(!th_act(adam, "people.save", f).ok);
+    CHECK_STR(person_get(bea)->username, "bea");
+    /* once Adam can sign in again, Bea may go */
+    snprintf(f, sizeof f, "id=%d&name=Adam&username=adam&password=longenough1", adam);
+    CHECK(th_act(bea, "people.save", f).ok);
+    snprintf(f, sizeof f, "id=%d", bea);
+    CHECK(th_act(adam, "people.delete", f).ok);
+    CHECK(person_get(bea) == NULL);
+    th_halt();
+}
+
 TEST(people_change_password_signs_out_other_devices) {
     boot();
     int adam = admin("Adam", "adam");

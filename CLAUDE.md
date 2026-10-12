@@ -39,6 +39,8 @@ Runs on a Raspberry Pi in production; developed on Windows 11 with `zig cc`.
 ```
 core/            framework with a stable API for modules
   base.*         buffers (always NUL-terminated), strings, UTF-8, time/calendar, hashing, logging
+                 (log_set_sink: called on ANY thread after log_clean - the sink locks and never logs;
+                 g_log_stderr = false keeps tests quiet)
   plat.*         the ONLY place with #ifdef _WIN32 besides lan.c and base.c's two clock calls (sockets,
                  files, dirs, threads, random, env)
   lan.*          LAN facts: interface/gateway, ARP neighbours, probes, Wake-on-LAN, reverse-DNS packets
@@ -48,15 +50,43 @@ core/            framework with a stable API for modules
   json.* http.* ws.* server.*   protocol stack + event loop
   html.*         H() — HTML formatter that escapes by default (%s escaped, %r raw, %02d padding ok)
   store.*, db.h  typed tables kept in RAM, persisted in SQLite; db.h = raw SQL (+FTS5)
-  when.*         natural-language dates/times (English + Swedish) for quick-add bars
-  env.*          .env loading (real environment wins)
+  when.*         natural-language dates/times (English + Swedish) for quick-add bars. A day that can't be
+                 ("31 sep", "29/2/2027") or a day range ending before it starts ("12/10-10/10", "until 5/10")
+                 is refused as a whole: when_parse() returns false, gives the words back and says why in
+                 When.refused (book/plan show it). "14-12/10" (the month before) only when it lasts <= 14
+                 days. An end date without a year takes the start's year, or the next one past New Year
+                 ("28/12-2/1"). A time after the last day of a written-out range ends it ("fri till sun 17").
+                 Evening days ("tonight", "ikväll", "inatt", "imorgon kväll", "fri night", "this evening")
+                 read 5-11 as pm, 12 as midnight, 1-4 as after midnight; a time belongs to the day word right
+                 before it; "tonight" typed between 00:00 and 05:00 means the night we're in.
+                 when_resolve() settles clock changes itself (wall_time): a time in the skipped spring hour
+                 moves forward keeping its length, the repeated autumn hour means its first pass, end > start
+  env.*          .env loading (a non-empty real environment wins; in the file the first line WITH a value
+                 counts - an empty "KEY=" never hides a later one; a repeated key is logged; a bad line is
+                 skipped and logged, the rest still loads; "KEY= # note" is empty). env_line_key() = the key
+                 a line sets, read the same way (auth.c uses it to find the HEMMA_AUTH_SALT= line, BOM too)
   auth.*         passwords (PBKDF2 + server salt), throttling, admin bootstrap, welcome/sign-in/forgot pages,
                  /login /logout /setup /forgot, recovery codes, --reset-password (see "Accounts")
   app.*          the live core: modules, routing, sessions, render→diff→morph, actions, presence,
-                 settings, per-person prefs, activity feed, shared agenda, JSON API (/api)
+                 settings, per-person prefs, activity feed, shared agenda, JSON API (/api), the health
+                 API (health_add/health_step/health_collect, for Module.health), app_config(),
+                 app_addresses() (LAN IP + <hostname>.local), public `GET /healthz` -> "200 ok" (after
+                 the Host guard, nothing else in it), the startup banner (where to open it, setup code
+                 hint, where the log is). HEMMA_VERSION lives in app.h; HEMMA_VERSION_FULL adds the
+                 commit (build.ps1/Makefile pass -DHEMMA_COMMIT=<sha>[-dirty]) - raise the version per release
   ui.*           components: shell, icons, avatars, cards, forms, modals, time formatting
   main.c         command line (--gen-salt, --env, --web ...)
-modules/<id>/    one folder per feature; folder name == module id (home book plan media tv board net people wall)
+modules/<id>/    one folder per feature; folder name == module id (home book plan media tv board net people wall
+                 system)
+  system/        admin-only (MOD_ADMIN) System page: checks (core + every Module.health hook), a getting-
+                 started list ticking itself from data (also an admin home card with the next step), the live
+                 log (log.c: ring of 2000 lines fed by the core log sink - installed by a constructor, so the
+                 first lines count; <data>/hemma.log written from tick at most every 2 s, no fsync, rotated
+                 at ~1 MB to hemma.log.1; the previous tail read back behind a "Hemma restarted" divider;
+                 start/stop marks in the file reveal a crash), help for how THIS instance runs (systemd,
+                 launchd, Windows, a terminal), /system/log.txt download, a home card while a check is at
+                 needs-a-look or worse. app_main halts the modules when it can't listen (the reason reaches
+                 the file). media/health.c and net.c report their checks through the hook.
                  dependencies: tv needs media (it links modules/media/library.c), media needs av (the converter)
   media/upload.c admins add videos from a browser (plan + streamed PUTs, .part files, resume); a folder
                  holding x.mkv + x.web.mp4 sends only the copy (checkbox "also send originals"). Other MKVs
@@ -99,6 +129,38 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  convert.c settle_finished -> convert_replace_original checks the new copy file itself).
                  Deleting an original moves everyone's progress to the copy (library.c media_watch_move).
                  Subtitles: x.en.srt belongs to x.mkv while it exists, else to x.web.mp4 (media_sub_for knows .web.mp4).
+                 Writes x.web.mp4.conv.part (convert_part_path - never an upload's x.web.mp4.part) and never
+                 renames over an existing copy. enqueue skips a copy already on disk, one an upload claims
+                 (upload_claims), or a second original making the same copy. A copy being converted is the
+                 server's (convert_making); one only queued leaves the queue when an upload brings it
+                 (convert_give_way, after the plan is accepted). ROOM (media/room.c): a worker (one at a time,
+                 g_pick) claims the first waiting file whose original's size fits, then re-checks; the rest
+                 wait while others run (and, with auto-delete on, for finished ones whose originals are about
+                 to go), and with none running they're set aside as CQ_NOROOM (one line on the card: "Make
+                 room, then convert again"); the action sets aside at once what can't fit even alone. Scans
+                 remove orphaned *.conv.part. Lock order: g_pick, then upload.c's g_lock, then g_cl. Stop flag
+                 + progress are atomics; change signatures are uint64_t (UBSan). Tests queue without threads
+                 (convert_test_start/finish).
+  media/room.c   disk room shared by uploads and conversions: MEDIA_RESERVE (1 GB) always stays free (the
+                 database often shares the disk), and running jobs hold what they may still write (an upload
+                 its unsent bytes, a conversion its original's size minus what it wrote), per disk (same
+                 total size, free within 64 MB). media_room(), media_room_text(), media_test_free_space().
+                 Uploads never take a file the server's converter is making (convert_making): skipped at the
+                 plan; a quiet upload whose copy the converter took meanwhile gets PUT ok without writing
+                 (UpFile.on_server; GET says at=size; its .part deleted) and ?size= -> {"skip":true}. Every PUT
+                 checks the rest of its file fits (else 507 + stop). upload_claims = files being written +
+                 queued files of a live upload (running, or planned in the last 30 s). A x.web.mp4.part older
+                 than the server's start is never resumed (an older build's converter wrote that name).
+  net/           the device list is capped (NET_MAX_DEVICES 1024): when full, the longest-unseen devices the
+                 household didn't set up (name/owner/kind/note/WoL) make room, those someone opens Hemma from
+                 last; never the router (only the ONE device at the router's address now: find_router),
+                 devices online now or listed this round; else newcomers are left out (logged once). start()
+                 trims; admins have "Forget unknown devices not seen for a week" (net.tidy). New devices: one
+                 activity line an hour (later rounds add to its count), a toast at most once an hour, not for
+                 MACs evicted lately. /net shows 100 rows per step (?n=). Name questions carry fresh random ids
+                 (DNS and mDNS separate); the first response from a sender who may answer closes the question -
+                 a wrong id or "no such name" too (net_dns_packet). Presence from devices is labelled a guess
+                 (ARP can't be authenticated: any device can borrow a phone's MAC).
   media/remove.c admins delete a film or other video (watch page "Remove" -> ?remove=1 dialog listing every
                  file -> media.remove): the video, its copy, subtitles, picture - or its OWN folder as a whole
                  (folder name parses to the film's title/year, nothing inside but the film and extras - the
@@ -120,6 +182,10 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  wasm32-wasi -mexec-model=reactor -msimd128; ~330 KB, imports only 4 hemma.* functions,
                  embedded as /static/av.wasm). Measured on a DVD episode: wasm ~75% of native speed (374 s
                  vs 282 s on one core), video bit-identical to native, AAC differs only by float rounding.
+                 conv.c bounds samples per track (2M; with a stated length 300 pictures / 120 sound blocks
+                 per second; AvConvJob.max_samples lowers it) and refuses MPEG-2 whose picture size changes
+                 part-way - both `unsupported` (the browser then sends the original). Timestamps beyond ~13
+                 days count as missing (MAX_TS). DeintIn carries width/height; deint_push refuses any other.
 web/             app.css (core styles + shared vocabulary), wire.js, conv.js (the upload converter's Worker:
                  feeds av.wasm a File, gathers the copy), icon.svg, manifest
 third_party/sqlite/  SQLite 3.54.0 amalgamation (see its README for provenance + hash)
@@ -138,10 +204,16 @@ tools/h264check.c encode | synth | bench: MKV -> H.264 Annex-B + reconstruction 
                  encoder was once checked bit-exact against Chrome's WebCodecs decoder)
                  (zig cc -O2 -std=gnu11 -Icore tools/h264check.c modules/av/h264enc.c modules/av/mkv.c
                   modules/av/mpeg2.c core/base.c core/plat.c -lws2_32 -liphlpapi -lbcrypt)
+tools/convfuzz.c libFuzzer target over av_convert (MKV in memory -> MP4 in memory); -DCONVFUZZ_MAIN = a
+                 replay/mutate driver that builds with zig on Windows (build lines at the top). Seeds:
+                 `HEMMA_FUZZ_SEEDS=<dir> ./build/test conv_fuzz_seeds` (generated, never committed)
 tests/           test.h (framework), runner.c, harness.* (boot the core without a server)
-deploy/          hemma.service (hardened systemd unit), install-pi.sh (any systemd Linux, despite the name),
-                 local.hemma.plist (macOS launchd agent)
-docs/            user guides: raspberry-pi linux windows macos home-network ssh accounts development
+deploy/          hemma.service (hardened systemd unit; waits for time-sync.target), install-pi.sh (any systemd
+                 Linux, despite the name: enables systemd-time-wait-sync with a 90 s limit, starts the service,
+                 waits for /healthz, prints addresses + setup code + next steps, or the journal tail and exit 1),
+                 local.hemma.plist (macOS launchd agent). The Windows guide runs Hemma as Local Service (S-1-5-19,
+                 icacls on C:\Hemma and the media folders), never SYSTEM.
+docs/            user guides: raspberry-pi linux windows macos home-network ssh accounts troubleshooting development
                  (README.md links them). Public docs: generic examples only (192.168.1.50, hemma.local,
                  /srv/media) - never this household's names, addresses, paths or passwords
 build*/ data/ .env   generated / runtime / secrets (gitignored)
@@ -160,6 +232,9 @@ build*/ data/ .env   generated / runtime / secrets (gitignored)
 ```
 - `$env:HEMMA_SKIP_MODULES="media,tv"` leaves module folders out (someone else's work in progress).
   media needs av and tv needs media: skipping one skips the ones that depend on it.
+- CI (.github/workflows/build.yml, every push): `make` + `make test` on Ubuntu and macOS; the suite again
+  under ASan + UBSan (clang, leak checks off); a 90 s libFuzzer run over the converter (tools/convfuzz.c).
+  None of it can run on this Windows PC (no ASan/libFuzzer in zig here): push and read the CI result.
 - `$env:HEMMA_BUILD_DIR="build-book"` builds into a private folder (parallel workers); SQLite objects
   are shared in `build/obj/<target>/` and compile once (~1 min; again when their flags change - a
   `.flags` stamp sits next to the object). Test scratch folders go to `<build dir>/test-tmp/` and are
@@ -216,10 +291,24 @@ it: the build embeds a `.gz` twin of each text file and av.wasm (~120 KB -> ~30 
   "who's home", etc. `account_count()/account_at()` = every account (household admin).
 - Sessions: random 128-bit cookie `hemma` (HttpOnly, SameSite=Lax); only its SHA-256 is stored.
   `session_create/session_end/sessions_drop`. Signing in again in another tab keeps that session.
+  A session ends (`session_over`, checked at every lookup, rows pruned hourly) a week unused, a year
+  unused with "keep me signed in", and - for admins - `ADMIN_SESSION_DAYS` (30) after signing in however
+  much it's used (owner, 2026-10-12: plain http, a captured admin cookie must die; the cookie's Max-Age
+  says 30 days for admins too). The owner wants more conditions on top later - ask before adding any.
+- Sign in with the username OR the name (`person_for_sign_in`: the username first, else the one account
+  that can sign in and goes by that name, folded - "Åsa"/"åsa"; two such accounts = name doesn't work).
+  Throttling keys on the resolved username, so name and username share one budget. Same on /forgot.
+- "Welcome back, X" (the address's last person) has "Not X? Sign in as someone else" (`/login?other=1`).
+- Secret fingerprint: setting `auth.salt_check` = 8 bytes of HMAC(salt, constant), refreshed whenever a
+  password is made or checks out; `auth_salt_mismatch()` -> a warning at start + a hint on failed sign-ins.
+- Keep an admin: people.save/people.delete refuse any change after which no admin can sign in, counted
+  AFTER the change (people.c admins_after/keeps_an_admin). Pickers' ids go through `person_real(id)`
+  (display accounts can't be booked for / assigned).
 - Secret salt (`HEMMA_AUTH_SALT`, the pepper in every password hash and recovery code): a new install makes
   it itself - `auth_ensure_secret()` in app_boot writes 256 random bits into the settings file (`--env`,
-  default ./.env; created if missing, 0600 via `file_write_private`, an empty `HEMMA_AUTH_SALT=` line gets
-  the value) - but NEVER once any account has a password (a new salt would lock everyone out: it warns).
+  default ./.env; created if missing, 0600 via `file_write_private` - which writes through a symlinked
+  settings file to its target - an empty `HEMMA_AUTH_SALT=` line gets the value, BOM or not) - but NEVER
+  once any account has a password (a new salt would lock everyone out: it warns).
   Never stored in the data folder or the database. The Pi installer still writes it into
   /etc/hemma/hemma.env (root:hemma 0640: Hemma can read it, not change it).
 - First admin: the **welcome page** (core/auth.c `setup_page`, POST `/setup`) is shown to every signed-out
@@ -251,11 +340,21 @@ it: the build embeds a `.gz` twin of each text file and av.wasm (~120 KB -> ~30 
   forgiven after 30 quiet minutes - and never evicted earlier (full tables don't drop fresh failures; a
   new IP waits while the IP table is full). All checked BEFORE hashing. Recovery-code guesses and the
   current-password check (`auth_recheck(p, pw, c->ip, ...)`: people.password / people.codes) count too.
+  Hashing budget: checks for (address, user) pairs that never signed in share a quarter of the loop's time
+  (HASH_SHARE, bursts of 4 s); past it auth_login says LOGIN_BUSY ("Lots of sign-in tries right now. Wait
+  N seconds", /login?...&busy=1), which counts against the address like a wrong try (a flood locks its own
+  addresses); known pairs (in memory: since the last start) always go through. Re-entering the password
+  in a signed-in browser restarts the session's `created` (an admin's 30 days). The
+  account-wide lock is logged like the address lock. The
+  setup code's throttle waits (FULL_WAIT_S) when the pair table is full instead of failing open.
 - Passwords: your own only via people.password (asks the current one, ends your other sessions);
   people.save refuses `password` for yourself. An admin setting someone else's ends their sessions.
 - Signed-out requests never reach module pages, actions or `http` hooks (unless `MOD_PUBLIC`), and
   signed-out/revoked screens get no `app_notify` toasts. A signed-out WebSocket (hello/nav/act/close)
-  only ever re-renders its own screen. `/api` is for members and admins (display accounts: 403).
+  only ever re-renders its own screen. `/api` is for members and admins (display accounts: 403); tables
+  with `api_owner` (pref, media_watch) show a member only their own rows, admins all (owner, 2026-10-12).
+  Signed-out WebSockets: 48 in all, 4 per address (`stranger_room`), past that the upgrade gets 503.
+  `MOD_ADMIN` modules exist only for admins: nav, /more, pages ("not found" for others) and http hooks.
 - Log lines go through `log_clean()`: control characters become visible escapes (no forged lines).
 
 ## Writing a module (the contract — see core/app.h)
@@ -277,8 +376,12 @@ MODULE(things)   /* self-registers: no shared file to edit */
   `c->me` is always set in actions (signed in, not a display account); check `is_admin(c)` when needed.
   `app_notify()` toasts everyone else, `app_notify_person()` one person; `activity_add()` feeds home.
 - **Live inputs**: `<input data-live="mod.preview" name="q">` sends a "live" action on typing;
-  store per-screen state with `ctx_set_live()` and read it in `page()` with `ctx_live()`.
-- **Data**: describe records with `FIELD(...)` (`FIELD_SECRET` = never in /api) + `TABLE(...)`,
+  store per-screen state with `ctx_set_live()` and read it in `page()` with `ctx_live()`. The action
+  must be flagged in its table, `{"mod.preview", act_preview, true}` (`Action.live`): a "live" message
+  naming anything else runs nothing. Live actions get no ack and don't re-render other screens (call
+  `app_changed()` yourself if one changed shared data, as media.progress does when a video ends).
+- **Data**: describe records with `FIELD(...)` (`FIELD_SECRET` = never in /api; `T.api_owner = "person"`
+  in init = /api shows members only their own rows) + `TABLE(...)`,
   `store_register()` in `init`. Each becomes a SQLite table (new fields → new columns
   automatically). Reads are in-memory. Use `db.h` for big/queryable data. Keep ids, not row pointers.
 - **Widgets**: `widget(c, b, WIDGET_HOME | WIDGET_WALL)`. Must cope with `c->me == NULL` and with a
@@ -287,6 +390,12 @@ MODULE(things)   /* self-registers: no shared file to edit */
 - **Sidebar foot**: `side(c, b)` renders a small block above the profile in the sidebar (phones: under
   the sections on /more). Every page calls it - cached numbers only, no disk/network work (media's
   storage meter refreshes its cache from `tick` every 30 s).
+- **Health**: `health(c, h)` reports checks for the admin System page with `health_add(h, HEALTH_OK|
+  INFO|WARN|BAD, title, detail, todo, link)` and getting-started steps with `health_step(h, done, title,
+  detail, link)`. Called for admins only (also on the home page): cached facts only. `system` never links
+  other modules - only this hook.
+- **Admin-only module**: `.flags = MOD_ADMIN` hides it from non-admins everywhere (nav, /more, pages,
+  http hooks, side(), widgets, agenda items, the /api action list); its actions still check `is_admin`.
 - **Raw endpoints**: `http()` hook (files, streams, JSON) — only called for signed-in requests.
   Bodies over 1 MB are not buffered: the hook gets `req->streaming` (body NULL, `content_length`
   set) and must take the socket with `conn_detach(conn, req, &d)` — `d.body` holds the bytes that
@@ -344,7 +453,9 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
 - Dev mode serves web/ from disk; built assets that aren't in web/ (av.wasm) come from the binary.
 - The server faces every device on the LAN: Host must be an IP, a single-label name or a private
   suffix (.local .lan .home .home.arpa .internal …) — more via `HEMMA_HOSTS` (DNS-rebinding guard).
-  Per-device connection cap (32; streams/uploads handed to threads don't count), a shared 32 MB budget
+  Per-device connection cap (32; streams/uploads handed to threads don't count); at the total cap (400) a
+  newcomer takes the place of a slot holder - an idle keep-alive connection, else a half-sent request -
+  from the address holding the most (server.c slot_holder; screens/WebSockets never), a shared 32 MB budget
   for request bodies / WebSocket messages still arriving (past it: 503 + close; `server_set_buffer_budget`
   in tests), output backpressure, stall timeouts; keep new code bounded too.
 - Bind 127.0.0.1 for dev servers (0.0.0.0 pops a Windows Firewall prompt). Never send Wake-on-LAN to
@@ -375,19 +486,33 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
   one audio codec every browser, iPhone, TV and Chromecast plays). MPEG-2 decode: ~1,100 fps on one PC core, ~59 fps
   under pisim model 3 (2× real time, 3 MB) — live decode fits a Pi 3, live H.264 *encode* doesn't.
 - Uploads (admins, /media/upload): written as `<name>.part`, renamed when complete, fsynced;
-  resumable; refused up front when the disk lacks room (+1 GB reserve). On the Pi the service
-  needs write access to the media folders (install-pi.sh takes them as arguments).
+  resumable; refused up front when the disk lacks room (+1 GB reserve, media/room.c - conversions keep
+  it too). On the Pi the service needs write access to the media folders (install-pi.sh takes them as
+  arguments).
+- Rescan: admins, plus members an admin ticks on Library settings (setting `media.rescanners` = member ids;
+  only the admin-only action `media.rescanners` writes it; display accounts, admins and removed people
+  never count). Owner's rule (2026-10-12).
 
-## Status (2026-10-11)
+## Status (2026-10-12)
+
+Done 2026-10-12: GitHub issues #3-#15 (an outside review's findings; issue #3 the owner's own) with tests,
+then a second review of those fixes (also fixed): sign-in by name + "Not X?", admin sessions 30 days,
+hashing budget, slot eviction, signed-out WebSocket cap, live-action gating, /api owner rows, rescan
+permission, settings-file parsing, last-admin guard, converter size-change OOB read + sample bounds,
+CI sanitizers + converter fuzzing, conversions keep room + never share a .part with uploads, net list cap
++ router/DNS hardening, quick-add date refusals/evening words/DST, Windows as Local Service, Pi clock sync,
+version 0.3.0 + commit stamp + CHANGELOG.md. New (owner asked): the System page (checks, getting started,
+live log, help), clearer installer and startup output, /healthz. 456 tests green (1.64M checks).
+Not yet tagged/released: the owner runs `git tag v0.3.0` + a GitHub release from CHANGELOG.md.
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,
 agenda, JSON API), people/household, home, book, plan, board, wall, net, media (library, player, Range
 streaming, progress, uploads that convert on the sending device, disc rips, pictures), tv.
-398 tests green (1.6M checks), incl. end-to-end socket tests (core/app_http_test.c, core/auth_setup_test.c;
+(2026-10-11: 398 tests green (1.6M checks)), incl. end-to-end socket tests (core/app_http_test.c, core/auth_setup_test.c;
 media/upload_test.c with a dropped-and-resumed 3 MB upload).
-Platforms: the Windows build and the Pi aarch64 build run in daily use (a Pi 3B+ since 2026-10-10). Linux
-x86-64, Pi armv6 and macOS (arm64/x64) builds compile without warnings but have never run, and the Makefile
-has never been run (no Linux/macOS machine here) - CI on GitHub would close that gap.
+Platforms: the Windows build and the Pi aarch64 build run in daily use (a Pi 3B+ since 2026-10-10).
+GitHub CI (.github/workflows/build.yml) runs `make` + `make test` on ubuntu-latest and macos-latest on
+every push (green). Pi armv6 builds compile without warnings but have never run.
 Review passes: core protocol, auth/app/wire, feature modules — all findings fixed with regression tests.
 Pre-publication sweep (2026-10-11, five reviewers: hygiene/docs, security, upload+converter, performance,
 quality/portability): no critical/high security issue; fixed with tests - a per-address sign-in budget

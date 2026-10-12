@@ -21,6 +21,10 @@ LEAN_LD  := -Wl,--gc-sections
 endif
 # 64-bit file offsets and time_t also on 32-bit glibc (Raspberry Pi OS armhf): files > 4 GB, dates after 2038
 CPPFLAGS += -Icore -Ithird_party/sqlite -D_FILE_OFFSET_BITS=64 -D_TIME_BITS=64
+# The commit a binary is built from, for `hemma --version` ("-dirty": with uncommitted changes).
+# Nothing outside a git checkout.
+HEMMA_COMMIT := $(shell git rev-parse --short=12 HEAD 2>/dev/null)$(shell git status --porcelain --untracked-files=no 2>/dev/null | grep -q . && echo -dirty)
+CPPFLAGS += $(if $(HEMMA_COMMIT),-DHEMMA_COMMIT=$(HEMMA_COMMIT))
 LDLIBS   += -lpthread -lm
 # SQLite for size: its data is read into memory once, so -Os costs nothing you'd notice
 SQLITE_FLAGS = -Os -w -DSQLITE_DQS=0 -DSQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_MEMSTATUS=0 \

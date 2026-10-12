@@ -9,8 +9,13 @@
  *
  * Frames stream through: memory stays a few MB whatever the file size (plus
  * ~4 bytes per sample for the MP4 index, and 16 per video frame when H.264 is
- * copied). Input is random access (MkvReader), output appends and patches the
- * reserved header at the end (Mp4Out with write_at).
+ * copied). Samples are bounded, so a file of tiny blocks can't blow that up: at
+ * most 2 million a track (9 hours of 60 fps), and with a stated length at most
+ * 300 pictures / 120 sound blocks a second of it; past that the job fails as
+ * `unsupported`. So does an MPEG-2 stream whose picture size changes part-way
+ * (later pictures smaller or bigger than the first). Input is random access
+ * (MkvReader), output appends and patches the reserved header at the end
+ * (Mp4Out with write_at).
  *
  * Pure library: libc only, no globals, no OS calls. The same code runs in the
  * server (media/convert.c, files on disk) and in the uploading browser
@@ -32,6 +37,7 @@ typedef struct {
     int quality;          /* H.264 QP (lower = better, bigger); 0 = 23 */
     int audio_kbps;       /* AAC bitrate; 0 = 160 */
     int64_t limit_ns;     /* stop after this much video (previews, tests); 0 = the whole file */
+    int64_t max_samples;  /* most samples a track may get, if fewer than the built-in bound (tests, fuzzing); 0 = that */
     volatile int *stop;   /* non-zero: give up soon */
     /* called whenever permille changes (may be NULL) */
     void (*progress)(void *ctx, int permille);

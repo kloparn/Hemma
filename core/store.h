@@ -41,6 +41,8 @@ typedef struct Table {
     int nfields;
     bool memory_only; /* never written to disk (caches, derived data) */
     bool api_hidden;  /* never exposed by /api (secrets such as session ids) */
+    const char *api_owner; /* an F_INT person-id field: /api shows each member only their own rows
+                              (admins see every row) - e.g. preferences, watch history */
     /* runtime */
     char *rows;
     int n, cap, next_id;

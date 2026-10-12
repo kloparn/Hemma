@@ -111,10 +111,17 @@ uint64_t hash64(const void *p, size_t n); /* FNV-1a */
 uint64_t hash64_str(const char *s);
 void hex_encode(const void *p, size_t n, char *out); /* writes 2n chars + NUL */
 
-/* ---- logging (stderr) ---- */
+/* ---- logging (stderr, plus an optional sink) ---- */
 typedef enum { LOG_DEBUG, LOG_INFO, LOG_WARN, LOG_ERROR, LOG_QUIET } LogLevel;
 extern LogLevel g_log_level;
+extern bool g_log_stderr; /* default true; false = lines only reach the sink (tests) */
 void log_at(LogLevel level, const char *fmt, ...) FMT(2, 3);
+/* A second home for every line log_at lets through (at or above g_log_level), already cleaned
+   (log_clean) and without the time/level prefix - e.g. the System page's log. log_at runs on
+   ANY thread, so the sink locks whatever it touches, and it must never log itself. Set it
+   before other threads start; NULL = none. */
+typedef void (*LogSink)(LogLevel level, int64_t unix_ts, const char *clean_line);
+void log_set_sink(LogSink fn);
 /* What log_at does to every line: control characters (\n \r \t, ESC, C1 ...) become visible
    escapes, so text from visitors can't forge log lines. Returns the length written to out. */
 size_t log_clean(const char *in, char *out, size_t cap);

@@ -186,6 +186,347 @@ TEST(when_day_ranges) {
     RUN(cases);
 }
 
+/* A refused text: nothing parsed, every word left for the caller, and a reason. */
+typedef struct {
+    const char *in, *why;
+} RefuseCase;
+
+static void check_refused(const RefuseCase *c) {
+    Tokens t;
+    When w;
+    int64_t s = 1, e = 1;
+    tok_split(&t, c->in);
+    bool any = when_parse(&t, NOW, &w);
+    bool resolved = when_resolve(&w, NOW, 60, &s, &e);
+    char rest[256], gs[32] = "-", ge[32] = "-";
+    tok_rest(&t, rest, sizeof rest);
+    if (resolved) {
+        fmt_t(s, gs, sizeof gs);
+        fmt_t(e, ge, sizeof ge);
+    }
+    test_checks++;
+    if (any || resolved || !str_eq(w.refused, c->why) || !str_eq(rest, c->in))
+        test_fail(__FILE__, __LINE__,
+                  "\"%s\"\n      got:      %s -> %s  refused \"%s\"  rest \"%s\"\n"
+                  "      expected: refused \"%s\", every word left",
+                  c->in, gs, ge, w.refused, rest, c->why);
+}
+
+#define RUN_REFUSED(cases)                                                                                             \
+    do {                                                                                                               \
+        NOW = dt_make(2026, 10, 7, 10, 0);                                                                             \
+        for (int i_ = 0; i_ < countof(cases); i_++) check_refused(&(cases)[i_]);                                       \
+    } while (0)
+
+/* Issue #13: a day that doesn't exist used to be dropped and the words after it read again
+ * ("31 sep 14" became 14 Sep 2027, "bil 31 sep 14-16" today 14-16). */
+TEST(when_refuses_days_that_dont_exist) {
+    static const RefuseCase refused[] = {
+        {"31 sep 14", "There's no 31 September"},
+        {"bil 31 sep 14-16", "There's no 31 September"},
+        {"sep 31", "There's no 31 September"},
+        {"31 sep 2027", "There's no 31 September"},
+        {"31st of september", "There's no 31 September"},
+        {"den 31 september kl 10", "There's no 31 September"},
+        {"31/9", "There's no 31 September"},
+        {"31/9 14-16", "There's no 31 September"},
+        {"31/9/2026", "There's no 31 September"},
+        {"2026-09-31", "There's no 31 September"},
+        {"2026-09-31 14-16", "There's no 31 September"},
+        {"30 feb", "There's no 30 February"},
+        {"29/2", "There's no 29 February 2027"}, /* the next one is in 2028: say which year was meant */
+        {"29 feb 2027 10", "There's no 29 February 2027"},
+        {"30-31 sep", "There's no 31 September"},
+        {"31-2/10", "There's no 31 September"},
+        {"31/9-2/10", "There's no 31 September"},
+        {"1/10-31/9", "There's no 31 September"},
+        {"fri until 31 sep", "There's no 31 September"},
+        {"from fri to 31/9", "There's no 31 September"},
+        {"1/1/1960 10", "Pick a year from 1970 to 2200"},
+    };
+    RUN_REFUSED(refused);
+    static const Case fine[] = {
+        {"30 sep 14", "2027-09-30 14:00", "2027-09-30 15:00", ""}, /* exists: passed, so next year */
+        {"31 oct", "2026-10-31 00:00", "2026-11-01 00:00", ""},
+        {"31/12 14-16", "2026-12-31 14:00", "2026-12-31 16:00", ""},
+        {"29/2/2028 9", "2028-02-29 09:00", "2028-02-29 10:00", ""},
+        {"12/13 14", "2026-10-07 14:00", "2026-10-07 15:00", "12/13"}, /* month 13: not a date, just a word */
+        {"50/50 14", "2026-10-07 14:00", "2026-10-07 15:00", "50/50"},
+    };
+    RUN(fine);
+
+    /* words the caller claimed stay claimed, the rest are free again */
+    Tokens t;
+    When w;
+    tok_split(&t, "bil 31 sep 14-16");
+    t.used[0] = true; /* the booking module recognised "bil" */
+    CHECK(!when_parse(&t, NOW, &w));
+    CHECK_STR(w.refused, "There's no 31 September");
+    CHECK(t.used[0] && !t.used[1] && !t.used[2] && !t.used[3]);
+    CHECK(!w.has_date && !w.has_start && !w.has_end);
+    char rest[64];
+    tok_rest(&t, rest, sizeof rest);
+    CHECK_STR(rest, "31 sep 14-16");
+    /* and a fresh parse starts clean */
+    tok_split(&t, "fri 14");
+    CHECK(when_parse(&t, NOW, &w));
+    CHECK_STR(w.refused, "");
+}
+
+/* Issue #13: an end date before the start used to be pushed a year on (a year-long booking). */
+TEST(when_refuses_ranges_that_end_before_they_start) {
+    static const RefuseCase refused[] = {
+        {"12/10/2026-10/10/2026", "The end date is before the start date"},
+        {"12/10-10/10", "The end date is before the start date"},
+        {"12/10/2026-10/10", "The end date is before the start date"},
+        {"12/10 - 10/10/2026", "The end date is before the start date"},
+        {"14-12 okt", "The end date is before the start date"},
+        {"from 12 oct to 10 oct", "The end date is before the start date"},
+        {"2026-10-12 to 2026-10-10", "The end date is before the start date"},
+        {"tomorrow - today", "The end date is before the start date"},
+        {"until 5/10", "The end date is before the start date"},
+        {"guest room fri until 5/10", "The end date is before the start date"},
+        /* "28-3/10" may start the month before, but only for two weeks at most */
+        {"14-12/10", "The end date is before the start date"},
+        {"14-12/11", "The end date is before the start date"},
+        {"19-3/11", "The end date is before the start date"}, /* 19 Oct - 3 Nov: 15 days */
+    };
+    RUN_REFUSED(refused);
+    static const Case fine[] = {
+        {"28-3/11", "2026-10-28 00:00", "2026-11-04 00:00", ""},
+        {"20-3/11", "2026-10-20 00:00", "2026-11-04 00:00", ""}, /* 14 days: still fine */
+        {"28-2/1", "2026-12-28 00:00", "2027-01-03 00:00", ""},
+        {"28/12/2026-2/1", "2026-12-28 00:00", "2027-01-03 00:00", ""}, /* past New Year: next year */
+        {"28/12-2/1/2027", "2026-12-28 00:00", "2027-01-03 00:00", ""},
+        {"30/12/2027-2/1", "2027-12-30 00:00", "2028-01-03 00:00", ""}, /* the start's year, not today's */
+        {"20 dec - 6 jan", "2026-12-20 00:00", "2027-01-07 00:00", ""},
+        {"1/11-31/3", "2026-11-01 00:00", "2027-04-01 00:00", ""},
+        {"12/10-12/10", "2026-10-12 00:00", "2026-10-13 00:00", ""},
+        {"12/10-14/10/2026", "2026-10-12 00:00", "2026-10-15 00:00", ""},
+        {"from the 28th to the 3rd", "2026-10-28 00:00", "2026-11-04 00:00", ""},
+        {"until 7/10", "2026-10-07 00:00", "2026-10-08 00:00", ""},
+        {"until 2/1", "2026-10-07 00:00", "2027-01-03 00:00", ""},
+        {"fri 22-02", "2026-10-09 22:00", "2026-10-10 02:00", ""}, /* times past midnight are fine */
+        {"fri 23:30-00:15", "2026-10-09 23:30", "2026-10-10 00:15", ""},
+    };
+    RUN(fine);
+}
+
+/* Issue #13: "tonight 8" used to be 08:00 (already past). */
+TEST(when_evening_words_mean_pm) {
+    static const Case cases[] = {
+        {"tonight 8", "2026-10-07 20:00", "2026-10-07 21:00", ""},
+        {"bastu ikväll 7", "2026-10-07 19:00", "2026-10-07 20:00", "bastu"},
+        {"ikväll 7", "2026-10-07 19:00", "2026-10-07 20:00", ""},
+        {"i kväll 7", "2026-10-07 19:00", "2026-10-07 20:00", ""},
+        {"ikvall 7", "2026-10-07 19:00", "2026-10-07 20:00", ""},
+        {"IKVÄLL kl 7", "2026-10-07 19:00", "2026-10-07 20:00", ""},
+        {"8 tonight", "2026-10-07 20:00", "2026-10-07 21:00", ""},
+        {"kl 8 ikväll", "2026-10-07 20:00", "2026-10-07 21:00", ""},
+        {"tonight 5", "2026-10-07 17:00", "2026-10-07 18:00", ""},
+        {"tonight 6", "2026-10-07 18:00", "2026-10-07 19:00", ""},
+        {"tonight 11", "2026-10-07 23:00", "2026-10-08 00:00", ""},
+        {"tonight 12", "2026-10-08 00:00", "2026-10-08 01:00", ""}, /* midnight, not noon */
+        /* before 05:00: that night, after midnight */
+        {"tonight 1", "2026-10-08 01:00", "2026-10-08 02:00", ""},
+        {"tonight 4", "2026-10-08 04:00", "2026-10-08 05:00", ""},
+        {"tonight 1am", "2026-10-08 01:00", "2026-10-08 02:00", ""},
+        {"tonight 12am", "2026-10-08 00:00", "2026-10-08 01:00", ""},
+        {"tonight 00:30", "2026-10-08 00:30", "2026-10-08 01:30", ""},
+        {"tonight 1-3", "2026-10-08 01:00", "2026-10-08 03:00", ""},
+        {"tonight 1-3am", "2026-10-08 01:00", "2026-10-08 03:00", ""},
+        {"tonight 9-1", "2026-10-07 21:00", "2026-10-08 01:00", ""},
+        {"inatt 2", "2026-10-08 02:00", "2026-10-08 03:00", ""},
+        {"i natt 11", "2026-10-07 23:00", "2026-10-08 00:00", ""},
+        {"tonight at midnight", "2026-10-08 00:00", "2026-10-08 01:00", ""},
+        {"tonight 12:30", "2026-10-08 00:30", "2026-10-08 01:30", ""},
+        {"tonight 8:30", "2026-10-07 20:30", "2026-10-07 21:30", ""},
+        {"ikväll 6:30", "2026-10-07 18:30", "2026-10-07 19:30", ""},
+        {"tonight 7-9", "2026-10-07 19:00", "2026-10-07 21:00", ""},
+        {"ikväll 7-10", "2026-10-07 19:00", "2026-10-07 22:00", ""},
+        {"tonight 6-8", "2026-10-07 18:00", "2026-10-07 20:00", ""},
+        {"tonight 11-1", "2026-10-07 23:00", "2026-10-08 01:00", ""},
+        {"tonight 11-12", "2026-10-07 23:00", "2026-10-08 00:00", ""},
+        {"tonight 12-2", "2026-10-08 00:00", "2026-10-08 02:00", ""},
+        {"tonight 9 till 11", "2026-10-07 21:00", "2026-10-07 23:00", ""},
+        {"tonight 7-9pm", "2026-10-07 19:00", "2026-10-07 21:00", ""},
+        {"ikväll till 11", "2026-10-07 10:00", "2026-10-07 23:00", ""}, /* from now */
+        /* as typed: 24-hour clock, leading zero, am/pm, words */
+        {"tonight 20", "2026-10-07 20:00", "2026-10-07 21:00", ""},
+        {"tonight 8pm", "2026-10-07 20:00", "2026-10-07 21:00", ""},
+        {"tonight 8am", "2026-10-07 08:00", "2026-10-07 09:00", ""},
+        {"tonight 08", "2026-10-07 08:00", "2026-10-07 09:00", ""},
+        {"tonight noon", "2026-10-07 12:00", "2026-10-07 13:00", ""},
+        /* other day words don't shift */
+        {"today 8", "2026-10-07 08:00", "2026-10-07 09:00", ""},
+        {"tomorrow 8", "2026-10-08 08:00", "2026-10-08 09:00", ""},
+        {"8", "2026-10-08 08:00", "2026-10-08 09:00", ""},
+    };
+    RUN(cases);
+}
+
+/* An evening is a day's: a time belongs to the day written right before it, else the start day. */
+TEST(when_evening_belongs_to_its_day) {
+    static const Case cases[] = {
+        {"tonight until tomorrow 10", "2026-10-07 10:00", "2026-10-08 10:00", ""}, /* tomorrow's 10, from now */
+        {"tonight - tomorrow 10", "2026-10-07 10:00", "2026-10-08 10:00", ""},
+        {"8 tonight until tomorrow 10", "2026-10-07 20:00", "2026-10-08 10:00", ""},
+        {"tonight 8 until 11", "2026-10-07 20:00", "2026-10-07 23:00", ""},
+        /* a day + evening/night/kväll/natt */
+        {"imorgon kväll 8", "2026-10-08 20:00", "2026-10-08 21:00", ""},
+        {"i morgon kväll kl 7", "2026-10-08 19:00", "2026-10-08 20:00", ""},
+        {"tomorrow evening 8", "2026-10-08 20:00", "2026-10-08 21:00", ""},
+        {"8 tomorrow evening", "2026-10-08 20:00", "2026-10-08 21:00", ""},
+        {"bastu imorgon kväll 7-9", "2026-10-08 19:00", "2026-10-08 21:00", "bastu"},
+        {"fredag kväll 19", "2026-10-09 19:00", "2026-10-09 20:00", ""},
+        {"fri night 11", "2026-10-09 23:00", "2026-10-10 00:00", ""},
+        {"fri night 1", "2026-10-10 01:00", "2026-10-10 02:00", ""},
+        {"this evening 7", "2026-10-07 19:00", "2026-10-07 20:00", ""},
+        {"tomorrow evening", "2026-10-08 00:00", "2026-10-09 00:00", ""}, /* the word is taken; all day */
+        {"until tomorrow evening 8", "2026-10-07 10:00", "2026-10-08 20:00", ""},
+        {"tomorrow 8", "2026-10-08 08:00", "2026-10-08 09:00", ""},
+        {"call mom in the evening", "-", "-", "call mom in the evening"},
+        /* a time after the last day of a written-out range ends it, on that day */
+        {"fri 14 until sunday 17", "2026-10-09 14:00", "2026-10-11 17:00", ""},
+        {"fri until sun 17", "2026-10-09 00:00", "2026-10-11 17:00", ""},
+        {"från fredag till söndag kl 17", "2026-10-09 00:00", "2026-10-11 17:00", ""},
+        {"until sunday 17", "2026-10-07 10:00", "2026-10-11 17:00", ""},
+        {"until tomorrow kl 10", "2026-10-07 10:00", "2026-10-08 10:00", ""},
+        {"fri-sun 10", "2026-10-09 10:00", "2026-10-12 00:00", ""}, /* written as one word: still the start */
+    };
+    RUN(cases);
+}
+
+/* Typed between midnight and 05:00, "tonight" is the night we're in for times that haven't passed. */
+TEST(when_tonight_after_midnight) {
+    static const Case at_0010[] = {
+        {"tonight 12:30", "2026-10-07 00:30", "2026-10-07 01:30", ""}, /* in 20 minutes */
+        {"tonight 2", "2026-10-07 02:00", "2026-10-07 03:00", ""},
+        {"tonight 12", "2026-10-07 00:00", "2026-10-07 01:00", ""}, /* 10 minutes ago: the usual grace */
+        {"tonight 12-2", "2026-10-07 00:00", "2026-10-07 02:00", ""},
+        {"inatt 3", "2026-10-07 03:00", "2026-10-07 04:00", ""},
+        {"ikväll till 2", "2026-10-07 00:10", "2026-10-07 02:00", ""},
+        {"tonight 11", "2026-10-07 23:00", "2026-10-08 00:00", ""}, /* the evening to come */
+    };
+    NOW = dt_make(2026, 10, 7, 0, 10);
+    for (int i = 0; i < countof(at_0010); i++) check_case(&at_0010[i], 60);
+    static const Case at_0300[] = {
+        {"tonight 2:50", "2026-10-07 02:50", "2026-10-07 03:50", ""},
+        {"tonight 4", "2026-10-07 04:00", "2026-10-07 05:00", ""},
+        {"tonight 2", "2026-10-08 02:00", "2026-10-08 03:00", ""}, /* an hour ago: the next night */
+    };
+    NOW = dt_make(2026, 10, 7, 3, 0);
+    for (int i = 0; i < countof(at_0300); i++) check_case(&at_0300[i], 60);
+}
+
+/* Like Case, plus the real minutes between start and end: an autumn wall clock shows 02:30 twice. */
+typedef struct {
+    const char *in, *start, *end;
+    int minutes;
+} DstCase;
+
+static void check_dst(const DstCase *c, int64_t now) {
+    Tokens t;
+    When w;
+    int64_t s = 0, e = 0;
+    tok_split(&t, c->in);
+    bool ok = when_parse(&t, now, &w) && when_resolve(&w, now, 60, &s, &e);
+    char gs[32] = "-", ge[32] = "-";
+    if (ok) {
+        fmt_t(s, gs, sizeof gs);
+        fmt_t(e, ge, sizeof ge);
+    }
+    long long mins = ok ? (e - s) / 60 : -1;
+    test_checks++;
+    if (!str_eq(gs, c->start) || !str_eq(ge, c->end) || mins != c->minutes)
+        test_fail(__FILE__, __LINE__, "\"%s\"\n      got:      %s -> %s (%lld min)\n      expected: %s -> %s (%d min)",
+                  c->in, gs, ge, mins, c->start, c->end, c->minutes);
+}
+
+/* Central European clocks: 2026-03-29 02:00 -> 03:00 and 2026-10-25 03:00 -> 02:00
+ * (Stockholm, Berlin, Paris ...). The cases below only hold in such a zone. */
+static bool central_european_clocks(void) {
+    return dt_local(dt_make(2026, 3, 29, 1, 0) + 3600).hour == 3 &&
+           dt_local(dt_make(2026, 10, 25, 1, 0) + 3 * 3600).hour == 3;
+}
+
+/* Issue #13: "tomorrow 02:00-03:00" on the night the clocks go forward was a 24-hour booking. */
+TEST(when_clock_changes_central_europe) {
+    if (!central_european_clocks()) return; /* another zone: when_clock_changes_never_wrap covers it */
+    static const DstCase spring[] = {
+        /* 02:00-03:00 doesn't exist that night: starts when the clocks go on, keeps its length */
+        {"tomorrow 02:00-03:00", "2026-03-29 03:00", "2026-03-29 04:00", 60},
+        {"tomorrow 2-3am", "2026-03-29 03:00", "2026-03-29 04:00", 60},
+        {"tomorrow 02:30", "2026-03-29 03:30", "2026-03-29 04:30", 60},
+        {"02:30", "2026-03-29 03:30", "2026-03-29 04:30", 60}, /* passed today -> tomorrow -> skipped */
+        {"tomorrow 02:30-02:45", "2026-03-29 03:30", "2026-03-29 03:45", 15},
+        {"tomorrow 02:00-04:00", "2026-03-29 03:00", "2026-03-29 05:00", 120},
+        {"tomorrow 02:00 for 2h", "2026-03-29 03:00", "2026-03-29 05:00", 120},
+        /* a start before the jump stays; an end in it moves on with the clocks */
+        {"tomorrow 01:30-02:30", "2026-03-29 01:30", "2026-03-29 03:30", 60},
+        {"tomorrow 01:00-04:00", "2026-03-29 01:00", "2026-03-29 04:00", 120},
+        {"sat 23-03", "2026-03-28 23:00", "2026-03-29 03:00", 180},
+        {"tomorrow", "2026-03-29 00:00", "2026-03-30 00:00", 23 * 60},
+    };
+    int64_t now = dt_make(2026, 3, 28, 10, 0);
+    for (int i = 0; i < countof(spring); i++) check_dst(&spring[i], now);
+
+    static const DstCase autumn[] = {
+        {"tomorrow 02:30", "2026-10-25 02:30", "2026-10-25 02:30", 60}, /* the first 02:30, an hour */
+        {"tomorrow 02:00-03:00", "2026-10-25 02:00", "2026-10-25 03:00", 120},
+        {"tomorrow 02:30-02:45", "2026-10-25 02:30", "2026-10-25 02:45", 15},
+        {"tomorrow 01:00-04:00", "2026-10-25 01:00", "2026-10-25 04:00", 240},
+        {"sat 22-02", "2026-10-24 22:00", "2026-10-25 02:00", 240},
+        {"tonight 11-3", "2026-10-24 23:00", "2026-10-25 03:00", 300},
+        {"tomorrow", "2026-10-25 00:00", "2026-10-26 00:00", 25 * 60},
+        {"sat-sun", "2026-10-24 00:00", "2026-10-26 00:00", 49 * 60},
+    };
+    now = dt_make(2026, 10, 24, 10, 0);
+    for (int i = 0; i < countof(autumn); i++) check_dst(&autumn[i], now);
+
+    /* the first pass of the repeated hour: 90 minutes after 01:00 (summer time) */
+    Tokens t;
+    When w;
+    int64_t s, e;
+    tok_split(&t, "tomorrow 02:30");
+    CHECK(when_parse(&t, now, &w) && when_resolve(&w, now, 60, &s, &e));
+    CHECK_INT(s - dt_make(2026, 10, 25, 1, 0), 90 * 60);
+}
+
+/* Whatever this machine's zone: on each day of 2026 its clocks change, every hour-long range
+ * stays short and forward, a start is never earlier than typed, and nothing wraps to the next
+ * day. (No clock changes here: nothing to check.) */
+TEST(when_clock_changes_never_wrap) {
+    int64_t now = dt_make(2026, 1, 1, 10, 0);
+    for (int doy = 0; doy < 365; doy++) {
+        if (dt_make(2026, 1, 2 + doy, 0, 0) - dt_make(2026, 1, 1 + doy, 0, 0) == 86400) continue;
+        DateTime d = dt_local(dt_make(2026, 1, 1 + doy, 12, 0));
+        int64_t noon = dt_make(d.year, d.mon, d.day, 12, 0);
+        for (int at = 0; at < 1440; at += 30) {
+            char in[64];
+            int to = (at + 60) % 1440;
+            snprintf(in, sizeof in, "%04d-%02d-%02d %02d:%02d-%02d:%02d", d.year, d.mon, d.day, at / 60, at % 60,
+                     to / 60, to % 60);
+            Tokens t;
+            When w;
+            int64_t s, e;
+            tok_split(&t, in);
+            CHECK(when_parse(&t, now, &w) && when_resolve(&w, now, 60, &s, &e));
+            DateTime ds = dt_local(s);
+            int shown = (ds.day == d.day ? 0 : 1440) + ds.hour * 60 + ds.min; /* the start on the day's clock */
+            test_checks++;
+            if (e <= s || e - s > 3 * 3600 || shown < at || shown > at + 120 || s > noon + 13 * 3600)
+                test_fail(__FILE__, __LINE__, "\"%s\": %+lld min after noon, %lld min long", in,
+                          (long long)(s - noon) / 60, (long long)(e - s) / 60);
+
+            snprintf(in, sizeof in, "%04d-%02d-%02d %02d:%02d", d.year, d.mon, d.day, at / 60, at % 60);
+            tok_split(&t, in);
+            CHECK(when_parse(&t, now, &w) && when_resolve(&w, now, 60, &s, &e));
+            CHECK_INT(e - s, 3600);
+        }
+    }
+}
+
 TEST(when_single_times) {
     static const Case cases[] = {
         {"14", "2026-10-07 14:00", "2026-10-07 15:00", ""},
@@ -594,11 +935,15 @@ TEST(when_fuzz_random_phrases) {
         "an",    "en",    "kvart", "and",    "och",    "between", "mellan", "from", "från",  "i",     "dag",
         "morgon", "helgen", "weekend", "tomorrow", "idag", "1.5h", "for", "för",  "2026",  "mondays", "28/12",
         "2/1",   "noon",  "midnight", "24",  "0",      "fri-sun", "a",    "quarter", "of",  "hour",  "x",
+        "tonight", "ikväll", "kväll", "8",  "7-9",    "12",     "8:30",  "31",    "sep",   "29/2",  "31/9",
+        "10/10", "14-12", "2026-09-31", "02:00-03:00", "02:30", "01:30-02:30", "2026-03-29", "2026-10-25", "today",
+        "evening", "night", "inatt", "natt", "1am", "14-12/10", "28-3/10", "1",
     };
-    int64_t now = dt_make(2026, 10, 7, 10, 0);
+    /* an ordinary day, and the two nights the clocks change in much of Europe */
+    const int64_t nows[] = {dt_make(2026, 10, 7, 10, 0), dt_make(2026, 3, 28, 10, 0), dt_make(2026, 10, 24, 10, 0)};
     uint32_t seed = 12345;
     char phrase[512], desc[96];
-    for (int iter = 0; iter < 4000; iter++) {
+    for (int iter = 0; iter < 6000; iter++) {
         phrase[0] = '\0';
         size_t len = 0;
         seed = seed * 1103515245u + 12345u;
@@ -608,12 +953,28 @@ TEST(when_fuzz_random_phrases) {
             const char *wd = pool[(seed >> 16) % (uint32_t)countof(pool)];
             len += (size_t)snprintf(phrase + len, sizeof phrase - len, "%s%s", k ? " " : "", wd);
         }
+        int64_t now = nows[iter % countof(nows)];
         Tokens t;
         When w;
         int64_t s, e;
         tok_split(&t, phrase);
-        when_parse(&t, now, &w);
-        if (when_resolve(&w, now, 60, &s, &e)) {
+        t.used[0] = iter & 1; /* sometimes the caller claimed the first word */
+        bool any = when_parse(&t, now, &w);
+        if (w.refused[0]) { /* refused: false, nothing to resolve, the words as they were */
+            bool restored = t.used[0] == (iter & 1);
+            for (int k = 1; k < t.n; k++) restored = restored && !t.used[k];
+            test_checks++;
+            if (any || when_resolve(&w, now, 60, &s, &e) || !restored) {
+                test_fail(__FILE__, __LINE__, "\"%s\": refused (%s) but not cleanly", phrase, w.refused);
+                return;
+            }
+            continue;
+        }
+        if (any != when_resolve(&w, now, 60, &s, &e)) {
+            test_fail(__FILE__, __LINE__, "\"%s\": parsed %d but resolved %d", phrase, any, !any);
+            return;
+        }
+        if (any) {
             test_checks++;
             if (e <= s) {
                 test_fail(__FILE__, __LINE__, "\"%s\": end <= start", phrase);

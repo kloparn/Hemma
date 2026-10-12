@@ -548,15 +548,25 @@ size_t log_clean(const char *in, char *out, size_t cap) {
     return n;
 }
 
+bool g_log_stderr = true;
+static LogSink g_log_sink;
+
+void log_set_sink(LogSink fn) { g_log_sink = fn; }
+
 void log_at(LogLevel level, const char *fmt, ...) {
     if (level < g_log_level) return;
     static const char tag[] = "DIWE";
-    DateTime d = dt_local((int64_t)time(NULL));
+    int64_t ts = (int64_t)time(NULL);
     char line[1024], clean[1536];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
     log_clean(line, clean, sizeof clean);
-    fprintf(stderr, "%02d:%02d:%02d %c %s\n", d.hour, d.min, d.sec, tag[level < 4 ? level : 3], clean);
+    if (g_log_stderr) {
+        DateTime d = dt_local(ts);
+        fprintf(stderr, "%02d:%02d:%02d %c %s\n", d.hour, d.min, d.sec, tag[level < 4 ? level : 3], clean);
+    }
+    LogSink sink = g_log_sink;
+    if (sink) sink(level > LOG_ERROR ? LOG_ERROR : level, ts, clean);
 }

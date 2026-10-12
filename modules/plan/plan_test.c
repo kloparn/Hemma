@@ -56,6 +56,12 @@ TEST(plan_parses_task_quick_add) {
     CHECK_STR(err, "What needs doing?");
     CHECK(!plan_parse_task("", NOW, &d, err, sizeof err));
     CHECK(!plan_parse_task(NULL, NOW, &d, err, sizeof err));
+    /* issue #13: "pay rent 31 sep" was an undated to-do called just that */
+    CHECK(!plan_parse_task("pay rent 31 sep", NOW, &d, err, sizeof err));
+    CHECK_HAS(err, "31 September");
+    EventDraft ev;
+    CHECK(!plan_parse_event("cabin 12/10/2026-10/10/2026", NOW, &ev, err, sizeof err));
+    CHECK_HAS(err, "before the start");
     th_halt();
 }
 
@@ -389,5 +395,13 @@ TEST(plan_display_accounts_see_tasks_without_tick_buttons) {
     CHECK_HAS(list, "Water the plants");
     CHECK(!strstr(list, "data-a=\"plan.task_done\""));
     CHECK_HAS(th_page(adam, "/"), "data-a=\"plan.task_done\""); /* people still can */
+    /* issue #14: the pickers list real people only, and a hand-made request can't pick the tablet */
+    char f[120];
+    snprintf(f, sizeof f, "id=1&title=water+the+plants&who=%d&due=&repeat=0", tablet);
+    CHECK(th_act(adam, "plan.task_save", f).ok);
+    CHECK_INT(((Task *)tbl_get(&T_task, 1))->who, 0);
+    snprintf(f, sizeof f, "id=1&title=water+the+plants&who=%d&due=&repeat=0", adam);
+    CHECK(th_act(adam, "plan.task_save", f).ok);
+    CHECK_INT(((Task *)tbl_get(&T_task, 1))->who, adam);
     th_halt();
 }

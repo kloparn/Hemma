@@ -50,8 +50,10 @@ static Watch *watches;
 static int nwatches, capwatches;
 static unsigned next_id;
 static size_t g_buffer_budget = BUFFER_BUDGET;
+static int g_max_conns = MAX_CONNS;
 
 void server_set_buffer_budget(size_t bytes) { g_buffer_budget = bytes ? bytes : BUFFER_BUDGET; }
+void server_set_max_conns(int n) { g_max_conns = n > 0 ? n : MAX_CONNS; }
 
 bool server_listen(const char *host, int port) {
     char err[200];
@@ -465,8 +467,50 @@ static int conns_from(uint32_t ip) {
     return n;
 }
 
+static int live_conns(void) {
+    int n = 0;
+    for (int i = 0; i < nconns; i++) n += !conns[i]->dead;
+    return n;
+}
+
+/* A connection that only holds a slot: an idle keep-alive one, or one still dribbling in its
+   request. Screens (WebSockets), handed-over streams and anything owed a reply never are. */
+static bool holds_a_slot(const Conn *c) {
+    return !c->dead && !c->ws && !c->detached && !c->closing && !c->lingering && !c->peer_eof && !c->out.len;
+}
+
+/* When every slot is taken, a newcomer takes the place of a slot holder - from the address
+   holding the most connections, idle ones before half-sent requests, the longest-waiting
+   first. Without this, one host with a dozen addresses could keep every slot with a request
+   every minute and nobody else could connect (issue #5). */
+static Conn *slot_holder(void) {
+    Conn *best = NULL;
+    int best_n = 0;
+    for (int i = 0; i < nconns; i++) {
+        Conn *c = conns[i];
+        if (!holds_a_slot(c)) continue;
+        int n = conns_from(c->ip);
+        bool idle = !c->t_req, best_idle = best && !best->t_req;
+        int64_t since = idle ? c->t_last : c->t_req, best_since = best ? (best_idle ? best->t_last : best->t_req) : 0;
+        if (!best || n > best_n || (n == best_n && idle && !best_idle) ||
+            (n == best_n && idle == best_idle && since < best_since)) {
+            best = c;
+            best_n = n;
+        }
+    }
+    return best;
+}
+
+static bool any_slot_holder(void) {
+    for (int i = 0; i < nconns; i++)
+        if (holds_a_slot(conns[i])) return true;
+    return false;
+}
+
 static void accept_all(void) {
-    for (int k = 0; k < 64 && nconns < MAX_CONNS; k++) {
+    for (int k = 0; k < 64; k++) {
+        bool full = live_conns() >= g_max_conns;
+        if (full && !any_slot_holder()) break;
         uint32_t ip = 0;
         sock_t s = tcp_accept(g_listen, &ip);
         if (s == SOCK_BAD) break;
@@ -474,6 +518,7 @@ static void accept_all(void) {
             sock_close(s);
             continue;
         }
+        if (full) conn_kill(slot_holder()); /* freed by the next compact() */
         Conn *c = xcalloc(1, sizeof *c);
         c->fd = s;
         c->ip = ip;
@@ -550,8 +595,10 @@ void server_run(const ServerHooks *hooks) {
             pf = xrealloc(pf, (size_t)cap * sizeof *pf);
         }
         int n = 0, nc = nconns, nw = nwatches;
-        /* at capacity the listener stays out of the poll set (or poll would spin on it) */
-        pf[n++] = (pollfd_t){.fd = g_listen, .events = (short)(nconns < MAX_CONNS ? POLLIN : 0)};
+        /* at capacity - nothing a newcomer could take the place of - the listener stays out of
+           the poll set (or poll would spin on it) */
+        bool room = nconns < g_max_conns || any_slot_holder();
+        pf[n++] = (pollfd_t){.fd = g_listen, .events = (short)(room ? POLLIN : 0)};
         pf[n++] = (pollfd_t){.fd = g_wake, .events = (short)(g_wake != SOCK_BAD ? POLLIN : 0)};
         for (int i = 0; i < nc; i++) pf[n++] = (pollfd_t){.fd = conns[i]->fd, .events = conn_events(conns[i])};
         for (int i = 0; i < nw; i++) pf[n++] = (pollfd_t){.fd = watches[i].fd, .events = watches[i].events};

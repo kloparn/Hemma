@@ -94,8 +94,10 @@ static bool mem_read(void *ctx, int64_t off, void *dst, size_t n) {
     return true;
 }
 
-static bool mem_write(void *ctx, const void *p, size_t n) {
-    w_put(ctx, p, n);
+static bool mem_write(void *ctx, const void *p, size_t n) { /* a "disk" of 64 MB: no test needs more */
+    W *w = ctx;
+    if (n > (64u << 20) - w->len) return false;
+    w_put(w, p, n);
     return true;
 }
 
@@ -136,36 +138,40 @@ static void dc(Bw *w, int comp, int diff) {
     if (size) put(w, (uint32_t)(diff > 0 ? diff : diff + (1 << size) - 1), size);
 }
 
-/* One progressive 48x32 I picture (sequence header and GOP in front, like a DVD's
-   keyframes) of flat macroblocks whose brightness moves with `k`. */
-static size_t mpeg2_picture(uint8_t *out, int k) {
+/* One w x h I picture (multiples of 16, at most 64x64; sequence header and GOP in front, like
+   a DVD's keyframes) of flat macroblocks whose brightness moves with `k`. A progressive
+   sequence, or (il) an interlaced one coded with field DCT whose bottom field is `comb`
+   darker than the top: fields from different instants, as interlaced video shows them. */
+static size_t mpeg2_picture_of(uint8_t *out, int k, int width, int height, bool il, int comb) {
     static Bw w;
     memset(&w, 0, sizeof w);
-    start_code(&w, 0xB3); /* sequence header: 48x32, square, 29.97 */
-    put(&w, 48, 12), put(&w, 32, 12), put(&w, 1, 4), put(&w, 4, 4), put(&w, 0x3FFFF, 18), put(&w, 1, 1);
-    put(&w, 112, 10), put(&w, 0, 3);
-    start_code(&w, 0xB5); /* sequence extension: MP@ML, progressive, 4:2:0 */
-    put(&w, 1, 4), put(&w, 0x48, 8), put(&w, 1, 1), put(&w, 1, 2), put(&w, 0, 4), put(&w, 0, 12), put(&w, 1, 1);
+    start_code(&w, 0xB3); /* sequence header: square pixels, 29.97 */
+    put(&w, (uint32_t)width, 12), put(&w, (uint32_t)height, 12), put(&w, 1, 4), put(&w, 4, 4), put(&w, 0x3FFFF, 18);
+    put(&w, 1, 1), put(&w, 112, 10), put(&w, 0, 3);
+    start_code(&w, 0xB5); /* sequence extension: MP@ML, (non-)progressive, 4:2:0 */
+    put(&w, 1, 4), put(&w, 0x48, 8), put(&w, !il, 1), put(&w, 1, 2), put(&w, 0, 4), put(&w, 0, 12), put(&w, 1, 1);
     put(&w, 0, 8), put(&w, 0, 1), put(&w, 0, 7);
     start_code(&w, 0xB8); /* GOP, closed */
     put(&w, 0, 25), put(&w, 1, 1), put(&w, 0, 1);
     start_code(&w, 0x00); /* picture: I */
     put(&w, 0, 10), put(&w, 1, 3), put(&w, 0xFFFF, 16), put(&w, 0, 1);
-    start_code(&w, 0xB5); /* picture coding extension: frame, frame DCT, progressive */
+    start_code(&w, 0xB5); /* picture coding extension: a frame; progressive with frame DCT, or top field first */
     put(&w, 8, 4);
     for (int i = 0; i < 4; i++) put(&w, 15, 4);
-    put(&w, 3, 2), put(&w, 3, 2), put(&w, 0, 1), put(&w, 1, 1), put(&w, 0, 4), put(&w, 0, 1), put(&w, 1, 1);
-    put(&w, 1, 1), put(&w, 0, 1);
-    for (int row = 0; row < 2; row++) {
+    put(&w, 3, 2), put(&w, 3, 2), put(&w, il, 1), put(&w, !il, 1), put(&w, 0, 4), put(&w, 0, 1), put(&w, 1, 1);
+    put(&w, !il, 1), put(&w, 0, 1);
+    for (int row = 0; row < height / 16; row++) {
         start_code(&w, row + 1);
         put(&w, 8, 5), put(&w, 0, 1);
         int pred[3] = {1024, 1024, 1024};
-        for (int x = 0; x < 3; x++) {
+        for (int x = 0; x < width / 16; x++) {
             put(&w, 1, 1); /* macroblock address increment 1 */
             put(&w, 1, 1); /* intra */
-            int lv[3] = {40 + (k * 3 + x * 50 + row * 70) % 180, 128, 128};
+            if (il) put(&w, 1, 1); /* dct_type: field - blocks 0, 1 hold the top field, 2, 3 the bottom */
+            int top = 40 + (k * (il ? 9 : 3) + x * 50 + row * 70) % 180; /* (interlaced: enough to count as motion) */
             for (int b = 0; b < 6; b++) {
-                int c = b < 4 ? 0 : b - 3, v = 8 * lv[c] + 1;
+                int c = b < 4 ? 0 : b - 3, lv = c ? 128 : b >= 2 && il ? (top > comb + 16 ? top - comb : top + comb) : top;
+                int v = 8 * lv + 1;
                 dc(&w, c, v - pred[c]);
                 pred[c] = v;
                 put(&w, 2, 2); /* end of block */
@@ -176,6 +182,8 @@ static size_t mpeg2_picture(uint8_t *out, int k) {
     memcpy(out, w.b, n);
     return n;
 }
+
+static size_t mpeg2_picture(uint8_t *out, int k) { return mpeg2_picture_of(out, k, 48, 32, false, 0); }
 
 /* ------------------------------------------------------------ test files */
 
@@ -221,7 +229,7 @@ static size_t start_file(W *w, const Tracks *t, double ms) {
     size_t seg = w_open(w, 0x18538067);
     size_t info = w_open(w, 0x1549A966);
     w_uint(w, 0x2AD7B1, 1000000);
-    w_float(w, 0x4489, ms);
+    if (ms > 0) w_float(w, 0x4489, ms); /* (else: a length nobody wrote down) */
     w_close(w, info);
     size_t tracks = w_open(w, 0x1654AE6B);
     size_t tr = w_open(w, 0xAE);
@@ -565,4 +573,438 @@ TEST(conv_turns_dolby_into_aac) {
         free(in.p), free(out.p);
     }
     CHECK_INT(aac[1], aac[0]); /* the hole became silence of the same length */
+}
+
+/* ------------------------------------------------- files built from streams of blocks */
+
+#define MAX_BLOCKS 640
+
+typedef struct { /* one track's blocks: their bytes one after another, times and key flags */
+    W data;
+    size_t at[MAX_BLOCKS + 1];
+    int ms[MAX_BLOCKS], n;
+    bool key[MAX_BLOCKS];
+} Stream;
+
+static void s_add(Stream *s, const void *p, size_t n, int ms, bool key) {
+    if (s->n == MAX_BLOCKS) return;
+    w_put(&s->data, p, n);
+    s->ms[s->n] = ms, s->key[s->n] = key;
+    s->at[++s->n] = s->data.len;
+}
+
+static void s_free(Stream *s) {
+    free(s->data.p);
+    memset(s, 0, sizeof *s);
+}
+
+static const uint8_t *s_block(const Stream *s, int b) { return s->data.p ? s->data.p + s->at[b] : NULL; }
+static size_t s_size(const Stream *s, int b) { return s->at[b + 1] - s->at[b]; }
+
+/* the video blocks (track 1) and the sound's (track 2; NULL: none), interleaved by time like a
+   real file, in one cluster (times up to 32 s) */
+static void mux(W *w, const Tracks *t, double ms, const Stream *v, const Stream *a) {
+    size_t seg = start_file(w, t, ms);
+    size_t cl = w_open(w, 0x1F43B675);
+    w_uint(w, 0xE7, 0);
+    for (int i = 0, k = 0; i < v->n || (a && k < a->n);) {
+        bool vid = i < v->n && (!a || k >= a->n || v->ms[i] <= a->ms[k]);
+        const Stream *s = vid ? v : a;
+        int b = vid ? i++ : k++;
+        w_simple(w, vid ? 1 : 2, s->ms[b], s->key[b], s_block(s, b), s_size(s, b));
+    }
+    w_close(w, cl);
+    w_close(w, seg);
+}
+
+/* MPEG-2 pictures k0 .. k0+n-1 (see mpeg2_picture_of). cadence: only every 5th's third and
+   fourth combed - the 3:2 pattern of film telecined to 29.97 */
+static void add_mpeg2(Stream *s, int k0, int n, int width, int height, bool il, int comb, bool cadence) {
+    static uint8_t pic[4096];
+    for (int k = k0; k < k0 + n; k++) {
+        int c = !cadence || k % 5 == 2 || k % 5 == 3 ? comb : 0;
+        s_add(s, pic, mpeg2_picture_of(pic, k, width, height, il, c), frame_ms(k), true);
+    }
+}
+
+/* n frames of H.264 (64x48, a keyframe every 5); its avcC record goes to avcc */
+static void add_h264(Stream *s, int n, uint8_t avcc[256], size_t *avcc_len) {
+    H264Params hp = {.width = 64, .height = 48, .fps_num = 30000, .fps_den = 1001, .keyint = 5, .annexb = false};
+    H264Enc *e = h264enc_new(&hp);
+    *avcc_len = h264enc_avcc(e, avcc, 256);
+    static uint8_t y[64 * 48], u[32 * 24], v[32 * 24];
+    for (int k = 0; k < n; k++) {
+        for (int i = 0; i < 64 * 48; i++) y[i] = (uint8_t)((i % 64 * 3 + i / 64 + k * 5) & 0xFF);
+        memset(u, 90 + k, sizeof u), memset(v, 160 - k, sizeof v);
+        H264Picture p = {y, u, v, 64, 32, 32, k};
+        H264Packet pk;
+        if (h264enc_encode(e, &p, &pk)) s_add(s, pk.data, pk.size, frame_ms(k), pk.idr);
+    }
+    h264enc_free(e);
+}
+
+/* `seconds` of AAC; its AudioSpecificConfig goes to asc */
+static void add_aac(Stream *s, double seconds, uint8_t asc[2]) {
+    static uint8_t aus[200][AAC_MAX_AU];
+    int sizes[200], n = make_aac(aus, sizes, 200, seconds, asc);
+    for (int a = 0; a < n; a++) s_add(s, aus[a], (size_t)sizes[a], au_ms(a), true);
+}
+
+/* MPEG-2 coded interlaced, as most DVDs are: fields from different instants throughout are
+   deinterlaced (one picture each), film telecined to 29.97 goes back to 23.976 (one picture in
+   five dropped) - picked by the analysis, as for a real disc. */
+TEST(conv_deinterlaces_video_and_inverse_telecines_film) {
+    for (int film = 0; film < 2; film++) {
+        static Stream v;
+        add_mpeg2(&v, 0, 60, 64, 32, true, 70, film);
+        W in, out;
+        Tracks t = {"V_MPEG2", NULL, 0, 64, 32, NULL, NULL, 0};
+        mux(&in, &t, 2000, &v, NULL);
+        AvConvJob j = {0};
+        Seen s;
+        CHECK(run(&in, &out, &j, &s));
+        CHECK_STR(j.err, "");
+        CHECK_HAS(j.what, film ? "(film, 23.976 fps)" : "(video, 29.970 fps)");
+        int n[2];
+        counts(&out, n);
+        if (film) CHECK(n[0] >= 60 * 4 / 5 - 2 && n[0] <= 60 * 4 / 5 + 1);
+        else CHECK_INT(n[0], 60);
+        free(in.p), free(out.p);
+        s_free(&v);
+    }
+}
+
+/* Issue #4: a later sequence header that changes the picture size. Everything after the decoder
+   (deinterlacer, encoder) is set up for the first size; the decoder makes its pictures the new
+   size. Same width with fewer rows used to be read past the end of the decoder's picture (a heap
+   overflow); now any change stops the job cleanly, saying why. */
+TEST(conv_refuses_a_picture_that_changes_size) {
+    static const struct {
+        int w, h;
+        bool il;
+        const char *says;
+    } later[] = {
+        {48, 16, false, "48×32, later 48×16"}, /* same width, fewer rows: the overflow */
+        {48, 64, false, "48×32, later 48×64"}, /* more rows */
+        {32, 32, false, "48×32, later 32×32"}, /* narrower */
+        {64, 16, false, "48×32, later 64×16"}, /* wider and fewer rows */
+        {48, 32, true, NULL},                  /* the same size, now interlaced: fine */
+    };
+    for (int i = 0; i < (int)(sizeof later / sizeof *later); i++) {
+        static Stream v;
+        add_mpeg2(&v, 0, 20, 48, 32, false, 0, false);
+        add_mpeg2(&v, 20, 20, later[i].w, later[i].h, later[i].il, 0, false);
+        W in, out;
+        Tracks t = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0};
+        mux(&in, &t, 1400, &v, NULL);
+        AvConvJob j = {0};
+        Seen s;
+        bool ok = run(&in, &out, &j, &s);
+        if (later[i].says) {
+            CHECK(!ok);
+            CHECK(j.unsupported); /* the browser sends the original instead */
+            CHECK_HAS(j.err, "changes size");
+            CHECK_HAS(j.err, later[i].says);
+        } else {
+            CHECK(ok);
+            int n[2];
+            counts(&out, n);
+            CHECK_INT(n[0], 40);
+        }
+        free(in.p), free(out.p);
+        s_free(&v);
+    }
+}
+
+/* one block of 256 empty frames (fixed lacing): 14 bytes of file, 256 samples */
+static void w_laced_empty(W *w, int track) {
+    w_id(w, 0xA3);
+    w_size8(w, 5);
+    w_byte(w, 0x80 | track);
+    w_byte(w, 0), w_byte(w, 0); /* at the cluster's time */
+    w_byte(w, 0x80 | 0x04);     /* key, fixed-size lacing */
+    w_byte(w, 255);             /* 256 frames */
+}
+
+static const uint8_t AVCC[] = {1, 0x42, 0xC0, 0x1E, 0xFF, 0xE1, 0, 0}; /* copied as it is: any bytes do */
+
+/* Issue #4, part two: every sample keeps ~20-40 bytes of index in memory until the end, so a file
+   of tiny blocks (or of laced empty frames, 256 in 14 bytes) could need many times its own size
+   in RAM and get a 1 GB Pi's server killed. A track gets at most 300 pictures / 120 sound blocks
+   a second of the stated length, and 2 million whatever the length says. */
+TEST(conv_bounds_the_samples_a_file_can_make) {
+    static const uint8_t one[1] = {0x55};
+    for (int honest = 0; honest < 2; honest++) { /* 2000 pictures: in 1 s too many, in 100 s fine */
+        W in, out;
+        Tracks t = {"V_MPEG4/ISO/AVC", AVCC, sizeof AVCC, 64, 48, NULL, NULL, 0};
+        size_t seg = start_file(&in, &t, honest ? 100000 : 1000);
+        size_t cl = w_open(&in, 0x1F43B675);
+        w_uint(&in, 0xE7, 0);
+        for (int k = 0; k < 2000; k++) w_simple(&in, 1, k * 10, k % 50 == 0, one, 1);
+        w_close(&in, cl);
+        w_close(&in, seg);
+        AvConvJob j = {0};
+        Seen s;
+        bool ok = run(&in, &out, &j, &s);
+        if (honest) {
+            CHECK(ok);
+            int n[2];
+            counts(&out, n);
+            CHECK_INT(n[0], 2000);
+        } else {
+            CHECK(!ok);
+            CHECK(j.unsupported);
+            CHECK_HAS(j.err, "far too many pictures");
+            CHECK_INT((int)out.len, 0); /* found while reading: nothing written */
+        }
+        free(in.p), free(out.p);
+    }
+
+    { /* sound: 2000 AAC blocks in a file that says it lasts a second */
+        W in, out;
+        uint8_t asc[2] = {0x11, 0x90};
+        Tracks t = {"V_MPEG4/ISO/AVC", AVCC, sizeof AVCC, 64, 48, "A_AAC", asc, 2};
+        size_t seg = start_file(&in, &t, 1000);
+        size_t cl = w_open(&in, 0x1F43B675);
+        w_uint(&in, 0xE7, 0);
+        for (int k = 0; k < 2000; k++) {
+            if (k % 60 == 0) w_simple(&in, 1, k / 2, k == 0, one, 1);
+            w_simple(&in, 2, k / 2, true, one, 1);
+        }
+        w_close(&in, cl);
+        w_close(&in, seg);
+        AvConvJob j = {0};
+        Seen s;
+        CHECK(!run(&in, &out, &j, &s));
+        CHECK(j.unsupported);
+        CHECK_HAS(j.err, "far too many sound blocks");
+        free(in.p), free(out.p);
+    }
+
+    { /* no length at all: 2,000,128 laced empty pictures in 110 KB stop at 2 million */
+        W in, out;
+        Tracks t = {"V_MPEG4/ISO/AVC", AVCC, sizeof AVCC, 64, 48, NULL, NULL, 0};
+        size_t seg = start_file(&in, &t, 0);
+        size_t cl = w_open(&in, 0x1F43B675);
+        w_uint(&in, 0xE7, 0);
+        for (int b = 0; b < 7813; b++) w_laced_empty(&in, 1);
+        w_close(&in, cl);
+        w_close(&in, seg);
+        CHECK(in.len < 120000);
+        AvConvJob j = {0};
+        Seen s;
+        CHECK(!run(&in, &out, &j, &s));
+        CHECK(j.unsupported);
+        CHECK_HAS(j.err, "far too many pictures");
+        /* a job can ask for a smaller bound (tests, fuzzing): 1024 pictures are too many for 1000 */
+        free(in.p), free(out.p);
+        seg = start_file(&in, &t, 0);
+        cl = w_open(&in, 0x1F43B675);
+        w_uint(&in, 0xE7, 0);
+        for (int b = 0; b < 4; b++) w_laced_empty(&in, 1);
+        w_close(&in, cl);
+        w_close(&in, seg);
+        AvConvJob small = {.max_samples = 1000};
+        CHECK(!run(&in, &out, &small, &s));
+        CHECK_HAS(small.err, "far too many pictures");
+        free(out.p);
+        AvConvJob roomy = {.max_samples = 1024};
+        CHECK(run(&in, &out, &roomy, &s));
+        free(in.p), free(out.p);
+    }
+
+    { /* Dolby with a 10 s jump at every block: each is filled with silence (a damaged disc's
+         holes), but not past what a file of 1 s can hold */
+        static uint8_t ac3[768]; /* one Dolby frame, sent again every time */
+        CHECK_INT((int)ac3_test_tone(ac3, sizeof ac3, 1), 768);
+        W in, out;
+        Tracks t = {"V_MPEG2", NULL, 0, 48, 32, "A_AC3", NULL, 0};
+        size_t seg = start_file(&in, &t, 1000);
+        static uint8_t pic[4096];
+        for (int b = 0; b < 8; b++) {
+            size_t cl = w_open(&in, 0x1F43B675);
+            w_uint(&in, 0xE7, (uint64_t)b * 10000);
+            for (int k = 0; k < 4; k++) w_simple(&in, 1, frame_ms(k), true, pic, mpeg2_picture(pic, b * 4 + k));
+            w_simple(&in, 2, 0, true, ac3, sizeof ac3);
+            w_close(&in, cl);
+        }
+        w_close(&in, seg);
+        AvConvJob j = {0};
+        Seen s;
+        CHECK(!run(&in, &out, &j, &s));
+        CHECK_HAS(j.err, "far too many sound blocks");
+        free(in.p), free(out.p);
+    }
+}
+
+/* Timestamps and lengths no real file has - damage, or made up: no arithmetic on them may
+   overflow (the debug build traps on that), and a stated length of days mustn't reserve a
+   giant index (it used to: up to 2 GB of padding at the front of the copy). */
+TEST(conv_keeps_wild_timestamps_and_lengths_in_check) {
+    for (int mpeg2 = 0; mpeg2 < 2; mpeg2++) { /* a second cluster ~146 years in */
+        static Stream v, a;
+        uint8_t avcc[256], asc[2];
+        size_t avcc_len = 0;
+        if (mpeg2) add_mpeg2(&v, 0, 10, 48, 32, false, 0, false);
+        else add_h264(&v, 10, avcc, &avcc_len);
+        add_aac(&a, 0.2, asc);
+        CHECK(v.n == 10 && a.n >= 8);
+        W in, out;
+        Tracks t = {mpeg2 ? "V_MPEG2" : "V_MPEG4/ISO/AVC", mpeg2 ? NULL : avcc, avcc_len, mpeg2 ? 48 : 64,
+                    mpeg2 ? 32 : 48, "A_AAC", asc, 2};
+        size_t seg = start_file(&in, &t, 400);
+        for (int c = 0; c < 2; c++) {
+            size_t cl = w_open(&in, 0x1F43B675);
+            w_uint(&in, 0xE7, c ? 4600000000000ull : 0); /* (ms) in ns: 4.6e18, close to INT64_MAX */
+            for (int i = c * 5; i < c * 5 + 5; i++) w_simple(&in, 1, v.ms[i] % 200, v.key[i], s_block(&v, i), s_size(&v, i));
+            for (int i = c * 4; i < c * 4 + 4; i++) w_simple(&in, 2, a.ms[i] % 100, true, s_block(&a, i), s_size(&a, i));
+            w_close(&in, cl);
+        }
+        w_close(&in, seg);
+        AvConvJob j = {0};
+        Seen s;
+        CHECK(run(&in, &out, &j, &s)); /* the far-out times count as missing */
+        int n[2];
+        counts(&out, n);
+        CHECK_INT(n[0], 10);
+        free(in.p), free(out.p);
+        s_free(&v), s_free(&a);
+    }
+    static const double lengths[] = {10 * 86400e3, 365 * 86400e3, 1e300}; /* 10 days, a year, nonsense (ms) */
+    for (int i = 0; i < 3; i++)
+        for (int mpeg2 = 0; mpeg2 < 2; mpeg2++) {
+            static Stream v;
+            uint8_t avcc[256];
+            size_t avcc_len = 0;
+            if (mpeg2) add_mpeg2(&v, 0, 10, 48, 32, false, 0, false);
+            else add_h264(&v, 10, avcc, &avcc_len);
+            W in, out;
+            Tracks t = {mpeg2 ? "V_MPEG2" : "V_MPEG4/ISO/AVC", mpeg2 ? NULL : avcc, avcc_len, mpeg2 ? 48 : 64,
+                        mpeg2 ? 32 : 48, NULL, NULL, 0};
+            mux(&in, &t, lengths[i], &v, NULL);
+            AvConvJob j = {0};
+            Seen s;
+            CHECK(run(&in, &out, &j, &s));
+            CHECK(out.len < 100000); /* the copy of a 10-picture file stays small */
+            free(in.p), free(out.p);
+            s_free(&v);
+        }
+}
+
+/* ------------------------------------------------------------ fuzzing seeds */
+
+/* Xiph lacing: the sound's blocks 4 at a time, as some muxers write them */
+static void mux_laced(W *in, const Tracks *t, double ms, const Stream *v, const Stream *a) {
+    size_t seg = start_file(in, t, ms);
+    size_t cl = w_open(in, 0x1F43B675);
+    w_uint(in, 0xE7, 0);
+    for (int i = 0, k = 0; i < v->n || k < a->n;) {
+        if (i < v->n && (k >= a->n || v->ms[i] <= a->ms[k])) {
+            w_simple(in, 1, v->ms[i], v->key[i], s_block(v, i), s_size(v, i));
+            i++;
+            continue;
+        }
+        int nf = a->n - k < 4 ? a->n - k : 4;
+        size_t lens = 0, body = a->at[k + nf] - a->at[k];
+        uint8_t head[64];
+        for (int f = 0; f < nf - 1; f++) /* every size but the last: runs of 255 and the rest */
+            for (size_t len = s_size(a, k + f);; len -= 255) {
+                head[lens++] = (uint8_t)(len < 255 ? len : 255);
+                if (len < 255) break;
+            }
+        w_id(in, 0xA3);
+        w_size8(in, 5 + lens + body);
+        w_byte(in, 0x82), w_byte(in, (a->ms[k] >> 8) & 0xFF), w_byte(in, a->ms[k] & 0xFF);
+        w_byte(in, 0x80 | 0x02); /* key, Xiph lacing */
+        w_byte(in, nf - 1);
+        w_put(in, head, lens);
+        w_put(in, s_block(a, k), body);
+        k += nf;
+    }
+    w_close(in, cl);
+    w_close(in, seg);
+}
+
+/* Small files of every kind the converter takes - the starting corpus for tools/convfuzz.c.
+   Each must convert (the size change: fail cleanly); with HEMMA_FUZZ_SEEDS=<dir> they are
+   also written there (CI's fuzz job makes them so, no binaries live in the repo). */
+TEST(conv_fuzz_seeds) {
+    const char *dir = getenv("HEMMA_FUZZ_SEEDS");
+    if (dir && *dir) CHECK(dir_make(dir));
+    static Stream v, a;
+    static uint8_t ac3[4 * 768]; /* the test encoder is slow: 4 frames, sent in turn */
+    CHECK_INT((int)ac3_test_tone(ac3, sizeof ac3, 4), 4 * 768);
+    static const uint8_t hvcc[] = {1,    0x01, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 0x5D, 0xF0, 0, 0xFC,
+                                   0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
+    for (int seed = 0; seed < 9; seed++) {
+        uint8_t avcc[256], asc[2];
+        size_t avcc_len = 0;
+        Tracks mp2 = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0}, t = mp2;
+        const char *name = "";
+        bool fails = false, laced = false;
+        switch (seed) {
+        case 0:
+            name = "mpeg2-aac.mkv";
+            add_mpeg2(&v, 0, 30, 48, 32, false, 0, false);
+            add_aac(&a, 1.0, asc);
+            t.acodec = "A_AAC", t.apriv = asc, t.apriv_len = 2;
+            break;
+        case 1: /* Dolby sound: 12 frames, ~0.4 s */
+            name = "mpeg2-ac3.mkv";
+            add_mpeg2(&v, 0, 12, 48, 32, false, 0, false);
+            for (int f = 0; f < 12; f++) s_add(&a, ac3 + f % 4 * 768, 768, f * 32, true);
+            t.acodec = "A_AC3";
+            break;
+        case 2:
+            name = "mpeg2-interlaced.mkv";
+            add_mpeg2(&v, 0, 30, 64, 32, true, 70, false);
+            t.width = 64;
+            break;
+        case 3:
+            name = "mpeg2-telecine.mkv";
+            add_mpeg2(&v, 0, 30, 64, 32, true, 70, true);
+            t.width = 64;
+            break;
+        case 4: /* several sequence headers: the size changes part-way */
+            name = "mpeg2-sizes.mkv";
+            add_mpeg2(&v, 0, 8, 48, 32, false, 0, false);
+            add_mpeg2(&v, 8, 8, 48, 16, false, 0, false);
+            fails = true;
+            break;
+        case 5:
+        case 6:
+            name = seed == 5 ? "h264-aac.mkv" : "h264-aac-laced.mkv";
+            add_h264(&v, 20, avcc, &avcc_len);
+            add_aac(&a, 0.7, asc);
+            t = (Tracks){"V_MPEG4/ISO/AVC", avcc, avcc_len, 64, 48, "A_AAC", asc, 2};
+            laced = seed == 6;
+            break;
+        case 7:
+            name = "h264.mkv";
+            add_h264(&v, 10, avcc, &avcc_len);
+            t = (Tracks){"V_MPEG4/ISO/AVC", avcc, avcc_len, 64, 48, NULL, NULL, 0};
+            break;
+        default: { /* HEVC: copied, never decoded - the record and length-prefixed units are what matter */
+            name = "hevc.mkv";
+            uint8_t frame[24] = {0, 0, 0, 20};
+            for (int k = 0; k < 8; k++) frame[4] = (uint8_t)k, s_add(&v, frame, sizeof frame, frame_ms(k), k % 4 == 0);
+            t = (Tracks){"V_MPEGH/ISO/HEVC", hvcc, sizeof hvcc, 64, 48, NULL, NULL, 0};
+        }
+        }
+        W in, out;
+        if (laced) mux_laced(&in, &t, v.n * 33.4, &v, &a);
+        else mux(&in, &t, v.n * 33.4, &v, t.acodec ? &a : NULL);
+        AvConvJob j = {0};
+        Seen s;
+        bool ok = run(&in, &out, &j, &s);
+        if (fails) CHECK(!ok && j.unsupported);
+        else if (!ok) test_fail(__FILE__, __LINE__, "seed %s: %s", name, j.err);
+        if (dir && *dir) {
+            char path[1024];
+            snprintf(path, sizeof path, "%s/%s", dir, name);
+            CHECK(file_write_atomic(path, in.p, in.len));
+        }
+        free(in.p), free(out.p);
+        s_free(&v), s_free(&a);
+    }
 }

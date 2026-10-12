@@ -71,6 +71,78 @@ void app_set_testing(bool on) { g_testing = on; }
 const char *app_name(void) { return setting("household.name", "Hemma"); }
 const char *app_asset_version(void) { return g_asset_ver; }
 bool app_dev_mode(void) { return g_cfg.web_dir != NULL; }
+const AppConfig *app_config(void) { return &g_cfg; }
+
+int app_addresses(char out[][96], int max) {
+    int n = 0, port = server_port() > 0 ? server_port() : g_cfg.port;
+    char ps[8] = "";
+    if (port > 0 && port != 80) snprintf(ps, sizeof ps, ":%d", port);
+    const char *host = g_cfg.host && *g_cfg.host ? g_cfg.host : "0.0.0.0";
+    uint32_t bound = 0;
+    if (max <= 0) return 0;
+    if (!ip_parse(host, &bound) || bound != 0) { /* listening on one address (or a name): that's the one */
+        snprintf(out[n++], 96, "http://%s%s", host, ps);
+        return n;
+    }
+    LanIface ifc;
+    if (!lan_iface(&ifc)) return 0;
+    char ip[16];
+    ip_format(ifc.ip, ip);
+    snprintf(out[n++], 96, "http://%s%s", ip, ps);
+    /* the machine's own name, announced on the LAN as <name>.local (mDNS: Avahi, Bonjour, Windows) */
+    char name[64] = "";
+    if (n < max && gethostname(name, (int)sizeof name - 1) == 0 && name[0]) {
+        name[sizeof name - 1] = '\0';
+        bool ok = true;
+        for (char *p = name; *p && ok; p++) {
+            if (*p >= 'A' && *p <= 'Z') *p = (char)(*p + 32);
+            ok = (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '-' || *p == '.';
+        }
+        if (str_iends(name, ".local")) name[strlen(name) - 6] = '\0';
+        if (ok && name[0] && !strchr(name, '.') && !str_eq(name, "localhost"))
+            snprintf(out[n++], 96, "http://%s.local%s", name, ps);
+    }
+    return n;
+}
+
+/* ================================================================ health */
+
+static HealthItem *health_new(Health *h) {
+    if (h->n == h->cap) {
+        h->cap = h->cap ? h->cap * 2 : 16;
+        h->items = xrealloc(h->items, (size_t)h->cap * sizeof *h->items);
+    }
+    HealthItem *it = &h->items[h->n++];
+    memset(it, 0, sizeof *it);
+    return it;
+}
+
+void health_add(Health *h, int state, const char *title, const char *detail, const char *todo, const char *link) {
+    HealthItem *it = health_new(h);
+    it->state = CLAMP(state, HEALTH_OK, HEALTH_BAD);
+    str_copy(it->title, sizeof it->title, title);
+    str_copy(it->detail, sizeof it->detail, detail);
+    str_copy(it->todo, sizeof it->todo, todo);
+    str_copy(it->link, sizeof it->link, link);
+}
+
+void health_step(Health *h, bool done, const char *title, const char *detail, const char *link) {
+    health_add(h, done ? HEALTH_OK : HEALTH_INFO, title, detail, NULL, link);
+    h->items[h->n - 1].step = true;
+}
+
+int health_worst(const Health *h) {
+    int worst = HEALTH_OK;
+    for (int i = 0; i < h->n; i++)
+        if (!h->items[i].step && h->items[i].state > worst) worst = h->items[i].state;
+    return worst;
+}
+
+void health_free(Health *h) {
+    free(h->items);
+    h->items = NULL;
+    h->n = h->cap = 0;
+}
 
 /* =============================================================== modules */
 
@@ -132,6 +204,16 @@ static const Action *action_find(const char *name, const Module **owner) {
     return NULL;
 }
 
+void health_collect(Ctx *c, Health *out) {
+    sort_mods();
+    for (int i = 0; i < nmods; i++) {
+        if (!mods[i]->health) continue;
+        int before = out->n;
+        mods[i]->health(c, out);
+        for (int k = before; k < out->n; k++) out->items[k].module = mods[i]->id;
+    }
+}
+
 /* ================================================================ people */
 
 Person *person_get(int id) { return id > 0 ? tbl_get(&T_person, id) : NULL; }
@@ -142,6 +224,11 @@ int person_count(void) {
     int n = 0;
     for (int i = 0; i < tbl_count(&T_person); i++) n += ((Person *)tbl_at(&T_person, i))->role != ROLE_DISPLAY;
     return n;
+}
+
+Person *person_real(int id) {
+    Person *p = person_get(id);
+    return p && p->role != ROLE_DISPLAY ? p : NULL;
 }
 
 Person *person_at(int i) {
@@ -182,11 +269,21 @@ static void sid_token(const char *sid, char token[65]) {
     else token[0] = '\0';
 }
 
+/* A session that has ended: its person is gone, it sat unused too long (a week; a year with
+   "keep me signed in"), or it's an admin's and older than ADMIN_SESSION_DAYS however much it
+   was used - a captured admin cookie (plain http) stops working within a month (issue #5). */
+static bool session_over(const Session *s, int64_t now) {
+    const Person *p = s->token[0] ? person_get(s->person) : NULL;
+    if (!p) return true;
+    if (now - MAX(s->seen, s->created) > (s->remember ? 366 : 7) * 86400LL) return true;
+    return p->role == ROLE_ADMIN && now - s->created > ADMIN_SESSION_DAYS * 86400LL;
+}
+
 static Session *session_by_token(const char *token) {
     if (!token || !token[0]) return NULL;
     for (int i = 0; i < tbl_count(&T_session); i++) {
         Session *s = tbl_at(&T_session, i);
-        if (strcmp(s->token, token) == 0) return s;
+        if (strcmp(s->token, token) == 0) return session_over(s, now_sec()) ? NULL : s; /* pruned hourly */
     }
     return NULL;
 }
@@ -284,6 +381,22 @@ static Client *client_new(Conn *conn, const char *token) {
     }
     clients[nclients++] = cl;
     return cl;
+}
+
+/* Signed-out screens (sign-in pages) stay open as long as they answer pings, so they get a
+   small share of the server's connections: one host with a few addresses could otherwise
+   hold every slot and lock the household out (issue #5). */
+#define STRANGER_SCREENS 48
+#define STRANGER_SCREENS_PER_ADDR 4
+
+static bool stranger_room(uint32_t ip) {
+    int all = 0, here = 0;
+    for (int i = 0; i < nclients; i++) {
+        if (clients[i]->token[0]) continue;
+        all++;
+        if (clients[i]->conn && clients[i]->conn->ip == ip) here++;
+    }
+    return all < STRANGER_SCREENS && here < STRANGER_SCREENS_PER_ADDR;
 }
 
 static void client_remove(Client *cl) {
@@ -613,6 +726,10 @@ static void render_app(Ctx *c, Buf *out) {
     if (!c->me && !(m && (m->flags & MOD_PUBLIC))) {
         auth_page(c, &page);
         m = NULL;
+    } else if (m && !module_visible(m, c)) { /* an admin's section: not there for anyone else */
+        m = NULL;
+        ctx_title(c, "Not found");
+        ui_empty(&page, "🧭", "Nothing here", "That page doesn't exist (anymore).");
     } else if (!m && str_eq(c->path, "/more")) {
         ui_more_page(c, &page);
     } else if (m && m->page) {
@@ -743,8 +860,8 @@ static int agenda_order(const void *x, const void *y) {
 }
 
 void agenda_collect(Ctx *c, int64_t from, int64_t to, const char *except, Agenda *out) {
-    for (int i = 0; i < nmods; i++) {
-        if (!mods[i]->agenda || (except && str_eq(mods[i]->id, except))) continue;
+    for (int i = 0; i < nmods; i++) { /* (an admin section's times are for admins only) */
+        if (!mods[i]->agenda || (except && str_eq(mods[i]->id, except)) || !module_visible(mods[i], c)) continue;
         int before = out->n;
         mods[i]->agenda(c, from, to, out);
         for (int k = before; k < out->n; k++) out->items[k].module = mods[i]->id;
@@ -763,11 +880,11 @@ void agenda_free(Agenda *a) {
 /* Runs an action; returns false if it doesn't exist. Signed-in people may
  * act, except read-only "display" accounts (wall tablets). *ran (may be NULL)
  * says whether it actually ran: only then can other screens need a re-render. */
-static bool run_action(Ctx *c, const char *name, Fields *f, bool *ran) {
+static bool run_action(Ctx *c, const char *name, Fields *f, bool *ran, bool live) {
     const Module *owner = NULL;
     const Action *a = action_find(name, &owner);
     if (ran) *ran = false;
-    if (!a) return false;
+    if (!a || (live && !a->live)) return false; /* a "live" message can't run a change: issue #8 */
     if (!c->me) {
         ctx_fail(c, "Sign in first");
         return true;
@@ -789,7 +906,13 @@ static void ws_action(Client *cl, const char *name, Fields *f, long long id, boo
     Ctx c;
     client_ctx(cl, &c);
     bool ran = false;
-    if (!run_action(&c, name, f, &ran)) ctx_fail(&c, "Unknown action \"%s\"", name);
+    if (!run_action(&c, name, f, &ran, live)) {
+        if (live) { /* not a preview: nothing ran, nothing to say (wire.js only sends previews) */
+            ctx_free(&c);
+            return;
+        }
+        ctx_fail(&c, "Unknown action \"%s\"", name);
+    }
     Buf ops = {0};
     buf_putc(&ops, '[');
     if (!live) buf_printf(&ops, "[\"ack\",%lld,%s]", id, c.failed ? "false" : "true");
@@ -1100,6 +1223,17 @@ static void reply_json(Conn *conn, int status, Buf *body) {
     conn_reply(conn, status, "application/json; charset=utf-8", body->p, body->len, "Cache-Control: no-store\r\n");
 }
 
+/* Rows of a table with an owner (preferences, watch history): members see their own, admins all. */
+static bool api_may_see(const Ctx *c, const Table *t, const void *row) {
+    if (!t->api_owner || is_admin(c)) return true;
+    for (int i = 0; i < t->nfields; i++) {
+        const FieldDef *fd = &t->fields[i];
+        if (fd->type == F_INT && str_eq(fd->name, t->api_owner))
+            return *(const int *)((const char *)row + fd->offset) == c->me->id;
+    }
+    return false; /* a misnamed owner field: show nothing rather than everything */
+}
+
 static void api(Ctx *c, Conn *conn, HttpReq *r) {
     Buf out = {0};
     const char *rest = r->path + 4; /* after "/api" */
@@ -1130,7 +1264,7 @@ static void api(Ctx *c, Conn *conn, HttpReq *r) {
         if (!origin_ok(r)) {
             buf_puts(&out, "{\"error\":\"cross-site request refused\"}");
             reply_json(conn, 403, &out);
-        } else if (!run_action(c, rest, &f, NULL)) {
+        } else if (!run_action(c, rest, &f, NULL, false)) {
             buf_puts(&out, "{\"error\":\"no such action\"}");
             reply_json(conn, 404, &out);
         } else {
@@ -1154,8 +1288,8 @@ static void api(Ctx *c, Conn *conn, HttpReq *r) {
         }
         buf_puts(&out, "],\"actions\":[");
         int k = 0;
-        for (int i = 0; i < nmods; i++)
-            for (const Action *a = mods[i]->actions; a && a->name; a++) {
+        for (int i = 0; i < nmods; i++) /* an admin section's actions are listed for admins only */
+            for (const Action *a = module_visible(mods[i], c) ? mods[i]->actions : NULL; a && a->name; a++) {
                 if (k++) buf_putc(&out, ',');
                 json_str(&out, a->name);
             }
@@ -1172,13 +1306,15 @@ static void api(Ctx *c, Conn *conn, HttpReq *r) {
             reply_json(conn, 404, &out);
         } else if (id) {
             void *row = tbl_get(t, (int)id);
+            if (row && !api_may_see(c, t, row)) row = NULL;
             if (row) tbl_to_json(t, row, &out);
             else buf_puts(&out, "{\"error\":\"not found\"}");
             reply_json(conn, row ? 200 : 404, &out);
         } else {
             buf_putc(&out, '[');
-            for (int i = 0; i < tbl_count(t); i++) {
-                if (i) buf_putc(&out, ',');
+            for (int i = 0, k = 0; i < tbl_count(t); i++) {
+                if (!api_may_see(c, t, tbl_at(t, i))) continue;
+                if (k++) buf_putc(&out, ',');
                 tbl_to_json(t, tbl_at(t, i), &out);
             }
             buf_putc(&out, ']');
@@ -1194,6 +1330,12 @@ static void on_http(Conn *conn, HttpReq *r) {
                                   "(like http://192.168.0.10:8080), or add the name to HEMMA_HOSTS.\n";
         conn->keep_alive = false;
         conn_reply(conn, 403, "text/plain; charset=utf-8", msg, sizeof msg - 1, NULL);
+        return;
+    }
+    if (!r->streaming && str_eq(r->path, "/healthz")) { /* scripts and the installer: "is it up?" - nothing more */
+        if (str_eq(r->method, "GET") || str_eq(r->method, "HEAD"))
+            conn_reply(conn, 200, "text/plain; charset=utf-8", "ok\n", 3, "Cache-Control: no-store\r\n");
+        else conn_reply(conn, 405, "text/plain", "GET only\n", 9, "Allow: GET, HEAD\r\n");
         return;
     }
     if (!r->streaming && (str_starts(r->path, "/static/") || str_eq(r->path, "/favicon.ico"))) {
@@ -1214,7 +1356,8 @@ static void on_http(Conn *conn, HttpReq *r) {
         ctx_init(&c, session_for(token), NULL, conn->ip, r->target);
         bool taken = false;
         for (int i = 0; i < nmods && !taken; i++)
-            if (mods[i]->http && (c.me || (mods[i]->flags & MOD_PUBLIC))) taken = mods[i]->http(&c, conn, r);
+            if (mods[i]->http && (c.me || (mods[i]->flags & MOD_PUBLIC)) && module_visible(mods[i], &c))
+                taken = mods[i]->http(&c, conn, r);
         if (!taken) {
             static const char msg[] = "request body too large\n";
             conn->keep_alive = false;
@@ -1225,8 +1368,15 @@ static void on_http(Conn *conn, HttpReq *r) {
     }
 
     if (str_eq(r->path, "/ws")) {
-        if (!origin_ok(r)) conn_reply(conn, 403, "text/plain", "forbidden\n", 10, NULL);
-        else if (conn_ws_upgrade(conn, r)) client_new(conn, live ? token : "");
+        if (!origin_ok(r)) {
+            conn_reply(conn, 403, "text/plain", "forbidden\n", 10, NULL);
+        } else if (!live && !stranger_room(conn->ip)) {
+            static const char msg[] = "too many signed-out screens\n";
+            conn->keep_alive = false; /* the page still works: signing in is a plain POST */
+            conn_reply(conn, 503, "text/plain", msg, sizeof msg - 1, "Retry-After: 60\r\n");
+        } else if (conn_ws_upgrade(conn, r)) {
+            client_new(conn, live ? token : "");
+        }
         return;
     }
 
@@ -1250,7 +1400,7 @@ static void on_http(Conn *conn, HttpReq *r) {
             fields_parse(&f, r->body, r->body_len);
             ctx_set_url(&c, back);
             bool ran = false;
-            if (!run_action(&c, r->path + 3, &f, &ran)) ctx_fail(&c, "Unknown action");
+            if (!run_action(&c, r->path + 3, &f, &ran, false)) ctx_fail(&c, "Unknown action");
             if (c.toast[0] && token[0]) flash_set(token, c.toast_kind, c.toast);
             Buf extra = {0};
             buf_printf(&extra, "Location: %s\r\n", c.redirect[0] ? c.redirect : back);
@@ -1272,7 +1422,7 @@ static void on_http(Conn *conn, HttpReq *r) {
     /* raw module endpoints (streams, images, ...) are for signed-in people only,
        unless the module is public */
     for (int i = 0; i < nmods; i++) {
-        if (!mods[i]->http || (!c.me && !(mods[i]->flags & MOD_PUBLIC))) continue;
+        if (!mods[i]->http || (!c.me && !(mods[i]->flags & MOD_PUBLIC)) || !module_visible(mods[i], &c)) continue;
         if (mods[i]->http(&c, conn, r)) {
             ctx_free(&c);
             return;
@@ -1393,23 +1543,25 @@ static void on_idle(void) {
     db_idle();
 }
 
-/* Sessions that ended long ago: unremembered ones after a week idle, the rest after a year. */
+/* Sessions that ended (session_over): their rows go. */
 static void prune_sessions(void) {
     int64_t now = now_sec();
     for (int i = tbl_count(&T_session) - 1; i >= 0; i--) {
         Session *s = tbl_at(&T_session, i);
-        int64_t idle = now - MAX(s->seen, s->created);
-        if (!s->token[0] || !person_get(s->person) || idle > (s->remember ? 366 : 7) * 86400LL)
-            tbl_del(&T_session, s->id);
+        if (session_over(s, now)) tbl_del(&T_session, s->id);
     }
 }
 
 bool app_boot(const char *data_dir) {
+    static char dir[600];
+    if (data_dir != dir) str_copy(dir, sizeof dir, data_dir ? data_dir : "data");
+    g_cfg.data_dir = dir; /* app_config(): the folder in use (tests boot without app_main) */
     g_nhome = 0;
     g_tracking = false;
     auth_reset_throttle();
     T_session.api_hidden = true;
     T_setting.api_hidden = true;
+    T_pref.api_owner = "person";
     store_register(&T_person);
     store_register(&T_session);
     store_register(&T_setting);
@@ -1455,7 +1607,7 @@ void app_ctx(Ctx *c, int person, const char *url) {
 void app_ctx_free(Ctx *c) { ctx_free(c); }
 void app_render(Ctx *c, Buf *out) { render_app(c, out); }
 
-bool app_action(Ctx *c, const char *name, Fields *f) { return run_action(c, name, f, NULL); }
+bool app_action(Ctx *c, const char *name, Fields *f) { return run_action(c, name, f, NULL, false); }
 
 void app_serve(void) {
     if (!g_asset_ver[0]) compute_asset_version();
@@ -1464,11 +1616,45 @@ void app_serve(void) {
     server_run(&hooks);
 }
 
+/* One block after the start that says it's working, where to open it, where the log is and how
+   to stop it - for whoever is looking at the window, the journal or the installer's output. */
+static void startup_banner(const char *where) {
+    char addr[3][96];
+    int na = app_addresses(addr, 3);
+    uint32_t bound = 0;
+    bool local_only = g_cfg.host && ip_parse(g_cfg.host, &bound) && (bound >> 24) == 127;
+    const char *svc = plat_getenv("INVOCATION_ID"), *agent = plat_getenv("XPC_SERVICE_NAME");
+    bool systemd = svc && *svc, launchd = agent && str_starts(agent, "local.hemma");
+    bool log_file = module_find("system") != NULL; /* the System page keeps <data>/hemma.log */
+    static const char rule[] = "------------------------------------------------------------";
+    log_info("%s", rule);
+    log_info("Hemma %s is running.", HEMMA_VERSION_FULL);
+    if (local_only) log_info("  Open it on this computer: %s  (other devices can't: it listens on %s only)",
+                             na ? addr[0] : where, g_cfg.host);
+    else if (na) {
+        log_info("  Open it on a phone or computer at home:  %s", addr[0]);
+        for (int i = 1; i < na; i++) log_info("                                      or:  %s", addr[i]);
+    } else log_info("  Open it at %s  (no home network found yet: check the cable or Wi-Fi)", where);
+    if (auth_ready() && auth_setup_open())
+        log_info("  First time? Open that address and type the setup code shown above.");
+    char logs[400];
+    snprintf(logs, sizeof logs, "%s%s%s%s", systemd ? "journalctl -u hemma -f" : launchd ? "its log file" : "this window",
+             log_file ? ", " : "", log_file ? g_cfg.data_dir : "", log_file ? "/hemma.log and Hemma's System page" : "");
+    log_info("  The log: %s", logs);
+    log_info("  Stop it: %s", systemd   ? "sudo systemctl stop hemma  (restart: sudo systemctl restart hemma)"
+                          : launchd ? "launchctl bootout gui/$(id -u)/local.hemma"
+                                    : "Ctrl+C");
+    log_info("%s", rule);
+}
+
 int app_main(const AppConfig *cfg) {
     g_cfg = *cfg;
     if (!app_boot(cfg->data_dir)) return 1;
     compute_asset_version();
-    if (!server_listen(cfg->host, cfg->port)) return 1;
+    if (!server_listen(cfg->host, cfg->port)) {
+        app_halt(); /* modules stop: the log file gets why (a port in use) - a service has no window */
+        return 1;
+    }
 
     char where[64] = "";
     uint32_t any = 0;
@@ -1490,6 +1676,7 @@ int app_main(const AppConfig *cfg) {
         log_warn("No admin yet - open %s/ in a browser to create one", where);
         log_warn("The welcome page asks for this setup code: %s", auth_setup_code());
     }
+    startup_banner(where);
 
     plat_on_quit(server_stop);
     app_serve();

@@ -43,6 +43,7 @@ static const struct {
     {"grid", "<rect x=\"3.5\" y=\"3.5\" width=\"7\" height=\"7\" rx=\"2\"/><rect x=\"13.5\" y=\"3.5\" width=\"7\" "
              "height=\"7\" rx=\"2\"/><rect x=\"3.5\" y=\"13.5\" width=\"7\" height=\"7\" rx=\"2\"/><rect x=\"13.5\" "
              "y=\"13.5\" width=\"7\" height=\"7\" rx=\"2\"/>"},
+    {"pulse", "<path d=\"M3 12h4l2.5-6 5 12 2.5-6h4\"/>"},
     {"logo", "<path d=\"M4 11 12 4l8 7v8.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19.5z\"/><path d=\"M12 "
              "17.5s-3.2-1.9-3.2-4a1.7 1.7 0 0 1 3.2-.8 1.7 1.7 0 0 1 3.2.8c0 2.1-3.2 4-3.2 4z\"/>"},
 };
@@ -289,12 +290,12 @@ void ui_duration(Buf *b, int64_t sec) {
 
 static void nav_links(Ctx *c, Buf *b, const Module *active, bool tabbar) {
     int n = 0, k = 0;
-    for (int i = 0; i < module_count(); i++) n += module_at(i)->nav != 0;
+    for (int i = 0; i < module_count(); i++) n += module_at(i)->nav != 0 && module_visible(module_at(i), c);
     tabbar = tabbar && n > TAB_SLOTS + 1; /* one extra fits; two or more go behind "More" */
     bool more_on = tabbar && str_eq(c->path, "/more");
     for (int i = 0; i < module_count(); i++) {
         const Module *m = module_at(i);
-        if (!m->nav) continue;
+        if (!m->nav || !module_visible(m, c)) continue;
         bool on = m == active, extra = tabbar && k++ >= TAB_SLOTS;
         if (on && extra) more_on = true;
         H(b, "<a href=\"%s%s\"%r%r>", "/", str_eq(m->id, "home") ? "" : m->id,
@@ -317,14 +318,14 @@ void ui_more_page(Ctx *c, Buf *b) {
     buf_puts(b, "<nav class=\"more-grid\">");
     for (int i = 0; i < module_count(); i++) {
         const Module *m = module_at(i);
-        if (!m->nav) continue;
+        if (!m->nav || !module_visible(m, c)) continue;
         H(b, "<a href=\"/%s\">", str_eq(m->id, "home") ? "" : m->id);
         ui_icon(b, m->icon);
         H(b, "<span>%s</span></a>", m->title);
     }
     buf_puts(b, "</nav><div class=\"more-side\">"); /* the sidebar's blocks: phones have no sidebar */
     for (int i = 0; i < module_count(); i++)
-        if (module_at(i)->side) module_at(i)->side(c, b);
+        if (module_at(i)->side && module_visible(module_at(i), c)) module_at(i)->side(c, b);
     buf_puts(b, "</div>");
 }
 
@@ -348,7 +349,7 @@ void ui_shell(Ctx *c, Buf *b, const Module *active, const char *page, size_t pag
     }
     if (shown) buf_puts(b, "</div></div>");
     for (int i = 0; i < module_count(); i++) /* modules' small blocks (e.g. the library's disk space) */
-        if (module_at(i)->side) module_at(i)->side(c, b);
+        if (module_at(i)->side && module_visible(module_at(i), c)) module_at(i)->side(c, b);
     if (c->me) {
         buf_puts(b, "<a class=\"me\" href=\"/people\">");
         ui_avatar(b, c->me, "sm");

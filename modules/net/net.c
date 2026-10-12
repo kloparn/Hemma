@@ -8,6 +8,7 @@
  * Presence ("who's home") is only reported while discovery is on: without
  * probes the ARP cache keeps listing devices that already left. */
 #include "net.h"
+#include "../../core/db.h"
 #include "../../core/ui.h"
 
 static const FieldDef device_fields[] = {
@@ -24,6 +25,12 @@ Table T_device = TABLE("device", Device, device_fields);
 #define SETTLE_MS 3000 /* after a sweep, give ARP replies time to land */
 #define FLUSH_EVERY_MS (10 * 60 * 1000)
 #define MAX_TRACKED 64
+#define PAGE_ROWS 100 /* devices per step on /net: a list flooded by forged ARP stays a light page */
+#define NEWS_EVERY 3600 /* "N new devices": one activity line and one toast an hour at most */
+#define GONE_RING 512   /* recently forgotten MACs: coming back isn't news */
+#define PTR_WINDOW 60   /* s: answers to a name question count this long */
+
+enum { PTR_DNS = 1, PTR_MDNS = 2 }; /* Device.ptr_open */
 
 typedef struct {
     int person;
@@ -44,7 +51,16 @@ static struct {
     int64_t next_sweep; /* ms */
     int64_t last_sweep; /* wall clock: when the last sweep round completed */
     bool baseline;      /* one probed round done since discovery (re)started */
-    uint16_t dns_id;
+    int router;         /* id of the device the router's address maps to now (0 = none) */
+    int evicted;        /* devices forgotten to make room since the last log line */
+    int64_t evict_log;  /* wall clock: that log line */
+    bool full_logged;   /* "the list is full" was logged; again only after there was room */
+    uint64_t gone[GONE_RING]; /* MACs (mac_key) forgotten to make room, oldest overwritten */
+    int gone_at;
+    int news_id;        /* the activity line counting new devices, while it's under an hour old */
+    int news_count;
+    int64_t news_at, toast_at; /* wall clock: that line started; the last "new devices" toast */
+    int64_t asked_at;   /* wall clock: the last name question (answers count for a minute) */
     int64_t last_flush; /* ms */
     Pres pres[MAX_TRACKED];
     int npres;
@@ -97,10 +113,10 @@ static bool known_kind(const char *k) {
     return false;
 }
 
-static bool is_gateway(const Device *d) {
-    uint32_t ip;
-    return S.have_ifc && S.ifc.gateway && ip_parse(d->last_ip, &ip) && ip == S.ifc.gateway;
-}
+/* The router is the ONE device its address maps to now (find_router), not every device
+   that ever claimed that address: anyone can claim it (forged ARP), and the router is
+   never forgotten to make room. */
+static bool is_gateway(const Device *d) { return S.router && d->id == S.router; }
 
 const char *net_kind(const Device *d) {
     if (d->kind[0]) return d->kind;
@@ -161,9 +177,21 @@ int net_guess(uint32_t ip) {
     return 0;
 }
 
+/* After every change to the list or the interface: which device is the router now. */
+static void find_router(void) {
+    char s[16];
+    Device *d = NULL;
+    if (S.have_ifc && S.ifc.gateway) {
+        ip_format(S.ifc.gateway, s);
+        d = by_ip(s);
+    }
+    S.router = d ? d->id : 0;
+}
+
 void net_set_iface(const LanIface *ifc) {
     S.ifc = *ifc;
     S.have_ifc = true;
+    find_router();
 }
 
 /* ------------------------------------------------------------ presence */
@@ -214,57 +242,287 @@ static void update_presence(int64_t now) {
 
 /* ------------------------------------------------------------- ingest */
 
-static void announce(const Device *d) {
-    char what[120];
-    if (d->hostname[0]) snprintf(what, sizeof what, "%s (%s)", d->hostname, d->last_ip);
-    else if (d->random_mac) snprintf(what, sizeof what, "a phone or tablet with a private address (%s)", d->last_ip);
-    else snprintf(what, sizeof what, "an unknown device (%s)", d->last_ip);
-    activity_add(0, "🆕", "/net?f=unknown", "New device on the network: %s", what);
-    app_notify(NULL, TOAST_INFO, "New device on the network: %s", what);
+/* Any device on the LAN can make the kernel list made-up neighbours (forged ARP, no sign-in
+   needed): ~250 new MACs per round on a /24. So the list is bounded (NET_MAX_DEVICES), new
+   devices make one activity line an hour, and a round's lookups don't scan the list per
+   neighbour. */
+
+/* Never forgotten to make room: what the household set up (a name, an owner, a kind, a note,
+   Wake-on-LAN) and the router. Nothing a device on the LAN can claim by itself counts - not
+   an address (anyone can claim the router's) and not used_by (set from an address). */
+static bool is_kept(const Device *d) {
+    return d->name[0] || d->owner || d->kind[0] || d->note[0] || d->wol || is_gateway(d);
+}
+
+typedef struct {
+    bool used; /* someone opens Hemma from it: goes last */
+    int64_t seen;
+    int id;
+} Spare;
+
+static int by_seen(const void *a, const void *b) {
+    const Spare *x = a, *y = b;
+    if (x->used != y->used) return x->used ? 1 : -1;
+    if (x->seen != y->seen) return x->seen < y->seen ? -1 : 1;
+    return x->id - y->id;
+}
+
+static int by_id_desc(const void *a, const void *b) { return ((const Spare *)b)->id - ((const Spare *)a)->id; }
+
+/* The devices that may go when the list is full: not kept, not on the network right now and
+   not in this round's list (even as stale) - the longest unseen first, the ones someone uses
+   Hemma from last. Returns how many; free(*out). */
+static int spares(int64_t now, Spare **out) {
+    int n = 0;
+    Spare *s = xmalloc(sizeof(Spare) * (size_t)(tbl_count(&T_device) + 1));
+    for (int i = 0; i < tbl_count(&T_device); i++) {
+        Device *d = tbl_at(&T_device, i);
+        if (!is_kept(d) && !net_online(d, now) && d->listed != now)
+            s[n++] = (Spare){d->used_by != 0, d->last_seen, d->id};
+    }
+    qsort(s, (size_t)n, sizeof *s, by_seen);
+    *out = s;
+    return n;
+}
+
+/* One round's MAC -> device id lookup: sorted once, kept in step as devices come and go. */
+typedef struct {
+    uint64_t mac;
+    int id;
+} MacKey;
+
+typedef struct {
+    MacKey *k;
+    int n;
+} MacIndex;
+
+static uint64_t mac_key(const Mac *m) {
+    uint64_t v = 0;
+    for (int i = 0; i < 6; i++) v = v << 8 | m->b[i];
+    return v;
+}
+
+static int by_mac(const void *a, const void *b) {
+    uint64_t x = ((const MacKey *)a)->mac, y = ((const MacKey *)b)->mac;
+    return x < y ? -1 : x > y;
+}
+
+static int by_u64(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+static int key_at(const MacIndex *ix, uint64_t mac) { /* the first slot >= mac */
+    int lo = 0, hi = ix->n;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (ix->k[mid].mac < mac) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+/* Room for `extra` devices added later in the round. */
+static MacIndex index_build(int extra) {
+    MacIndex ix = {xmalloc(sizeof(MacKey) * (size_t)(tbl_count(&T_device) + extra + 1)), 0};
+    for (int i = 0; i < tbl_count(&T_device); i++) {
+        Device *d = tbl_at(&T_device, i);
+        Mac m;
+        if (mac_parse(d->mac, &m)) ix.k[ix.n++] = (MacKey){mac_key(&m), d->id};
+    }
+    qsort(ix.k, (size_t)ix.n, sizeof *ix.k, by_mac);
+    return ix;
+}
+
+static Device *index_get(const MacIndex *ix, uint64_t mac) {
+    int i = key_at(ix, mac);
+    return i < ix->n && ix->k[i].mac == mac ? tbl_get(&T_device, ix->k[i].id) : NULL;
+}
+
+static void index_add(MacIndex *ix, uint64_t mac, int id) {
+    int i = key_at(ix, mac);
+    memmove(ix->k + i + 1, ix->k + i, sizeof *ix->k * (size_t)(ix->n - i));
+    ix->k[i] = (MacKey){mac, id};
+    ix->n++;
+}
+
+static void index_drop(MacIndex *ix, uint64_t mac) {
+    int i = key_at(ix, mac);
+    if (i == ix->n || ix->k[i].mac != mac) return;
+    memmove(ix->k + i, ix->k + i + 1, sizeof *ix->k * (size_t)(ix->n - i - 1));
+    ix->n--;
+}
+
+/* Was this MAC forgotten to make room lately? Then coming back isn't news. (Key 0, the
+   ring's empty slots, is the zero MAC: never ingested.) */
+static bool gone_lately(uint64_t mac) {
+    for (int i = 0; i < GONE_RING; i++)
+        if (S.gone[i] == mac) return true;
+    return false;
+}
+
+/* Forget up to `count` spare devices to make room (ix: the round's index, or NULL). Highest
+   ids go first: each delete then moves only the rows that stay. Returns how many went. */
+static int evict(MacIndex *ix, int count, int64_t now) {
+    Spare *s;
+    int n = MIN(spares(now, &s), count);
+    qsort(s, (size_t)n, sizeof *s, by_id_desc);
+    for (int i = 0; i < n; i++) {
+        Device *old = tbl_get(&T_device, s[i].id);
+        Mac m;
+        if (!old) continue;
+        if (mac_parse(old->mac, &m)) {
+            S.gone[S.gone_at] = mac_key(&m);
+            S.gone_at = (S.gone_at + 1) % GONE_RING;
+            if (ix) index_drop(ix, mac_key(&m));
+        }
+        tbl_del(&T_device, old->id);
+    }
+    free(s);
+    return n;
+}
+
+/* A list that grew past the limit before there was one shrinks at start. */
+static void trim(int64_t now) {
+    int over = tbl_count(&T_device) - NET_MAX_DEVICES;
+    if (over <= 0) return;
+    db_begin();
+    int n = evict(NULL, over, now);
+    db_commit();
+    if (n) log_info("net: forgot %d unnamed devices not seen for a while (the list keeps %d)", n, NET_MAX_DEVICES);
+}
+
+/* A device we know is in this round's list. True when that's worth a write and a re-render. */
+static bool refresh(Device *d, const Neighbor *e, int64_t now) {
+    char ip[16];
+    ip_format(e->ip, ip);
+    Device upd = *d;
+    bool durable = false;
+    upd.listed = now;
+    if (!str_eq(upd.last_ip, ip)) {
+        str_copy(upd.last_ip, sizeof upd.last_ip, ip);
+        durable = true;
+    }
+    if (e->state == NEIGH_REACHABLE && upd.last_seen != now) { /* stale entries: known, not confirmed now */
+        upd.last_seen = now;
+        upd.dirty = true;
+    }
+    if (durable) {
+        upd.dirty = false;
+        tbl_put(&T_device, &upd);
+    } else {
+        tbl_put_quiet(&T_device, &upd);
+    }
+    return durable;
+}
+
+static Device *add_device(const Neighbor *e, int64_t now) {
+    Device nd = {0};
+    mac_format(&e->mac, nd.mac);
+    ip_format(e->ip, nd.last_ip);
+    nd.first_seen = now;
+    nd.last_seen = now;
+    nd.listed = now;
+    nd.random_mac = mac_is_random(&e->mac);
+    nd.online = true;
+    return tbl_put(&T_device, &nd);
+}
+
+/* New devices make one activity line an hour: later rounds add their count to it while it's
+   under an hour old, and screens get a toast at most once an hour. Forged ARP could otherwise
+   fill the feed and pester every screen - one fake device a sweep is enough. */
+static void announce(int count, const Device *d, int64_t now) {
+    char what[160];
+    Activity *line = S.news_id && now - S.news_at < NEWS_EVERY ? tbl_get(&T_activity, S.news_id) : NULL;
+    if (line) {
+        Activity upd = *line;
+        S.news_count += count;
+        snprintf(upd.text, sizeof upd.text, "%d new devices on the network", S.news_count);
+        tbl_put(&T_activity, &upd);
+        str_copy(what, sizeof what, upd.text);
+    } else {
+        if (count > 1 || !d) snprintf(what, sizeof what, "%d new devices on the network", count);
+        else if (d->hostname[0])
+            snprintf(what, sizeof what, "New device on the network: %s (%s)", d->hostname, d->last_ip);
+        else if (d->random_mac)
+            snprintf(what, sizeof what, "New device on the network: a phone or tablet with a private address (%s)",
+                     d->last_ip);
+        else snprintf(what, sizeof what, "New device on the network: an unknown device (%s)", d->last_ip);
+        activity_add(0, "🆕", "/net?f=unknown", "%s", what);
+        S.news_id = ((Activity *)tbl_at(&T_activity, tbl_count(&T_activity) - 1))->id;
+        S.news_count = count;
+        S.news_at = now;
+    }
+    if (now - S.toast_at >= NEWS_EVERY) {
+        app_notify(NULL, TOAST_INFO, "%s", what);
+        S.toast_at = now;
+    }
+}
+
+/* Making room is normal on a busy network (phones that change their private address): one
+   line an hour at most. A list full of devices that must stay is logged once, and again
+   only after there was room. */
+static void log_limits(int dropped, int64_t now) {
+    if (S.evicted && now - S.evict_log >= 3600) {
+        log_info("net: forgot %d unnamed device%s not seen for a while (the list keeps %d)", S.evicted,
+                 S.evicted == 1 ? "" : "s", NET_MAX_DEVICES);
+        S.evicted = 0;
+        S.evict_log = now;
+    }
+    if (dropped && !S.full_logged)
+        log_warn("net: the device list is full (%d devices, each set up by the household or on the network now): "
+                 "new devices are left out until some are forgotten on the Network page",
+                 NET_MAX_DEVICES);
+    S.full_logged = (dropped || S.full_logged) && tbl_count(&T_device) >= NET_MAX_DEVICES;
 }
 
 void net_ingest(const Neighbor *nb, int n, int64_t now, bool probed) {
     bool changed = false;
     bool announce_new = probed && S.baseline && net_scan_on();
+    db_begin(); /* the round is one write */
+    MacIndex ix = index_build(n);
+    int *fresh = xmalloc(sizeof(int) * (size_t)(n > 0 ? n : 1)), nfresh = 0;
+    /* known devices first: whoever is in this round's list is safe before anyone makes room */
     for (int i = 0; i < n; i++) {
         const Neighbor *e = &nb[i];
         if (e->state == NEIGH_FAILED || mac_is_zero(&e->mac) || mac_is_multicast(&e->mac) || !in_scope(e->ip)) continue;
-        char mac[18], ip[16];
-        mac_format(&e->mac, mac);
-        ip_format(e->ip, ip);
-        bool seen = e->state == NEIGH_REACHABLE; /* stale entries: known, but not confirmed right now */
-        Device *d = net_by_mac(mac);
-        if (!d) {
-            Device nd = {0};
-            str_copy(nd.mac, sizeof nd.mac, mac);
-            str_copy(nd.last_ip, sizeof nd.last_ip, ip);
-            nd.first_seen = now;
-            nd.last_seen = now;
-            nd.random_mac = mac_is_random(&e->mac);
-            nd.online = true;
-            Device *row = tbl_put(&T_device, &nd);
-            changed = true;
-            if (announce_new) announce(row);
+        Device *d = index_get(&ix, mac_key(&e->mac));
+        if (d) changed |= refresh(d, e, now);
+        else fresh[nfresh++] = i;
+    }
+    /* room for the newcomers (each MAC once), all made in one go */
+    uint64_t *keys = xmalloc(sizeof(uint64_t) * (size_t)(nfresh + 1));
+    for (int k = 0; k < nfresh; k++) keys[k] = mac_key(&nb[fresh[k]].mac);
+    qsort(keys, (size_t)nfresh, sizeof *keys, by_u64);
+    int want = 0;
+    for (int k = 0; k < nfresh; k++) want += !k || keys[k] != keys[k - 1];
+    free(keys);
+    int room = NET_MAX_DEVICES - tbl_count(&T_device), gone = 0;
+    if (want > room) gone = evict(&ix, want - room, now);
+    S.evicted += gone;
+    changed |= gone > 0;
+    int news = 0, first = 0, dropped = 0;
+    for (int k = 0; k < nfresh; k++) {
+        const Neighbor *e = &nb[fresh[k]];
+        uint64_t key = mac_key(&e->mac);
+        Device *d = index_get(&ix, key);
+        if (d) { /* listed twice in this round */
+            changed |= refresh(d, e, now);
             continue;
         }
-        Device upd = *d;
-        bool durable = false;
-        if (!str_eq(upd.last_ip, ip)) {
-            str_copy(upd.last_ip, sizeof upd.last_ip, ip);
-            durable = true;
-            changed = true;
+        if (tbl_count(&T_device) >= NET_MAX_DEVICES) {
+            dropped++;
+            continue;
         }
-        if (seen && upd.last_seen != now) {
-            upd.last_seen = now;
-            upd.dirty = true;
-        }
-        if (durable) {
-            upd.dirty = false;
-            tbl_put(&T_device, &upd);
-        } else {
-            tbl_put_quiet(&T_device, &upd);
-        }
+        Device *row = add_device(e, now);
+        index_add(&ix, key, row->id);
+        changed = true;
+        if (gone_lately(key)) continue; /* forgotten to make room lately: not news */
+        if (!news++) first = row->id;
     }
+    free(fresh);
+    free(ix.k);
+    find_router();
     /* online <-> offline transitions are worth a write and a re-render */
     for (int i = 0; i < tbl_count(&T_device); i++) {
         Device *d = tbl_at(&T_device, i);
@@ -278,7 +536,10 @@ void net_ingest(const Neighbor *nb, int n, int64_t now, bool probed) {
     }
     if (net_scan_on()) update_presence(now);
     else if (S.npres) forget_presence(0); /* discovery was switched off */
+    if (announce_new && news) announce(news, tbl_get(&T_device, first), now);
+    log_limits(dropped, now);
     if (probed) S.baseline = true;
+    db_commit();
     if (changed) app_changed();
 }
 
@@ -322,19 +583,78 @@ static void refresh_iface(void) {
     if (lan_iface(&f)) net_set_iface(&f);
 }
 
-/* A reverse-DNS answer counts only for an address we asked about within the last minute,
-   and only from someone who may answer for it: the router (DNS, port 53) or the device
-   itself (mDNS, port 5353). Anything else on the LAN could otherwise rename other people's
-   devices (review). */
-bool net_ptr_answer(uint32_t from, uint16_t port, uint16_t id, uint32_t ip, const char *name, int64_t now) {
-    bool trusted = (port == 53 && S.have_ifc && from == S.ifc.gateway) || (port == 5353 && from == ip);
-    if (!trusted || (uint16_t)(S.dns_id - id) >= 4096 || !in_scope(ip)) return false;
+/* Each question gets fresh random ids, one for the router and one for mDNS: the mDNS question
+   is multicast, so every device on the LAN sees its id - it must say nothing about the
+   router's. Responders answer a question from an ordinary port (not 5353) by unicast, with
+   its id (RFC 6762 6.7), so both answers can be matched exactly. */
+bool net_ptr_ask(uint32_t ip, int64_t now, uint16_t *dns_id, uint16_t *mdns_id) {
     char s[16];
     ip_format(ip, s);
     Device *d = by_ip(s);
-    if (!d || !d->ptr_asked || now - d->ptr_asked > 60) return false;
+    if (!d) return false;
+    uint16_t id[2];
+    do {
+        rand_bytes(id, sizeof id);
+    } while (id[0] == id[1]);
+    d->dns_id = id[0];
+    d->mdns_id = id[1];
+    d->ptr_open = PTR_DNS | PTR_MDNS;
+    d->ptr_asked = now;
+    S.asked_at = now;
+    *dns_id = id[0];
+    *mdns_id = id[1];
+    return true;
+}
+
+static bool from_router(uint32_t from, uint16_t port) {
+    return port == 53 && S.have_ifc && S.ifc.gateway && from == S.ifc.gateway;
+}
+
+/* A reverse-DNS answer counts only for an address we asked about within the last minute,
+   only from someone who may answer for it - the router (DNS, port 53) or the device itself
+   (mDNS, port 5353) - only with the id of that very question, and only once. Anything else
+   on the LAN could otherwise rename other people's devices (review, issue #10). The first
+   answer from such a sender closes the question even with a wrong id: whoever sees the
+   multicast question can't spray guesses at the router's id for the rest of the minute. */
+bool net_ptr_answer(uint32_t from, uint16_t port, uint16_t id, uint32_t ip, const char *name, int64_t now) {
+    bool dns = from_router(from, port);
+    bool mdns = port == 5353 && from == ip;
+    if (!(dns || mdns) || !in_scope(ip) || now - S.asked_at > PTR_WINDOW) return false;
+    char s[16];
+    ip_format(ip, s);
+    Device *d = by_ip(s);
+    if (!d || !d->ptr_asked || now - d->ptr_asked > PTR_WINDOW) return false;
+    uint8_t which = dns ? PTR_DNS : PTR_MDNS;
+    if (!(d->ptr_open & which)) return false;
+    d->ptr_open &= (uint8_t)~which;
+    if (id != (dns ? d->dns_id : d->mdns_id)) return false;
     net_name_ip(ip, name);
     return true;
+}
+
+/* A response with no name in it - "no such name" (most routers, for most devices), another
+   error, or no PTR record - from someone who may answer: the question with that id is
+   answered, so nothing that arrives after it counts. */
+static void ptr_no_name(uint32_t from, uint16_t port, uint16_t id, int64_t now) {
+    bool dns = from_router(from, port);
+    if ((!dns && port != 5353) || now - S.asked_at > PTR_WINDOW) return;
+    for (int i = 0; i < tbl_count(&T_device); i++) {
+        Device *d = tbl_at(&T_device, i);
+        uint32_t ip;
+        if (!d->ptr_open || now - d->ptr_asked > PTR_WINDOW) continue;
+        if (dns && (d->ptr_open & PTR_DNS) && d->dns_id == id) d->ptr_open &= (uint8_t)~PTR_DNS;
+        else if (!dns && (d->ptr_open & PTR_MDNS) && d->mdns_id == id && ip_parse(d->last_ip, &ip) && ip == from)
+            d->ptr_open &= (uint8_t)~PTR_MDNS;
+    }
+}
+
+void net_dns_packet(uint32_t from, uint16_t port, const uint8_t *pkt, size_t n, int64_t now) {
+    if ((port != 53 && port != 5353) || !pkt || n < 12 || !(pkt[2] & 0x80)) return; /* responses only */
+    uint16_t id = 0;
+    uint32_t ip = 0;
+    char name[64];
+    if (dns_ptr_reply(pkt, n, &id, &ip, name, sizeof name)) net_ptr_answer(from, port, id, ip, name, now);
+    else ptr_no_name(from, port, (uint16_t)(pkt[0] << 8 | pkt[1]), now);
 }
 
 static void on_udp(sock_t fd, short revents, void *ctx) {
@@ -344,11 +664,7 @@ static void on_udp(sock_t fd, short revents, void *ctx) {
         uint16_t port = 0;
         long n = udp_recv(fd, pkt, sizeof pkt, &from, &port);
         if (n <= 0) break;
-        uint16_t id = 0;
-        uint32_t ip = 0;
-        char name[64];
-        if ((port == 53 || port == 5353) && dns_ptr_reply(pkt, (size_t)n, &id, &ip, name, sizeof name))
-            net_ptr_answer(from, port, id, ip, name, now_sec());
+        net_dns_packet(from, port, pkt, (size_t)n, now_sec());
     }
 }
 
@@ -387,13 +703,15 @@ static void ask_names(void) {
     for (int i = 0; i < tbl_count(&T_device) && sent < 32; i++) {
         Device *d = tbl_at(&T_device, i);
         uint32_t ip;
+        uint16_t dns_id, mdns_id;
         if (d->hostname[0] || !net_online(d, now) || now - d->ptr_asked < 1800 || !ip_parse(d->last_ip, &ip)) continue;
+        d->ptr_asked = now; /* memory-only fields: no write needed */
+        if (!net_ptr_ask(ip, now, &dns_id, &mdns_id)) continue;
         uint8_t q[64];
         size_t n;
-        if (S.ifc.gateway && (n = dns_ptr_query(ip, ++S.dns_id, false, q, sizeof q)) > 0)
+        if (S.ifc.gateway && (n = dns_ptr_query(ip, dns_id, false, q, sizeof q)) > 0)
             udp_send(S.udp, S.ifc.gateway, 53, q, n);
-        if ((n = dns_ptr_query(ip, ++S.dns_id, true, q, sizeof q)) > 0) udp_send(S.udp, 0xE00000FB, 5353, q, n);
-        d->ptr_asked = now; /* memory-only field: no write needed */
+        if ((n = dns_ptr_query(ip, mdns_id, true, q, sizeof q)) > 0) udp_send(S.udp, 0xE00000FB, 5353, q, n);
         sent++;
     }
 }
@@ -459,11 +777,21 @@ static bool http_hook(Ctx *c, Conn *conn, HttpReq *r) {
 
 static int64_t g_sort_now;
 
+/* Unnamed and unowned — except the router, which we recognise by its address. */
+static bool is_unknown(const Device *d) { return !d->name[0] && !d->owner && !is_gateway(d); }
+static bool is_new(const Device *d, int64_t now) { return is_unknown(d) && now - d->first_seen < 86400; }
+/* What "Forget unknown devices not seen for a week" takes: whatever the household didn't set
+   up and hasn't been around for a week - one click cleans a list that forged ARP flooded. */
+static bool is_tidy(const Device *d, int64_t now) { return !is_kept(d) && now - d->last_seen >= NET_TIDY_AFTER; }
+
+/* Online first; within that, owned, then named or the router, then the rest (where a flood
+   of strangers lands), each by label. */
 static int dev_order(const void *a, const void *b) {
     const Device *x = tbl_at(&T_device, *(const int *)a), *y = tbl_at(&T_device, *(const int *)b);
     bool xo = net_online(x, g_sort_now), yo = net_online(y, g_sort_now);
     if (xo != yo) return xo ? -1 : 1;
     if ((x->owner != 0) != (y->owner != 0)) return x->owner ? -1 : 1;
+    if (is_unknown(x) != is_unknown(y)) return is_unknown(x) ? 1 : -1;
     char lx[64], ly[64];
     fold_copy(lx, sizeof lx, net_label(x));
     fold_copy(ly, sizeof ly, net_label(y));
@@ -471,15 +799,11 @@ static int dev_order(const void *a, const void *b) {
     return cmp ? cmp : x->id - y->id;
 }
 
-/* Unnamed and unowned — except the router, which we recognise by its address. */
-static bool is_unknown(const Device *d) { return !d->name[0] && !d->owner && !is_gateway(d); }
-static bool is_new(const Device *d, int64_t now) { return is_unknown(d) && now - d->first_seen < 86400; }
-
 static void filter_chip(Ctx *c, Buf *b, const char *value, const char *label, int count) {
     const char *cur = ctx_q(c, "f");
     bool on = str_eq(cur, value ? value : "");
     Buf u = {0};
-    ctx_url(c, &u, "f", value, "edit", NULL, NULL);
+    ctx_url(c, &u, "f", value, "edit", NULL, "n", NULL, NULL);
     H(b, "<a class=\"chip%r\" href=\"%s\">%s <span class=\"net-n\">%d</span></a>", on ? " on" : "", buf_cstr(&u), label,
       count);
     buf_free(&u);
@@ -532,20 +856,24 @@ static void scan_card(Ctx *c, Buf *b) {
         if (!is_admin(c)) {
             H(b, "<p class=\"net-small muted\">People count as home when their device was seen in the last %d minutes.</p>",
               cur);
-            buf_puts(b, "</section>");
-            return;
+        } else {
+            ui_form(b, "net.window", "net-window");
+            buf_puts(b, "<label>People count as home when their device was seen in the last <select name=\"min\" "
+                        "data-auto aria-label=\"Minutes\">");
+            for (int i = 0; i < countof(choices); i++)
+                H(b, "<option value=\"%d\"%r>%d</option>", choices[i], choices[i] == cur ? " selected" : "",
+                  choices[i]);
+            buf_puts(b, "</select> minutes.</label><noscript><button class=\"btn sm\">Save</button></noscript>");
+            ui_form_end(b);
         }
-        ui_form(b, "net.window", "net-window");
-        buf_puts(b, "<label>People count as home when their device was seen in the last <select name=\"min\" "
-                    "data-auto aria-label=\"Minutes\">");
-        for (int i = 0; i < countof(choices); i++)
-            H(b, "<option value=\"%d\"%r>%d</option>", choices[i], choices[i] == cur ? " selected" : "", choices[i]);
-        buf_puts(b, "</select> minutes.</label><noscript><button class=\"btn sm\">Save</button></noscript>");
-        ui_form_end(b);
+        /* ARP can't be authenticated: a forged neighbour entry with someone's phone address
+           makes them "home" (issue #10). Say so where presence is set up. */
+        buf_puts(b, "<p class=\"net-small muted\">It's a good guess, not proof: phones get left at home, and any device "
+                    "on the network can pretend to be someone's phone.</p>");
     } else {
-        buf_puts(b, "<p class=\"net-explain\">Turn it on at home to see every phone, TV and laptop on the Wi-Fi — and "
-                    "who's home. Hemma then sends a tiny packet to each address on your own network every two "
-                    "minutes. Nothing leaves your network.</p>");
+        buf_puts(b, "<p class=\"net-explain\">Turn it on at home to see every phone, TV and laptop on the Wi-Fi — and a "
+                    "good guess at who's home. Hemma then sends a tiny packet to each address on your own network "
+                    "every two minutes. Nothing leaves your network.</p>");
     }
     buf_puts(b, "</section>");
 }
@@ -656,12 +984,13 @@ static void edit_modal(Ctx *c, Buf *b, const Device *d) {
 
 static void page(Ctx *c, Buf *b) {
     ctx_title(c, "Network");
-    int n = tbl_count(&T_device), online = 0, people = 0, unknown = 0;
+    int n = tbl_count(&T_device), online = 0, people = 0, unknown = 0, tidy = 0;
     for (int i = 0; i < n; i++) {
         Device *d = tbl_at(&T_device, i);
         online += net_online(d, c->now);
         people += d->owner != 0;
         unknown += is_unknown(d);
+        tidy += is_tidy(d, c->now);
     }
     char sub[96];
     snprintf(sub, sizeof sub, "%d online · %d known", online, n);
@@ -701,11 +1030,32 @@ static void page(Ctx *c, Buf *b) {
                                    : "Devices appear as this hub talks to them — or turn on discovery to find them all.");
         buf_puts(b, "</section>");
     } else {
+        long long want = ctx_qint(c, "n", PAGE_ROWS);
+        int limit = (int)CLAMP(want, PAGE_ROWS, NET_MAX_DEVICES), upto = MIN(shown, limit);
         buf_puts(b, "<section class=\"card net-list\"><ul class=\"net-devs\">");
-        for (int i = 0; i < shown; i++) device_row(c, b, tbl_at(&T_device, idx[i]));
-        buf_puts(b, "</ul></section>");
+        for (int i = 0; i < upto; i++) device_row(c, b, tbl_at(&T_device, idx[i]));
+        buf_puts(b, "</ul>");
+        if (shown > upto) {
+            char more[16];
+            snprintf(more, sizeof more, "%d", limit + PAGE_ROWS);
+            Buf u = {0};
+            ctx_url(c, &u, "n", more, "edit", NULL, NULL);
+            H(b, "<p class=\"net-more\" id=\"net-more\"><a class=\"btn sm\" href=\"%s\">Show %d more</a><span "
+                 "class=\"muted\">%d of %d shown</span></p>",
+              buf_cstr(&u), MIN(PAGE_ROWS, shown - upto), upto, shown);
+            buf_free(&u);
+        }
+        buf_puts(b, "</section>");
     }
     free(idx);
+    if (tidy && is_admin(c)) {
+        const char *s = tidy == 1 ? "" : "s";
+        H(b,
+          "<form method=\"post\" action=\"/a/net.tidy\" data-a=\"net.tidy\" class=\"net-tidy\" id=\"net-tidy\" "
+          "data-confirm=\"Forget %d unknown device%s not seen for a week? Any that come back show up again.\">"
+          "<button class=\"btn sm\">Forget %d unknown device%s not seen for a week</button></form>",
+          tidy, s, tidy, s);
+    }
 
     Device *ed = tbl_get(&T_device, (int)ctx_qint(c, "edit", 0));
     if (ed && is_admin(c)) edit_modal(c, b, ed);
@@ -869,9 +1219,28 @@ static void act_forget(Ctx *c, Fields *f) {
     char label[64];
     str_copy(label, sizeof label, net_label(d));
     tbl_del(&T_device, d->id);
+    find_router();
     if (net_scan_on()) update_presence(now_sec()); /* maybe its owner's last device */
     ctx_ok(c, "Forgot %s", label);
     back_without_edit(c);
+}
+
+/* All at once, highest ids first (each delete then moves only the rows that stay). None of
+   them has an owner: who's home doesn't change. */
+static void act_tidy(Ctx *c, Fields *f) {
+    if (!admin_only(c)) return;
+    int n = 0;
+    Spare *s = xmalloc(sizeof(Spare) * (size_t)(tbl_count(&T_device) + 1));
+    for (int i = 0; i < tbl_count(&T_device); i++) {
+        Device *d = tbl_at(&T_device, i);
+        if (is_tidy(d, c->now)) s[n++] = (Spare){false, d->last_seen, d->id};
+    }
+    qsort(s, (size_t)n, sizeof *s, by_id_desc);
+    for (int i = 0; i < n; i++) tbl_del(&T_device, s[i].id);
+    free(s);
+    find_router();
+    if (n) ctx_ok(c, "Forgot %d device%s not seen for a week", n, n == 1 ? "" : "s");
+    else ctx_info(c, "Nothing to forget");
 }
 
 static void act_wake(Ctx *c, Fields *f) {
@@ -901,6 +1270,42 @@ static void act_wake(Ctx *c, Fields *f) {
 
 /* -------------------------------------------------------------- module */
 
+/* The System page's checks: is there a network, and is discovery on and working? (Cached
+   facts: the interface is looked up once a minute by the tick.) */
+static void health(Ctx *c, Health *h) {
+    char d[320], ip[16], gw[16];
+    if (S.have_ifc) {
+        ip_format(S.ifc.ip, ip);
+        if (S.ifc.gateway) {
+            ip_format(S.ifc.gateway, gw);
+            snprintf(d, sizeof d, "Connected as %s (%s), with the router at %s.", ip, S.ifc.name, gw);
+        } else {
+            snprintf(d, sizeof d, "Connected as %s (%s), but no router was found: devices may go unnamed.", ip,
+                     S.ifc.name);
+        }
+        health_add(h, HEALTH_OK, "Home network", d, NULL, NULL);
+    } else if (!app_testing()) { /* (tests have no interface unless they set one) */
+        health_add(h, HEALTH_WARN, "Home network", "Hemma can't find a network connection on this computer.",
+                   "Check the network cable or Wi-Fi - Hemma looks again every minute.", NULL);
+    }
+    if (!net_scan_on()) {
+        health_add(h, HEALTH_INFO, "Device discovery",
+                   "Off: the Network page only lists devices that talk to Hemma, and nobody shows as home or away.",
+                   "Turn it on on the Network page to see who's home.", "/net");
+    } else if (S.udp == SOCK_BAD && S.udp_retry) {
+        health_add(h, HEALTH_WARN, "Device discovery", "On, but Hemma can't send its probes (no network socket).",
+                   "The log says more; Hemma tries again every minute.", "/system/log?f=warn");
+    } else {
+        int n = snprintf(d, sizeof d, "On: Hemma looks for devices every %d minutes, so it can tell who's home.",
+                         NET_SCAN_EVERY / 60);
+        if (S.last_sweep && n > 0 && (size_t)n < sizeof d) {
+            DateTime t = dt_local(S.last_sweep);
+            snprintf(d + n, sizeof d - (size_t)n, " Last look: %02d:%02d.", t.hour % 100, t.min % 100);
+        }
+        health_add(h, HEALTH_OK, "Device discovery", d, NULL, "/net");
+    }
+}
+
 static void init(void) { store_register(&T_device); }
 
 static void start(void) {
@@ -913,8 +1318,11 @@ static void start(void) {
         d->online = net_online(d, now);
         d->dirty = false;
         d->ptr_asked = 0;
+        d->ptr_open = 0;
+        d->listed = 0;
     }
     if (!app_testing()) refresh_iface();
+    trim(now); /* after refresh_iface: the router is never trimmed */
 }
 
 static void stop(void) {
@@ -925,6 +1333,7 @@ static void stop(void) {
 static const Action actions[] = {
     {"net.scan", act_scan},     {"net.window", act_window}, {"net.save", act_save},
     {"net.assign", act_assign}, {"net.forget", act_forget}, {"net.wake", act_wake},
+    {"net.tidy", act_tidy},
     {0},
 };
 
@@ -942,5 +1351,6 @@ static const Module net = {
     .http = http_hook,
     .widget = widget,
     .widget_order = 30,
+    .health = health,
 };
 MODULE(net)

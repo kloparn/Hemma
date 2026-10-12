@@ -53,6 +53,8 @@
 .net-owner { display: inline-flex; margin-right: 4px; }
 .chip.net-suggest { padding: 3px 10px 3px 4px; font-size: 12.5px; border-style: dashed; }
 .icon-btn.net-wake { color: var(--warn); }
+.net-tidy { display: flex; justify-content: center; margin: 14px 0 0; }
+.net-more { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px 12px; margin: 0; padding: 12px 4px 10px; border-top: 1px solid var(--line); font-size: 13px; }
 
 /* edit modal */
 .net-form .emojis { grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); }
