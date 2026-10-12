@@ -108,9 +108,10 @@ chown root:hemma "$ENVF"
 chmod 640 "$ENVF"
 
 # ---- start it (again), and wait until it answers -----------------------------------------
-setting() { # the last "KEY=value" line for $1 in the settings file, without quotes
+setting() { # $1's value as Hemma reads it: the first line with a value, without quotes or " # note"
     sed -n "s/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}$1[[:space:]]*=[[:space:]]*//p" "$ENVF" |
-        tail -n 1 | tr -d '\r' | sed 's/[[:space:]]*$//; s/^"\(.*\)"$/\1/; s/^'\''\(.*\)'\''$/\1/'
+        tr -d '\r' | sed 's/^#.*//; s/^\([^"'\''].*\)[[:space:]]#.*$/\1/; s/[[:space:]]*$//' |
+        sed 's/^"\(.*\)"$/\1/; s/^'\''\(.*\)'\''$/\1/' | sed -n '/./{p;q;}'
 }
 PORT=$(setting HEMMA_PORT)
 PORT=${PORT:-8080}
