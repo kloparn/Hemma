@@ -138,11 +138,22 @@ TEST(media_player_page_has_tracks_next_and_badges) {
     const char *html = th_page(adam, url("/media/watch/%s", flower->id));
     /* one player element for good: the box goes full screen (not the video: the card shows over it) */
     CHECK_HAS(html, "<div class=\"media-player-box\" id=\"media-box\"><video id=\"media-video\" class=\"media-player\"");
-    CHECK_HAS(html, "controls controlslist=\"nofullscreen\"");
-    char want[120];
+    char want[160];
     snprintf(want, sizeof want, "data-static=\"%016llx\"", (unsigned long long)flower->id);
     CHECK_HAS(html, want);
+    /* our own controls over it (the browser's - `controls` - only until wire.js takes over), with the
+       same data-static as the video: the next episode renews both */
+    CHECK_HAS(html, " controls ");
+    snprintf(want, sizeof want, "<div class=\"pl\" id=\"media-box-pl\" data-player=\"media-video\" data-static=\"%016llx\" "
+             "data-paused hidden>", (unsigned long long)flower->id);
+    CHECK_HAS(html, want);
+    CHECK_HAS(html, "data-p=\"play\"");
+    CHECK_HAS(html, "data-p=\"seek\"");
     CHECK_HAS(html, "id=\"media-box-fs\" data-fullscreen=\"media-box\" data-static hidden aria-pressed=\"false\"");
+    /* its subtitles in the player's menu, as the <track>s have them */
+    CHECK_HAS(html, "<button type=\"button\" role=\"menuitemradio\" data-sub=\"\" aria-checked=\"true\">Off</button>");
+    CHECK_HAS(html, "data-sub=\"sv\" aria-checked=\"false\">Svenska</button>");
+    CHECK(!strstr(html, "<span class=\"pl-onair\">")); /* (not live) */
     CHECK_HAS(html, "data-report=\"media.progress\"");
     CHECK(!strstr(html, "data-upnext")); /* a film: nothing comes next */
     CHECK_HAS(html, "srclang=\"sv\" label=\"Svenska\"");
@@ -153,6 +164,8 @@ TEST(media_player_page_has_tracks_next_and_badges) {
     CHECK(th_act(adam, "media.prefs", "sublang=sv").ok);
     html = th_page(adam, url("/media/watch/%s", flower->id));
     CHECK_HAS(html, "label=\"Svenska\" default>");
+    CHECK_HAS(html, "data-sub=\"sv\" aria-checked=\"true\">Svenska</button>"); /* the menu ticks it too */
+    CHECK_HAS(html, "data-sub=\"\" aria-checked=\"false\">Off</button>");
     /* episodes chain to the next one and autoplay it */
     const MediaFile *ep1 = find("S01E01.Seeds.mp4"), *ep2 = find("S01E02.Roots.mp4");
     html = th_page(adam, url("/media/watch/%s", ep1->id));

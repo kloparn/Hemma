@@ -315,8 +315,8 @@ void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f) {
     Buf go = {0};
     if (next) H(&go, "/media/watch/%X?tv=1&amp;auto=1&amp;back=%u", next->id, back);
     H(b, "<div class=\"media-tv-player\" id=\"media-box\"><video id=\"media-video\" class=\"media-tv-video\" "
-         "src=\"/media/file/%X\" controls controlslist=\"nofullscreen\" autoplay playsinline preload=\"auto\" tabindex=\"0\" "
-         "autofocus data-static=\"%X\" data-id=\"%X\" data-report=\"media.progress\"",
+         "src=\"/media/file/%X\" controls autoplay playsinline preload=\"auto\" tabindex=\"0\" autofocus data-static=\"%X\" "
+         "data-id=\"%X\" data-report=\"media.progress\"",
       f->id, f->id, f->id);
     if (w && !w->done && w->pos > 10 && !fresh) H(b, " data-resume=\"%d\"", w->pos);
     if (next) H(b, " data-next=\"%r\"", buf_cstr(&go));
@@ -330,7 +330,7 @@ void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f) {
     media_tracks(c, b, f);
     buf_puts(b, "</video>");
     if (next) media_upnext(b, next, buf_cstr(&go), true);
-    ui_fullscreen(b, "media-box", "media-tv-fs");
+    media_controls(c, b, f, true);
     buf_puts(b, "</div>");
 
     buf_puts(b, "<div class=\"media-tv-info\">");

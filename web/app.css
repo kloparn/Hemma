@@ -298,22 +298,95 @@ small { font-size: 12.5px; }
 .tile:focus { outline: none; transform: scale(1.06); z-index: 1; }
 .tile:focus .tile-art { box-shadow: 0 0 0 3px var(--bg), 0 0 0 7px var(--text), 0 10px 28px rgba(0, 0, 0, .45); }
 
-/* "Full screen" over a player (ui_fullscreen, wire.js [data-fullscreen]): shown by wire.js where the
-   browser can; aria-pressed = full screen now. While full screen, <html data-idle> after a few still
-   seconds: what's drawn over the picture fades and the pointer hides. */
-.fs-btn {
-  position: absolute; top: 12px; right: 12px; z-index: 6; display: inline-flex; padding: 8px 14px;
-  border: 1px solid rgba(255, 255, 255, .28); border-radius: 999px; background: rgba(0, 0, 0, .6); color: #fff;
-  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity .3s;
+/* ---- a video player's own controls (ui_player, wire.js [data-player]) ----
+   The overlay covers the video's box and lets clicks through to the picture; wire.js keeps its state
+   in attributes: data-on (the bar shows: a move, a key, paused), data-paused, data-wait, data-muted.
+   Full screen and a few still seconds: <html data-idle> hides the pointer. */
+.pl { position: absolute; top: 0; right: 0; bottom: 0; left: 0; z-index: 5; pointer-events: none; color: #fff; }
+.pl[hidden] { display: none; }
+.pl button { pointer-events: auto; font: inherit; color: inherit; cursor: pointer; }
+.pl .i { width: 24px; height: 24px; }
+.pl-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 30px 12px 8px;
+  background: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, .78)); opacity: 0; transition: opacity .25s;
 }
-.fs-btn[hidden] { display: none; }
-.fs-btn > span { display: inline-flex; align-items: center; gap: 8px; }
-.fs-btn .i { width: 18px; height: 18px; }
-.fs-btn:hover { background: rgba(0, 0, 0, .8); }
-.fs-btn:focus { outline: 3px solid #fff; outline-offset: 3px; }
-.fs-btn[aria-pressed="true"] .fs-on, .fs-btn[aria-pressed="false"] .fs-off { display: none; }
+.pl[data-on] .pl-bar { opacity: 1; }
+.pl[data-on] .pl-bar input { pointer-events: auto; }
+.pl:not([data-on]) .pl-bar button { pointer-events: none; } /* hidden: a tap there wakes it instead */
+.pl-row { display: flex; align-items: center; gap: 2px; }
+.pl-row button {
+  display: grid; place-items: center; min-width: 44px; height: 44px; padding: 0 8px; border: 0; border-radius: 10px;
+  background: none;
+}
+.pl-row button:hover { background: rgba(255, 255, 255, .14); }
+.pl-row button:focus { outline: none; }
+.pl-row button:focus-visible, .pl-big:focus-visible { outline: 3px solid #fff; outline-offset: 1px; }
+.pl-gap { flex: 1; }
+.pl-time, .pl-onair { padding: 0 8px; font-size: 14px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pl-onair { display: inline-flex; align-items: center; gap: 7px; letter-spacing: .06em; text-transform: uppercase; }
+.pl-onair::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: #ff4d4d; }
+/* the seek bar: a drawn line, the real (invisible) range input on top does the work */
+.pl-seek { position: relative; height: 20px; margin: 0 8px 2px; }
+.pl-seek::before, .pl-buf, .pl-fill {
+  content: ""; position: absolute; left: 0; top: 8px; height: 4px; border-radius: 4px; transition: height .12s, top .12s;
+}
+.pl-seek::before { right: 0; background: rgba(255, 255, 255, .25); }
+.pl-buf { width: 0; background: rgba(255, 255, 255, .4); }
+.pl-fill { width: 0; background: var(--accent); }
+.pl-fill::after {
+  content: ""; position: absolute; right: -7px; top: -5px; width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; transform: scale(0); transition: transform .12s;
+}
+.pl-seek:hover::before, .pl-seek:hover .pl-buf, .pl-seek:hover .pl-fill, .pl-seek:focus-within::before,
+.pl-seek:focus-within .pl-buf, .pl-seek:focus-within .pl-fill { top: 7px; height: 6px; }
+.pl-seek:hover .pl-fill::after, .pl-seek:focus-within .pl-fill::after { transform: scale(1); top: -4px; }
+.pl-range {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; pointer-events: none;
+}
+.pl-vol { width: 80px; margin: 0 8px 0 0; accent-color: #fff; pointer-events: none; }
+@media (hover: none) { .pl-vol { display: none; } } /* phones and tablets: the buttons on their side */
+/* two icons per button: .pl-a in one state, .pl-b in the other (playing, muted, full screen) */
+.pl-a, .pl-b { display: inline-flex; align-items: center; gap: 8px; }
+.pl-b { display: none; }
+.pl:not([data-paused]) .pl-play .pl-a, .pl[data-muted] .pl-mute .pl-a, .pl-fs[aria-pressed="true"] .pl-a { display: none; }
+.pl:not([data-paused]) .pl-play .pl-b, .pl[data-muted] .pl-mute .pl-b, .pl-fs[aria-pressed="true"] .pl-b { display: inline-flex; }
+.pl-fs[hidden] { display: none; }
+.pl-mute-t { display: none; font-size: 14px; font-weight: 600; }
+.pl-live[data-muted] .pl-mute-t { display: inline; } /* a live channel says "Sound off" in words */
+.pl-live[data-muted] .pl-mute { padding: 0 14px 0 10px; background: rgba(0, 0, 0, .55); }
+/* subtitles: a small menu above its button */
+.pl-subs { position: relative; }
+.pl-menu {
+  position: absolute; right: 0; bottom: 52px; min-width: 150px; display: flex; flex-direction: column; padding: 6px;
+  border-radius: 12px; background: rgba(20, 22, 26, .96); box-shadow: 0 10px 30px rgba(0, 0, 0, .5);
+}
+.pl-menu[hidden] { display: none; }
+.pl-menu button {
+  display: block; width: 100%; padding: 9px 12px 9px 30px; border: 0; border-radius: 8px; background: none;
+  text-align: left; font-size: 15px; white-space: nowrap; position: relative;
+}
+.pl-menu button:hover, .pl-menu button:focus-visible { background: rgba(255, 255, 255, .14); outline: none; }
+.pl-menu button[aria-checked="true"]::before { content: "✓"; position: absolute; left: 10px; font-weight: 700; }
+/* paused: a big play button in the middle; loading: a spinner */
+.pl-big {
+  position: absolute; left: 50%; top: 50%; width: 76px; height: 76px; margin: -38px 0 0 -38px; display: none;
+  place-items: center; border: 0; border-radius: 50%; background: rgba(0, 0, 0, .55);
+}
+.pl-big .i { width: 36px; height: 36px; margin-left: 4px; }
+.pl[data-paused] .pl-big { display: grid; }
+.pl[data-paused][data-wait] .pl-big { display: none; }
+.pl-spin {
+  position: absolute; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px 0 0 -24px; display: none;
+  border: 4px solid rgba(255, 255, 255, .25); border-top-color: #fff; border-radius: 50%; animation: pl-spin .8s linear infinite;
+}
+.pl[data-wait] .pl-spin { display: block; }
+@keyframes pl-spin { to { transform: rotate(360deg); } }
 html[data-idle], html[data-idle] * { cursor: none; }
-html[data-idle] .fs-btn { opacity: 0; }
+@media (max-width: 600px) {
+  .pl-bar { padding: 24px 4px 4px; }
+  .pl-row button { min-width: 40px; height: 40px; padding: 0 6px; }
+  .pl-back, .pl-fwd { display: none; } /* phones: the seek bar and a tap on the picture are enough */
+}
 
 /* ---------------------------------------------------------------- people */
 

@@ -43,6 +43,33 @@ void media_tracks(const Ctx *c, Buf *b, const MediaFile *f) {
     }
 }
 
+/* The same tracks as a player's subtitle menu: same order, same one on. */
+static int media_subs(const Ctx *c, const MediaFile *f, UiSub *out, int max) {
+    const MediaIndex *ix = media_lib();
+    int v = ctx_viewer(c);
+    const char *want = v ? pref(v, "media.sublang", "") : "";
+    bool defaulted = false;
+    int n = 0;
+    for (int i = 0; i < ix->nfiles && n < max; i++) {
+        const MediaFile *sub = &ix->files[i];
+        if (sub->type != MF_SUB || sub->video != f->id) continue;
+        bool def = !defaulted && *want && str_ieq(sub->lang, want);
+        defaulted |= def;
+        out[n++] = (UiSub){sub->lang[0] ? sub->lang : "und", lang_name(sub->lang), def};
+    }
+    return n;
+}
+
+void media_controls(const Ctx *c, Buf *b, const MediaFile *f, bool tv) {
+    UiSub subs[16];
+    char key[17];
+    media_id_hex(f->id, key);
+    int64_t ms = f->probe.duration_ms ? f->probe.duration_ms : media_playable(f)->probe.duration_ms;
+    UiPlayer p = {.box = "media-box", .video = "media-video", .key = key, .seconds = (int)(ms / 1000), .subs = subs, .tv = tv};
+    p.nsubs = media_subs(c, f, subs, countof(subs));
+    ui_player(b, &p);
+}
+
 static const char *query(const Ctx *c) {
     const char *q = ctx_live(c, "media.q");
     return *q ? q : ctx_q(c, "q");
@@ -837,13 +864,14 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     }
 
     /* the player: data-static="<the video>" keeps live re-renders away from it, and the next
-       episode morphs into the same element - full screen (the box: the card shows over it) stays */
+       episode morphs into the same element - full screen (the box: the card shows over it) stays.
+       Our own controls (media_controls); the browser's only without wire.js */
     bool autoplay = str_eq(ctx_q(c, "auto"), "1");
     Buf go = {0};
     if (next) H(&go, "/media/watch/%X?auto=1", next->id);
     H(b, "<div class=\"media-player-box\" id=\"media-box\"><video id=\"media-video\" class=\"media-player\" "
-         "src=\"/media/file/%X\" controls controlslist=\"nofullscreen\" preload=\"metadata\" playsinline data-static=\"%X\" "
-         "data-id=\"%X\" data-report=\"media.progress\"",
+         "src=\"/media/file/%X\" controls preload=\"metadata\" playsinline data-static=\"%X\" data-id=\"%X\" "
+         "data-report=\"media.progress\"",
       f->id, f->id, f->id);
     if (w && !w->done && w->pos > 10 && !autoplay) H(b, " data-resume=\"%d\"", w->pos);
     if (next) H(b, " data-next=\"%r\"", buf_cstr(&go));
@@ -858,7 +886,7 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     media_tracks(c, b, f);
     buf_puts(b, "</video>");
     if (next) media_upnext(b, next, buf_cstr(&go), false);
-    ui_fullscreen(b, "media-box", NULL);
+    media_controls(c, b, f, false);
     buf_puts(b, "</div>");
     buf_free(&go);
 

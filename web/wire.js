@@ -14,7 +14,9 @@
 //               data-convert/data-wasm the server's converter (C, as WebAssembly) can make
 //               play-everywhere copies first, in Workers (web/conv.js)
 //               [data-start="id"] open a horizontal scroller at that child
-//               video[data-onair] live: plays at "now", no pausing or winding · [data-mute] its sound
+//               video[data-onair] live: plays at "now", no pausing or winding
+//               [data-player="<video id>"] a video's own controls (play, seek, time, subtitles,
+//               sound, full screen - see "the player" below), instead of the browser's
 //               [data-arrows] a remote control's arrow keys move focus inside it, to the nearest
 //               focusable thing that way (Left/Right along its row, Up/Down to the next row,
 //               whatever is closest across); Enter then opens it as usual. With nothing focused
@@ -168,6 +170,7 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (fsEl()) return; // the browser leaves full screen; going back too would be one step too many
+      if (menus(null)) { e.preventDefault(); return; } // an open subtitles menu closes first
       const x = document.querySelector('[data-esc]');
       if (x) { e.preventDefault(); x.click(); }
       return;
@@ -233,6 +236,7 @@
     el.focus({ preventScroll: true });
     el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: smooth ? 'smooth' : 'auto' });
   };
+  document.addEventListener('keydown', (e) => playerKeys(e)); // a player's keys come first (see below)
   document.addEventListener('keydown', (e) => {
     const dir = ARROWS[e.key] || ARROW_CODES[e.keyCode];
     if (!dir || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
@@ -594,51 +598,39 @@
   // <video data-onair data-resume="S">: a live broadcast (a TV channel). It plays where the
   // programme is now - S when it came (m._at, m._t0: see media()), plus the time since - and can't
   // be paused, wound or sped up: it jumps back to now and plays on. Only the sound is the viewer's
-  // ([data-mute]); their choice carries over to the next programme. A browser that won't start it
-  // with sound starts it muted.
-  let onairMuted = false;
-  const muteShow = (v) => {
-    for (const b of document.querySelectorAll('[data-mute]')) b.setAttribute('aria-pressed', v.muted ? 'true' : 'false');
-  };
+  // (its player's sound button); the element stays from programme to programme, and so does that.
+  // A browser that won't start it with sound starts it muted (the player then says "Sound off").
   function onair(m) {
     const now = () => m._at + (performance.now() - m._t0) / 1000;
     const snap = () => {
       if (m.duration && Math.abs(m.currentTime - now()) > 2) m.currentTime = Math.min(now(), m.duration - 0.5);
     };
+    // (only while it's on the page: leaving it pauses it, and playing on there - unseen - would add one
+    // more voice for every visit)
     const go = () => {
+      if (!m.isConnected) return;
       const p = m.play();
       if (p && p.catch) p.catch(() => {
-        if (m.muted) return;
-        m.muted = onairMuted = true; // no sound without a press first: muted, the button says so
-        muteShow(m);
+        if (m.muted || !m.isConnected) return;
+        m.muted = true; // no sound without a press first
         m.play().catch(() => {});
       });
     };
     m.addEventListener('loadedmetadata', () => { snap(); go(); });
-    m.addEventListener('pause', () => { if (!m.ended) { snap(); go(); } });
+    m.addEventListener('pause', () => { if (!m.ended && m.isConnected) { snap(); go(); } });
     m.addEventListener('seeked', snap); // its own jump lands within 2 s: no loop
     m.addEventListener('ratechange', () => { if (m.playbackRate !== 1) m.playbackRate = 1; });
-    m.addEventListener('volumechange', () => muteShow(m));
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && m.isConnected) { snap(); go(); }
     });
   }
-  document.addEventListener('click', (e) => {
-    const b = e.target.closest && e.target.closest('[data-mute]');
-    const v = b && document.querySelector('video[data-onair]');
-    if (!v) return;
-    e.preventDefault();
-    v.muted = onairMuted = !v.muted;
-    if (!v.muted && v.paused) v.play().catch(() => {});
-    muteShow(v);
-  });
 
   // <video data-resume="123" data-report="media.progress" data-id="..." data-next="/tv/1">.
   // Wired once; when a morph brings the same element a new video (data-static="v": the next
   // episode, the next programme) it starts over with that one's data-resume - and the element
   // stays, so a full screen does too. The listeners read the data-* attributes as they are then.
   function media(m) {
-    const src = m.getAttribute('src') || '';
+    const src = (m.getAttribute('data-static') || '') + ' ' + (m.getAttribute('src') || ''); // (a channel airs a file again)
     if (m._src === src) return;
     const again = m._src !== undefined;
     m._src = src;
@@ -646,8 +638,18 @@
     m._t0 = performance.now();
     m._last = 0;
     m._away = false; // the "next episode" card put away
-    if (m.hasAttribute('data-onair')) { m.muted = onairMuted; muteShow(m); }
+    plWire(m);
     if (again) return;
+    // its player shows how it's doing
+    for (const t of ['play', 'pause', 'playing', 'waiting', 'seeked', 'volumechange', 'durationchange', 'progress', 'ended']) {
+      m.addEventListener(t, () => {
+        const pl = plOf(m);
+        if (!pl) return;
+        if (t === 'waiting' || t === 'playing' || t === 'pause' || t === 'seeked') flag(pl, 'data-wait', t === 'waiting');
+        plSync(pl, m);
+        if (t === 'play' || t === 'pause' || t === 'volumechange') plWake(pl);
+      });
+    }
     if (m.hasAttribute('data-onair')) onair(m);
     else {
       // "continue watching" (data-report) skips a resume point in the last seconds
@@ -665,8 +667,14 @@
     m.addEventListener('timeupdate', () => {
       if (Math.abs(m.currentTime - m._last) >= 15) { m._last = m.currentTime; tell(false); }
       upnext(m);
+      const pl = plOf(m);
+      if (pl) plSync(pl, m);
     });
-    m.addEventListener('pause', () => { if (!m.ended) tell(false); });
+    m.addEventListener('pause', () => {
+      if (!m.ended) tell(false);
+      // taken off the page (another page came): let go of the stream too - after the report above
+      if (!m.isConnected) setTimeout(() => { if (!m.isConnected) { m.removeAttribute('src'); m.load(); } });
+    });
     m.addEventListener('ended', () => {
       tell(true);
       if (m.dataset.next) send({ t: 'nav', url: m.dataset.next }) || (location.href = m.dataset.next);
@@ -700,13 +708,255 @@
     else if (e.target.closest('a[href]') && m._tell) m._tell(true); // on to the next one: this one is watched
   }, true);
 
+  // ------------------------------------------------------------- the player
+  // [data-player="<video id>"] (ui_player): a video's own controls, drawn over it - the same in every
+  // browser and for a TV's remote. Without this file the video keeps the browser's controls; wired,
+  // those go and the overlay shows. Its state, for CSS: data-on (the bar shows: a move, a key, a
+  // pause - 3 still seconds of playing put it away), data-paused, data-wait, data-muted. Parts
+  // ([data-p]): play back fwd seek at dur mute vol subs, and [data-sub="<srclang>"] in the subtitles
+  // menu ("" = off; the choice goes on to the next episode). Keys while the player has the focus (or
+  // nothing has): Space/K play, Left/Right 10 s, M sound, F full screen; a remote's Up/Down on the
+  // picture go to the bar, Up on the seek bar back to the picture.
+  const plOf = (v) => (v && v.id ? document.querySelector(`[data-player="${CSS.escape(v.id)}"]`) : null);
+  const plVideo = (pl) => document.getElementById(pl.dataset.player);
+  const players = () => document.querySelectorAll('[data-player]:not([hidden])');
+  const flag = (el, name, on) => {
+    if (on !== el.hasAttribute(name)) { if (on) el.setAttribute(name, ''); else el.removeAttribute(name); }
+  };
+  const two = (n) => (n < 10 ? '0' : '') + n;
+  const clock = (s) => {
+    s = Math.max(0, Math.floor(s || 0));
+    return s >= 3600 ? `${Math.floor(s / 3600)}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}` : `${Math.floor(s / 60)}:${two(s % 60)}`;
+  };
+  const say = (pl, part, text) => {
+    const el = pl.querySelector(`[data-p="${part}"]`);
+    if (el && el.textContent !== text) el.textContent = text;
+  };
+  // A video came (a page, or the next episode in the same element): ours instead of the browser's.
+  function plWire(v) {
+    const pl = plOf(v);
+    if (!pl) return;
+    v.controls = false;
+    pl.hidden = false;
+    pl._drag = false;
+    if (v._sub !== undefined) subPick(pl, v, v._sub);
+    plSync(pl, v);
+    plWake(pl);
+  }
+  function plSync(pl, v) {
+    flag(pl, 'data-paused', v.paused && !v.hasAttribute('data-onair'));
+    flag(pl, 'data-muted', v.muted || v.volume === 0);
+    const d = v.duration, seek = pl.querySelector('[data-p="seek"]');
+    if (seek && d > 0 && isFinite(d)) {
+      const at = pl._drag ? pl._to : v.currentTime;
+      if (!pl._drag) {
+        if (+seek.max !== d) seek.max = d;
+        seek.value = at;
+      }
+      pl.querySelector('.pl-fill').style.width = (100 * at / d) + '%';
+      let end = 0;
+      for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= v.currentTime + 1) end = Math.max(end, v.buffered.end(i));
+      pl.querySelector('.pl-buf').style.width = (100 * Math.min(end, d) / d) + '%';
+      say(pl, 'at', clock(at));
+      say(pl, 'dur', clock(d));
+    }
+    const vol = pl.querySelector('[data-p="vol"]');
+    if (vol && document.activeElement !== vol) vol.value = v.muted ? 0 : v.volume;
+  }
+  let pointer = 'mouse'; // what pressed last: a tap on the picture shows the bar instead of pausing
+  // The bar shows or goes; while it shows, subtitles move up above it (as a browser's own controls
+  // make them).
+  function plShow(pl, on) {
+    if (on === pl.hasAttribute('data-on')) return;
+    flag(pl, 'data-on', on);
+    const v = plVideo(pl);
+    for (let i = 0; v && i < v.textTracks.length; i++) {
+      const t = v.textTracks[i];
+      for (let j = 0; t.mode === 'showing' && t.cues && j < t.cues.length; j++) {
+        const c = t.cues[j];
+        if (on) {
+          if (c._line === undefined) c._line = c.line;
+          c.line = -4;
+        } else if (c._line !== undefined) c.line = c._line;
+      }
+    }
+  }
+  function plWake(pl) {
+    plShow(pl, true);
+    clearTimeout(pl._t);
+    pl._t = setTimeout(() => plSleep(pl), 3000);
+  }
+  function plSleep(pl) {
+    const v = plVideo(pl);
+    if (!v || !pl.isConnected) return;
+    const live = v.hasAttribute('data-onair');
+    if (v.paused && !live) return; // paused: it stays until playing again
+    if ((live && v.muted) || pl._drag || pl.querySelector('[role="menu"]:not([hidden])') ||
+        (pointer === 'mouse' && pl.querySelector('.pl-bar:hover'))) {
+      pl._t = setTimeout(() => plSleep(pl), 3000);
+      return;
+    }
+    plShow(pl, false);
+  }
+  const play = (v) => {
+    if (!v.paused) { v.pause(); return; }
+    const p = v.play();
+    if (p && p.catch) p.catch(() => {});
+  };
+  const seekBy = (v, s) => { if (v.duration > 0) v.currentTime = Math.max(0, Math.min(v.duration - 0.25, v.currentTime + s)); };
+  const mute = (v) => {
+    v.muted = !v.muted;
+    if (!v.muted && v.volume === 0) v.volume = 1;
+    if (!v.muted && v.paused && v.hasAttribute('data-onair')) v.play().catch(() => {});
+  };
+  // Subtitles: the first track in that language shows, the rest don't; the menu ticks what shows.
+  function subPick(pl, v, lang) {
+    v._sub = lang;
+    let done = false;
+    for (let i = 0; i < v.textTracks.length; i++) {
+      const t = v.textTracks[i];
+      if (t.kind !== 'subtitles' && t.kind !== 'captions') continue;
+      const on = !!lang && !done && t.language === lang;
+      done = done || on;
+      t.mode = on ? 'showing' : 'disabled';
+    }
+    subTicks(pl, v);
+  }
+  function subTicks(pl, v) {
+    let now = '';
+    for (let i = 0; i < v.textTracks.length; i++) if (v.textTracks[i].mode === 'showing') { now = v.textTracks[i].language; break; }
+    for (const b of pl.querySelectorAll('[data-sub]')) b.setAttribute('aria-checked', b.dataset.sub === now ? 'true' : 'false');
+  }
+  // Close the open subtitle menus but `keep`; true when one was open. The focus, if it was in one,
+  // goes back to its button.
+  function menus(keep) {
+    let was = false;
+    for (const m of document.querySelectorAll('[data-player] [role="menu"]:not([hidden])')) {
+      if (m === keep) continue;
+      if (m.contains(document.activeElement) && m.previousElementSibling) m.previousElementSibling.focus();
+      m.hidden = true;
+      was = true;
+    }
+    return was;
+  }
+  addEventListener('pointerdown', (e) => { pointer = e.pointerType || 'mouse'; }, true);
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+    if (!t.closest) return;
+    const part = t.closest('[data-player] [data-p], [data-player] [data-sub]');
+    const pic = part ? null : t.closest('video');
+    const pl = part ? part.closest('[data-player]') : plOf(pic);
+    const v = pl && !pl.hidden && plVideo(pl);
+    if (!v) { if (!t.closest('[data-player] [role="menu"]')) menus(null); return; }
+    const was = pl.hasAttribute('data-on');
+    plWake(pl);
+    if (!part) { // the picture: a click plays or pauses, a tap shows or hides the bar
+      menus(null);
+      if (pointer !== 'touch') { if (!v.hasAttribute('data-onair')) play(v); }
+      else if (was && !v.paused) { clearTimeout(pl._t); plShow(pl, false); }
+      return;
+    }
+    if (part.tagName === 'INPUT') return;
+    e.preventDefault();
+    if (part.hasAttribute('data-sub')) { subPick(pl, v, part.dataset.sub); menus(null); return; }
+    const what = part.dataset.p, menu = pl.querySelector('[role="menu"]');
+    menus(what === 'subs' ? menu : null);
+    if (what === 'play') play(v);
+    else if (what === 'back') seekBy(v, -10);
+    else if (what === 'fwd') seekBy(v, 10);
+    else if (what === 'mute') mute(v);
+    else if (what === 'subs' && menu) {
+      subTicks(pl, v);
+      menu.hidden = !menu.hidden;
+      const c = !menu.hidden && !e.detail && menu.querySelector('[aria-checked="true"]'); // (a key, not a pointer)
+      if (c) c.focus();
+    }
+  });
+  // The seek bar follows the finger (one seek at a time) and lands where it's let go.
+  const dragEnd = (pl) => {
+    if (!pl._drag) return;
+    pl._drag = false;
+    const v = plVideo(pl);
+    if (v) { v.currentTime = pl._to; plSync(pl, v); }
+  };
+  document.addEventListener('input', (e) => {
+    const r = e.target, pl = r.closest && r.closest('[data-player]'), v = pl && plVideo(pl);
+    if (!v || !r.dataset.p) return;
+    plWake(pl);
+    if (r.dataset.p === 'vol') {
+      v.volume = +r.value;
+      v.muted = +r.value === 0;
+    } else if (r.dataset.p === 'seek') {
+      pl._drag = true;
+      pl._to = +r.value;
+      plSync(pl, v);
+      if (!v.seeking) v.currentTime = pl._to;
+    }
+  });
+  document.addEventListener('change', (e) => {
+    const pl = e.target.closest && e.target.dataset.p === 'seek' && e.target.closest('[data-player]');
+    if (pl) dragEnd(pl);
+  });
+  addEventListener('pointerup', () => { for (const pl of players()) dragEnd(pl); }, true);
+  let moved = 0; // (a mouse's moves only: a tap's made-up mouse events would undo the tap)
+  addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'touch' || Date.now() - moved < 150) return;
+    moved = Date.now();
+    for (const pl of players()) if (pl.parentNode.contains(e.target)) plWake(pl);
+  }, true);
+  // (registered before [data-arrows]: on a player the arrows are its keys first)
+  function playerKeys(e) {
+    if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = document.activeElement, none = unfocused();
+    let pl = null;
+    for (const p of players()) if (none || p.parentNode.contains(t)) { pl = p; break; }
+    const v = pl && plVideo(pl);
+    if (!v) return;
+    if (!none && (t.isContentEditable || /^(TEXTAREA|SELECT)$/.test(t.tagName) || (t.tagName === 'INPUT' && t.type !== 'range'))) return;
+    plWake(pl);
+    const k = e.key, live = v.hasAttribute('data-onair'), onSeek = !none && t.dataset.p === 'seek';
+    // the picture, or one of its buttons (a computer's: Space and the arrows stay the video's, as on
+    // any player); a TV's bar ([data-arrows]) moves the remote's focus between them instead
+    const bare = none || t === v || (t.tagName === 'BUTTON' && pl.contains(t) && !t.closest('[data-arrows], [role="menu"]'));
+    const up = k === 'ArrowUp' || k === 'Up', down = k === 'ArrowDown' || k === 'Down';
+    const item = !none && t.closest('[role="menu"]') && t; // up and down the subtitles menu
+    let act = null;
+    if (item && (up || down)) {
+      const s = up ? item.previousElementSibling : item.nextElementSibling;
+      if (s) act = () => s.focus();
+    } else if (!live && (k === 'k' || k === 'K' || (k === ' ' && (bare || onSeek)) || (k === 'Enter' && t === v))) act = () => play(v);
+    else if (!live && (bare || onSeek) && (k === 'ArrowLeft' || k === 'Left')) act = () => seekBy(v, -10);
+    else if (!live && (bare || onSeek) && (k === 'ArrowRight' || k === 'Right')) act = () => seekBy(v, 10);
+    else if (k === 'm' || k === 'M') act = () => mute(v);
+    else if (k === 'f' || k === 'F') {
+      const b = pl.querySelector('[data-fullscreen]');
+      if (b && !b.hidden) act = () => b.click();
+    } else if ((up || down) && t === v) {
+      const b = pl.querySelector(live ? '[data-p="mute"]' : '.pl-bar [data-p="play"]');
+      if (b) act = () => b.focus();
+    } else if (up && onSeek) act = () => v.focus();
+    else if (down && onSeek) {
+      const b = pl.querySelector('.pl-bar [data-p="play"]');
+      if (b) act = () => b.focus();
+    }
+    if (!act) return;
+    e.preventDefault();
+    act();
+  }
+
   // ------------------------------------------------------------- full screen
   // [data-fullscreen="id"]: #id in full screen - the player with what's drawn over it (the video
-  // element alone would hide the card, the sound button). aria-pressed says whether it is.
+  // element alone would hide the card and the controls). aria-pressed says whether it is. Where a
+  // page can't go full screen (an iPhone) the video can: Apple's own player then.
   const fsOK = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
   const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+  const fsVideo = (b) => {
+    const box = document.getElementById(b.dataset.fullscreen);
+    return box && box.querySelector('video');
+  };
   function fsButton(b) {
-    if (fsOK && b.hidden) b.hidden = false;
+    const v = fsVideo(b);
+    if (b.hidden && (fsOK || (v && v.webkitEnterFullscreen))) b.hidden = false;
     const f = fsEl();
     b.setAttribute('aria-pressed', f && f.getAttribute('id') === b.dataset.fullscreen ? 'true' : 'false');
   }
@@ -714,9 +964,15 @@
     const b = e.target.closest && e.target.closest('[data-fullscreen]');
     if (!b) return;
     e.preventDefault();
-    const box = fsEl() ? null : document.getElementById(b.dataset.fullscreen);
-    const go = box ? box.requestFullscreen || box.webkitRequestFullscreen : document.exitFullscreen || document.webkitExitFullscreen;
-    const p = go && go.call(box || document);
+    let p = null;
+    if (fsEl()) p = (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    else if (fsOK) {
+      const box = document.getElementById(b.dataset.fullscreen);
+      if (box) p = (box.requestFullscreen || box.webkitRequestFullscreen).call(box);
+    } else {
+      const v = fsVideo(b);
+      if (v && v.webkitEnterFullscreen) v.webkitEnterFullscreen();
+    }
     if (p && p.catch) p.catch(() => {});
   });
   document.addEventListener('dblclick', (e) => { // on the picture, like a player's own

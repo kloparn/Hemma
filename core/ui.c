@@ -46,6 +46,18 @@ static const struct {
     {"pulse", "<path d=\"M3 12h4l2.5-6 5 12 2.5-6h4\"/>"},
     {"expand", "<path d=\"M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5\"/>"},
     {"shrink", "<path d=\"M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5\"/>"},
+    {"go", "<path fill=\"currentColor\" d=\"M7.5 4.8v14.4L19 12z\"/>"},
+    {"pause", "<path fill=\"currentColor\" d=\"M6.5 5h3.5v14H6.5zM14 5h3.5v14H14z\"/>"},
+    {"back10", "<path d=\"M4.6 13A7.5 7.5 0 1 0 6.8 6.7\"/><path d=\"M6.5 2.8v4.1h4.1\"/><text x=\"12.4\" y=\"15.9\" "
+               "text-anchor=\"middle\" font-size=\"7.6\" font-weight=\"700\" fill=\"currentColor\" "
+               "stroke=\"none\">10</text>"},
+    {"fwd10", "<path d=\"M19.4 13A7.5 7.5 0 1 1 17.2 6.7\"/><path d=\"M17.5 2.8v4.1h-4.1\"/><text x=\"11.6\" y=\"15.9\" "
+              "text-anchor=\"middle\" font-size=\"7.6\" font-weight=\"700\" fill=\"currentColor\" "
+              "stroke=\"none\">10</text>"},
+    {"sound", "<path d=\"M4 9.5h3.5L12 5.5v13l-4.5-4H4z\"/><path d=\"M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11\"/>"},
+    {"muted", "<path d=\"M4 9.5h3.5L12 5.5v13l-4.5-4H4z\"/><path d=\"m16 9.5 5 5M21 9.5l-5 5\"/>"},
+    {"cc", "<rect x=\"3\" y=\"5.5\" width=\"18\" height=\"13\" rx=\"2.5\"/><path d=\"M10.6 10.2a2.3 2.3 0 1 0 0 3.6M17 "
+           "10.2a2.3 2.3 0 1 0 0 3.6\"/>"},
     {"logo", "<path d=\"M4 11 12 4l8 7v8.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19.5z\"/><path d=\"M12 "
              "17.5s-3.2-1.9-3.2-4a1.7 1.7 0 0 1 3.2-.8 1.7 1.7 0 0 1 3.2.8c0 2.1-3.2 4-3.2 4z\"/>"},
 };
@@ -143,14 +155,88 @@ void ui_empty(Buf *b, const char *emoji, const char *title, const char *text) {
     buf_puts(b, "</div>");
 }
 
-void ui_fullscreen(Buf *b, const char *target, const char *cls) {
-    H(b, "<button type=\"button\" class=\"fs-btn%r%s\" id=\"%s-fs\" data-fullscreen=\"%s\" data-static hidden "
-         "aria-pressed=\"false\"><span class=\"fs-on\">",
-      cls ? " " : "", cls ? cls : "", target, target);
+/* ---------------------------------------------------------------- player */
+
+/* "1:02:03" / "22:35" */
+static void clock_text(Buf *b, int s) {
+    s = MAX(s, 0);
+    if (s >= 3600) H(b, "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60);
+    else H(b, "%d:%02d", s / 60, s % 60);
+}
+
+/* One of the bar's buttons: data-p names what it does (wire.js), two icons when it swaps (CSS picks
+   by the overlay's state: .pl-a shows in the first state, .pl-b in the other). */
+static void pl_button(Buf *b, const char *what, const char *label, const char *icon, const char *icon2) {
+    H(b, "<button type=\"button\" class=\"pl-%s\" data-p=\"%s\" aria-label=\"%s\" title=\"%s\">", what, what, label, label);
+    if (icon2) buf_puts(b, "<span class=\"pl-a\">");
+    ui_icon(b, icon);
+    if (icon2) {
+        buf_puts(b, "</span><span class=\"pl-b\">");
+        ui_icon(b, icon2);
+        buf_puts(b, "</span>");
+    }
+    buf_puts(b, "</button>");
+}
+
+void ui_player(Buf *b, const UiPlayer *p) {
+    H(b, "<div class=\"pl%r\" id=\"%s-pl\" data-player=\"%s\" data-static=\"%s\" data-paused hidden>", p->live ? " pl-live" : "",
+      p->box, p->video, p->key);
+    if (!p->live) { /* big in the middle while paused (the bar's own play button is the one to tab to) */
+        buf_puts(b, "<button type=\"button\" class=\"pl-big\" data-p=\"play\" tabindex=\"-1\" aria-label=\"Play\">");
+        ui_icon(b, "go");
+        buf_puts(b, "</button>");
+    }
+    H(b, "<span class=\"pl-spin\" aria-hidden=\"true\"></span><div class=\"pl-bar\"%r>", p->tv ? " data-arrows" : "");
+    if (!p->live)
+        H(b, "<div class=\"pl-seek\"><span class=\"pl-buf\"></span><span class=\"pl-fill\"></span><input type=\"range\" "
+             "class=\"pl-range\" data-p=\"seek\" min=\"0\" max=\"%d\" step=\"any\" value=\"0\" aria-label=\"Where in the "
+             "video\"></div>",
+          MAX(p->seconds, 1));
+    buf_puts(b, "<div class=\"pl-row\">");
+    if (p->live) {
+        buf_puts(b, "<span class=\"pl-onair\">Live</span>");
+    } else {
+        pl_button(b, "play", "Play or pause (Space)", "go", "pause");
+        pl_button(b, "back", "Back 10 seconds (Left)", "back10", NULL);
+        pl_button(b, "fwd", "Forward 10 seconds (Right)", "fwd10", NULL);
+        buf_puts(b, "<span class=\"pl-time\"><span data-p=\"at\">0:00</span> / <span data-p=\"dur\">");
+        if (p->seconds > 0) clock_text(b, p->seconds);
+        else buf_puts(b, "-:--");
+        buf_puts(b, "</span></span>");
+    }
+    buf_puts(b, "<span class=\"pl-gap\"></span>");
+    if (p->nsubs > 0) {
+        bool any = false;
+        for (int i = 0; i < p->nsubs; i++) any |= p->subs[i].on;
+        buf_puts(b, "<span class=\"pl-subs\">");
+        pl_button(b, "subs", "Subtitles", "cc", NULL);
+        H(b, "<span class=\"pl-menu\" role=\"menu\" hidden><button type=\"button\" role=\"menuitemradio\" data-sub=\"\" "
+             "aria-checked=\"%s\">Off</button>",
+          any ? "false" : "true");
+        for (int i = 0; i < p->nsubs; i++)
+            H(b, "<button type=\"button\" role=\"menuitemradio\" data-sub=\"%s\" aria-checked=\"%s\">%s</button>", p->subs[i].lang,
+              p->subs[i].on ? "true" : "false", p->subs[i].label);
+        buf_puts(b, "</span></span>");
+    }
+    /* the sound: muted swaps the icon; on a live channel it also says so in words (a TV that won't
+       start with sound starts it muted) */
+    H(b, "<button type=\"button\" class=\"pl-mute\" data-p=\"mute\" aria-label=\"Sound (M)\" title=\"Sound (M)\"%r>"
+         "<span class=\"pl-a\">",
+      p->focus_sound ? " autofocus" : "");
+    ui_icon(b, "sound");
+    buf_puts(b, "</span><span class=\"pl-b\">");
+    ui_icon(b, "muted");
+    buf_puts(b, "<span class=\"pl-mute-t\">Sound off</span></span></button>"
+                "<input type=\"range\" class=\"pl-vol\" data-p=\"vol\" min=\"0\" max=\"1\" step=\"0.05\" value=\"1\" "
+                "aria-label=\"Volume\">");
+    /* full screen: the box, not the video (what's drawn over it stays) - wire.js [data-fullscreen] */
+    H(b, "<button type=\"button\" class=\"pl-fs\" id=\"%s-fs\" data-fullscreen=\"%s\" data-static hidden aria-pressed=\"false\" "
+         "aria-label=\"Full screen (F)\" title=\"Full screen (F)\"><span class=\"pl-a\">",
+      p->box, p->box);
     ui_icon(b, "expand");
-    buf_puts(b, "<span>Full screen</span></span><span class=\"fs-off\">");
+    buf_puts(b, "</span><span class=\"pl-b\">");
     ui_icon(b, "shrink");
-    buf_puts(b, "<span>Exit full screen</span></span></button>");
+    buf_puts(b, "</span></button></div></div></div>");
 }
 
 /* ----------------------------------------------------------------- forms */

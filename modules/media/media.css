@@ -143,24 +143,23 @@
   display: block; width: 100%; max-height: 74vh; aspect-ratio: 16 / 9; background: #000;
   border-radius: 16px; box-shadow: var(--shadow-lg);
 }
-/* "Full screen" waits in the corner until the pointer comes over the picture */
-.media-player-box .fs-btn { opacity: 0; }
-.media-player-box:hover .fs-btn, .media-player-box .fs-btn:focus { opacity: 1; }
-html[data-idle] .media-player-box .fs-btn { opacity: 0; }
+.media-player-box .pl-bar { border-radius: 0 0 16px 16px; }
 /* full screen is the box (the card shows over the picture); one rule per spelling - an engine
    that doesn't know one would drop a shared rule */
 .media-player-box:fullscreen { margin: 0; background: #000; }
 .media-player-box:-webkit-full-screen { margin: 0; background: #000; }
 .media-player-box:fullscreen .media-player { height: 100%; max-height: none; aspect-ratio: auto; border-radius: 0; box-shadow: none; }
 .media-player-box:-webkit-full-screen .media-player { height: 100%; max-height: none; border-radius: 0; box-shadow: none; }
+.media-player-box:fullscreen .pl-bar { border-radius: 0; }
+.media-player-box:-webkit-full-screen .pl-bar { border-radius: 0; }
 @media (max-width: 600px) {
   .media-player-box { margin: 0 -16px 14px; }
-  .media-player { border-radius: 0; max-height: none; }
+  .media-player, .media-player-box .pl-bar { border-radius: 0; max-height: none; }
 }
 
 /* "Next episode in 12 s" (wire.js [data-upnext]): over the picture's lower right, above the controls */
 .media-upnext {
-  position: absolute; right: 16px; bottom: 70px; z-index: 5; max-width: 420px; max-width: calc(100% - 32px);
+  position: absolute; right: 16px; bottom: 96px; z-index: 5; max-width: 420px; max-width: calc(100% - 32px);
   display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border-radius: 14px;
   background: rgba(10, 11, 13, .9); color: #f4f0e9; box-shadow: 0 12px 34px rgba(0, 0, 0, .45);
 }
@@ -169,12 +168,12 @@ html[data-idle] .media-player-box .fs-btn { opacity: 0; }
 .media-upnext-t small { color: #a8a196; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .media-upnext-t b { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .media-upnext-a { display: flex; flex-wrap: wrap; gap: 8px; }
-.media-player-box:fullscreen .media-upnext { right: 40px; bottom: 90px; padding: 20px 24px; }
-.media-player-box:-webkit-full-screen .media-upnext { right: 40px; bottom: 90px; padding: 20px 24px; }
+.media-player-box:fullscreen .media-upnext { right: 40px; bottom: 110px; padding: 20px 24px; }
+.media-player-box:-webkit-full-screen .media-upnext { right: 40px; bottom: 110px; padding: 20px 24px; }
 .media-player-box:fullscreen .media-upnext-t b { font-size: 22px; }
 .media-player-box:-webkit-full-screen .media-upnext-t b { font-size: 22px; }
 @media (max-width: 600px) {
-  .media-upnext { right: 8px; bottom: 52px; max-width: calc(100% - 16px); gap: 8px; padding: 10px 12px; }
+  .media-upnext { right: 8px; bottom: 76px; max-width: calc(100% - 16px); gap: 8px; padding: 10px 12px; }
   .media-upnext-t b { font-size: 14px; }
 }
 .media-watch-info { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -334,11 +333,26 @@ html[data-idle] .media-player-box .fs-btn { opacity: 0; }
 .media-tv-video:focus { outline: none; }
 .media-tv-player:fullscreen .media-tv-video { height: 100%; max-height: none; aspect-ratio: auto; }
 .media-tv-player:-webkit-full-screen .media-tv-video { height: 100%; max-height: none; }
-.media-tv .fs-btn.media-tv-fs { top: 22px; right: 28px; padding: 12px 24px; font-size: 22px; }
-.media-tv .media-tv-fs .i { width: 26px; height: 26px; }
-.media-tv .media-tv-fs:focus { outline: 4px solid #fff; outline-offset: 2px; }
-html[data-idle] .media-tv .media-tv-fs { opacity: 0; }
-.media-tv .media-upnext { right: 56px; bottom: 96px; max-width: 640px; gap: 18px; padding: 24px 28px; border-radius: 20px; }
+/* the player across the room (ui_player): bigger, a remote's focus you can see, no volume slider
+   (the TV has its own) - also a live channel's (tv's TV mode draws this box too) */
+.media-tv .pl-bar { padding: 50px 40px 24px; }
+.media-tv .pl .i { width: 34px; height: 34px; }
+.media-tv .pl-row { gap: 8px; }
+.media-tv .pl-row button { min-width: 64px; height: 64px; border-radius: 14px; }
+.media-tv .pl-row button:focus { outline: 4px solid #fff; outline-offset: 2px; background: rgba(255, 255, 255, .16); }
+.media-tv .pl-time, .media-tv .pl-onair, .media-tv .pl-mute-t { font-size: 22px; }
+.media-tv .pl-seek { height: 28px; margin-bottom: 8px; }
+.media-tv .pl-seek::before, .media-tv .pl-buf, .media-tv .pl-fill { top: 11px; height: 6px; }
+.media-tv .pl-seek:focus-within::before, .media-tv .pl-seek:focus-within .pl-buf, .media-tv .pl-seek:focus-within .pl-fill { top: 9px; height: 10px; }
+.media-tv .pl-seek:focus-within .pl-fill::after { transform: scale(1.4); }
+.media-tv .pl-vol { display: none; }
+.media-tv .pl-menu { bottom: 76px; min-width: 220px; }
+.media-tv .pl-menu button { font-size: 22px; padding: 12px 16px 12px 40px; }
+.media-tv .pl-menu button[aria-checked="true"]::before { left: 14px; }
+.media-tv .pl-menu button:focus { outline: 4px solid #fff; outline-offset: -4px; }
+.media-tv .pl-big { width: 110px; height: 110px; margin: -55px 0 0 -55px; }
+.media-tv .pl-big .i { width: 52px; height: 52px; }
+.media-tv .media-upnext { right: 56px; bottom: 150px; max-width: 640px; gap: 18px; padding: 24px 28px; border-radius: 20px; }
 .media-tv .media-upnext-t small { font-size: 17px; }
 .media-tv .media-upnext-t b { font-size: 30px; }
 .media-tv-info { padding: 34px 56px 60px; }
@@ -358,8 +372,11 @@ html[data-idle] .media-tv .media-tv-fs { opacity: 0; }
   .media-tv { font-size: 16px; }
   .media-tv-back { top: 12px; left: 12px; font-size: 17px; padding: 8px 16px 8px 10px; }
   .media-tv-video { height: auto; max-height: 100vh; aspect-ratio: 16 / 9; }
-  .media-tv .fs-btn.media-tv-fs { top: 12px; right: 12px; padding: 8px 14px; font-size: 15px; }
-  .media-tv .media-upnext { right: 8px; bottom: 52px; padding: 10px 12px; gap: 8px; }
+  .media-tv .pl-bar { padding: 24px 4px 4px; }
+  .media-tv .pl .i { width: 24px; height: 24px; }
+  .media-tv .pl-row button { min-width: 40px; height: 40px; }
+  .media-tv .pl-time, .media-tv .pl-onair, .media-tv .pl-mute-t { font-size: 14px; }
+  .media-tv .media-upnext { right: 8px; bottom: 76px; padding: 10px 12px; gap: 8px; }
   .media-tv .media-upnext-t small { font-size: 12px; }
   .media-tv .media-upnext-t b { font-size: 15px; }
   .media-tv-info, .media-tv-series { padding-left: 16px; padding-right: 16px; }

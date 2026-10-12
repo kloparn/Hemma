@@ -58,6 +58,9 @@ int media_episodes_in(const MediaSeries *s); /* both halves of a "S01E01-E02" co
 void media_ep_code(Buf *b, const MediaFile *f); /* "S01E02", "S01E01–E02" */
 void media_ep_title(Buf *b, const MediaFile *f); /* its title, or "Episode 3" */
 void media_tracks(const Ctx *c, Buf *b, const MediaFile *f); /* <track>s of its subtitles */
+/* The player's own controls (ui_player) for f inside #media-box over #media-video: its length, its
+   subtitles in a menu (as media_tracks has them). tv: a remote's arrows move along the bar. */
+void media_controls(const Ctx *c, Buf *b, const MediaFile *f, bool tv);
 /* The "Next episode in N s" card over a player (wire.js [data-upnext]): shown in the video's last
    MEDIA_UPNEXT_S seconds, Play now (href: escaped already) and Hide; at the end the video goes on
    by itself. tv: the remote's OK plays now (Play now takes the focus, arrows move in the card). */
