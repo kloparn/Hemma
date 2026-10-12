@@ -6,7 +6,7 @@
  * /media/file/<id> stream; the schedule math lives in tv_plan.c. */
 #include "tv.h"
 #include "../../core/ui.h"
-#include "../media/library.h"
+#include "../media/media.h"
 
 static const FieldDef channel_fields[] = {
     FIELD(Channel, id, F_INT),          FIELD(Channel, number, F_INT),   FIELD(Channel, name, F_STR),
@@ -313,18 +313,19 @@ static void guide(Ctx *c, Buf *b, Channel **chs, int n) {
 }
 
 static void overview(Ctx *c, Buf *b) {
-    ctx_title(c, "TV");
+    ctx_title(c, "Live TV");
     Channel *chs[MAX_CHANNELS];
     int n = channel_list(chs, MAX_CHANNELS);
     const MediaIndex *ix = media_lib();
     bool library = ix->nseries || ix->nmovies;
-    ui_head(b, "TV", "Always on — tune in like it's 1996");
+    Buf add = {0};
     if (can_edit(c) && n && library && next_free_number()) {
-        buf_puts(b, "<a class=\"btn\" href=\"/tv?new=1\">");
-        ui_icon(b, "plus");
-        buf_puts(b, "<span>New channel</span></a>");
+        buf_puts(&add, "<a class=\"btn\" href=\"/tv?new=1\">");
+        ui_icon(&add, "plus");
+        buf_puts(&add, "<span>New channel</span></a>");
     }
-    ui_head_end(b);
+    media_lib_head(c, b, "tv", "Live TV", "Always on — tune in like it's 1996", add.len ? buf_cstr(&add) : NULL);
+    buf_free(&add);
     if (!library && !n) {
         no_library(b);
         return;
@@ -395,16 +396,22 @@ static void overview(Ctx *c, Buf *b) {
     }
 }
 
-static void screen(Ctx *c, Buf *b, const Channel *ch, const TvPlan *p) {
+/* tvq: what the channel's links carry - "" on the ordinary page, "?tv=1&amp;back=..." in TV mode
+   (already escaped for an attribute). */
+static void screen(Ctx *c, Buf *b, const Channel *ch, const TvPlan *p, const char *tvq) {
     TvSlot s;
     bool on = tv_now(p, ch->epoch, c->now, &s);
     int64_t mark = on ? s.start : 0; /* fresh ids per airing: the static and the OSD play again */
     buf_puts(b, "<div class=\"tv-screen\">");
     if (on && !s.gap) {
+        /* live (owner): no controls - it can't be paused or wound (wire.js data-onair keeps it at
+           "now"); the only thing a viewer changes is the sound. TV mode: OK on the remote = sound. */
         H(b,
-          "<video id=\"tv-v-%X-%L\" class=\"tv-video\" src=\"/media/file/%X\" autoplay playsinline controls "
-          "preload=\"auto\" data-static data-resume=\"%L\" data-next=\"/tv/%d\"></video>",
-          s.file, (long long)mark, s.file, (long long)s.offset, ch->number);
+          "<video id=\"tv-v-%X-%L\" class=\"tv-video\" src=\"/media/file/%X\" autoplay playsinline "
+          "preload=\"auto\" data-static data-onair data-resume=\"%L\" data-next=\"/tv/%d%r\"></video>"
+          "<button type=\"button\" class=\"tv-mute\" id=\"tv-mute\" data-mute data-static aria-pressed=\"false\"%r>"
+          "<span class=\"tv-mute-on\">Sound on</span><span class=\"tv-mute-off\">Sound off</span></button>",
+          s.file, (long long)mark, s.file, (long long)s.offset, ch->number, tvq, *tvq ? " autofocus" : "");
     } else if (on) {
         TvSlot nx;
         const MediaFile *nf = tv_now(p, ch->epoch, s.next, &nx) ? media_file(nx.file) : NULL;
@@ -443,8 +450,11 @@ static void channel_page(Ctx *c, Buf *b, Channel *ch) {
         if (chs[i]->id == ch->id) at = i;
     const Channel *down = chs[(at + n - 1) % n], *up = chs[(at + 1) % n];
 
+    char sub[32];
+    snprintf(sub, sizeof sub, "Channel %d", ch->number);
+    media_lib_head(c, b, "tv", ch->name, sub, NULL);
     H(b, "<div class=\"tv-room\" style=\"--h:%d\"><div class=\"tv-set\">", ch->hue);
-    screen(c, b, ch, p);
+    screen(c, b, ch, p, "");
     H(b, "<div class=\"tv-knobs\"><a class=\"tv-knob\" href=\"/tv/%d\" data-key=\"ArrowDown\" aria-label=\"Channel "
          "down\">",
       down->number);
@@ -520,17 +530,82 @@ static void channel_page(Ctx *c, Buf *b, Channel *ch) {
     buf_puts(b, "</nav></aside></div>");
 }
 
+/* A channel on the TV (?tv=1, opened from a TV screen's "On now" row): the picture fills the
+   screen, tuned in at the shared clock; Up and Down on the remote change channel, 1-9 tune
+   straight in, Back returns to the screen. */
+static void channel_tv(Ctx *c, Buf *b, Channel *ch) {
+    ctx_title(c, "CH %02d · %s", ch->number, ch->name);
+    const TvPlan *p = tv_channel_plan(ch);
+    Channel *chs[MAX_CHANNELS];
+    int n = channel_list(chs, MAX_CHANNELS), at = 0;
+    for (int i = 0; i < n; i++)
+        if (chs[i]->id == ch->id) at = i;
+    const Channel *down = chs[(at + n - 1) % n], *up = chs[(at + 1) % n];
+    char back[400];
+    media_tv_back(c, back, sizeof back);
+    Buf q = {0};
+    H(&q, "?tv=1&amp;back=%u", back);
+    const char *tvq = buf_cstr(&q);
+
+    media_tv_open(c, b, back, "tv-full");
+    H(b, "<div class=\"tv-full-screen\" style=\"--h:%d\">", ch->hue);
+    screen(c, b, ch, p, tvq);
+    buf_puts(b, "</div>");
+
+    H(b, "<div class=\"tv-full-bar\" style=\"--h:%d\"><a class=\"tv-knob\" href=\"/tv/%d%r\" data-key=\"ArrowDown\" "
+         "aria-label=\"Channel down\">",
+      ch->hue, down->number, tvq);
+    ui_icon(b, "left");
+    H(b, "</a><div class=\"tv-full-now\"><span class=\"tv-num\" style=\"--h:%d\">%02d</span><div><b>%s</b>", ch->hue,
+      ch->number, ch->name);
+    TvSlot s;
+    if (tv_now(p, ch->epoch, c->now, &s)) {
+        const MediaFile *f = media_file(s.file);
+        if (!s.gap) {
+            buf_puts(b, "<span>");
+            prog_title(b, f);
+            buf_puts(b, " <small>");
+            prog_sub(b, f);
+            buf_puts(b, " · ");
+            left(b, s.end - c->now);
+            buf_puts(b, "</small></span><span class=\"tv-bar\"><i style=\"width:");
+            pct(b, bp(c->now - s.start, s.end - s.start));
+            buf_puts(b, "\"></i></span>");
+        } else {
+            buf_puts(b, "<span>Intermission · back at ");
+            ui_hm(b, s.next);
+            buf_puts(b, "</span>");
+        }
+    } else {
+        buf_puts(b, "<span>No signal</span>");
+    }
+    H(b, "</div></div><a class=\"tv-knob\" href=\"/tv/%d%r\" data-key=\"ArrowUp\" aria-label=\"Channel up\">", up->number,
+      tvq);
+    ui_icon(b, "right");
+    buf_puts(b, "</a></div><nav class=\"tv-full-remote\" aria-label=\"Channels\">");
+    for (int i = 0; i < n; i++) {
+        H(b, "<a class=\"tv-num%r\" href=\"/tv/%d%r\" style=\"--h:%d\"", chs[i]->id == ch->id ? " on" : "", chs[i]->number,
+          tvq, chs[i]->hue);
+        if (chs[i]->number <= 9) H(b, " data-key=\"%d\"", chs[i]->number);
+        H(b, " title=\"%s\">%02d</a>", chs[i]->name, chs[i]->number);
+    }
+    buf_puts(b, "</nav></div>");
+    buf_free(&q);
+}
+
 static void page(Ctx *c, Buf *b) {
     if (str_starts(c->path, "/tv/")) {
         long long n = str_int_or(c->path + 4, 0);
         Channel *ch = n > 0 ? tv_channel_by_number((int)n) : NULL;
-        if (ch) {
-            channel_page(c, b, ch);
-            return;
-        }
-        ctx_title(c, "TV");
+        if (ch && media_tv_mode(c)) channel_tv(c, b, ch);
+        if (ch && !media_tv_mode(c)) channel_page(c, b, ch);
+        if (ch) return;
+        ctx_title(c, "Live TV");
+        if (media_tv_mode(c)) media_tv_open(c, b, NULL, NULL);
+        else media_lib_head(c, b, "tv", "Live TV", NULL, NULL);
         ui_empty(b, "📡", "No such channel", "That channel isn't on the air.");
-        buf_puts(b, "<p class=\"center\"><a class=\"btn\" href=\"/tv\">All channels</a></p>");
+        if (c->bare) buf_puts(b, "</div>");
+        else buf_puts(b, "<p class=\"center\"><a class=\"btn\" href=\"/tv\">All channels</a></p>");
         return;
     }
     overview(c, b);
@@ -649,7 +724,7 @@ static void widget(Ctx *c, Buf *b, int where) {
     if (!n) {
         const MediaIndex *ix = media_lib();
         if (where == WIDGET_HOME && ix->nseries && c->me && c->me->role != ROLE_DISPLAY) {
-            ui_card(b, "TV", "/tv", "Start");
+            ui_card(b, "Live TV", "/tv", "Start");
             buf_puts(b, "<p class=\"muted\">Turn your series into channels that never stop — <a href=\"/tv\">start "
                         "one</a>.</p>");
             ui_card_end(b);
@@ -694,6 +769,72 @@ static void widget(Ctx *c, Buf *b, int where) {
     buf_puts(b, "</ul>");
     ui_card_end(b);
 }
+
+/* ==================================================================== blocks */
+
+/* "On now": every channel's programme right now as a wide tile - the channel's number, what's on,
+   how long it has left - for a screen's row (TV mode: tune in full screen, Back returns to the
+   screen) and for Watch's home (kind 0: the ordinary channel page). Channels with nothing to air
+   are left out; none on the air: no row. */
+static bool row_onnow(Ctx *c, Buf *b, int kind, const char *arg) {
+    (void)arg;
+    Channel *chs[MAX_CHANNELS];
+    int n = channel_list(chs, MAX_CHANNELS), shown = 0;
+    char back[400];
+    media_row_back(c, back, sizeof back);
+    Buf row = {0};
+    for (int i = 0; i < n; i++) {
+        const Channel *ch = chs[i];
+        TvSlot s, nx;
+        const MediaFile *f = NULL;
+        if (!channel_now(ch, c->now, &s, &f)) continue; /* no signal */
+        if (s.gap && !channel_now(ch, s.next, &nx, &f)) continue;
+        char path[16];
+        snprintf(path, sizeof path, "/tv/%d", ch->number);
+        buf_puts(&row, "<a class=\"tile wide\" href=\"");
+        media_tv_href(&row, path, kind, back);
+        H(&row, "\"><span class=\"tile-art tv-tile\" style=\"--h:%d\">", ch->hue);
+        uint64_t img = media_picture(f);
+        if (img) {
+            buf_puts(&row, "<img src=\"");
+            media_img_src(&row, img);
+            buf_puts(&row, "\" alt=\"\" loading=\"lazy\" decoding=\"async\">");
+        } else {
+            buf_puts(&row, "<span class=\"tv-tile-t\">");
+            prog_title(&row, f);
+            buf_puts(&row, "</span>");
+        }
+        H(&row, "<span class=\"tv-num tv-tile-n\" style=\"--h:%d\">%02d</span>", ch->hue, ch->number);
+        if (!s.gap) /* how far into the programme, along the foot of the picture */
+            H(&row, "<span class=\"tile-bar\"><i style=\"width:%d%%\"></i></span>",
+              bp(c->now - s.start, s.end - s.start) / 100);
+        buf_puts(&row, "</span><b class=\"tile-t\">");
+        prog_title(&row, f);
+        H(&row, "</b><span class=\"tile-s\">%s · ", ch->name);
+        if (s.gap) {
+            buf_puts(&row, "Up next at ");
+            ui_hm(&row, s.next);
+        } else {
+            prog_sub(&row, f);
+            if (f && (f->name.kind == MEDIA_EPISODE || f->name.year)) buf_puts(&row, " · ");
+            left(&row, s.end - c->now);
+        }
+        buf_puts(&row, "</span></a>");
+        shown++;
+    }
+    if (shown) {
+        buf_puts(b, "<div class=\"tiles\">");
+        buf_put(b, row.p, row.len);
+        buf_puts(b, "</div>");
+    }
+    buf_free(&row);
+    return shown > 0;
+}
+
+static const Block blocks[] = {
+    {"tv.onnow", "On now", SCREEN_TV | SCREEN_WALL, row_onnow, NULL},
+    {0},
+};
 
 /* ===================================================================== tick */
 
@@ -747,11 +888,15 @@ static const Action actions[] = {
     {0},
 };
 
+/* Live TV is part of Watch: not in the navigation itself (nav 0), its pages light up Watch's
+   entry (parent) and draw Watch's tabs (media_lib_head). */
 static const Module tv = {
     .id = "tv",
-    .title = "TV",
+    .title = "Live TV",
     .icon = "tv",
-    .nav = 4,
+    .nav = 0,
+    .parent = "media",
+    .blocks = blocks,
     .init = init,
     .start = start,
     .stop = stop,

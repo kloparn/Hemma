@@ -6,7 +6,7 @@
  * threads (stream.c) and every person's progress is remembered, so "continue
  * watching" works across the phone, the laptop and the TV's browser. */
 #include "../../core/ui.h"
-#include "library.h"
+#include "media.h"
 #include "convert.h"
 #include "remove.h"
 #include "upload.h"
@@ -27,22 +27,41 @@ static const char *lang_name(const char *code) {
     return code && *code ? code : "Subtitles";
 }
 
+/* The video's subtitles as <track>s; the viewer's language (Library settings) is on by default. */
+void media_tracks(const Ctx *c, Buf *b, const MediaFile *f) {
+    const MediaIndex *ix = media_lib();
+    int v = ctx_viewer(c);
+    const char *want = v ? pref(v, "media.sublang", "") : "";
+    bool defaulted = false;
+    for (int i = 0; i < ix->nfiles; i++) {
+        const MediaFile *sub = &ix->files[i];
+        if (sub->type != MF_SUB || sub->video != f->id) continue;
+        bool def = !defaulted && *want && str_ieq(sub->lang, want);
+        defaulted |= def;
+        H(b, "<track kind=\"subtitles\" src=\"/media/sub/%X.vtt\" srclang=\"%s\" label=\"%s\"%r>", sub->id,
+          sub->lang[0] ? sub->lang : "und", lang_name(sub->lang), def ? " default" : "");
+    }
+}
+
 static const char *query(const Ctx *c) {
     const char *q = ctx_live(c, "media.q");
     return *q ? q : ctx_q(c, "q");
 }
 
-static int percent(const MediaWatch *w) {
+int media_percent(const MediaWatch *w) {
     if (!w || w->dur <= 0 || w->pos <= 0) return 0;
     return CLAMP(w->pos * 100 / w->dur, 1, 100);
 }
 
-static MediaWatch *watch_of(const Ctx *c, const MediaFile *f) {
-    return c->me && f ? media_watch_get(c->me->id, f->id) : NULL;
+/* Progress, "continue watching" and watched ticks are the viewer's: the signed-in person, or
+   whoever was picked on a display account (the living-room TV) - nobody's until someone is. */
+const MediaWatch *media_watch_of(const Ctx *c, const MediaFile *f) {
+    int v = ctx_viewer(c);
+    return v && f ? media_watch_get(v, f->id) : NULL;
 }
 
 /* Episodes in a series, counting both halves of a two-episode file ("S01E01-E02"). */
-static int episodes_in(const MediaSeries *s) {
+int media_episodes_in(const MediaSeries *s) {
     int n = 0;
     for (int i = 0; i < s->count; i++) {
         const MediaFile *e = media_episode(s, i);
@@ -59,13 +78,13 @@ static const char *ep_n(const MediaFile *f) {
     return n;
 }
 
-static void ep_code(Buf *b, const MediaFile *f) {
+void media_ep_code(Buf *b, const MediaFile *f) {
     H(b, "S%02dE%02d", f->name.season, f->name.episode);
     if (f->name.episode_end > f->name.episode) H(b, "–E%02d", f->name.episode_end);
 }
 
 /* Bold line of an episode row: its title, or "Episode 3". */
-static void ep_title(Buf *b, const MediaFile *f) {
+void media_ep_title(Buf *b, const MediaFile *f) {
     if (f->name.ep_title[0]) html_esc(b, f->name.ep_title);
     else H(b, "Episode %d", f->name.episode);
 }
@@ -86,20 +105,35 @@ static void duration(Buf *b, const MediaFile *f) {
 
 /* /media/img/<id>?v=<version>: a replaced picture keeps its name (and id), and browsers keep
    images for a day - the version makes them fetch the new one at once. */
-static void img_src(Buf *b, uint64_t img) {
+void media_img_src(Buf *b, uint64_t img) {
     const MediaFile *f = media_file(img);
     H(b, "/media/img/%X?v=%X", img, f ? (uint64_t)f->mtime * 1000003u + (uint64_t)f->size : (uint64_t)0);
+}
+
+uint64_t media_picture(const MediaFile *f) {
+    if (!f) return 0;
+    if (f->poster) return f->poster;
+    const MediaSeries *s = f->name.kind == MEDIA_EPISODE ? media_series(f->series) : NULL;
+    return s ? s->poster : 0;
+}
+
+/* The colours of a drawn poster, from its title (each series its own, the same everywhere): the
+   hue and two neighbours worked out here, so the CSS needs no calc() inside hsl() - older TV
+   browsers drop a whole background over that. */
+void media_art_style(Buf *b, const char *title) {
+    int h = media_hue(title);
+    H(b, " style=\"--h:%d;--h2:%d;--h3:%d\"", h, (h + 40) % 360, (h + 25) % 360);
 }
 
 /* The art of a poster: an image when the library has one, otherwise a
  * typographic card in the title's colour. */
 static void poster_art(Buf *b, const char *title, int year, const char *label, uint64_t img, int pct, bool done) {
     H(b, "<span class=\"media-art\"");
-    ui_hue_style(b, media_hue(title));
+    media_art_style(b, title);
     buf_putc(b, '>');
     if (img) {
         buf_puts(b, "<img src=\"");
-        img_src(b, img);
+        media_img_src(b, img);
         buf_puts(b, "\" alt=\"\" loading=\"lazy\" decoding=\"async\">");
     } else {
         if (label) H(b, "<span class=\"media-art-k\">%s</span>", label);
@@ -117,16 +151,16 @@ static void poster_art(Buf *b, const char *title, int year, const char *label, u
 }
 
 static void video_card(Ctx *c, Buf *b, const MediaFile *f) {
-    MediaWatch *w = watch_of(c, f);
+    const MediaWatch *w = media_watch_of(c, f);
     H(b, "<a class=\"media-poster\" href=\"/media/watch/%X\">", f->id);
     if (f->name.kind == MEDIA_EPISODE) {
         const MediaSeries *s = media_series(f->series);
-        poster_art(b, f->name.title, 0, NULL, f->poster ? f->poster : s ? s->poster : 0, percent(w), w && w->done);
+        poster_art(b, f->name.title, 0, NULL, f->poster ? f->poster : s ? s->poster : 0, media_percent(w), w && w->done);
         H(b, "<span class=\"media-cap\">%s<small>", f->name.title);
-        ep_code(b, f);
+        media_ep_code(b, f);
         if (f->name.ep_title[0]) H(b, " · %s", f->name.ep_title);
     } else {
-        poster_art(b, f->name.title, f->name.year, f->name.kind == MEDIA_OTHER ? "Video" : NULL, f->poster, percent(w),
+        poster_art(b, f->name.title, f->name.year, f->name.kind == MEDIA_OTHER ? "Video" : NULL, f->poster, media_percent(w),
                    w && w->done);
         H(b, "<span class=\"media-cap\">%s<small>", f->name.title);
         if (f->name.year) H(b, "%d", f->name.year);
@@ -177,9 +211,9 @@ static void art_modal(Ctx *c, Buf *b, uint64_t id, const char *title, int year, 
 }
 
 static int watched_count(const Ctx *c, const MediaSeries *s) {
-    int n = 0;
-    for (int i = 0; c->me && i < s->count; i++) {
-        MediaWatch *w = media_watch_get(c->me->id, media_episode(s, i)->id);
+    int n = 0, v = ctx_viewer(c);
+    for (int i = 0; v && i < s->count; i++) {
+        MediaWatch *w = media_watch_get(v, media_episode(s, i)->id);
         n += w && w->done;
     }
     return n;
@@ -189,21 +223,21 @@ static void series_card(Ctx *c, Buf *b, const MediaSeries *s) {
     H(b, "<a class=\"media-poster\" href=\"/media/series/%X\">", s->id);
     int seen = watched_count(c, s);
     poster_art(b, s->title, s->year, "Series", s->poster, seen ? seen * 100 / s->count : 0, seen == s->count && seen);
-    int eps = episodes_in(s);
+    int eps = media_episodes_in(s);
     H(b, "<span class=\"media-cap\">%s<small>%d episode%s", s->title, eps, eps == 1 ? "" : "s");
     if (s->nseasons > 1) H(b, " · %d seasons", s->nseasons);
     buf_puts(b, "</small></span></a>");
 }
 
-/* This person's unfinished videos, most recently watched first. */
-static int in_progress(const Ctx *c, const MediaFile **out, int max) {
+/* The viewer's unfinished videos, most recently watched first. */
+int media_in_progress(const Ctx *c, const MediaFile **out, int max) {
     const MediaWatch *keep[24];
-    int n = 0;
+    int n = 0, v = ctx_viewer(c);
     max = MIN(max, countof(keep));
-    for (int i = 0; c->me && i < tbl_count(&T_media_watch); i++) {
+    for (int i = 0; v && max > 0 && i < tbl_count(&T_media_watch); i++) {
         const MediaWatch *w = tbl_at(&T_media_watch, i);
         uint64_t id = 0;
-        if (w->person != c->me->id || w->done || w->pos < 10 || !media_parse_id(w->item, &id) || !media_file(id))
+        if (w->person != v || w->done || w->pos < 10 || !media_parse_id(w->item, &id) || !media_file(id))
             continue;
         if (n == max && keep[n - 1]->updated >= w->updated) continue;
         int k = n < max ? n++ : n - 1; /* full: the oldest falls off the end */
@@ -218,12 +252,12 @@ static int in_progress(const Ctx *c, const MediaFile **out, int max) {
     return n;
 }
 
-/* What to play next in a series for this person: the first unfinished episode
+/* What to play next in a series for the viewer: the first unfinished episode
  * after the last one they finished (or the one they're in the middle of). */
-static const MediaFile *next_up(const Ctx *c, const MediaSeries *s) {
-    int last_done = -1;
-    for (int i = 0; c->me && i < s->count; i++) {
-        MediaWatch *w = media_watch_get(c->me->id, media_episode(s, i)->id);
+const MediaFile *media_next_up(const Ctx *c, const MediaSeries *s) {
+    int last_done = -1, v = ctx_viewer(c);
+    for (int i = 0; v && i < s->count; i++) {
+        MediaWatch *w = media_watch_get(v, media_episode(s, i)->id);
         if (w && w->done) last_done = i;
         else if (w && w->pos > 0) return media_episode(s, i);
     }
@@ -232,26 +266,33 @@ static const MediaFile *next_up(const Ctx *c, const MediaSeries *s) {
 
 /* ------------------------------------------------------------------ chrome */
 
-static void lib_head(Ctx *c, Buf *b, const char *active, const char *title, const char *sub) {
+/* One Watch section: the library's tabs, and tv's channels as "Live TV" (tv's pages draw this
+   header too, through media.h). */
+void media_lib_head(Ctx *c, Buf *b, const char *active, const char *title, const char *sub, const char *buttons) {
     ui_head(b, title, sub);
     if (media_scanning())
         H(b, "<span class=\"badge media-scanning\"><span class=\"media-spin\"></span>Scanning · %d files</span>",
           media_scan_seen());
+    if (buttons) buf_puts(b, buttons);
     buf_puts(b, "<a class=\"icon-btn\" href=\"/media/settings\" title=\"Library settings\" aria-label=\"Library settings\">");
     ui_icon(b, "settings");
     buf_puts(b, "</a>");
     ui_head_end(b);
-    static const char *const tabs[][2] = {{"home", "/media"}, {"movies", "/media/movies"}, {"series", "/media/series"},
-                                          {"browse", "/media/browse"}};
-    static const char *const labels[] = {"Home", "Movies", "Series", "Folders"};
-    buf_puts(b, "<div class=\"toolbar media-tools\"><nav class=\"seg\">");
-    for (int i = 0; i < 4; i++)
-        H(b, "<a href=\"%s\"%r>%s</a>", tabs[i][1], str_eq(active, tabs[i][0]) ? " class=\"on\"" : "", labels[i]);
+    static const char *const tabs[][3] = {{"home", "/media", "Home"},          {"movies", "/media/movies", "Movies"},
+                                          {"series", "/media/series", "Series"}, {"tv", "/tv", "Live TV"},
+                                          {"browse", "/media/browse", "Folders"}};
+    buf_puts(b, "<div class=\"toolbar media-tools\"><nav class=\"seg media-tabs\">");
+    for (int i = 0; i < countof(tabs); i++) {
+        if (str_eq(tabs[i][0], "tv") && !module_find("tv")) continue; /* built without channels */
+        bool on = str_eq(active, tabs[i][0]);
+        H(b, "<a href=\"%s\"%r>%s</a>", tabs[i][1], on ? " class=\"on\" aria-current=\"page\"" : "", tabs[i][2]);
+    }
+    /* searching is the library's: from Live TV the box simply opens Watch's results */
     H(b,
       "</nav><form class=\"media-search\" method=\"get\" action=\"/media\" role=\"search\">"
-      "<input type=\"search\" name=\"q\" value=\"%s\" placeholder=\"Search movies and series…\" autocomplete=\"off\" "
-      "data-live=\"media.search\" data-key=\"/\" aria-label=\"Search the library\"></form></div>",
-      query(c));
+      "<input type=\"search\" name=\"q\" value=\"%s\" placeholder=\"Search movies and series…\" autocomplete=\"off\"%r "
+      "data-key=\"/\" aria-label=\"Search the library\"></form></div>",
+      str_eq(active, "tv") ? "" : query(c), str_eq(active, "tv") ? "" : " data-live=\"media.search\"");
 }
 
 static void shelf_head(Buf *b, const char *title, const char *more) {
@@ -261,6 +302,48 @@ static void shelf_head(Buf *b, const char *title, const char *more) {
 }
 
 static void shelf_end(Buf *b) { buf_puts(b, "</div></section>"); }
+
+/* "Recently added" with a series' batch of new episodes as one entry (media.h). An episode joins
+   its series' latest entry when it came within a week of that entry's oldest episode, so two
+   series copied in at once (their files interleaved) still make one entry each; an older batch
+   of the same series is an entry of its own. */
+#define BATCH_S (7 * 86400)
+int media_recent(MediaRecent *out, int max) {
+    const MediaIndex *ix = media_lib();
+    int n = 0;
+    for (int i = 0; i < ix->nrecent && max > 0; i++) {
+        const MediaFile *f = &ix->files[ix->recent[i]];
+        int k = -1;
+        if (f->name.kind == MEDIA_EPISODE && f->series)
+            for (int j = n - 1; j >= 0 && k < 0; j--)
+                if (out[j].f->name.kind == MEDIA_EPISODE && out[j].f->series == f->series) k = j;
+        if (k >= 0 && out[k].oldest - f->mtime <= BATCH_S) {
+            out[k].n++;
+            out[k].oldest = f->mtime;
+            out[k].series = media_series(f->series);
+            continue;
+        }
+        if (n < max) {
+            out[n++] = (MediaRecent){f, NULL, 1, f->mtime};
+            continue;
+        }
+        /* full: only open batches can still grow - stop once this is older than all of them */
+        bool open = false;
+        for (int j = 0; j < n && !open; j++) open = out[j].oldest - f->mtime <= BATCH_S;
+        if (!open) break;
+    }
+    for (int j = 0; j < n; j++)
+        if (out[j].n > 1 && !out[j].series) out[j].n = 1; /* (a series that vanished: just the video) */
+    return n;
+}
+
+/* A shelf card for a batch of new episodes: the series' poster, "8 new episodes". */
+static void batch_card(Buf *b, const MediaRecent *r) {
+    const MediaSeries *s = r->series;
+    H(b, "<a class=\"media-poster\" href=\"/media/series/%X\">", s->id);
+    poster_art(b, s->title, s->year, "Series", s->poster, 0, false);
+    H(b, "<span class=\"media-cap\">%s<small>%d new episodes</small></span></a>", s->title, r->n);
+}
 
 static bool library_empty_states(Ctx *c, Buf *b) {
     const MediaIndex *ix = media_lib();
@@ -315,7 +398,7 @@ static void page_home(Ctx *c, Buf *b) {
     if (ix->nrecent)
         snprintf(sub, sizeof sub, "%d movie%s · %d series · %d other video%s", ix->nmovies, ix->nmovies == 1 ? "" : "s",
                  ix->nseries, ix->nothers, ix->nothers == 1 ? "" : "s");
-    lib_head(c, b, "home", "Watch", sub);
+    media_lib_head(c, b, "home", "Watch", sub, NULL);
     const char *q = query(c);
     if (*q) {
         search_results(c, b, q);
@@ -324,14 +407,29 @@ static void page_home(Ctx *c, Buf *b) {
     if (library_empty_states(c, b)) return;
 
     const MediaFile *going[12];
-    int ngoing = in_progress(c, going, countof(going));
+    int ngoing = media_in_progress(c, going, countof(going));
     if (ngoing) {
         shelf_head(b, "Continue watching", NULL);
         for (int i = 0; i < ngoing; i++) going_card(c, b, going[i], false);
         shelf_end(b);
     }
+    /* what the channels air right now: tv's row, found by id (tv links media, never the other way) */
+    const Block *onnow = block_find("tv.onnow", NULL);
+    Buf row = {0};
+    if (onnow && onnow->render(c, &row, 0, "")) { /* kind 0: an ordinary page - plain links */
+        buf_puts(b, "<section class=\"media-row media-onnow\"><header class=\"media-row-h\"><h2>On now</h2>"
+                    "<a href=\"/tv\">Guide</a></header>");
+        buf_put(b, row.p, row.len);
+        buf_puts(b, "</section>");
+    }
+    buf_free(&row);
+    MediaRecent recent[14];
+    int nrecent = media_recent(recent, countof(recent));
     shelf_head(b, "Recently added", NULL);
-    for (int i = 0; i < ix->nrecent && i < 14; i++) video_card(c, b, &ix->files[ix->recent[i]]);
+    for (int i = 0; i < nrecent; i++) {
+        if (recent[i].n > 1) batch_card(b, &recent[i]);
+        else video_card(c, b, recent[i].f);
+    }
     shelf_end(b);
     if (ix->nseries) {
         shelf_head(b, "Series", "/media/series");
@@ -365,7 +463,7 @@ static void page_movies(Ctx *c, Buf *b) {
     ctx_title(c, "Movies");
     char sub[40];
     snprintf(sub, sizeof sub, "%d movie%s", ix->nmovies, ix->nmovies == 1 ? "" : "s");
-    lib_head(c, b, "movies", "Movies", sub);
+    media_lib_head(c, b, "movies", "Movies", sub, NULL);
     const char *q = query(c);
     if (*q) {
         search_results(c, b, q);
@@ -396,7 +494,7 @@ static void page_series_list(Ctx *c, Buf *b) {
     ctx_title(c, "Series");
     char sub[40];
     snprintf(sub, sizeof sub, "%d series", ix->nseries);
-    lib_head(c, b, "series", "Series", sub);
+    media_lib_head(c, b, "series", "Series", sub, NULL);
     const char *q = query(c);
     if (*q) {
         search_results(c, b, q);
@@ -425,7 +523,13 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
     const MediaSeries *s = media_parse_id(idhex, &id) ? media_series(id) : NULL;
     if (!s) {
         ctx_title(c, "Series");
+        if (media_tv_mode(c)) media_tv_open(c, b, NULL, NULL);
         ui_empty(b, "📺", "This series isn't in the library", "It may have been moved or renamed.");
+        if (c->bare) buf_puts(b, "</div>");
+        return;
+    }
+    if (media_tv_mode(c)) { /* opened from a TV screen */
+        media_series_tv(c, b, s);
         return;
     }
     ctx_title(c, "%s", s->title);
@@ -443,19 +547,19 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
     }
     H(b, "</div><div class=\"media-sdetail-t\"><h1>%s</h1><p class=\"sub\">", s->title);
     if (s->nseasons > 1) H(b, "%d seasons · ", s->nseasons);
-    int eps = episodes_in(s);
+    int eps = media_episodes_in(s);
     H(b, "%d episode%s", eps, eps == 1 ? "" : "s");
     if (s->year) H(b, " · %d", s->year);
     int seen = watched_count(c, s);
     if (seen) H(b, " · %d watched", seen);
     buf_puts(b, "</p>");
-    const MediaFile *up = next_up(c, s);
+    const MediaFile *up = media_next_up(c, s);
     if (up) {
-        MediaWatch *w = watch_of(c, up);
+        const MediaWatch *w = media_watch_of(c, up);
         H(b, "<a class=\"btn primary big\" href=\"/media/watch/%X\">", up->id);
         ui_icon(b, "play");
         H(b, "<span>%s ", w && w->pos > 0 && !w->done ? "Resume" : seen ? "Next up" : "Start watching");
-        ep_code(b, up);
+        media_ep_code(b, up);
         buf_puts(b, "</span></a>");
     }
     buf_puts(b, "</div></div>");
@@ -478,7 +582,7 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
     for (int i = 0; i < s->count; i++) {
         const MediaFile *e = media_episode(s, i);
         if (s->nseasons > 1 && e->name.season != season) continue;
-        MediaWatch *w = watch_of(c, e);
+        const MediaWatch *w = media_watch_of(c, e);
         bool done = w && w->done;
         H(b,
           "<li class=\"media-ep%r%r\"><a class=\"media-ep-main\" href=\"/media/watch/%X\">"
@@ -486,9 +590,9 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
           done ? " media-ep-done" : "", e == up ? " media-ep-up" : "", e->id,
           e->name.episode_end > e->name.episode ? " media-ep-nn" : "", ep_n(e));
         buf_puts(b, "<span class=\"media-ep-t\"><b>");
-        ep_title(b, e);
+        media_ep_title(b, e);
         buf_puts(b, "</b><small>");
-        ep_code(b, e);
+        media_ep_code(b, e);
         if (e->probe.duration_ms) {
             buf_puts(b, " · ");
             duration(b, e);
@@ -496,10 +600,10 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
         if (e->name.unnumbered && e->name.disc) H(b, " · disc %d", e->name.disc); /* numbered in disc order */
         if (media_playable(e)->probe.playable == PLAY_NO) buf_puts(b, " · <span class=\"media-warn\">needs conversion</span>");
         buf_puts(b, "</small>");
-        int p = percent(w);
+        int p = media_percent(w);
         if (p && !done) H(b, "<span class=\"media-ep-bar\"><i style=\"width:%d%%\"></i></span>", p);
         buf_puts(b, "</span></a>");
-        tick_form(c, b, e, done);
+        if (ctx_viewer(c)) tick_form(c, b, e, done); /* (a display account with nobody picked: no ticks) */
         buf_puts(b, "</li>");
     }
     buf_puts(b, "</ol>");
@@ -545,7 +649,7 @@ typedef struct {
 static void page_browse(Ctx *c, Buf *b) {
     const MediaIndex *ix = media_lib();
     ctx_title(c, "Folders");
-    lib_head(c, b, "browse", "Folders", NULL);
+    media_lib_head(c, b, "browse", "Folders", NULL, NULL);
     const char *q = query(c);
     if (*q) {
         search_results(c, b, q);
@@ -692,16 +796,22 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     const MediaFile *f = media_parse_id(idhex, &id) ? media_file(id) : NULL;
     if (!f || f->type != MF_VIDEO) {
         ctx_title(c, "Watch");
+        if (media_tv_mode(c)) media_tv_open(c, b, NULL, NULL);
         ui_empty(b, "🎬", "This video isn't in the library", "It may have been moved, renamed or deleted.");
+        if (c->bare) buf_puts(b, "</div>");
+        return;
+    }
+    if (media_tv_mode(c)) { /* opened from a TV screen: the player, full screen */
+        media_watch_tv(c, b, f);
         return;
     }
     const MediaSeries *s = f->name.kind == MEDIA_EPISODE ? media_series(f->series) : NULL;
     const MediaFile *prev = media_neighbour(f, -1), *next = media_neighbour(f, +1);
-    MediaWatch *w = watch_of(c, f);
+    const MediaWatch *w = media_watch_of(c, f);
     if (s) {
         Buf t = {0};
         buf_printf(&t, "%s ", f->name.title);
-        ep_code(&t, f);
+        media_ep_code(&t, f);
         ctx_title(c, "%s", buf_cstr(&t));
         buf_free(&t);
         H(b, "<a class=\"media-back\" href=\"/media/series/%X?s=%d\">", s->id, f->name.season);
@@ -725,28 +835,18 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     uint64_t poster = f->poster ? f->poster : s ? s->poster : 0;
     if (poster) {
         buf_puts(b, " poster=\"");
-        img_src(b, poster);
+        media_img_src(b, poster);
         buf_putc(b, '"');
     }
     buf_putc(b, '>');
-    const MediaIndex *ix = media_lib();
-    const char *want = c->me ? pref(c->me->id, "media.sublang", "") : "";
-    bool defaulted = false;
-    for (int i = 0; i < ix->nfiles; i++) {
-        const MediaFile *sub = &ix->files[i];
-        if (sub->type != MF_SUB || sub->video != f->id) continue;
-        bool def = !defaulted && *want && str_ieq(sub->lang, want);
-        defaulted |= def;
-        H(b, "<track kind=\"subtitles\" src=\"/media/sub/%X.vtt\" srclang=\"%s\" label=\"%s\"%r>", sub->id,
-          sub->lang[0] ? sub->lang : "und", lang_name(sub->lang), def ? " default" : "");
-    }
+    media_tracks(c, b, f);
     buf_puts(b, "</video></div>");
 
     /* about it */
     buf_puts(b, "<div class=\"media-watch-info\"><div class=\"media-watch-t\">");
     if (s) {
         H(b, "<h1>%s</h1><p class=\"sub\">", f->name.ep_title[0] ? f->name.ep_title : f->name.title);
-        ep_code(b, f);
+        media_ep_code(b, f);
         H(b, " · %s", s->title);
     } else {
         H(b, "<h1>%s</h1><p class=\"sub\">", f->name.title);
@@ -771,7 +871,7 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         ui_icon(b, "right");
         buf_puts(b, "</a>");
     }
-    if (c->me) {
+    if (ctx_viewer(c)) {
         bool done = w && w->done;
         ui_form(b, "media.watched", "inline");
         H(b, "<input type=\"hidden\" name=\"id\" value=\"%X\"><input type=\"hidden\" name=\"done\" value=\"%d\">", f->id,
@@ -840,16 +940,16 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         for (int i = 0; i < s->count; i++) {
             const MediaFile *e = media_episode(s, i);
             if (e->name.season != f->name.season) continue;
-            MediaWatch *ew = watch_of(c, e);
+            const MediaWatch *ew = media_watch_of(c, e);
             H(b,
               "<li class=\"media-ep%r%r\"><a class=\"media-ep-main\" href=\"/media/watch/%X\">"
               "<span class=\"media-ep-n%r\">%s</span>",
               ew && ew->done ? " media-ep-done" : "", e == f ? " media-ep-up" : "", e->id,
               e->name.episode_end > e->name.episode ? " media-ep-nn" : "", ep_n(e));
             buf_puts(b, "<span class=\"media-ep-t\"><b>");
-            ep_title(b, e);
+            media_ep_title(b, e);
             buf_puts(b, "</b><small>");
-            ep_code(b, e);
+            media_ep_code(b, e);
             if (e->probe.duration_ms) {
                 buf_puts(b, " · ");
                 duration(b, e);
@@ -1014,22 +1114,24 @@ static void page(Ctx *c, Buf *b) {
 /* --------------------------------------------------------------- widgets */
 
 static void mini(Ctx *c, Buf *b, const MediaFile *f) {
-    MediaWatch *w = watch_of(c, f);
+    const MediaWatch *w = media_watch_of(c, f);
     const MediaSeries *s = f->name.kind == MEDIA_EPISODE ? media_series(f->series) : NULL;
     H(b, "<a class=\"media-mini\" href=\"/media/watch/%X\">", f->id);
-    /* images need a signed-in viewer; the public wall display gets drawn posters */
-    uint64_t img = c->me ? (f->poster ? f->poster : s ? s->poster : 0) : 0;
-    poster_art(b, f->name.title, s ? 0 : f->name.year, NULL, img, percent(w), w && w->done);
+    /* pictures are for signed-in screens (display accounts too: /media/img only asks for a session);
+       a page drawn for nobody (c->me NULL) gets drawn posters */
+    uint64_t img = c->me ? media_picture(f) : 0;
+    poster_art(b, f->name.title, s ? 0 : f->name.year, NULL, img, media_percent(w), w && w->done);
     H(b, "<span class=\"media-mini-cap\">%s<small>", f->name.title);
-    if (s) ep_code(b, f);
+    if (s) media_ep_code(b, f);
     else if (f->name.year) H(b, "%d", f->name.year);
     buf_puts(b, "</small></span></a>");
 }
 
-/* A "continue watching" card: the poster, and an x that drops this person's progress in it (the
-   video then starts from the beginning, and leaves the list). Everyone else's progress stays. */
+/* A "continue watching" card: the poster, and an x that drops the viewer's progress in it (the
+   video then starts from the beginning, and leaves the list). Everyone else's progress stays.
+   On a display account the x is there while someone is picked under "Who's watching?". */
 static void going_card(Ctx *c, Buf *b, const MediaFile *f, bool small) {
-    if (!c->me || c->me->role == ROLE_DISPLAY) { /* a wall display only looks */
+    if (!ctx_viewer(c)) { /* nobody's progress to drop (a wall display only looks) */
         if (small) mini(c, b, f);
         else video_card(c, b, f);
         return;
@@ -1058,7 +1160,7 @@ static void widget(Ctx *c, Buf *b, int where) {
     }
     if (!ix->nrecent) return;
     const MediaFile *list[4];
-    int n = where == WIDGET_HOME ? in_progress(c, list, 4) : 0;
+    int n = where == WIDGET_HOME ? media_in_progress(c, list, 4) : 0;
     bool resuming = n > 0;
     for (int i = 0; !resuming && i < ix->nrecent && n < 4; i++) list[n++] = &ix->files[ix->recent[i]];
     ui_card(b, resuming ? "Continue watching" : "Recently added", "/media", "Watch");
@@ -1075,23 +1177,28 @@ static void widget(Ctx *c, Buf *b, int where) {
 
 static void act_search(Ctx *c, Fields *f) { ctx_set_live(c, "media.q", fields_str(f, "q")); }
 
+/* Watching actions (progress, watched, forget) are the viewer's - also on a display account, for
+   whoever was picked there (Action.display); with nobody picked they quietly do nothing. */
 static void act_progress(Ctx *c, Fields *f) {
     uint64_t id = 0;
-    if (!c->me || !media_parse_id(fields_str(f, "id"), &id) || !media_file(id)) return;
+    int v = ctx_viewer(c);
+    if (!v || !media_parse_id(fields_str(f, "id"), &id) || !media_file(id)) return;
     bool ended = fields_str(f, "ended")[0] == '1';
-    if (media_watch_report(c->me->id, id, (int)fields_int(f, "pos", 0), (int)fields_int(f, "dur", 0), ended, c->now))
+    if (media_watch_report(v, id, (int)fields_int(f, "pos", 0), (int)fields_int(f, "dur", 0), ended, c->now))
         app_changed(); /* finished: other screens' "continue watching" changes */
 }
 
 static void act_watched(Ctx *c, Fields *f) {
     uint64_t id = 0;
+    int v = ctx_viewer(c);
+    if (!v) return;
     const MediaFile *mf = media_parse_id(fields_str(f, "id"), &id) ? media_file(id) : NULL;
     if (!mf) {
         ctx_fail(c, "That video isn't in the library any more");
         return;
     }
     bool done = fields_int(f, "done", 1) != 0;
-    media_watch_set_done(c->me->id, id, done, c->now);
+    media_watch_set_done(v, id, done, c->now);
     ctx_ok(c, done ? "Marked as watched" : "Marked as not watched");
 }
 
@@ -1212,14 +1319,16 @@ static void act_drop_originals(Ctx *c, Fields *fl) {
     else media_scan_start();
 }
 
-/* "Remove from Continue watching": this person's progress in the video goes (finished ones aren't listed). */
+/* "Remove from Continue watching": the viewer's progress in the video goes (finished ones aren't listed). */
 static void act_forget(Ctx *c, Fields *f) {
     uint64_t id = 0;
+    int who = ctx_viewer(c);
+    if (!who) return;
     if (!media_parse_id(fields_str(f, "id"), &id)) {
         ctx_fail(c, "That isn't in the library any more");
         return;
     }
-    const MediaWatch *w = media_watch_get(c->me->id, id);
+    const MediaWatch *w = media_watch_get(who, id);
     if (w && !w->done) tbl_del(&T_media_watch, w->id);
     const MediaFile *v = media_file(id);
     char what[200] = "it";
@@ -1309,10 +1418,12 @@ static void act_prefs(Ctx *c, Fields *f) {
 }
 
 static const Action actions[] = {
-    {"media.search", act_search, true}, {"media.progress", act_progress, true}, {"media.watched", act_watched},
+    {"media.search", act_search, true}, {"media.progress", act_progress, true, true},
+    {"media.watched", act_watched, false, true},
     {"media.rescan", act_rescan}, {"media.roots", act_roots},       {"media.prefs", act_prefs},
     {"media.upload_stop", upload_act_stop}, {"media.art_remove", act_art_remove},
-    {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove}, {"media.forget", act_forget},
+    {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove},
+    {"media.forget", act_forget, false, true},
     {"media.drop_originals", act_drop_originals}, {"media.drop_auto", act_drop_auto},
     {"media.rescanners", act_rescanners},
     {0},
@@ -1421,5 +1532,6 @@ static const Module media = {
     .widget = widget,
     .widget_order = 50,
     .health = media_health,
+    .blocks = media_blocks,
 };
 MODULE(media)

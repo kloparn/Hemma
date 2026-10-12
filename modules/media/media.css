@@ -34,13 +34,15 @@
 }
 
 .media-poster { display: flex; flex-direction: column; gap: 7px; min-width: 0; text-decoration: none; color: var(--text); }
+/* a drawn poster's colours come from its title (media_art_style: --h and two neighbours --h2 --h3,
+   worked out on the server): comma-syntax hsl() without calc(), which older TV browsers read */
 .media-art {
-  --h: 220;
+  --h: 220; --h2: 260; --h3: 245;
   position: relative; display: flex; flex-direction: column; justify-content: flex-end; gap: 4px;
   aspect-ratio: 2 / 3; padding: 12px; overflow: hidden; border-radius: 12px; color: #fff;
   background:
-    radial-gradient(120% 70% at 85% 0%, hsl(calc(var(--h) + 40) 70% 62% / .55), transparent 60%),
-    linear-gradient(160deg, hsl(var(--h) 48% 42%), hsl(calc(var(--h) + 25) 52% 16%));
+    radial-gradient(120% 70% at 85% 0%, hsla(var(--h2), 70%, 62%, .55), transparent 60%),
+    linear-gradient(160deg, hsl(var(--h), 48%, 42%), hsl(var(--h3), 52%, 16%));
   box-shadow: var(--shadow); transition: transform .15s, box-shadow .15s;
 }
 .media-art img { position: absolute; top: 0; right: 0; bottom: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
@@ -238,3 +240,89 @@
 .media-minis .media-going-x { top: 4px; right: 4px; }
 .media-minis .media-going-x button { width: 24px; height: 24px; }
 .media-minis .media-going-x .i { width: 13px; height: 13px; }
+
+/* Watch's tabs (Home Movies Series Live TV Folders): on a narrow phone they scroll sideways
+   rather than push the page wider */
+.media-tabs { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.media-tabs::-webkit-scrollbar { display: none; }
+.media-tabs a { white-space: nowrap; }
+@media (max-width: 600px) {
+  .media-tools { flex-wrap: wrap; }
+  .media-search { max-width: none; min-width: 0; flex-basis: 100%; }
+}
+
+/* ---- tiles (web/app.css .tiles/.tile): a drawn poster when the library has no picture ---- */
+.tile-art.media-drawn {
+  --h: 220; --h2: 260; --h3: 245;
+  position: relative; display: flex; flex-direction: column; justify-content: flex-end; align-items: stretch; gap: 4px;
+  padding: 9% 9% 18%; color: #fff; text-align: left;
+  background:
+    radial-gradient(120% 70% at 85% 0%, hsla(var(--h2), 70%, 62%, .55), transparent 60%),
+    linear-gradient(160deg, hsl(var(--h), 48%, 42%), hsl(var(--h3), 52%, 16%));
+}
+.media-drawn-k {
+  position: absolute; top: 7%; left: 9%; right: 9%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-size: .66em; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; opacity: .75;
+}
+.media-drawn-t {
+  font-size: 1.2em; font-weight: 800; line-height: 1.12; letter-spacing: -.01em;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, .35);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.tile.wide .tile-art.media-drawn { padding: 5% 6% 9%; } /* (above the progress bar along the foot) */
+.tile.wide .media-drawn-t { font-size: 1.45em; }
+.media-tile-up .tile-art { box-shadow: 0 0 0 3px var(--accent); }
+
+/* ---- TV mode (?tv=1): pages opened from a TV screen. Full screen, always dark (like the wall),
+   big type for across the room, focus you can see from the sofa ---- */
+.media-tv {
+  --bg: #0a0b0d; --panel: #14161a; --panel-2: #1b1e23; --line: #22262c; --line-2: #30353c;
+  --text: #f4f0e9; --muted: #a8a196; --accent: #6cc6a6; --accent-ink: #0d1f19; --accent-soft: #1d362e;
+  --av-l: 32%; --av-ink-l: 90%; --av-s: 40%; --shadow: none;
+  color-scheme: dark;
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 1; overflow-y: auto;
+  background: var(--bg); color: var(--text); font-size: 20px;
+}
+.media-tv-back {
+  position: absolute; top: 22px; left: 28px; z-index: 10;
+  display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px 12px 16px;
+  border-radius: 999px; background: rgba(0, 0, 0, .62); color: #fff; text-decoration: none;
+  font-size: 22px; font-weight: 700; box-shadow: 0 0 0 1px rgba(255, 255, 255, .2);
+}
+.media-tv-back .i { width: 26px; height: 26px; }
+.media-tv-back:hover, .media-tv-back:focus { background: var(--accent); color: var(--accent-ink); outline: 4px solid #fff; outline-offset: 2px; }
+.media-tv .btn { font-size: 21px; padding: 14px 24px; border-radius: 14px; gap: 10px; }
+.media-tv .btn .i { width: 24px; height: 24px; }
+.media-tv .btn:focus { outline: 4px solid #fff; outline-offset: 3px; }
+.media-tv-sub { color: var(--muted); font-size: 24px; margin: 0 0 18px; }
+.media-tv-who { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 19px; margin: 0 0 18px; }
+.media-tv-acts { display: flex; flex-wrap: wrap; gap: 16px; }
+
+/* the player fills the screen; what's on and what's next wait below it */
+.media-tv-video { display: block; width: 100%; height: 100vh; background: #000; object-fit: contain; }
+.media-tv-video:focus { outline: none; }
+.media-tv-info { padding: 34px 56px 60px; }
+.media-tv-info h1 { font-size: 44px; line-height: 1.1; margin: 0 0 8px; }
+
+/* a series: the next episode as one big button, then a row of tiles per season */
+.media-tv-series { padding: 104px 56px 60px; }
+.media-tv-head { display: flex; align-items: flex-end; gap: 40px; margin-bottom: 30px; }
+.media-tv-poster { flex: none; width: 210px; }
+.media-tv-poster .tile-art { position: relative; aspect-ratio: 2 / 3; overflow: hidden; border-radius: 16px; }
+@supports not (aspect-ratio: 1 / 1) { .media-tv-poster .tile-art { height: 315px; } }
+.media-tv-head-t { min-width: 0; }
+.media-tv-head-t h1 { font-size: 52px; line-height: 1.05; margin: 0 0 10px; }
+.media-tv-h { font-size: 28px; margin: 30px 0 12px; }
+
+@media (max-width: 700px) { /* a phone opening a TV link still gets a usable page */
+  .media-tv { font-size: 16px; }
+  .media-tv-back { top: 12px; left: 12px; font-size: 17px; padding: 8px 16px 8px 10px; }
+  .media-tv-video { height: auto; max-height: 100vh; aspect-ratio: 16 / 9; }
+  .media-tv-info, .media-tv-series { padding-left: 16px; padding-right: 16px; }
+  .media-tv-series { padding-top: 72px; }
+  .media-tv-info h1, .media-tv-head-t h1 { font-size: 28px; }
+  .media-tv-sub { font-size: 17px; }
+  .media-tv-head { gap: 16px; }
+  .media-tv-poster { width: 110px; }
+  .media-tv .btn { font-size: 17px; padding: 10px 16px; }
+}

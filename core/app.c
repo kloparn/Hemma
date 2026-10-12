@@ -29,7 +29,7 @@ Table T_person = TABLE("person", Person, person_fields);
 static const FieldDef session_fields[] = {
     FIELD(Session, id, F_INT),      FIELD(Session, token, F_STR), FIELD(Session, person, F_INT),
     FIELD(Session, created, F_I64), FIELD(Session, seen, F_I64),  FIELD(Session, agent, F_STR),
-    FIELD(Session, remember, F_BOOL),
+    FIELD(Session, remember, F_BOOL), FIELD(Session, viewer, F_INT),
 };
 Table T_session = TABLE("session", Session, session_fields);
 
@@ -190,6 +190,16 @@ static const Module *module_for_path(const char *path) {
     memcpy(seg, p, n);
     seg[n] = '\0';
     return module_find(seg);
+}
+
+const Block *block_find(const char *id, const Module **owner) {
+    for (int i = 0; i < nmods; i++)
+        for (const Block *bl = mods[i]->blocks; bl && bl->id; bl++)
+            if (str_eq(bl->id, id)) {
+                if (owner) *owner = mods[i];
+                return bl;
+            }
+    return NULL;
 }
 
 static const Action *action_find(const char *name, const Module **owner) {
@@ -559,6 +569,32 @@ void ctx_set_live(Ctx *c, const char *key, const char *val) {
     str_copy(c->client->live[free_slot].v, sizeof c->client->live[free_slot].v, val);
 }
 
+/* ------------------------------------------------------------ the viewer */
+
+static int g_test_viewer[256]; /* app_ctx's stand-in sessions (tests): what each display account picked */
+
+int ctx_viewer(const Ctx *c) {
+    if (!c->me) return 0;
+    if (c->me->role != ROLE_DISPLAY) return c->me->id;
+    int v = c->sess ? c->sess->viewer : 0;
+    return person_real(v) ? v : 0;
+}
+
+void ctx_set_viewer(Ctx *c, int person) {
+    if (!c->me || c->me->role != ROLE_DISPLAY || !c->sess) return;
+    int v = person_real(person) ? person : 0;
+    Session *s = session_by_token(c->sess->token);
+    if (!s) { /* not a stored session: the harness's */
+        c->sess->viewer = v;
+        if (c->me->id > 0 && c->me->id < countof(g_test_viewer)) g_test_viewer[c->me->id] = v;
+        return;
+    }
+    Session rec = *s;
+    rec.viewer = v;
+    tbl_put(&T_session, &rec);
+    c->sess = session_by_token(rec.token); /* rows move when the table grows */
+}
+
 /* ============================================================== presence */
 
 #define MAX_HOME 64
@@ -718,7 +754,20 @@ void activity_add(int who, const char *icon, const char *link, const char *fmt, 
 
 /* Renders the <div id="app"> element for the context's URL. Signed-out
  * visitors get the sign-in page wherever they are (except public modules). */
+/* A display account (the living-room TV, a wall tablet) shows its own page at "/": the screen
+   an admin gave it (pref PREF_START). The address stays "/", any query goes along. */
+static void display_start(Ctx *c) {
+    if (!c->me || c->me->role != ROLE_DISPLAY || !str_eq(c->path, "/")) return;
+    const char *start = pref(c->me->id, PREF_START, "");
+    if (start[0] != '/' || start[1] == '/' || str_eq(start, "/") || strchr(start, '?')) return;
+    const char *q = strchr(c->url, '?');
+    char url[sizeof c->url];
+    snprintf(url, sizeof url, "%s%s", start, q ? q : "");
+    ctx_set_url(c, url);
+}
+
 static void render_app(Ctx *c, Buf *out) {
+    display_start(c);
     const Module *m = module_for_path(c->path);
     Buf page = {0};
     c->title[0] = '\0';
@@ -889,7 +938,7 @@ static bool run_action(Ctx *c, const char *name, Fields *f, bool *ran, bool live
         ctx_fail(c, "Sign in first");
         return true;
     }
-    if (c->me->role == ROLE_DISPLAY) {
+    if (c->me->role == ROLE_DISPLAY && !a->display) { /* a TV may only watch (Action.display) */
         ctx_fail(c, "This screen is view-only");
         return true;
     }
@@ -1556,6 +1605,7 @@ bool app_boot(const char *data_dir) {
     static char dir[600];
     if (data_dir != dir) str_copy(dir, sizeof dir, data_dir ? data_dir : "data");
     g_cfg.data_dir = dir; /* app_config(): the folder in use (tests boot without app_main) */
+    memset(g_test_viewer, 0, sizeof g_test_viewer); /* a fresh boot: no stand-in session picked anyone */
     g_nhome = 0;
     g_tracking = false;
     auth_reset_throttle();
@@ -1601,6 +1651,7 @@ void app_ctx(Ctx *c, int person, const char *url) {
     memset(&s, 0, sizeof s);
     str_copy(s.token, sizeof s.token, "test");
     s.person = person;
+    if (person > 0 && person < countof(g_test_viewer)) s.viewer = g_test_viewer[person];
     ctx_init(c, &s, NULL, 0x7F000001, url);
 }
 

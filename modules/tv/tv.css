@@ -72,6 +72,16 @@ a.tv-g-row:hover .tv-g-lane { background: var(--panel-2); }
   box-shadow: 0 0 0 4px #0d0b09, 0 0 0 6px rgba(255, 255, 255, .05);
 }
 .tv-video { position: absolute; top: 0; right: 0; bottom: 0; left: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+/* live TV has no controls (no pausing, no winding): the sound is the one thing to change */
+.tv-mute {
+  position: absolute; left: 22px; bottom: 18px; z-index: 5; padding: 8px 16px; border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, .28); background: rgba(0, 0, 0, .6); color: #fff;
+  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.tv-mute:hover { background: rgba(0, 0, 0, .8); }
+.tv-mute:focus { outline: 3px solid #fff; outline-offset: 3px; }
+.tv-mute[aria-pressed="true"] .tv-mute-on, .tv-mute[aria-pressed="false"] .tv-mute-off { display: none; }
+.tv-full-screen .tv-mute { left: 36px; bottom: 30px; font-size: 22px; padding: 12px 26px; }
 .tv-scan {
   position: absolute; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; z-index: 2;
   background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0) 0 2px, rgba(0, 0, 0, .22) 2px 3px);
@@ -203,4 +213,63 @@ a.tv-g-row:hover .tv-g-lane { background: var(--panel-2); }
   .tv-g-row { grid-template-columns: 76px minmax(0, 1fr); }
   .tv-g-ch { flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; font-size: 12px; padding-right: 8px; }
   .tv-g-ch span:last-child { max-width: 100%; }
+}
+
+/* ---- "On now" tiles (the tv.onnow row: TV screens, Watch's home): a little screen per channel ---- */
+.tile-art.tv-tile {
+  --h: 140;
+  position: relative; display: flex; flex-direction: column; justify-content: flex-end; align-items: flex-start;
+  padding: 5% 6% 9%; overflow: hidden; color: #fff; text-align: left;
+  background: radial-gradient(90% 80% at 50% 45%, hsla(var(--h), 45%, 22%, 1), #07090a 100%);
+}
+.tile-art.tv-tile::after { /* scan lines over picture and all */
+  content: ""; position: absolute; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none;
+  background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0) 0 2px, rgba(0, 0, 0, .18) 2px 3px);
+}
+.tv-tile-t {
+  position: relative; font-family: var(--mono); font-size: 1.2em; font-weight: 700; line-height: 1.2;
+  color: hsl(var(--h), 85%, 80%); text-shadow: 0 0 10px hsla(var(--h), 90%, 55%, .6);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.tv-tile-n {
+  position: absolute; top: 6%; right: 4%; z-index: 1; padding: .1em .4em; border-radius: 8px;
+  font-size: 1.3em; background: rgba(0, 0, 0, .7);
+}
+
+/* ---- a channel on the TV (?tv=1): the picture fills the screen, the knobs and the remote below ---- */
+.tv-full-screen { position: relative; height: 100vh; background: #000; }
+.tv-full-screen .tv-screen {
+  position: absolute; top: 0; right: 0; bottom: 0; left: 0; aspect-ratio: auto;
+  border-radius: 0; box-shadow: none;
+}
+.tv-full-screen .tv-osd { top: 26px; right: 36px; }
+.tv-full-bar { --h: 140; display: flex; align-items: center; gap: 22px; padding: 26px 56px 10px; }
+.tv-full-bar .tv-knob { width: 64px; height: 64px; flex: none; }
+.tv-full-bar .tv-knob .i { width: 30px; height: 30px; }
+.tv-full-bar .tv-knob:focus { outline: 4px solid #fff; outline-offset: 3px; }
+.tv-full-now { flex: 1; min-width: 0; display: flex; align-items: center; gap: 20px; }
+.tv-full-now .tv-num {
+  flex: none; display: grid; place-items: center; width: 84px; height: 64px; font-size: 32px;
+  border-radius: 12px; background: #0b0f0c;
+}
+.tv-full-now > div { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.tv-full-now b { font-size: 26px; }
+.tv-full-now span { font-size: 21px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tv-full-now small { color: var(--muted); font-size: 18px; }
+.tv-full-now .tv-bar { max-width: 520px; height: 6px; margin-top: 4px; }
+.tv-full-remote { display: flex; flex-wrap: wrap; gap: 10px; padding: 14px 56px 56px; }
+.tv-full-remote a {
+  display: grid; place-items: center; min-width: 64px; height: 50px; padding: 0 10px; border-radius: 10px;
+  background: #0b0f0c; text-decoration: none; font-size: 21px; opacity: .7;
+}
+.tv-full-remote a.on, .tv-full-remote a:hover, .tv-full-remote a:focus { opacity: 1; }
+.tv-full-remote a:focus { outline: 4px solid #fff; outline-offset: 2px; }
+@media (max-width: 700px) {
+  .tv-full-screen { height: auto; aspect-ratio: 16 / 9; }
+  .tv-full-bar { padding: 16px 12px 6px; gap: 10px; }
+  .tv-full-bar .tv-knob { width: 44px; height: 44px; }
+  .tv-full-now .tv-num { width: 56px; height: 44px; font-size: 22px; }
+  .tv-full-now b { font-size: 18px; }
+  .tv-full-now span { font-size: 15px; }
+  .tv-full-remote { padding: 10px 12px 30px; }
 }

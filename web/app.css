@@ -253,6 +253,51 @@ small { font-size: 12.5px; }
 .preview.ok { border-style: solid; border-color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
 .preview.bad { border-style: solid; border-color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); color: var(--danger); }
 
+/* tiles: a row of big focusable cards that scrolls sideways - what screens (the TV view, walls)
+   are made of. Modules' blocks render into it (see Block in core/app.h):
+     <div class="tiles">
+       <a class="tile wide" href="/media/watch/12?tv=1"><span class="tile-art" style="--h:140"><img src="..." alt="">
+         <span class="tile-bar"><i style="width:40%"></i></span></span>
+         <span class="tile-t">70's Show</span><span class="tile-s">S1 · E4 · 12 min left</span></a>
+     </div>
+   a.tile or button.tile; default a 2:3 poster, .wide 16:9 (channels, continue watching). .tile-art is
+   the picture: an <img> inside covers it, otherwise its text sits on a gradient in --h. .tile-bar is
+   progress (inside the art: along its foot). A screen sizes tiles for its room (the TV: screens.css). */
+.tiles { /* the padding is room for a focused tile's ring (the scroller clips); the margin keeps tiles in line */
+  display: flex; gap: 14px; overflow-x: auto; overflow-y: hidden; margin: 0 -14px; padding: 14px;
+  scrollbar-width: none; -ms-overflow-style: none;
+}
+.tiles::-webkit-scrollbar { display: none; }
+.tile {
+  position: relative; flex: none; display: flex; flex-direction: column; gap: 6px; width: 150px; min-width: 0;
+  margin: 0; padding: 0; border: 0; border-radius: 14px; background: none; color: inherit; font: inherit;
+  text-align: left; text-decoration: none; cursor: pointer; transition: transform .15s ease-out;
+}
+.tile.wide { width: 260px; }
+.tile-art {
+  --h: 200;
+  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  overflow: hidden; aspect-ratio: 2 / 3; padding: 10%; border-radius: 12px; text-align: center; font-weight: 700; line-height: 1.2;
+  background: hsl(var(--h) 32% 28%); background: linear-gradient(160deg, hsl(var(--h) 40% 36%), hsl(var(--h) 34% 16%));
+  color: #fff; box-shadow: var(--shadow); transition: box-shadow .15s;
+}
+.tile.wide .tile-art { aspect-ratio: 16 / 9; padding: 6%; }
+@supports not (aspect-ratio: 1 / 1) { /* older TV browsers: the same shapes as sizes */
+  .tile-art { height: 225px; }
+  .tile.wide .tile-art { height: 146px; }
+}
+.tile-art img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+.tile-t, .tile-s { display: block; padding: 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-t { font-weight: 650; }
+.tile-s { margin-top: -3px; font-size: .86em; color: var(--muted); }
+.tile-bar { display: block; height: 4px; border-radius: 4px; overflow: hidden; background: rgba(128, 128, 128, .35); }
+.tile-bar > * { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
+.tile-art .tile-bar { position: absolute; left: 8%; right: 8%; bottom: 7%; z-index: 1; background: rgba(0, 0, 0, .5); }
+.tile:hover .tile-art { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--line-2); }
+/* what a remote is on: a thick ring in the page's own ink and a little lift - seen from the sofa */
+.tile:focus { outline: none; transform: scale(1.06); z-index: 1; }
+.tile:focus .tile-art { box-shadow: 0 0 0 3px var(--bg), 0 0 0 7px var(--text), 0 10px 28px rgba(0, 0, 0, .45); }
+
 /* ---------------------------------------------------------------- people */
 
 .av {

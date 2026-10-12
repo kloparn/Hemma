@@ -78,6 +78,22 @@ core/            framework with a stable API for modules
   main.c         command line (--gen-salt, --env, --web ...)
 modules/<id>/    one folder per feature; folder name == module id (home book plan media tv board net people wall
                  system)
+  screens/       the TV view (and, next, walls): screens an admin builds from the Blocks modules offer.
+                 Tables `screen` + `screen_row` (position, block id, choice arg, custom heading); a "TV" screen
+                 seeded once (setting screens.seeded) with media.continue, tv.onnow, media.recent,
+                 media.series, media.movies. /screens = list (everyone opens, admins edit/new), /screens/<id>
+                 = full-screen view (bare, always dark, 5% overscan, [data-arrows]), /screens/<id>/edit = the
+                 builder (Up/Down/Remove, heading, choice, Add a row, "Shows on" = display accounts' PREF_START,
+                 one screen per account). Rows are left out when their block is unknown (builder: "missing"),
+                 not for this kind, an admin module's (for members) or renders nothing. WHO'S WATCHING (owner,
+                 2026-10-12): a display account with ctx_viewer() == 0 gets the avatar picker (screens.viewer,
+                 .display; who=0 = Switch); the pick lapses after SCREENS_IDLE_S (4 h) without use (the TV
+                 session's `seen`), checked when rendering and on tick; people on their own devices are always
+                 the viewer. TODO: the wall builder ("New screen" offers TV only; WALL kind renders cards).
+                 Tile vocabulary (web/app.css, shared): .tiles (sideways row; margin 0 -14px + padding 14px is
+                 room for the focus ring), a.tile / button.tile (2:3 poster; .wide = 16:9), .tile-art (an <img>
+                 covers it, else text on a --h gradient), .tile-t, .tile-s, .tile-bar > i[style=width:N%],
+                 .tile:focus (ring + scale). TV sizes live in screens.css under .screens-tv.
   system/        admin-only (MOD_ADMIN) System page: checks (core + every Module.health hook), a getting-
                  started list ticking itself from data (also an admin home card with the next step), the live
                  log (log.c: ring of 2000 lines fed by the core log sink - installed by a constructor, so the
@@ -161,6 +177,20 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  (DNS and mDNS separate); the first response from a sender who may answer closes the question -
                  a wrong id or "no such name" too (net_dns_packet). Presence from devices is labelled a guess
                  (ARP can't be authenticated: any device can borrow a phone's MAC).
+  media/ + tv/   ONE Watch section: tabs Home | Movies | Series | Live TV | Folders (media_lib_head() in
+                 media/media.h; tv's pages draw it too; Live TV only while tv is built). tv = .nav 0,
+                 .parent "media". Recently added groups a series' episodes that arrived within a week of
+                 each other (media_recent). Blocks (media/tiles.c): media.continue (TV), media.recent (TV +
+                 wall), media.series, media.movies, media.series_one (choices = every series by hex id;
+                 next-up first), tv.onnow (TV + wall). Drawn posters: media_tile_art / media_art_style
+                 (--h/--h2/--h3 from a title hash, comma hsl() and no calc() for old TVs). TV MODE
+                 (?tv=1&back=<path> on /media/watch/<id>, /media/series/<id>, /tv/<n>): bare, always dark,
+                 Back first (data-esc), back checked by media_safe_back (else "/"); the player autoplays +
+                 autofocuses, resumes for the viewer, data-next keeps tv/back; a channel: ArrowUp/Down
+                 change channel, 1-9 pick one. On a screen (kind != 0) tiles link to TV mode with back =
+                 c->path. Everything personal is ctx_viewer(c); media.progress (live), media.watched and
+                 media.forget are .display and do nothing without a viewer; display accounts get real
+                 posters and streams (/media/* only asks for a session).
   media/remove.c admins delete a film or other video (watch page "Remove" -> ?remove=1 dialog listing every
                  file -> media.remove): the video, its copy, subtitles, picture - or its OWN folder as a whole
                  (folder name parses to the film's title/year, nothing inside but the film and extras - the
@@ -396,6 +426,21 @@ MODULE(things)   /* self-registers: no shared file to edit */
   other modules - only this hook.
 - **Admin-only module**: `.flags = MOD_ADMIN` hides it from non-admins everywhere (nav, /more, pages,
   http hooks, side(), widgets, agenda items, the /api action list); its actions still check `is_admin`.
+- **Blocks for screens** (the TV view, wall tablets - modules/screens arranges them): `.blocks` =
+  `{id "<mod>.<name>", title, kinds SCREEN_TV|SCREEN_WALL, render, choices}`, terminated by {0}.
+  `bool render(c, b, kind, arg)` draws one row's content WITHOUT its heading (false = nothing to show:
+  the row is left out); `choices()` (optional) lists what the block can show (e.g. one series) for the
+  builder's pick, passed back as `arg`. Look one up with `block_find(id, &owner)` - also how one module
+  shows another's row without linking it (Watch's home renders "tv.onnow" with kind 0 = an ordinary
+  page: plain links instead of TV-mode ones).
+- **Section parent**: a module with `.nav = 0` and `.parent = "media"` lights up that entry (tv's
+  channel pages live under Watch).
+- **The viewer**: personal media state (progress, continue watching, watched ticks) belongs to
+  `ctx_viewer(c)` - the signed-in person, or on a display account (the living-room TV) the person picked
+  under "Who's watching?" (`ctx_set_viewer`, stored in the session; 0 = nobody yet). Actions with
+  `.display = true` (`{"media.progress", act_progress, true, true}`) may run from a display account -
+  watching only; everything else stays "view-only" for them. A display account's "/" shows the page
+  in its pref `PREF_START` (e.g. "/screens/2"; the query goes along) - use absolute links on such pages.
 - **Raw endpoints**: `http()` hook (files, streams, JSON) — only called for signed-in requests.
   Bodies over 1 MB are not buffered: the hook gets `req->streaming` (body NULL, `content_length`
   set) and must take the socket with `conn_detach(conn, req, &d)` — `d.body` holds the bytes that
@@ -416,7 +461,13 @@ MODULE(things)   /* self-registers: no shared file to edit */
   Anonymous = person 0 → expect the sign-in page (`data-mod="auth"`). For sign-in tests call
   `auth_configure("salt", 1000)` (low iterations keep tests fast).
 
-wire.js markup hooks: `form[data-a]` · `[data-live]` · `[data-auto]` (submit on change) ·
+wire.js markup hooks: `[data-arrows]` (remote control: arrow keys move focus to the nearest focusable in
+that direction - Left/Right stay on the row, Up/Down go to the nearest row; after a load or morph focus
+returns near where it was, else [autofocus] / the first focusable; inputs keep their arrows - don't put it
+around a <video>) · `video[data-onair]` (a live broadcast - owner, 2026-10-12: no controls; plays at
+data-resume + the time since the page came, a pause resumes, winding/speed snap back, a browser blocking
+sound starts it muted) · `[data-mute]` (toggles the on-air video's sound; the choice carries to the next
+programme; aria-pressed = muted) · `form[data-a]` · `[data-live]` · `[data-auto]` (submit on change) ·
 `[data-esc]` (Escape) · `[data-key="/"]` (shortcut) · `[data-static]` (never morphed) ·
 `a[data-native]` (full load) · `form[data-keep]` (don't reset) · `form[data-confirm]` (asked before
 any submit, socket or not) · `form[data-upload="/base"]` (files: POST base/plan, then one PUT per file
@@ -440,6 +491,8 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
   encoded) %d/%L (+ width, e.g. %02d) %X (a 64-bit id as 16 hex digits) %c %%: anything else (`%016llx`, `%lu`)
   is printed as-is WITHOUT taking its argument, so every later argument shifts - a crash. Use snprintf for those.
 - Don't call a static helper the same as a core function (e.g. `file_read_at` clashed once).
+- Morphing keys elements by their id ATTRIBUTE (`getAttribute('id')` in wire.js): `form.id` returns a
+  form's `<input name="id">` - it once made every form with an id field rebuild on each morph (typed text lost).
 - The debug test build traps on undefined behaviour (UBSan): never left-shift a negative value
   (multiply instead); it caught three such shifts in the H.264 encoder.
 - `far` and `near` are macros on Windows (windef.h): don't use them as variable names.
@@ -503,7 +556,10 @@ CI sanitizers + converter fuzzing, conversions keep room + never share a .part w
 + router/DNS hardening, quick-add date refusals/evening words/DST, Windows as Local Service, Pi clock sync,
 version 0.3.0 + commit stamp + CHANGELOG.md. New (owner asked): the System page (checks, getting started,
 live log, help), clearer installer and startup output, /healthz. 456 tests green (1.64M checks).
-Not yet tagged/released: the owner runs `git tag v0.3.0` + a GitHub release from CHANGELOG.md.
+0.3.0 merged to main (PR #16), not tagged yet (the owner runs `git tag v0.3.0` + a GitHub release from
+CHANGELOG.md). 0.4.0 in progress (the GUI redesign): round 1 = Watch absorbs TV, Screens (the TV view with
+"Who's watching?"), grouped "Recently added", per-series poster colours. Next: the Wall as a screen kind
+(blocks for clock, who's home, today, bookings, shopping list, notes), then calmer cards (hide empty ones).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,
 agenda, JSON API), people/household, home, book, plan, board, wall, net, media (library, player, Range

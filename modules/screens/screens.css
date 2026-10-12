@@ -1,0 +1,153 @@
+/* modules/screens — the screens, then the builder. Every class is screens-*.
+
+   A TV is a 10-foot screen: type in vw (it scales with whatever size the TV's browser reports),
+   ~5% safe margins (TVs overscan), a ring you can see from the sofa. Always dark, scoped under
+   .screens-dark so the rest of the app keeps following the system theme. The tiles themselves
+   are the shared .tiles/.tile vocabulary (web/app.css); here they only get their TV sizes. */
+
+.screens-dark {
+  --bg: #0b0c0f;
+  --panel: #16181d;
+  --panel-2: #20232a;
+  --line: #262a31;
+  --line-2: #3a4049;
+  --text: #f6f2eb;
+  --muted: #a7a197;
+  --accent: #6cc6a6;
+  --accent-ink: #0d1f19;
+  --accent-soft: #1d362e;
+  --ok: #74d39b;
+  --danger: #ec7f72;
+  --danger-soft: #3a2220;
+  --warn: #e7b25e;
+  --av-l: 32%;
+  --av-ink-l: 90%;
+  --av-s: 40%;
+  --shadow: none;
+  color-scheme: dark;
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 1; overflow-x: hidden; overflow-y: auto;
+  padding: 4.5vh 5vw 8vh;
+  background: radial-gradient(1200px 560px at 0% -10%, #13241f 0%, rgba(19, 36, 31, 0) 62%), var(--bg);
+  color: var(--text);
+  font-size: 1.2vw; /* 23px on a 1920-wide screen: everything inside is in em or vw */
+  line-height: 1.35;
+}
+
+/* ---- top: home, clock, who's watching ---- */
+.screens-top { display: flex; align-items: center; gap: 1.6vw; }
+.screens-home { font-size: .8em; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
+.screens-clock { margin-left: auto; font-size: 1.45em; font-weight: 700; font-variant-numeric: tabular-nums; }
+.screens-who { display: flex; align-items: center; gap: .6em; }
+.screens-who .av { width: 2.1em; height: 2.1em; font-size: 1em; }
+.screens-btn {
+  display: inline-flex; align-items: center; padding: .4em 1.1em; border: 0; border-radius: 99px;
+  background: var(--panel-2); color: var(--text); font: inherit; font-size: .85em; font-weight: 650;
+  text-decoration: none; cursor: pointer; transition: transform .15s, background .15s, color .15s;
+  scroll-margin: 6vh 5vw; /* reached with the remote: the whole bar comes into view */
+}
+.screens-btn:hover { background: var(--line-2); }
+.screens-btn:focus { outline: none; background: var(--text); color: var(--bg); transform: scale(1.08); }
+
+/* ---- rows of tiles, TV-sized ---- */
+.screens-row { margin-top: 2.6vh; }
+.screens-row > h2 { margin: 0; font-size: 1.3em; font-weight: 700; }
+/* edge to edge, tiles in line with the heading; room above and below for the focused one's ring */
+.screens-tv .tiles { margin: -.4vw -5vw 0; padding: 1.8vw 5vw; gap: 1.2vw; }
+.screens-tv .tile { width: 14vw; gap: .45vw; border-radius: .8vw; scroll-margin: 15vh 5vw 10vh; } /* room for the heading */
+.screens-tv .tile.wide { width: 24vw; }
+.screens-tv .tile-art { border-radius: .7vw; font-size: 1.1em; }
+.screens-tv .tile-t { font-size: .95em; }
+.screens-tv .tile-s { font-size: .75em; }
+.screens-tv .tile-bar { height: .32vw; }
+.screens-tv .tile:focus { transform: scale(1.06); }
+.screens-tv .tile:focus .tile-art { box-shadow: 0 0 0 .22vw var(--bg), 0 0 0 .5vw var(--text), 0 1vw 2.6vw rgba(0, 0, 0, .6); }
+@supports not (aspect-ratio: 1 / 1) {
+  .screens-tv .tile-art { height: 21vw; }        /* 14vw x 3/2 */
+  .screens-tv .tile.wide .tile-art { height: 13.5vw; } /* 24vw x 9/16 */
+}
+.screens-dark .empty { margin-top: 12vh; color: var(--muted); }
+.screens-dark .empty h3 { color: var(--text); font-size: 1.3em; }
+.screens-dark .empty-e { font-size: 3em; }
+
+/* ---- a wall: the same rows as cards ---- */
+.screens-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(24vw, 1fr)); gap: 1.4vw; margin-top: 2.6vh; align-items: start; }
+.screens-grid > .card + .card { margin-top: 0; }
+.screens-card { background: var(--panel); border-color: var(--line); padding: 1.2vw; }
+.screens-card .card-h h2 { font-size: 1.15em; }
+
+/* ---- who's watching? ---- */
+.screens-pick { display: flex; text-align: center; }
+.screens-pick-in { margin: auto; width: 100%; } /* (auto margins: a tall list still scrolls from its top) */
+.screens-pick h1 { margin: .25em 0 1.3em; font-size: 2.6em; font-weight: 750; letter-spacing: -.02em; }
+.screens-note { color: var(--muted); margin-bottom: 1em; }
+.screens-people { display: flex; flex-wrap: wrap; justify-content: center; gap: 2.4vw; }
+.screens-person {
+  display: flex; flex-direction: column; align-items: center; gap: .9vw; min-width: 11vw; padding: 1vw;
+  border: 0; border-radius: 1.2vw; background: none; color: var(--muted); font: inherit; cursor: pointer;
+  transition: transform .15s, color .15s;
+}
+.screens-person .av { width: 9vw; height: 9vw; font-size: 4.3vw; transition: box-shadow .15s; }
+.screens-person b { font-size: 1.15em; font-weight: 650; }
+.screens-person:hover { color: var(--text); }
+.screens-person:focus { outline: none; color: var(--text); transform: scale(1.08); }
+.screens-person:focus .av { box-shadow: 0 0 0 .3vw var(--bg), 0 0 0 .65vw var(--text); }
+
+/* ---- the same screens on a phone or a small window ---- */
+@media (max-width: 900px) {
+  .screens-dark { font-size: 16px; padding: 18px 16px 56px; }
+  .screens-top { flex-wrap: wrap; gap: 10px 14px; }
+  .screens-tv .tiles { margin: -4px -16px 0; padding: 16px; gap: 12px; }
+  .screens-tv .tile { width: 34vw; gap: 6px; border-radius: 12px; scroll-margin: 80px 16px 40px; }
+  .screens-tv .tile.wide { width: 66vw; }
+  .screens-tv .tile-art { border-radius: 10px; }
+  .screens-tv .tile-bar { height: 4px; }
+  .screens-tv .tile:focus .tile-art { box-shadow: 0 0 0 3px var(--bg), 0 0 0 6px var(--text); }
+  .screens-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .screens-card { padding: 16px; }
+  .screens-people { gap: 18px; }
+  .screens-person { min-width: 96px; gap: 8px; padding: 8px; border-radius: 16px; }
+  .screens-person .av { width: 76px; height: 76px; font-size: 36px; }
+  .screens-person:focus .av { box-shadow: 0 0 0 3px var(--bg), 0 0 0 6px var(--text); }
+}
+@media (max-width: 900px) {
+  @supports not (aspect-ratio: 1 / 1) {
+    .screens-tv .tile-art { height: 51vw; }
+    .screens-tv .tile.wide .tile-art { height: 37vw; }
+  }
+}
+
+/* ================================================================ the builder */
+
+.screens-list .row { flex-wrap: wrap; }
+.screens-kind {
+  display: grid; place-items: center; flex: none; width: 40px; height: 40px; border-radius: 12px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.screens-list-a { display: flex; gap: 6px; }
+.screens-hint { margin-bottom: 6px; }
+
+.screens-ed { list-style: none; margin: 0; padding: 0; }
+.screens-ed-row { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.screens-ed-row:last-child { border-bottom: 0; }
+.screens-ed-head { display: flex; align-items: center; gap: 10px; }
+.screens-ed-n {
+  display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); font-size: 13px; font-weight: 700;
+}
+.screens-ed-main { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
+.screens-ed-main b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.screens-ed-main small { color: var(--muted); }
+.screens-missing .screens-ed-main b { color: var(--muted); }
+.screens-ed-btns { display: flex; gap: 2px; flex: none; }
+.screens-ed-btns .icon-btn[disabled] { opacity: .3; cursor: default; background: transparent; }
+.screens-ed-form { display: flex; flex-wrap: wrap; gap: 8px; padding-left: 38px; }
+.screens-ed-form input { flex: 2 1 160px; width: auto; min-width: 0; }
+.screens-ed-form select { flex: 1 1 140px; width: auto; min-width: 0; }
+.screens-add .row { padding: 8px 0; }
+.screens-add-f { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; flex: 1; min-width: 0; }
+.screens-add-f .row-main { flex: 1 1 140px; }
+.screens-add-f select { flex: 1 1 140px; width: auto; min-width: 0; }
+.screens-shows { gap: 10px; }
+@media (max-width: 600px) {
+  .screens-ed-form { padding-left: 0; }
+}
