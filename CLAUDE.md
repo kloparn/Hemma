@@ -33,6 +33,9 @@ Runs on a Raspberry Pi in production; developed on Windows 11 with `zig cc`.
   dev PC, addresses, MACs, hostnames of anyone's machines, credentials or deployment diaries. The
   maintainer keeps those in private local notes (outside the repo).
 - Keep this file updated as things change (owner's request).
+- **Every PR raises the version** (`HEMMA_VERSION` in core/app.h) and gets its own CHANGELOG.md section
+  (owner, 2026-10-12): **patch** = fixes only, **minor** = something new or changed, **major** = a big
+  breaking change in how things work. Bump it in the PR itself, not after the merge.
 
 ## Layout
 
@@ -589,12 +592,12 @@ CI sanitizers + converter fuzzing, conversions keep room + never share a .part w
 version 0.3.0 + commit stamp + CHANGELOG.md. New (owner asked): the System page (checks, getting started,
 live log, help), clearer installer and startup output, /healthz. 456 tests green (1.64M checks).
 0.3.0 merged to main (PR #16), not tagged yet (the owner runs `git tag v0.3.0` + a GitHub release from
-CHANGELOG.md). 0.4.0 in progress (the GUI redesign): round 1 (merged, PR #17) = Watch absorbs TV, Screens (the
-TV view with "Who's watching?"), grouped "Recently added", per-series poster colours, live TV can't be paused.
-Then (owner asked): full screen survives the next episode, a "Next episode in N s" card, full screen for Live
-TV (survives programme and channel changes); then Hemma's own player controls (ui_player + wire.js
-[data-player]) instead of each browser's, and the fix for live TV playing on, unseen, after leaving it.
-Next: the Wall as a screen kind
+CHANGELOG.md). 0.4.0 (PR #17, the GUI redesign round 1) = Watch absorbs TV, Screens (the TV view with
+"Who's watching?"), grouped "Recently added", per-series poster colours, live TV can't be paused.
+0.5.0 (PR #18 + the version bump after it) = full screen survives the next episode, a "Next episode in N s"
+card, full screen for Live TV (survives programme and channel changes), Hemma's own player controls
+(ui_player + wire.js [data-player]) instead of each browser's, and the fix for live TV playing on, unseen,
+after leaving it. Next: the Wall as a screen kind
 (blocks for clock, who's home, today, bookings, shopping list, notes), then calmer cards (hide empty ones).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,
