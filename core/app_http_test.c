@@ -141,7 +141,7 @@ TEST(app_http_sign_in_pages_wire_and_sign_out) {
     request(port, req, &r);
     CHECK_HAS(buf_cstr(&r), "Location: /book");
     CHECK_HAS(buf_cstr(&r), "HttpOnly");
-    CHECK_HAS(buf_cstr(&r), "Max-Age=31536000");
+    CHECK_HAS(buf_cstr(&r), "Max-Age=2592000"); /* an admin: a month (members: a year) */
     cookie_of(&r, cookie, sizeof cookie);
     CHECK_INT(strlen(cookie), 32);
 
@@ -435,6 +435,126 @@ TEST(app_api_needs_a_member_or_admin) {
     for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
     CHECK(g_done);
     server_shutdown();
+    buf_free(&r);
+    th_halt();
+}
+
+static void api_get(int port, const char *cookie, const char *path, Buf *r) {
+    char req[300];
+    snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nConnection: close\r\n\r\n", path,
+             cookie);
+    request(port, req, r);
+}
+
+TEST(app_api_shows_members_only_their_own_preferences) {
+    /* issue #5: every member could read everyone's preferences (who is on a temporary password)
+       and watch history over /api; the owner's call: members their own rows, admins all */
+    th_boot();
+    auth_configure("e2e-salt", 1000);
+    int adam = account("Adam", "adam", "correct horse", ROLE_ADMIN);
+    int eva = account("Eva", "eva", "eva password", ROLE_MEMBER);
+    pref_set(adam, "test.adam", "adams");
+    pref_set(eva, "test.eva", "evas");
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char ca[64], ce[64], path[64], mine[32];
+    sign_in(port, "username=adam&password=correct+horse", ca, sizeof ca);
+    sign_in(port, "username=eva&password=eva+password", ce, sizeof ce);
+    Buf r = {0};
+    api_get(port, ce, "/api/pref", &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 200 OK\r\n"));
+    CHECK_HAS(body_of(&r), "\"key\":\"test.eva\"");
+    CHECK(!strstr(body_of(&r), "test.adam"));
+    api_get(port, ca, "/api/pref", &r);
+    CHECK_HAS(body_of(&r), "\"key\":\"test.eva\"");
+    CHECK_HAS(body_of(&r), "\"key\":\"test.adam\"");
+    /* one row by id: someone else's is "not found" for a member */
+    snprintf(mine, sizeof mine, "\"person\":%d", eva);
+    int seen = 0, hidden = 0;
+    for (int id = 1; id <= 20; id++) {
+        snprintf(path, sizeof path, "/api/pref/%d", id);
+        api_get(port, ce, path, &r);
+        if (str_starts(buf_cstr(&r), "HTTP/1.1 200 OK\r\n")) {
+            CHECK_HAS(body_of(&r), mine);
+            seen++;
+        }
+        api_get(port, ca, path, &r);
+        if (str_starts(buf_cstr(&r), "HTTP/1.1 200 OK\r\n") && !strstr(body_of(&r), mine)) hidden++;
+    }
+    CHECK(seen >= 1 && hidden >= 1);
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    th_halt();
+}
+
+/* The upgrade's answer (101, or 503 when refused) for a socket from 127.0.0.1. */
+static sock_t ws_try(int port, const char *cookie, Buf *reply) {
+    sock_t s = dial(port);
+    if (s == SOCK_BAD) return s;
+    char req[512];
+    snprintf(req, sizeof req,
+             "GET /ws HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n%s%s%s"
+             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+             cookie[0] ? "Cookie: hemma=" : "", cookie, cookie[0] ? "\r\n" : "");
+    send_all(s, req, strlen(req));
+    buf_reset(reply);
+    ws_wait(s, reply, "\r\n\r\n", 2000);
+    return s;
+}
+
+TEST(app_live_messages_and_signed_out_screens_are_bounded) {
+    th_boot();
+    auth_configure("e2e-salt", 1000);
+    account("Adam", "adam", "correct horse", ROLE_ADMIN);
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64];
+    sign_in(port, "username=adam&password=correct+horse", adam, sizeof adam);
+    Buf a = {0}, r = {0};
+
+    /* issue #8: a "live" message ran any action, and other screens never heard of the change */
+    sock_t sa = ws_open(port, adam);
+    ws_say(sa, "{\"t\":\"hello\",\"url\":\"/\"}");
+    CHECK(ws_wait(sa, &a, "[\"morph\",", 3000));
+    ws_say(sa, "{\"t\":\"live\",\"a\":\"household.save\",\"url\":\"/\",\"f\":[[\"name\",\"Quietly\"]]}");
+    ws_wait(sa, &a, NULL, 300);
+    CHECK_STR(app_name(), "Hemma"); /* not a preview: nothing ran */
+    ws_say(sa, "{\"t\":\"act\",\"a\":\"household.save\",\"id\":7,\"url\":\"/\",\"f\":[[\"name\",\"Openly\"]]}");
+    CHECK(ws_wait(sa, &a, "[\"ack\",7,true]", 3000));
+    CHECK_STR(app_name(), "Openly");
+
+    /* issue #5: signed-out screens (they stay open while they answer pings) get a few
+       connections per address, so one host can't hold every slot */
+    sock_t s[5];
+    for (int i = 0; i < 4; i++) {
+        s[i] = ws_try(port, "", &r);
+        CHECK_HAS(buf_cstr(&r), "HTTP/1.1 101 ");
+    }
+    s[4] = ws_try(port, "", &r);
+    CHECK_HAS(buf_cstr(&r), "HTTP/1.1 503 ");
+    CHECK_HAS(buf_cstr(&r), "too many signed-out screens");
+    sock_t mine = ws_try(port, adam, &r); /* signed in: not counted against strangers */
+    CHECK_HAS(buf_cstr(&r), "HTTP/1.1 101 ");
+    sock_close(s[0]);
+    plat_sleep_ms(200);
+    sock_t again = ws_try(port, "", &r); /* a slot came free */
+    CHECK_HAS(buf_cstr(&r), "HTTP/1.1 101 ");
+    for (int i = 1; i < 5; i++) sock_close(s[i]);
+    sock_close(again);
+    sock_close(mine);
+    sock_close(sa);
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&a);
     buf_free(&r);
     th_halt();
 }

@@ -35,6 +35,17 @@ $B = if ($env:HEMMA_BUILD_DIR) { $env:HEMMA_BUILD_DIR.TrimEnd('/', '\') } else {
 
 $Flags = @("-std=gnu11", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-missing-field-initializers",
     "-Icore", "-Ithird_party/sqlite")
+# The commit a binary is built from, for `hemma --version` ("-dirty": with uncommitted changes).
+# Nothing outside a git checkout.
+$Commit = ""
+try {
+    $c = & git rev-parse --short=12 HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $c) {
+        $Commit = "$c".Trim()
+        if (& git status --porcelain --untracked-files=no 2>$null) { $Commit += "-dirty" }
+    }
+} catch { $Commit = "" }
+if ($Commit) { $Flags += "-DHEMMA_COMMIT=$Commit" }
 $Debug = @("-O0", "-g", "-fsanitize=undefined", "-fsanitize-trap=undefined")
 # release builds leave unused code and unwind tables out (the linker side is per target, below)
 $Release = @("-O2", "-DNDEBUG", "-s", "-ffunction-sections", "-fdata-sections", "-fno-asynchronous-unwind-tables")

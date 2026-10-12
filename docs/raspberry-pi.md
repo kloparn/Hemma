@@ -136,13 +136,11 @@ What the installer does:
   needs no port number,
 - installs the service `hemma` (`/etc/systemd/system/hemma.service`).
 
-The first time, it stops there and prints the next steps, including your **setup code**
-(for example `7KQ4-M2XP`): write it down or keep the window open. Start Hemma, and make it
-start on every boot:
-
-```sh
-sudo systemctl enable --now hemma
-```
+Then it starts Hemma (and makes it start on every boot), waits until it answers, and
+prints `Hemma is running.`, the addresses to open, the next steps and the handy commands.
+The first time that includes your **setup code** (for example `7KQ4-M2XP`): write it down
+or keep the window open. If Hemma didn't come up, the installer says so and shows its
+last log lines - see [troubleshooting.md](troubleshooting.md).
 
 Now open **`http://hemma.local`** in a browser on any device at home, type the **setup
 code** and **create the admin account**. That's you: you'll add everyone else under
@@ -174,11 +172,17 @@ The settings are explained in [.env.example](../.env.example).
 
 **Is it running? What is it doing?**
 
+In Hemma itself, admins open **System** (under **More** on a phone): it checks that
+everything works, in plain words, and shows the log live. On the Pi:
+
 ```sh
 systemctl status hemma          # running or not, plus the last few log lines
 journalctl -u hemma -f          # follow the log live (Ctrl+C to stop watching)
 journalctl -u hemma | grep "is up on"   # the address Hemma announced when it started
 ```
+
+Hemma also keeps its own log in `/var/lib/hemma/hemma.log`. More in
+[troubleshooting.md](troubleshooting.md).
 
 **Restart it:** `sudo systemctl restart hemma`
 
@@ -322,5 +326,6 @@ Use the type `lsblk -f` shows (`ntfs3` for NTFS on current systems, or `exfat`).
 - **Turn it off properly:** `sudo poweroff`, and wait for the green light to stop
   blinking before pulling the plug. Pulling the power while it writes can damage the
   memory card.
-- **Something wrong?** `journalctl -u hemma -n 50` shows the last 50 log lines. Hemma's
-  messages are written to be read by people.
+- **Something wrong?** Hemma's **System** page says what isn't working; `journalctl -u
+  hemma -n 50` shows the last 50 log lines. Hemma's messages are written to be read by
+  people. See [troubleshooting.md](troubleshooting.md).

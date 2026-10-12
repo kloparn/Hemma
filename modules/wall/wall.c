@@ -68,7 +68,7 @@ static void page(Ctx *c, Buf *b) {
     int nw = 0;
     for (int i = 0; i < module_count() && nw < countof(w); i++) {
         const Module *m = module_at(i);
-        if (m->widget && !str_eq(m->id, "wall")) w[nw++] = m;
+        if (m->widget && !str_eq(m->id, "wall") && module_visible(m, c)) w[nw++] = m; /* MOD_ADMIN: admins only */
     }
     qsort(w, (size_t)nw, sizeof *w, by_widget_order);
     Buf grid = {0};

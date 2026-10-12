@@ -270,7 +270,7 @@ TEST(auth_setup_creates_the_admin_with_codes_and_signs_in) {
     CHECK_HAS(buf_cstr(&r), "303 See Other");
     CHECK_HAS(buf_cstr(&r), "Location: /people/codes\r\n");
     CHECK_HAS(buf_cstr(&r), "HttpOnly");
-    CHECK_HAS(buf_cstr(&r), "Max-Age=31536000");
+    CHECK_HAS(buf_cstr(&r), "Max-Age=2592000"); /* an admin: a month (ADMIN_SESSION_DAYS), not a year */
     cookie_of(&r, cookie, sizeof cookie);
     CHECK_INT(strlen(cookie), 32);
     get(port, "/people/codes", cookie, &r);

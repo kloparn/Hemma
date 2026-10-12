@@ -123,6 +123,14 @@ TEST(book_quick_parse_english_and_swedish) {
     book_quick_parse("fri 10-12", car, g_fake_now, &q); /* default resource from the page */
     CHECK_INT(q.res, car);
     CHECK_STR(q.problem, "");
+
+    /* issue #13: days that don't exist and ranges ending before they start are refused with a
+       reason - "car 31 sep 14-16" used to book today 14-16 */
+    book_quick_parse("car 31 sep 14-16", 0, g_fake_now, &q);
+    CHECK_HAS(q.problem, "31 September");
+    CHECK(q.start == 0 && q.end == 0);
+    book_quick_parse("guest room 12/10/2026-10/10/2026", 0, g_fake_now, &q);
+    CHECK_HAS(q.problem, "before the start");
     th_halt();
 }
 

@@ -71,16 +71,11 @@ uploads there. List all of them each time; without any, it keeps the current lis
 
 It creates a `hemma` system user, `/opt/hemma/hemma`, the database folder
 `/var/lib/hemma`, the settings file `/etc/hemma/hemma.env` (with a fresh secret salt and
-`HEMMA_PORT=80`) and a hardened `hemma` service. The first time, it stops after creating
-the settings file and tells you the next steps. Running it again later updates the
-program and restarts the service, keeping your settings and data.
-
-Start Hemma now and on every boot:
-
-```sh
-sudo systemctl enable --now hemma
-systemctl status hemma
-```
+`HEMMA_PORT=80`) and a hardened `hemma` service. Then it starts Hemma (and on every boot
+from now on), waits until it answers, and prints where to open it and the next steps - or,
+if it didn't come up, its last log lines ([troubleshooting.md](troubleshooting.md)).
+Running it again later updates the program and restarts the service, keeping your
+settings and data.
 
 Open `http://<server address>` in a browser and **create the admin account**. The welcome
 page asks for the **setup code** the installer showed in its last lines (also in
@@ -91,10 +86,14 @@ instead.
 Day to day:
 
 ```sh
+systemctl status hemma              # running or not, and its last lines
 journalctl -u hemma -f              # the live log
 sudo systemctl restart hemma        # after changing /etc/hemma/hemma.env
 sudo nano /etc/hemma/hemma.env      # settings (see .env.example)
 ```
+
+In Hemma, admins open **System**: checks in plain words and the log, live (Hemma also keeps
+it in `/var/lib/hemma/hemma.log`). When something's wrong: [troubleshooting.md](troubleshooting.md).
 
 The database is `/var/lib/hemma/hemma.db`. Backups work as described in
 [raspberry-pi.md](raspberry-pi.md#backups).
@@ -148,6 +147,18 @@ sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.ta
 
 To keep it running with the lid closed, set `HandleLidSwitch=ignore` in
 `/etc/systemd/logind.conf` and reboot.
+
+**A laptop that leaves the house** would serve Hemma on every network it joins: at a
+café, the office or a hotel, everyone on that Wi-Fi could open your sign-in page. A
+firewall rule by address range doesn't help much there (other networks use
+`192.168.1.x` too). Either don't start it at boot (`sudo systemctl disable hemma`, then
+`sudo systemctl start hemma` when you're home), or, with firewalld, open the port only
+in the zone of your home connection:
+
+```sh
+sudo firewall-cmd --permanent --zone=home --add-service=http && sudo firewall-cmd --reload
+nmcli connection modify "Your home Wi-Fi" connection.zone home     # its name: nmcli connection show
+```
 
 ## 3. Running without systemd
 

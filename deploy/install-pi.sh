@@ -9,6 +9,9 @@
 # salt) and the service. Folders after the binary are media library folders that
 # admins may upload into: they become writable for Hemma (re-run with the full
 # list to change them; with none, the current list is kept).
+# Then it (re)starts the service, waits up to 15 s until http://127.0.0.1:<port>/healthz
+# answers, and says where to open Hemma and what to do next - or, if it didn't come up,
+# shows its last log lines (exit status 1).
 set -eu
 
 BIN=${1:-./hemma}
@@ -62,9 +65,25 @@ if [ $# -gt 0 ]; then
     printf '# Media library folders Hemma may write to (uploads). Written by install-pi.sh.\n[Service]\nReadWritePaths=%s\n' \
         "$RW" >/etc/systemd/system/hemma.service.d/media.conf
 fi
+# The clock: a Pi has no battery clock, so after a power cut "today", clash checks and the TV
+# channels' clock can be hours off until NTP answers. hemma.service waits for time-sync.target,
+# which only waits for the clock when systemd-time-wait-sync is enabled - at most 90 s here, so
+# a day without internet still starts Hemma (the wait then shows as failed in systemctl).
+if systemctl cat systemd-time-wait-sync.service >/dev/null 2>&1; then
+    install -d -m 755 /etc/systemd/system/systemd-time-wait-sync.service.d
+    {
+        echo "# Written by Hemma's install-pi.sh: wait for the clock at boot, but at most 90 s."
+        echo "[Service]"
+        echo "TimeoutStartSec=90"
+    } >/etc/systemd/system/systemd-time-wait-sync.service.d/hemma.conf
+    systemctl enable systemd-time-wait-sync.service >/dev/null 2>&1 || true
+fi
 systemctl daemon-reload
 
+FIRST=0
+CODE=""
 if [ ! -f "$ENVF" ]; then
+    FIRST=1
     SALT=$(/opt/hemma/hemma --gen-salt)
     CODE=$(/opt/hemma/hemma --gen-setup-code)
     umask 027
@@ -82,28 +101,124 @@ HEMMA_SETUP_CODE=$CODE
 # HEMMA_ADMIN_PASSWORD=
 HEMMA_PORT=80
 EOF
-    chown root:hemma "$ENVF"
-    chmod 640 "$ENVF"
     echo
-    echo "Created $ENVF with a fresh HEMMA_AUTH_SALT."
-    echo "1. Start Hemma:      sudo systemctl enable --now hemma"
-    echo "2. Open http://$(hostname).local (or the Pi's address) in a browser and create the admin"
-    echo "   account on the welcome page. It asks for this setup code:"
-    echo
-    echo "        $CODE"
-    echo
-    echo "   (also in $ENVF). Save the recovery codes the page shows you afterwards."
-    echo "3. Optional: name the machine 'hemma' so phones can open http://hemma.local"
-    echo "             (on a Pi: sudo raspi-config nonint do_hostname hemma, then reboot)"
-    echo "Locked out later? sudo -u hemma /opt/hemma/hemma --env $ENVF --data /var/lib/hemma --reset-password NAME"
-    exit 0
+    echo "Created $ENVF with a fresh HEMMA_AUTH_SALT and a one-time setup code."
 fi
 chown root:hemma "$ENVF"
 chmod 640 "$ENVF"
 
+# ---- start it (again), and wait until it answers -----------------------------------------
+setting() { # the last "KEY=value" line for $1 in the settings file, without quotes
+    sed -n "s/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}$1[[:space:]]*=[[:space:]]*//p" "$ENVF" |
+        tail -n 1 | tr -d '\r' | sed 's/[[:space:]]*$//; s/^"\(.*\)"$/\1/; s/^'\''\(.*\)'\''$/\1/'
+}
+PORT=$(setting HEMMA_PORT)
+PORT=${PORT:-8080}
+HOST=$(setting HEMMA_HOST)
+case "$HOST" in "" | 0.0.0.0) PROBE=127.0.0.1 ;; *) PROBE=$HOST ;; esac
+SUFFIX=""
+[ "$PORT" = 80 ] || SUFFIX=":$PORT"
+# GET /healthz answers "ok" once Hemma serves pages (curl or wget; without either, the
+# service staying up for a few seconds has to do)
+if command -v curl >/dev/null 2>&1; then
+    FETCH="curl -fsS -m 2"
+elif command -v wget >/dev/null 2>&1; then
+    FETCH="wget -q -T 2 -O -"
+else
+    FETCH=""
+fi
+answers() { [ -n "$FETCH" ] && $FETCH "http://$PROBE:$PORT/healthz" 2>/dev/null | grep -q '^ok'; }
+
+STARTED_AT=$(date '+%Y-%m-%d %H:%M:%S')
 systemctl enable hemma >/dev/null 2>&1 || true
-systemctl restart hemma
-echo "Hemma updated and restarted:  systemctl status hemma  /  journalctl -u hemma -f"
+systemctl restart hemma || true
+echo
+echo "Starting Hemma..."
+UP=0
+ACTIVE=0
+i=0
+while [ "$i" -lt 15 ]; do
+    sleep 1
+    i=$((i + 1))
+    if systemctl is-active --quiet hemma; then ACTIVE=$((ACTIVE + 1)); else ACTIVE=0; fi
+    [ "$ACTIVE" -gt 0 ] || continue
+    if [ -n "$FETCH" ]; then
+        if answers; then UP=1; break; fi
+    elif [ "$ACTIVE" -ge 4 ]; then
+        UP=1
+        break
+    fi
+done
+
+if [ "$UP" -ne 1 ]; then
+    echo
+    echo "Hemma did NOT start properly. Its last log lines:"
+    echo
+    journalctl -u hemma -n 30 --no-pager 2>/dev/null || systemctl status hemma --no-pager 2>/dev/null || true
+    echo
+    echo "The usual causes:"
+    echo "  - another program already uses port $PORT     (see: sudo ss -ltnp | grep ':$PORT ')"
+    echo "  - a mistake in the settings file               (sudo nano $ENVF)"
+    echo "  - a media folder that isn't there (not mounted?) - the lines above say"
+    echo "Fix it, then: sudo systemctl restart hemma   (or run this installer again)."
+    echo "More help: docs/troubleshooting.md"
+    exit 1
+fi
+
+# ---- it's running: where to open it, what to do next, and the handy commands ---------------
+lan_ips() { # this machine's IPv4 addresses on the network (no loopback)
+    { hostname -I 2>/dev/null || ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}'; } |
+        tr ' ' '\n' | sed 's#/.*##' | grep -E '^[0-9]+(\.[0-9]+){3}$' | grep -v '^127\.' || true
+}
+case "$HOST" in "" | 0.0.0.0) IPS=$(lan_ips) ;; *) IPS=$HOST ;; esac
+NAME=$(hostname 2>/dev/null | cut -d. -f1 || true)
+# still waiting for its first admin? Hemma logs the welcome page's setup code at start
+sleep 1
+SETUP=$(journalctl -u hemma --since "$STARTED_AT" --no-pager -o cat 2>/dev/null |
+    sed -n 's/.*asks for this setup code: \([0-9A-Z][0-9A-Z-]*\).*/\1/p' | tail -n 1 || true)
+[ -z "$SETUP" ] && [ "$FIRST" -eq 1 ] && SETUP=$CODE
+
+echo
+echo "Hemma is running."
+echo
+echo "Open it on a phone or computer at home:"
+for IP in $IPS; do echo "    http://$IP$SUFFIX"; done
+if [ -n "$NAME" ] && systemctl is-active --quiet avahi-daemon 2>/dev/null; then
+    echo "    http://$NAME.local$SUFFIX    (phones and computers; a TV may need the number)"
+fi
+[ -n "$IPS" ] || echo "    (no network address found - check the cable or Wi-Fi, then: hostname -I)"
+echo
+echo "Next steps:"
+n=1
+if [ -n "$SETUP" ]; then
+    echo "  $n. Open the address above and create the admin account. The welcome page asks for"
+    echo "     this setup code (it's also in $ENVF):"
+    echo
+    echo "         $SETUP"
+    echo
+    n=$((n + 1))
+    echo "  $n. Save the recovery codes Hemma shows you afterwards."
+    n=$((n + 1))
+fi
+echo "  $n. In Hemma, open System (under More on a phone): it checks that everything works,"
+echo "     shows the log and lists what to set up next."
+n=$((n + 1))
+echo "  $n. Give this machine a fixed address in your router, so bookmarks keep working"
+echo "     (docs/home-network.md)."
+if [ "$FIRST" -eq 1 ]; then
+    echo "  Optional: name the machine 'hemma' so phones can open http://hemma.local"
+    echo "            (on a Pi: sudo raspi-config nonint do_hostname hemma, then reboot)"
+fi
+echo
+echo "Handy commands:"
+echo "  systemctl status hemma          is it running? (and its last lines)"
+echo "  journalctl -u hemma -f          follow the log (Ctrl+C stops watching)"
+echo "  sudo systemctl restart hemma    restart it, e.g. after changing the settings"
+echo "  sudo nano $ENVF   the settings"
+echo "  Update: copy the new program over, then run this installer again with it."
+echo "  Data: /var/lib/hemma (the database hemma.db and Hemma's own log hemma.log)"
+echo "  Locked out? sudo -u hemma /opt/hemma/hemma --env $ENVF --data /var/lib/hemma --reset-password NAME"
+echo "  Something wrong? docs/troubleshooting.md"
 if grep -q '^HEMMA_ADMIN_PASSWORD=..*' "$ENVF"; then
     echo
     echo "Note: $ENVF still contains HEMMA_ADMIN_PASSWORD. Hemma only used it for the first admin;"

@@ -113,16 +113,21 @@ development).
 ## 5. Start Hemma with Windows
 
 Task Scheduler can start Hemma when the PC starts, before anyone signs in. Paste this
-into PowerShell **as administrator**. It runs Hemma in the background, writes its log to
-`C:\Hemma\hemma.log`, and restarts it if it stops:
+into PowerShell **as administrator**. It runs Hemma in the background and restarts it if
+it stops. Hemma runs as Windows' own limited *Local Service* account, which may change
+`C:\Hemma` and nothing else on the PC: if Hemma ever had a security hole, that's all it
+could reach.
 
 ```powershell
-$action = New-ScheduledTaskAction -Execute "cmd.exe" -WorkingDirectory "C:\Hemma" `
-    -Argument '/c C:\Hemma\hemma.exe --data C:\Hemma\data --env C:\Hemma\hemma.env >> C:\Hemma\hemma.log 2>&1'
+# Windows' "Local Service" account, whatever it's called in your Windows language
+$svc = (New-Object System.Security.Principal.SecurityIdentifier "S-1-5-19").Translate([System.Security.Principal.NTAccount]).Value
+icacls C:\Hemma /grant "*S-1-5-19:(OI)(CI)M" /T     # it may change C:\Hemma (settings, database, log)
+$action = New-ScheduledTaskAction -Execute "C:\Hemma\hemma.exe" -WorkingDirectory "C:\Hemma" `
+    -Argument "--data C:\Hemma\data --env C:\Hemma\hemma.env"
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$principal = New-ScheduledTaskPrincipal -UserId $svc -LogonType ServiceAccount -RunLevel Limited
 Register-ScheduledTask -TaskName "Hemma" -Action $action -Trigger $trigger -Settings $settings -Principal $principal
 New-NetFirewallRule -DisplayName "Hemma" -Direction Inbound -Program "C:\Hemma\hemma.exe" -Action Allow -Profile Private
 Start-ScheduledTask -TaskName "Hemma"
@@ -132,10 +137,19 @@ Start-ScheduledTask -TaskName "Hemma"
 three days.) The task runs without a window, so no firewall question pops up. That's why
 the script adds the rule itself.
 
+**Set it up with an older version of this guide?** That task ran Hemma as *SYSTEM*, with
+power over the whole PC. Stop it and remove it first (`Unregister-ScheduledTask -TaskName
+"Hemma" -Confirm:$false`), then run the lines above, and give it your movie folders (next
+paragraph but one).
+
+Hemma keeps its own log in `C:\Hemma\data\hemma.log` (it starts a new one at about 1 MB and
+keeps one older file, `hemma.log.1`), and an admin sees it on Hemma's **System** page.
+Something not working? See [troubleshooting.md](troubleshooting.md).
+
 Day to day (as administrator):
 
 ```powershell
-Get-Content C:\Hemma\hemma.log -Tail 20 -Wait     # the log (Ctrl+C to stop watching)
+Get-Content C:\Hemma\data\hemma.log -Tail 20 -Wait     # the log (Ctrl+C to stop watching)
 Stop-ScheduledTask -TaskName "Hemma"; Stop-Process -Name hemma -ErrorAction SilentlyContinue
 Start-ScheduledTask -TaskName "Hemma"
 Unregister-ScheduledTask -TaskName "Hemma"         # remove the autostart again
@@ -145,8 +159,16 @@ Unregister-ScheduledTask -TaskName "Hemma"         # remove the autostart again
 (Windows can't replace a running program), then start it again.
 
 **Movies:** in Hemma, open **Watch → Library settings** and enter folders such as
-`D:\Movies`, one per line. A task started at boot can't see *mapped* network drives
-(like `Z:`), so keep movies on a local or USB disk.
+`D:\Movies`, one per line. Hemma runs as *Local Service* (above), so let it into each of
+those folders, as administrator:
+
+```powershell
+icacls "D:\Movies" /grant "*S-1-5-19:(OI)(CI)M" /T    # M: watch, upload, convert and remove
+icacls "D:\Movies" /grant "*S-1-5-19:(OI)(CI)RX" /T   # ...or RX: only watch
+```
+
+A task started at boot can't see *mapped* network drives (like `Z:`), so keep movies on a
+local or USB disk.
 
 **Backups:** the database is `C:\Hemma\data\hemma.db`. Stop Hemma, copy the `data`
 folder somewhere safe, start it again. Keep `hemma.env` (the salt) separate and safe.

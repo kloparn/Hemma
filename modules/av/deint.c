@@ -311,7 +311,10 @@ static void plain(Deint *d, int64_t k, bool have_next) {
 }
 
 int deint_push(Deint *d, const DeintIn *in) {
-    if (!in || !in->y || !in->u || !in->v || in->stride_y < d->w || in->stride_c < d->cw) return -1;
+    /* the rows copied below are d->h of them, d->w wide: only a picture of exactly that size has them */
+    if (!in || !in->y || !in->u || !in->v || in->width != d->w || in->height != d->h || in->stride_y < d->w ||
+        in->stride_c < d->cw)
+        return -1;
     begin_turn(d);
     Pic *p = &d->in[d->nin % 3];
     for (int y = 0; y < d->h; y++) memcpy(p->y + (size_t)y * d->w, in->y + (size_t)y * in->stride_y, (size_t)d->w);

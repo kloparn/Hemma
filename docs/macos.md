@@ -95,6 +95,12 @@ press **+**, choose `~/Hemma/hemma` (Cmd+Shift+G lets you type the path), and se
 *Allow incoming connections*. After replacing the program with a new version, you may
 need to allow it again.
 
+**A MacBook that leaves the house?** Hemma answers on every network the Mac joins: at a
+café, the office or a hotel, everyone on that Wi-Fi could open your sign-in page. The
+macOS firewall can't tell your home network from others, so either keep Hemma on a Mac
+that stays home, or don't start it at login (skip step 3) and start it by hand when
+you're home: `~/Hemma/hemma --data ~/Hemma/data --env ~/Hemma/hemma.env`.
+
 ### Other permissions
 
 - **Movies in Documents, Desktop or Downloads, or on an external disk:** macOS may hide
@@ -125,6 +131,9 @@ rm ~/Library/LaunchAgents/local.hemma.plist        # ...and then this: no more a
 ```
 
 **Updating:** copy the new program over `~/Hemma/hemma`, then restart it (above).
+
+In Hemma, admins open **System**: checks in plain words and the log, live (Hemma also keeps
+it in `~/Hemma/data/hemma.log`). When something's wrong: [troubleshooting.md](troubleshooting.md).
 
 An agent only runs while you're logged in. For a Mac that sits in a cupboard, turn on
 automatic login (*System Settings → Users & Groups → Automatically log in as*). The

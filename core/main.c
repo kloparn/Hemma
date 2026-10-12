@@ -7,8 +7,6 @@
 #include "env.h"
 #include "plat.h"
 
-#define HEMMA_VERSION "0.2.0"
-
 static void usage(void) {
     fprintf(stderr,
             "Hemma %s - a household hub for your home network\n\n"
@@ -26,8 +24,10 @@ static void usage(void) {
             "                 last resort for a forgotten password: print a temporary one for USER and\n"
             "                 exit. Give it the server's --data and --env and run it as the user Hemma\n"
             "                 runs as; a running Hemma applies it within seconds (docs/accounts.md)\n"
-            "  --verbose | --quiet | --version\n",
-            HEMMA_VERSION);
+            "  --verbose | --quiet | --version\n\n"
+            "While it runs, Hemma logs here and to hemma.log in its data folder. Admins find checks\n"
+            "(\"is everything working?\") and the live log on its System page. Scripts: GET /healthz.\n",
+            HEMMA_VERSION_FULL);
 }
 
 int main(int argc, char **argv) {
@@ -50,7 +50,7 @@ int main(int argc, char **argv) {
             printf("%s\n", code);
             return 0;
         } else if (str_eq(argv[i], "--version")) {
-            printf("hemma %s\n", HEMMA_VERSION);
+            printf("hemma %s\n", HEMMA_VERSION_FULL);
             return 0;
         }
     }

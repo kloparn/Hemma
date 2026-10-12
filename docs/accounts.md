@@ -8,7 +8,8 @@ forgets their password, and the last resort when nobody can get in.
 
 Everyone in the household is a **person** in Hemma. A person can have a **sign-in**
 (a username and a password), or not: a toddler can be a person that things get booked
-for, without signing in.
+for, without signing in. On the sign-in page you can type your **username or your name**
+("admin" or "Alex"); a name only works when nobody else with a sign-in has the same one.
 
 A sign-in is one of three kinds:
 
@@ -18,8 +19,8 @@ A sign-in is one of three kinds:
 | **Admin** | Use everything, and also add and remove people, rename the home, manage media folders |
 | **Display** | Only look. For a tablet on the wall: it shows the overview but can't change anything |
 
-There is always at least one admin. Hemma won't let the last admin remove their own
-sign-in.
+There is always at least one admin who can sign in. Hemma refuses any change that would
+leave none: removing the last one, making them a member, or taking their sign-in away.
 
 ## The first admin: the welcome page
 
@@ -239,7 +240,20 @@ or removed. (To force a change, use `HEMMA_ADMIN_RESET` as described above.)
   one device whatever the usernames (checking a password takes real work, on a Raspberry
   Pi about a second: a flood of made-up names mustn't slow Hemma down for everyone).
   Wrong current passwords under **Your account** count towards that too. Waiting devices
-  show up in Hemma's log.
+  and accounts show up in Hemma's log. When lots of sign-in tries arrive at once, a device
+  that hasn't signed in since Hemma last started is asked to wait a few seconds (asking
+  again and again counts like wrong passwords); devices that have stay quick, and so does
+  Hemma for everyone already signed in.
+- **"Keep me signed in"** keeps you signed in on that device for a year, as long as you
+  use it now and then (unticked: until a week without use). **Admins sign in again every
+  30 days**, however much they use it: Hemma runs on plain http, so a stolen admin cookie
+  stops working within a month.
+- **"Welcome back, Eva" when you aren't Eva?** The sign-in page guesses who you are from
+  the device's address on the network. Tap **Not Eva? Sign in as someone else**.
+- **Nobody can sign in, and the log says "HEMMA_AUTH_SALT isn't the secret this
+  household's passwords were made with"?** Hemma was started with a different settings
+  file (another computer's, or one that lost its line). Put the original `HEMMA_AUTH_SALT`
+  line back and restart.
 - **See where you're signed in.** **Household → Your account → Signed in on** lists your
   devices. **Sign out other devices** ends all of them except the one you're holding.
   Changing your password does that too.

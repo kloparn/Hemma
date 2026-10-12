@@ -36,6 +36,8 @@
 typedef struct {
     const uint8_t *y, *u, *v;
     int stride_y, stride_c;
+    int width, height; /* the picture's own size: deint_push refuses one that isn't deint_new's (a
+                          stream that changes size mid-way would otherwise be read past its end) */
     bool progressive; /* progressive_frame */
     bool tff;         /* top_field_first */
     bool rff;         /* repeat_first_field */
@@ -57,7 +59,7 @@ typedef struct Deint Deint;
 
 Deint *deint_new(int width, int height, int mode); /* NULL on bad arguments or out of memory */
 void deint_free(Deint *d);
-int deint_push(Deint *d, const DeintIn *in); /* frames ready to pull, -1 on bad input */
+int deint_push(Deint *d, const DeintIn *in); /* frames ready to pull, -1 on bad input (another size, short strides) */
 bool deint_pull(Deint *d, DeintOut *out);
 int deint_flush(Deint *d); /* end of stream: the frames still held back become ready */
 /* Output frame rate for an input rate: IVTC 30000/1001 -> 24000/1001, BOB -> 60000/1001. */

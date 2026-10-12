@@ -42,7 +42,7 @@ static void weave(Img *o, const Img *t, const Img *b) {
 }
 
 static DeintIn in_of(const Img *f, bool progressive, bool rff, int64_t pts) {
-    return (DeintIn){f->y, f->u, f->v, W, CW, progressive, true, rff, pts};
+    return (DeintIn){f->y, f->u, f->v, W, CW, W, H, progressive, true, rff, pts};
 }
 
 static bool same(const DeintOut *o, const Img *f) {
@@ -77,6 +77,29 @@ TEST(deint_leaves_static_detail_alone) {
         while (deint_pull(d, &o)) got++, exact += same(&o, &f);
         CHECK_INT(got, mode == DEINT_BOB ? 12 : 6);
         CHECK_INT(exact, got); /* nothing moves, so the missing field equals its neighbours in time */
+        deint_free(d);
+    }
+}
+
+/* A stream that changes size mid-way (a later MPEG-2 sequence header): the deinterlacer copies
+   its own size's rows, so a picture of any other size is refused, never read past its end -
+   even one whose strides would pass (same width, fewer rows). */
+TEST(deint_refuses_a_picture_of_another_size) {
+    static Img f;
+    film(&f, 10);
+    static const int sizes[][2] = {{W, H - 16}, {W, H + 16}, {W - 16, H}, {W + 16, H - 32}, {0, 0}};
+    for (int mode = DEINT_YADIF; mode <= DEINT_PASS; mode++) {
+        Deint *d = deint_new(W, H, mode);
+        CHECK(d);
+        DeintIn in = in_of(&f, false, false, 0);
+        CHECK(deint_push(d, &in) >= 0);
+        for (int i = 0; i < (int)(sizeof sizes / sizeof *sizes); i++) {
+            DeintIn other = in_of(&f, false, false, 1 + i);
+            other.width = sizes[i][0], other.height = sizes[i][1];
+            CHECK_INT(deint_push(d, &other), -1);
+        }
+        in = in_of(&f, false, false, 9); /* the right size still goes through afterwards */
+        CHECK(deint_push(d, &in) >= 0);
         deint_free(d);
     }
 }
@@ -252,7 +275,8 @@ TEST(deint_real_dvd_when_given) {
                 iv = deint_new(f.width, f.height, DEINT_IVTC);
                 ya = deint_new(f.width, f.height, DEINT_YADIF);
             }
-            DeintIn in = {f.y, f.u, f.v, f.stride_y, f.stride_c, f.progressive_frame, f.top_field_first, f.repeat_first_field, f.pts};
+            DeintIn in = {f.y, f.u, f.v, f.stride_y, f.stride_c, f.width, f.height, f.progressive_frame, f.top_field_first,
+                          f.repeat_first_field, f.pts};
             deint_analyze(&st, &in, f.width, f.height);
             deint_push(iv, &in);
             deint_push(ya, &in);

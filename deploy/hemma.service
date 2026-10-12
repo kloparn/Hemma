@@ -1,8 +1,12 @@
 # /etc/systemd/system/hemma.service — installed by deploy/install-pi.sh
 [Unit]
 Description=Hemma household hub
-After=network-online.target local-fs.target remote-fs.target
-Wants=network-online.target
+After=network-online.target local-fs.target remote-fs.target time-sync.target
+Wants=network-online.target time-sync.target
+# A Pi has no battery clock: until NTP has set the time, "today", bookings' clash checks and
+# the TV channels' clock would be off. time-sync.target only waits for that when
+# systemd-time-wait-sync is enabled - install-pi.sh enables it, with a time limit (90 s) so a
+# day without internet still starts Hemma.
 
 [Service]
 Type=simple

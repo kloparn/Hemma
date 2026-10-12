@@ -64,9 +64,14 @@ bool auth_needs_rehash(const char *stored);
 const char *auth_password_problem(const char *password); /* NULL = fine, else a friendly reason */
 bool auth_username_ok(const char *u);                     /* 2-32 of [a-z0-9._-] */
 Person *person_by_username(const char *username);         /* case-insensitive */
+/* Whom the sign-in box means: the username, else the name of the one account that can sign in
+   and goes by it ("Adam" for the admin "admin"); NULL when nobody or several do. */
+Person *person_for_sign_in(const char *typed);
 void auth_bootstrap_admin(void);                          /* create/attach/reset the env admin */
 
-typedef enum { LOGIN_OK, LOGIN_WRONG, LOGIN_THROTTLED, LOGIN_UNAVAILABLE } LoginResult;
+/* LOGIN_BUSY (auth_login only): too many password checks from new places right now - try
+   again in *wait_s seconds; it counts against the address like a wrong try. */
+typedef enum { LOGIN_OK, LOGIN_WRONG, LOGIN_THROTTLED, LOGIN_UNAVAILABLE, LOGIN_BUSY } LoginResult;
 /* Checks credentials with throttling (see above). On LOGIN_OK *person is set;
  * on LOGIN_THROTTLED *wait_s says how long to wait. */
 LoginResult auth_login(const char *username, const char *password, uint32_t ip, int64_t now, int *person, int *wait_s);
@@ -75,6 +80,9 @@ LoginResult auth_login(const char *username, const char *password, uint32_t ip, 
 LoginResult auth_recheck(const Person *p, const char *password, uint32_t ip, int64_t now, int *wait_s);
 void auth_forget_failures(const char *username); /* e.g. after an admin set a new password */
 void auth_reset_throttle(void);
+void auth_set_hash_budget(int ms); /* tests: what's left of the loop time for checking passwords */
+/* HEMMA_AUTH_SALT isn't the secret the last password made or checked here used (logged at start). */
+bool auth_salt_mismatch(void);
 
 /* A new password for `person`: hashed and stored, earlier lockouts forgotten, the
    "temporary password" mark cleared, and every session but `keep` (may be NULL) ended.

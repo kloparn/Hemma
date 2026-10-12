@@ -683,3 +683,76 @@ TEST(media_keeps_only_the_most_compatible_version) {
     th_halt();
 }
 
+
+static int with_login(const char *name, const char *user, int role) {
+    int id = th_person(name);
+    Person p = *person_get(id);
+    str_copy(p.username, sizeof p.username, user);
+    p.role = role;
+    tbl_put(&T_person, &p);
+    return id;
+}
+
+/* Rescanning is for admins - and for the members an admin lets; display accounts never, and
+   members can't let themselves. */
+TEST(media_rescan_is_for_admins_and_who_they_let) {
+    int adam = boot_with_library();
+    Person p = *person_get(adam);
+    p.role = ROLE_ADMIN;
+    tbl_put(&T_person, &p);
+    int eva = with_login("Eva", "eva", ROLE_MEMBER);
+    int wall = with_login("Hall tablet", "wall", ROLE_DISPLAY);
+    int kid = th_person("Kid"); /* no sign-in */
+    const char *button = "data-a=\"media.rescan\"";
+
+    CHECK(th_act(adam, "media.rescan", "").ok);
+    const char *page = th_page(adam, "/media/settings");
+    CHECK_HAS(page, button);
+    char want[120], form[120];
+    snprintf(want, sizeof want, "name=\"p\" value=\"%d\" data-auto> Eva</label>", eva);
+    CHECK_HAS(page, want); /* the members who can sign in, to choose from */
+    snprintf(want, sizeof want, "value=\"%d\"", wall);
+    CHECK(!strstr(page, want));
+    snprintf(want, sizeof want, "value=\"%d\"", kid);
+    CHECK(!strstr(page, want));
+
+    ThResult r = th_act(eva, "media.rescan", "");
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Rescanning is for admins");
+    CHECK(!strstr(th_page(eva, "/media/settings"), button));
+    CHECK(!strstr(th_page(eva, "/media/settings"), "media.rescanners")); /* the choice is the admins' */
+    snprintf(form, sizeof form, "p=%d", eva);
+    CHECK(!th_act(eva, "media.rescanners", form).ok); /* no letting yourself */
+    CHECK(!th_act(eva, "media.rescan", "").ok);
+
+    /* Adam lets Eva (the tablet and the kid don't count, nor a second tick) */
+    snprintf(form, sizeof form, "p=%d&p=%d&p=%d&p=%d", eva, wall, kid, eva);
+    r = th_act(adam, "media.rescanners", form);
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "1 member may rescan the library too");
+    snprintf(want, sizeof want, "%d", eva);
+    CHECK_STR(setting("media.rescanners", ""), want);
+    CHECK(th_act(eva, "media.rescan", "").ok);
+    CHECK_HAS(th_page(eva, "/media/settings"), button);
+    snprintf(want, sizeof want, "name=\"p\" value=\"%d\" data-auto checked> Eva</label>", eva);
+    CHECK_HAS(th_page(adam, "/media/settings"), want);
+
+    /* a display account never, even when its id is in the list */
+    snprintf(form, sizeof form, "%d,%d", eva, wall);
+    setting_set("media.rescanners", form);
+    CHECK(!th_act(wall, "media.rescan", "").ok);
+    CHECK(!strstr(th_page(wall, "/media/settings"), button));
+
+    /* Eva leaves: her grant goes with her (ids are never handed out again) */
+    tbl_del(&T_person, eva);
+    int finn = with_login("Finn", "finn", ROLE_MEMBER);
+    CHECK(finn != eva);
+    CHECK(!th_act(finn, "media.rescan", "").ok);
+
+    /* none but admins again */
+    r = th_act(adam, "media.rescanners", "");
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "Only admins may rescan");
+    CHECK_STR(setting("media.rescanners", "-"), "");
+    th_halt();
+}

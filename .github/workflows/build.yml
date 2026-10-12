@@ -1,11 +1,18 @@
 # Builds Hemma and runs the whole test suite on Linux and macOS with the system C compiler
 # (the Makefile route), on every push and pull request. The Windows build and the
 # cross-compiled Raspberry Pi binaries are made with build.ps1 and zig.
+# Two more jobs on Linux: the suite again under AddressSanitizer + UBSan, and a short
+# libFuzzer run over the video converter (modules/av) - see tools/convfuzz.c.
 name: build
 
 on:
   push:
   pull_request:
+
+# The jobs only read the code: keep the workflow's token read-only whatever the
+# repository's default is.
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -20,3 +27,63 @@ jobs:
         run: make
       - name: Test
         run: make test
+
+  # Its own job: the test job's build/test is built with default flags and make wouldn't
+  # rebuild it. CFLAGS replaces only the Makefile's -O2 (-std=gnu11 and the warnings stay);
+  # SQLite keeps its own flags, uninstrumented, which both sanitizers allow. Any report stops
+  # the run (-fno-sanitize-recover, halt_on_error). Leak checking stays off for now: the
+  # suite was only ever checked where it doesn't exist (macOS) - worth a try later.
+  sanitizers:
+    runs-on: ubuntu-latest
+    env:
+      ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+      # ASan's shadow memory and newer kernels' address randomisation can clash (spurious
+      # "DEADLYSIGNAL" crashes on some runner images): the usual workaround, harmless otherwise.
+      - name: Address-space randomisation ASan copes with
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Test under ASan + UBSan
+        run: >
+          make test CC=clang
+          CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
+          LDFLAGS="-fsanitize=address,undefined"
+
+  # libFuzzer over av_convert (MKV in memory -> MP4 in memory) under ASan + UBSan, seeded with
+  # the converter tests' synthetic files (MPEG-2 progressive/interlaced/telecined/changing size,
+  # H.264, HEVC, AAC plain and laced, AC-3). What it finds is kept as an artifact: reproduce with
+  # `build/convfuzz <file>`, or on Windows with the replay build described in tools/convfuzz.c.
+  fuzz:
+    runs-on: ubuntu-latest
+    env:
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Address-space randomisation ASan copes with
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Seed files
+        run: make build/test && HEMMA_FUZZ_SEEDS=build/fuzz-seeds build/test conv_fuzz_seeds && ls -l build/fuzz-seeds
+      - name: Build the fuzzer
+        run: |
+          # libFuzzer comes with clang's runtime libraries; some images keep those in a package of their own
+          echo 'int LLVMFuzzerTestOneInput(const unsigned char *d, unsigned long n) { return 0; }' > build/probe.c
+          clang -fsanitize=fuzzer build/probe.c -o build/probe || {
+            sudo apt-get update -q && sudo apt-get install -y "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"; }
+          clang -g -O1 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
+            -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
+            -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION tools/convfuzz.c \
+            modules/av/conv.c modules/av/mkv.c modules/av/mpeg2.c modules/av/deint.c modules/av/h264enc.c \
+            modules/av/ac3.c modules/av/aac.c modules/av/mp4.c -lm -o build/convfuzz
+      - name: Fuzz the converter (90 s)
+        run: |
+          mkdir -p build/fuzz-corpus build/fuzz-found
+          build/convfuzz -max_total_time=90 -max_len=65536 -rss_limit_mb=2048 -timeout=60 \
+            -print_final_stats=1 -artifact_prefix=build/fuzz-found/ build/fuzz-corpus build/fuzz-seeds
+      - name: Keep what it found
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: convfuzz-findings
+          path: build/fuzz-found/

@@ -4,7 +4,11 @@
 #include "../../core/plat.h"
 #include "../../core/server.h"
 #include "../../tests/harness.h"
+#include "convert.h"
+#include "room.h"
 #include "upload.h"
+
+void conv_test_rip(const char *root, const char *rel, const char *doctype, int64_t size); /* convert_test.c */
 
 TEST(upload_names_keep_folders_and_refuse_tricks) {
     char out[400];
@@ -669,6 +673,212 @@ TEST(upload_takes_copies_the_browser_makes) {
     server_shutdown();
     buf_free(&r);
     th_halt();
+}
+
+/* ------------------------------------------- uploads and the server's converter */
+
+static void convert_api(const char *cookie, const char *root, const char *rel, Buf *r) {
+    char form[40], hex[17];
+    media_id_hex(media_make_id(root, rel), hex);
+    snprintf(form, sizeof form, "id=%s", hex);
+    call("POST", "/api/media.convert", cookie, "Content-Type: application/x-www-form-urlencoded\r\n", form, strlen(form),
+         strlen(form), r);
+}
+
+static bool queued(const char *root, const char *rel) { return convert_queued(media_make_id(root, rel)); }
+
+/* The server's converter and an upload never write the same copy. A copy being converted right
+   now stays the converter's; one only queued there is the upload's (the queue lets go of it -
+   a set-aside or stopped conversion would otherwise leave nobody to make it). The converter in
+   turn leaves alone what an upload brings, and a quiet upload that comes back after the
+   converter started on its copy hears "sent". Each counts the room the other needs. */
+TEST(upload_and_the_converter_never_write_the_same_copy) {
+    th_boot();
+    auth_configure("upload-salt", 1000);
+    int adam_id = make_user("Adam", "adam", "pw-adam-123", ROLE_ADMIN);
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    conv_test_rip(root, "Up/S/x.mkv", "matroska", 4000); /* a folder with its copy arrives */
+    conv_test_rip(root, "Up/W/z.webm", "webm", 4000);    /* its copy z.web.mp4 is what a browser makes of z.mkv */
+    conv_test_rip(root, "Up/V/v.mkv", "matroska", 4000); /* their copies come by upload */
+    conv_test_rip(root, "Up/V/u.mkv", "matroska", 4000);
+    conv_test_rip(root, "Up/C/c.webm", "webm", 4000); /* its copy is made by the uploading browser */
+    setting_set("media.roots", root);
+    media_scan_sync();
+    const MediaFile *x = media_file(media_make_id(root, "Up/S/x.mkv"));
+    CHECK(x && convert_need(x) == CONV_TRANSCODE);
+    upload_test_free_space(1LL << 40);
+    CHECK(server_listen("127.0.0.1", 0));
+    g_port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], batch[17], url[128], path[1100];
+    sign_in("adam", "pw-adam-123", adam, sizeof adam);
+    Buf r = {0};
+    const char *form = "Content-Type: application/x-www-form-urlencoded\r\n";
+
+    /* 1. only queued on the server: the upload brings x.web.mp4 and the queue lets go of it -
+       unless the plan is refused, then the conversion stays */
+    convert_api(adam, root, "Up/S/x.mkv", &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    CHECK(queued(root, "Up/S/x.mkv"));
+    upload_test_free_space(MEDIA_RESERVE + 5);
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"S/x.web.mp4\",10]]}", &r, batch);
+    CHECK_HAS(body_of(&r), "Not enough room");
+    CHECK(queued(root, "Up/S/x.mkv"));
+    upload_test_free_space(1LL << 40);
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"S/x.mkv\",4000],[\"S/x.web.mp4\",10]]}", &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[[1,0]],\"skipped\":1"); /* (x.mkv is there) */
+    CHECK(!queued(root, "Up/S/x.mkv"));
+    call("POST", "/a/media.upload_stop", adam, form, "", 0, 0, &r);
+    /* ... the same for a copy the uploading browser makes (z.webm here, z.mkv there: z.web.mp4) */
+    convert_api(adam, root, "Up/W/z.webm", &r);
+    CHECK(queued(root, "Up/W/z.webm"));
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"conv\":\"1\",\"dupes\":\"1\",\"files\":[[\"W/z.mkv\",4000]]}", &r,
+             batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[{\"i\":0,\"f\":0}]");
+    CHECK(!queued(root, "Up/W/z.webm"));
+    call("POST", "/a/media.upload_stop", adam, form, "", 0, 0, &r);
+
+    /* ... being converted: it stays the converter's, and its half-made file (its own name) is
+       nobody's resume point */
+    convert_api(adam, root, "Up/S/x.mkv", &r);
+    CHECK(queued(root, "Up/S/x.mkv"));
+    const char *running = convert_test_start();
+    CHECK(running != NULL);
+    put_file(root, "Up/S/x.web.mp4.conv.part", "half", 4);
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"S/x.mkv\",4000],[\"S/x.web.mp4\",10]]}", &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[],\"skipped\":2");
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "S/x.web.mp4</code> — Hemma is making this copy on the server right now");
+    snprintf(path, sizeof path, "%s/Up/S/x.web.mp4.conv.part", root);
+    CHECK(same_file(path, "half", 4));
+    CHECK(!exists(root, "Up/S/x.web.mp4.part"));
+    convert_api(adam, root, "Up/W/z.webm", &r);
+    CHECK(convert_test_start() != NULL);
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"conv\":\"1\",\"dupes\":\"1\",\"files\":[[\"W/z.mkv\",4000]]}", &r,
+             batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[],\"skipped\":1");
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "Hemma is making its play-everywhere copy on the server right now");
+
+    /* 2. an upload first: the converter leaves the copies to it - files sent as they are, or a copy
+       the browser is making */
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"conv\":\"1\",\"dupes\":\"1\",\"files\":[[\"V/v.web.mp4\",10],"
+                   "[\"V/u.web.mp4\",10],[\"C/c.mkv\",4000]]}",
+             &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[[0,0],[1,0],{\"i\":2,\"f\":2}]");
+    convert_api(adam, root, "Up/V/v.mkv", &r);
+    CHECK_HAS(body_of(&r), "An upload is bringing this video's play-everywhere copy right now");
+    CHECK(!queued(root, "Up/V/v.mkv"));
+    convert_api(adam, root, "Up/C/c.webm", &r);
+    CHECK_HAS(body_of(&r), "An upload is bringing");
+    CHECK(!queued(root, "Up/C/c.webm"));
+
+    /* 3. that upload goes quiet (a laptop asleep) and the converter queues all three; it starts on
+       u and c. Back again, the browser sends v (the queue lets go of it), and hears "sent" for u
+       and c - nothing written twice, and u's half-sent part goes */
+    g_fake_now = now_sec() + 120;
+    convert_api(adam, root, "Up/V/u.mkv", &r);
+    CHECK(convert_test_start() != NULL);
+    convert_api(adam, root, "Up/C/c.webm", &r);
+    CHECK(convert_test_start() != NULL);
+    convert_api(adam, root, "Up/V/v.mkv", &r);
+    CHECK(queued(root, "Up/V/v.mkv"));
+    put_file(root, "Up/V/u.web.mp4.part", "01234", 5);
+    snprintf(url, sizeof url, "/media/upload/%s/1?at=5", batch);
+    call("PUT", url, adam, NULL, "56789", 5, 5, &r);
+    CHECK_HAS(buf_cstr(&r), "200 OK");
+    CHECK(!exists(root, "Up/V/u.web.mp4"));
+    CHECK(!exists(root, "Up/V/u.web.mp4.part"));
+    snprintf(url, sizeof url, "/media/upload/%s/1", batch);
+    call("GET", url, adam, NULL, "", 0, 0, &r);
+    CHECK_HAS(body_of(&r), "\"at\":10"); /* (a browser that lost the answer: done) */
+    snprintf(url, sizeof url, "/media/upload/%s/0?at=0", batch);
+    call("PUT", url, adam, NULL, "0123456789", 10, 10, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    snprintf(url, sizeof url, "/media/upload/%s/0", batch);
+    CHECK(resume_at(url, adam) == 10);
+    snprintf(path, sizeof path, "%s/Up/V/v.web.mp4", root);
+    CHECK(same_file(path, "0123456789", 10));
+    CHECK(!queued(root, "Up/V/v.mkv"));
+    snprintf(url, sizeof url, "/media/upload/%s/2?size=10", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    CHECK_HAS(body_of(&r), "\"skip\":true");
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "V/u.web.mp4</code> — Hemma started making this copy on the server meanwhile");
+    g_fake_now = 0;
+    call("POST", "/a/media.upload_stop", adam, form, "", 0, 0, &r);
+
+    /* 4. room: a running conversion holds its original's size from uploads ... */
+    convert_test_finish(false);
+    upload_test_free_space(MEDIA_RESERVE + 6000);
+    convert_api(adam, root, "Up/S/x.mkv", &r);
+    CHECK(convert_test_start() != NULL);
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"R/big.mp4\",3000]]}", &r, batch);
+    CHECK_HAS(body_of(&r), "Not enough room: this needs 3 KB, and the drive has 2 KB to spare (Hemma keeps 1 GB free, and "
+                           "4 KB for the uploads and conversions running now)");
+    /* ... and an upload what it has left to send from conversions */
+    convert_test_finish(false);
+    upload_test_free_space(MEDIA_RESERVE + 5000);
+    convert_api(adam, root, "Up/W/z.webm", &r);
+    CHECK(queued(root, "Up/W/z.webm"));
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"R/big.mp4\",3000]]}", &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[[0,0]]");
+    CHECK(convert_test_start() == NULL); /* a 4 KB original, 2 KB to spare past the upload */
+    CHECK(!queued(root, "Up/W/z.webm"));
+    const char *page = th_page(adam_id, "/media/settings");
+    CHECK_HAS(page, "1 video didn't fit on the drive");
+    CHECK_HAS(page, "and 3 KB for the uploads and conversions running now");
+
+    /* 5. a PUT checks the room too: what an upload held lapsed while it was quiet */
+    upload_test_free_space(MEDIA_RESERVE + 1000);
+    snprintf(url, sizeof url, "/media/upload/%s/0?at=0", batch);
+    char *body = xcalloc(1, 3000);
+    call("PUT", url, adam, NULL, body, 3000, 3000, &r);
+    free(body);
+    CHECK_HAS(buf_cstr(&r), "507");
+    CHECK_HAS(body_of(&r), "No room for the rest of this file: it needs 3 KB, and the drive has 1 KB to spare");
+    CHECK_HAS(body_of(&r), "\"stop\":true");
+    CHECK(!exists(root, "Up/R/big.mp4.part"));
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "R/big.mp4</code> — not enough room on the drive");
+    upload_test_free_space(-1);
+
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    th_halt();
+}
+
+/* A copy's ".part" from before this server started is never resumed from: older Hemmas' converter
+   wrote its half-made copies under that name too. Other files resume as ever. */
+TEST(upload_never_resumes_a_copy_from_an_older_part) {
+    g_fake_now = now_sec() + 600; /* this server "started" after the parts below were written */
+    th_boot();
+    auth_configure("upload-salt", 1000);
+    make_user("Adam", "adam", "pw-adam-123", ROLE_ADMIN);
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    setting_set("media.roots", root);
+    put_file(root, "Up/P/a.web.mp4.part", "AAAAA", 5);
+    put_file(root, "Up/P/b.mp4.part", "BBBBB", 5);
+    CHECK(server_listen("127.0.0.1", 0));
+    g_port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], batch[17];
+    sign_in("adam", "pw-adam-123", adam, sizeof adam);
+    Buf r = {0};
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"P/a.web.mp4\",10],[\"P/b.mp4\",10]]}", &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[[0,0],[1,5]]");
+    CHECK(!exists(root, "Up/P/a.web.mp4.part"));
+    CHECK(exists(root, "Up/P/b.mp4.part"));
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    th_halt();
+    g_fake_now = 0;
 }
 
 TEST(upload_skips_what_the_library_has_under_other_names) {

@@ -587,7 +587,7 @@ TEST(auth_signing_in_again_keeps_the_other_tab) {
     /* review: a second tab still on the sign-in page signs in too - with the first tab's cookie */
     post_login(port, first, "username=adam&password=correct+horse&next=%2Fbook&remember=1", &r);
     CHECK_HAS(buf_cstr(&r), "Location: /book");
-    CHECK_HAS(buf_cstr(&r), "Max-Age=31536000"); /* "keep me signed in" still honoured */
+    CHECK_HAS(buf_cstr(&r), "Max-Age=2592000"); /* "keep me signed in" still honoured - a month for an admin */
     set_cookie(&r, again, sizeof again);
     CHECK_STR(again, first); /* the same session: the first tab stays signed in */
     CHECK(signed_in(port, first));
@@ -662,5 +662,175 @@ TEST(auth_makes_its_secret_on_first_start) {
     CHECK(!path_stat(lost, NULL, NULL, NULL));
     CHECK_STR(env("HEMMA_AUTH_SALT", ""), "");
     buf_free(&text);
+    th_halt();
+}
+
+TEST(auth_fills_in_a_secret_line_behind_a_bom) {
+    /* issue #12: "BOM + HEMMA_AUTH_SALT=" (as some Windows editors save it) wasn't recognised:
+       a second line was added at the end, and the next start read the empty first one */
+    th_boot();
+    char path[600], why[300];
+    snprintf(path, sizeof path, "%s/bom.env", test_tmpdir());
+    static const char mine[] = "\xEF\xBB\xBFHEMMA_AUTH_SALT= # filled in by Hemma\nHEMMA_PORT=8081\n";
+    CHECK(file_write_atomic(path, mine, sizeof mine - 1));
+    plat_setenv("HEMMA_AUTH_SALT", "", true);
+    CHECK_INT(auth_ensure_secret(path, why, sizeof why), 1);
+    Buf text = {0};
+    CHECK(file_read_all(path, &text, 4096));
+    const char *t = buf_cstr(&text), *line = strstr(t, "HEMMA_AUTH_SALT=");
+    CHECK(str_starts(t, "\xEF\xBB\xBF#"));
+    CHECK(line && strstr(line + 1, "HEMMA_AUTH_SALT=") == NULL); /* one line, not two */
+    CHECK(line && !strncmp(line + 16, env("HEMMA_AUTH_SALT", ""), 64));
+    CHECK_HAS(t, "\nHEMMA_PORT=8081\n");
+    /* and the next start reads that value back */
+    char made[80];
+    str_copy(made, sizeof made, env("HEMMA_AUTH_SALT", ""));
+    plat_setenv("HEMMA_AUTH_SALT", "", true);
+    CHECK(env_load(path) >= 2);
+    CHECK_STR(env("HEMMA_AUTH_SALT", ""), made);
+    plat_setenv("HEMMA_AUTH_SALT", "", true);
+    buf_free(&text);
+    th_halt();
+}
+
+TEST(auth_signs_in_with_the_name_too) {
+    /* issue #3: the admin "admin" is Adam to everyone - and typed "Adam" on another computer */
+    th_boot();
+    auth_configure("pepper", 1000);
+    int adam = with_login("Adam", "admin", "correct horse", ROLE_ADMIN);
+    int who = 0, wait = 0;
+    CHECK_INT(auth_login("Adam", "correct horse", 0x0A000001, 1800000000, &who, &wait), LOGIN_OK);
+    CHECK_INT(who, adam);
+    CHECK_INT(auth_login(" ADAM ", "correct horse", 0x0A000001, 1800000001, &who, &wait), LOGIN_OK);
+    CHECK_INT(auth_login("admin", "correct horse", 0x0A000001, 1800000002, &who, &wait), LOGIN_OK);
+    CHECK_INT(auth_login("Adam", "wrong horse", 0x0A000001, 1800000003, &who, &wait), LOGIN_WRONG);
+    /* Swedish letters fold */
+    int asa = with_login("\xC3\x85sa", "asa1", "asa password", ROLE_MEMBER);
+    CHECK_INT(auth_login("\xC3\xA5sa", "asa password", 0x0A000002, 1800000004, &who, &wait), LOGIN_OK);
+    CHECK_INT(who, asa);
+    /* a username wins over somebody else's name */
+    with_login("admin", "other", "other password", ROLE_MEMBER);
+    CHECK(person_for_sign_in("admin") == person_get(adam));
+    /* two who go by one name: only their usernames tell them apart */
+    with_login("Eva", "eva1", "eva one pass", ROLE_MEMBER);
+    with_login("eva", "eva2", "eva two pass", ROLE_MEMBER);
+    CHECK(person_for_sign_in("Eva") == NULL);
+    CHECK_INT(auth_login("Eva", "eva one pass", 0x0A000003, 1800000005, &who, &wait), LOGIN_WRONG);
+    CHECK_INT(auth_login("eva1", "eva one pass", 0x0A000003, 1800000006, &who, &wait), LOGIN_OK);
+    /* someone without a sign-in doesn't own their name here */
+    th_person("Love");
+    CHECK(person_for_sign_in("Love") == NULL);
+    /* guesses under the name and the username share one budget */
+    for (int i = 0; i < 3; i++)
+        CHECK_INT(auth_login("Adam", "nope", 0x0A000009, 1800000100 + i, &who, &wait), LOGIN_WRONG);
+    for (int i = 0; i < 2; i++)
+        CHECK_INT(auth_login("admin", "nope", 0x0A000009, 1800000110 + i, &who, &wait), LOGIN_WRONG);
+    CHECK_INT(auth_login("admin", "correct horse", 0x0A000009, 1800000120, &who, &wait), LOGIN_THROTTLED);
+    CHECK_INT(auth_login("adam", "correct horse", 0x0A000009, 1800000120, &who, &wait), LOGIN_THROTTLED);
+    /* the pages say so */
+    CHECK_HAS(th_page(0, "/login"), "<span>Username or name</span>");
+    CHECK_HAS(th_page(0, "/forgot"), "<span>Username or name</span>");
+    th_halt();
+}
+
+TEST(auth_welcome_back_has_a_way_to_someone_else) {
+    /* issue #3: the "Welcome back" guess filled in another person's username on a shared
+       computer, and the admin's password kept failing against it */
+    th_boot();
+    auth_configure("pepper", 1000);
+    g_guess = with_login("Eva", "eva", "eva password", ROLE_MEMBER);
+    with_login("Adam", "admin", "correct horse", ROLE_ADMIN);
+    presence_set_guesser(guess_who);
+    const char *h = th_page(0, "/login?next=%2Fbook");
+    CHECK_HAS(h, "Welcome back, Eva");
+    CHECK_HAS(h, "value=\"eva\"");
+    CHECK_HAS(h, "Not Eva? <a href=\"/login?other=1&amp;next=");
+    CHECK_HAS(h, "\">Sign in as someone else</a>");
+    h = th_page(0, "/login?other=1&next=%2Fbook");
+    CHECK(!strstr(h, "Welcome back") && !strstr(h, "value=\"eva\""));
+    CHECK_HAS(h, "value=\"/book\""); /* still goes back to where it was */
+    presence_set_guesser(NULL);
+    th_halt();
+}
+
+TEST(auth_password_checks_share_a_budget_of_loop_time) {
+    /* issue #5: every check is a PBKDF2 hash on the event loop (~1 s on a Pi 3), and one host
+       with hundreds of addresses could keep it busy for most of an hour */
+    th_boot();
+    auth_configure("pepper", 1000);
+    int adam = with_login("Adam", "adam", "correct horse", ROLE_ADMIN);
+    int who = 0, wait = 0;
+    CHECK_INT(auth_login("adam", "correct horse", 0x0A000001, 1800000000, &who, &wait), LOGIN_OK);
+    auth_set_hash_budget(-2000); /* a flood just spent it */
+    CHECK_INT(auth_login("adam", "correct horse", 0x0A000002, 1800000001, &who, &wait), LOGIN_BUSY);
+    CHECK(wait >= 1 && wait <= 9);
+    CHECK_INT(auth_login("nobody", "x", 0x0A000003, 1800000001, &who, &wait), LOGIN_BUSY);
+    CHECK_HAS(th_page(0, "/login?e=2&w=9&busy=1"), "Lots of sign-in tries right now. Wait 9 seconds");
+    CHECK_HAS(th_page(0, "/login?e=2&w=120"), "Wait 2 minutes"); /* a lock still says minutes */
+    CHECK_HAS(th_page(0, "/login?e=2&w=30"), "Wait 1 minute"); /* ... in its last minute too (review) */
+    /* asking again and again while it's busy locks that address, like wrong passwords do */
+    for (int i = 0; i < 9; i++)
+        CHECK_INT(auth_login("nobody", "x", 0x0A000003, 1800000001, &who, &wait), LOGIN_BUSY);
+    CHECK_INT(auth_login("nobody", "x", 0x0A000003, 1800000001, &who, &wait), LOGIN_THROTTLED);
+    CHECK(wait >= 60);
+    /* where this account signed in before, it still can */
+    who = 0;
+    CHECK_INT(auth_login("adam", "correct horse", 0x0A000001, 1800000002, &who, &wait), LOGIN_OK);
+    CHECK_INT(who, adam);
+    /* waiting isn't failing: no lock piled up for the address that was turned away */
+    auth_set_hash_budget(4000);
+    CHECK_INT(auth_login("adam", "correct horse", 0x0A000002, 1800000003, &who, &wait), LOGIN_OK);
+    th_halt();
+}
+
+TEST(auth_notices_a_different_secret) {
+    /* issue #3: started with another machine's HEMMA_AUTH_SALT, every sign-in failed and the
+       log only said "failed sign-in" */
+    th_boot();
+    auth_configure("pepper", 1000);
+    CHECK(!auth_salt_mismatch()); /* nothing proven yet */
+    with_login("Adam", "adam", "correct horse", ROLE_ADMIN);
+    int who = 0, wait = 0;
+    CHECK_INT(auth_login("adam", "correct horse", 0x0A000001, 1800000000, &who, &wait), LOGIN_OK);
+    CHECK_INT(strlen(setting("auth.salt_check", "")), 16);
+    CHECK(!auth_salt_mismatch());
+    auth_configure("another pepper", 1000);
+    CHECK(auth_salt_mismatch());
+    CHECK_INT(auth_login("adam", "correct horse", 0x0A000001, 1800000001, &who, &wait), LOGIN_WRONG);
+    auth_configure("pepper", 1000);
+    CHECK(!auth_salt_mismatch());
+    th_halt();
+}
+
+TEST(auth_admin_sessions_end_after_a_month) {
+    /* issue #5: over plain http a captured cookie was good for a year; an admin's session now
+       ends ADMIN_SESSION_DAYS after signing in, however much it's used */
+    th_boot();
+    auth_configure("e2e-salt", 1000);
+    int adam = with_login("Adam", "adam", "correct horse", ROLE_ADMIN);
+    int eva = with_login("Eva", "eva", "eva password", ROLE_MEMBER);
+    char a[33], e[33], fresh[33];
+    CHECK(session_create(adam, true, "test", a));
+    CHECK(session_create(eva, true, "test", e));
+    for (int i = 0; i < tbl_count(&T_session); i++) { /* both signed in 31 days ago, used today */
+        Session s = *(Session *)tbl_at(&T_session, i);
+        s.created = now_sec() - 31 * 86400LL;
+        s.seen = now_sec();
+        tbl_put(&T_session, &s);
+    }
+    CHECK(session_create(adam, true, "test", fresh));
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_served = 0;
+    CHECK(thread_spawn(serve_app, NULL));
+    CHECK(!signed_in(port, a));
+    CHECK(signed_in(port, fresh));
+    CHECK(signed_in(port, e)); /* a member's "keep me signed in" lasts a year while it's used */
+    server_stop();
+    sock_t poke = tcp_connect_nb(0x7F000001, port);
+    for (int i = 0; i < 300 && !g_served; i++) plat_sleep_ms(10);
+    if (poke != SOCK_BAD) sock_close(poke);
+    CHECK(g_served);
+    server_shutdown();
     th_halt();
 }

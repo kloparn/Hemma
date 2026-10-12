@@ -8,6 +8,20 @@ report it privately instead of in a public issue: on GitHub, open the repository
 Please include what you found, how to reproduce it, and the version (`hemma --version`).
 Fixes go into a new release, with a note in its release notes once it's out.
 
+## Releases
+
+Every release raises the version (`HEMMA_VERSION` in `core/app.h`) and gets a git tag
+(`v0.3.0`) and a GitHub release whose notes come from [CHANGELOG.md](CHANGELOG.md).
+`hemma --version` also prints the commit it was built from, so a binary copied onto a
+Pi can be matched to the code even between releases. Before a release:
+
+- **SQLite** is vendored (`third_party/sqlite`, pinned and hash-checked), so nothing
+  warns about its security fixes automatically: check
+  [sqlite.org's release history](https://sqlite.org/changes.html) and update the
+  amalgamation when a fix matters to Hemma.
+- The CI run of the release commit must be green (tests on Linux and macOS, the suite
+  under AddressSanitizer + UBSan, the converter fuzzer).
+
 ## What Hemma is built for
 
 - **A trusted home network.** Hemma speaks plain `http://` and is meant to be reached only

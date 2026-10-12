@@ -18,6 +18,7 @@ typedef struct {
 
 static bool need(Bb *b, size_t n) {
     if (b->oom) return false;
+    if (n > SIZE_MAX / 4 - b->len) return !(b->oom = true); /* the sum or the doubling below would wrap (32-bit builds) */
     if (b->len + n <= b->cap) return true;
     size_t cap = b->cap ? b->cap : 1024;
     while (cap < b->len + n) cap *= 2;
@@ -96,6 +97,7 @@ typedef struct { /* a sample waiting in the current fragment */
          : false)
 
 static bool grow(void **p, uint32_t *cap, size_t elem) {
+    if (*cap > UINT32_MAX / 2 || (size_t)*cap * 2 > SIZE_MAX / elem) return false; /* the count or the bytes would wrap */
     uint32_t c = *cap ? *cap * 2 : 256;
     void *q = realloc(*p, (size_t)c * elem);
     if (!q) return false;

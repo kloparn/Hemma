@@ -17,6 +17,17 @@
 #include "server.h"
 #include "store.h"
 
+#define HEMMA_VERSION "0.3.0" /* raised for every release (SECURITY.md, CHANGELOG.md) */
+/* With the commit the binary was built from: "0.3.0 (8242ca8f1a2b)", "-dirty" with uncommitted
+   changes (build.ps1 and the Makefile pass -DHEMMA_COMMIT=...); just the version outside git. */
+#define HEMMA_STR_(x) #x
+#define HEMMA_STR(x) HEMMA_STR_(x)
+#ifdef HEMMA_COMMIT
+#define HEMMA_VERSION_FULL HEMMA_VERSION " (" HEMMA_STR(HEMMA_COMMIT) ")"
+#else
+#define HEMMA_VERSION_FULL HEMMA_VERSION
+#endif
+
 /* ------------------------------------------------------------- people */
 
 enum { ROLE_MEMBER = 0, ROLE_ADMIN = 1, ROLE_DISPLAY = 2 }; /* display = read-only (wall tablets) */
@@ -33,6 +44,8 @@ typedef struct {
     int64_t last_login;
 } Person;
 
+#define ADMIN_SESSION_DAYS 30 /* an admin signs in again after this, however much they use the session */
+
 typedef struct {
     int id;
     char token[65]; /* SHA-256 of the cookie value: the cookie itself is never stored */
@@ -47,6 +60,7 @@ Person *person_get(int id);
 /* The household's people (display accounts such as a wall tablet are not people). */
 int person_count(void);
 Person *person_at(int i);
+Person *person_real(int id); /* person_get, but only a real person (not a display account): pickers' ids */
 Person *person_find(const char *name); /* case-insensitive name, or unique prefix */
 /* Every account, display ones included (household admin). */
 int account_count(void);
@@ -101,6 +115,9 @@ void ctx_set_live(Ctx *c, const char *key, const char *val);
 typedef struct {
     const char *name; /* global: "<module>.<verb>", e.g. "book.create" */
     void (*run)(Ctx *c, Fields *f);
+    bool live; /* may run from a quiet "live" message ([data-live] previews, video[data-report]): no
+                  ack, and other screens aren't re-rendered unless the action calls app_changed()
+                  itself. A "live" message naming any other action runs nothing (issue #8). */
 } Action;
 
 /* Shared agenda: anything with a time (bookings, events, due chores) can show
@@ -126,8 +143,39 @@ void agenda_add(Agenda *a, const AgendaItem *it);
 void agenda_collect(Ctx *c, int64_t from, int64_t to, const char *except, Agenda *out);
 void agenda_free(Agenda *a);
 
+/* "Is everything working?" (the System page, admins only): modules report checks in plain
+   household words, plus steps for the getting-started list. A health hook runs whenever an
+   admin looks (also the home dashboard): keep it quick - cached facts, no disk scans. */
+enum {
+    HEALTH_OK,   /* working */
+    HEALTH_INFO, /* worth knowing, nothing wrong (e.g. "discovery is off") */
+    HEALTH_WARN, /* needs a look */
+    HEALTH_BAD,  /* a problem: something doesn't work */
+};
+typedef struct {
+    int state;          /* HEALTH_*; a step: HEALTH_OK = done, HEALTH_INFO = still to do */
+    bool step;          /* a getting-started step rather than a check */
+    const char *module; /* set by health_collect() */
+    char title[80];     /* "Library folders" */
+    char detail[320];   /* how it is */
+    char todo[240];     /* what to do about it, one line ("" = nothing) */
+    char link[160];     /* where to do it ("" = nowhere) */
+} HealthItem;
+typedef struct {
+    HealthItem *items;
+    int n, cap;
+} Health;
+void health_add(Health *h, int state, const char *title, const char *detail, const char *todo, const char *link);
+void health_step(Health *h, bool done, const char *title, const char *detail, const char *link);
+void health_collect(Ctx *c, Health *out); /* every module's health hook, in navigation order */
+int health_worst(const Health *h);        /* the worst check (steps don't count); HEALTH_OK when none */
+void health_free(Health *h);
+
 enum { WIDGET_HOME, WIDGET_WALL };
-enum { MOD_PUBLIC = 1 }; /* usable without picking a person (e.g. the wall display) */
+/* MOD_PUBLIC: usable without picking a person (e.g. the wall display).
+   MOD_ADMIN: only admins see it in the navigation, open its pages or reach its http hook
+   (others get "not found"); its actions still check is_admin themselves. */
+enum { MOD_PUBLIC = 1, MOD_ADMIN = 2 };
 
 typedef struct Module {
     const char *id;    /* URL prefix "/<id>"; the module with id "home" owns "/" */
@@ -148,7 +196,15 @@ typedef struct Module {
     /* A small block at the foot of the sidebar, above the profile (phones: on the More page).
        Every page shows it: keep it quick (cached numbers, no disk or network work). */
     void (*side)(Ctx *c, Buf *b);
+    /* Checks and getting-started steps for the System page (health_add / health_step above).
+       Only called for admins; cached facts only. */
+    void (*health)(Ctx *c, Health *h);
 } Module;
+
+/* MOD_ADMIN modules exist only for admins (see the flags above). */
+static inline bool module_visible(const Module *m, const Ctx *c) {
+    return m && (!(m->flags & MOD_ADMIN) || is_admin(c));
+}
 
 void module_register(const Module *m);
 #define MODULE(var)                                                                                                    \
@@ -241,5 +297,13 @@ typedef struct {
     const char *env_file; /* the settings file (--env, default ".env"): a new install's secret goes there */
 } AppConfig;
 int app_main(const AppConfig *cfg);
+/* How this instance was started (any field may be NULL/0 under tests); data_dir is always the
+   folder app_boot opened. */
+const AppConfig *app_config(void);
+/* The addresses other devices at home open, e.g. "http://192.168.1.50:8080" and
+   "http://hemma.local:8080" (no port when it's 80) - or the one address Hemma listens on.
+   Asks the OS (the network interface, the machine's name): call it at start or from a tick,
+   not on every render. Returns how many were written. */
+int app_addresses(char out[][96], int max);
 
 #endif

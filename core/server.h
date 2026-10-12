@@ -57,6 +57,7 @@ int server_conn_count(void);
 /* All connections' input buffers beyond 64 KB each share this budget (default 32 MB;
    0 = default): past it a request is answered 503 and closed. Tests make it small. */
 void server_set_buffer_budget(size_t bytes);
+void server_set_max_conns(int n); /* tests: fewer connection slots (0 = the default, 400) */
 
 void conn_write(Conn *c, const void *p, size_t n);
 /* Full response honouring the request's keep-alive. */

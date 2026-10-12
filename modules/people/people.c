@@ -318,10 +318,26 @@ static bool name_taken(const char *name, int except) {
     return false;
 }
 
-static int admin_count(void) {
+/* Admins who can sign in once a change lands: `after` stands in for its stored row (NULL = no
+   edit), `removed` (0 = nobody) is gone. Counted after the change, not before: blanking your own
+   username and then removing the other admin used to leave nobody who could sign in (issue #14). */
+static int admins_after(const Person *after, int removed) {
     int n = 0;
-    for (int i = 0; i < account_count(); i++) n += account_at(i)->role == ROLE_ADMIN && account_at(i)->pass[0];
+    for (int i = 0; i < account_count(); i++) {
+        const Person *q = account_at(i);
+        if (q->id == removed) continue;
+        if (after && q->id == after->id) q = after;
+        n += q->role == ROLE_ADMIN && q->username[0] && q->pass[0];
+    }
     return n;
+}
+
+/* Refuses a change that would leave the household without an admin who can sign in (only the
+   server's reset brings one back). */
+static bool keeps_an_admin(Ctx *c, const Person *after, int removed) {
+    if (admins_after(after, removed) > 0 || admins_after(NULL, 0) == 0) return true;
+    ctx_fail(c, "Keep at least one admin who can sign in");
+    return false;
 }
 
 static void act_save(Ctx *c, Fields *f) {
@@ -400,16 +416,12 @@ static void act_save(Ctx *c, Fields *f) {
                 return;
             }
         }
-        bool was_admin = p.role == ROLE_ADMIN;
         if (set_user) {
             str_copy(p.username, sizeof p.username, user);
             if (!user[0]) p.pass[0] = '\0'; /* no username, no sign-in */
         }
         if (set_role && !(id && id == me)) p.role = (int)CLAMP(fields_int(f, "role", ROLE_MEMBER), 0, 2);
-        if (was_admin && (p.role != ROLE_ADMIN || !p.pass[0]) && admin_count() <= 1) {
-            ctx_fail(c, "Keep at least one admin who can sign in");
-            return;
-        }
+        if (!keeps_an_admin(c, &p, 0)) return;
         if (*pw) auth_forget_failures(p.username); /* a fresh password: earlier lockouts are moot */
     }
     if (!id) p.created = c->now;
@@ -436,6 +448,7 @@ static void act_delete(Ctx *c, Fields *f) {
     char name[48];
     str_copy(name, sizeof name, p->name);
     int id = p->id;
+    if (!keeps_an_admin(c, NULL, id)) return;
     sessions_drop(id, NULL);
     auth_codes_drop(id);
     tbl_del(&T_person, id);

@@ -11,7 +11,7 @@
 #include "app.h"
 
 /* icons: home calendar list play note wifi users plus x left right trash clock monitor power search
- *        settings edit bell check arrow logo pin film tv sparkle folder */
+ *        settings edit bell check arrow logo pin film tv sparkle folder pulse */
 void ui_icon(Buf *b, const char *name);
 
 /* Avatars: emoji or initials on the person's colour. size: "xs" "sm" "md" "lg" "xl". */

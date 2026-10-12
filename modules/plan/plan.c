@@ -148,7 +148,12 @@ bool plan_parse_task(const char *text, int64_t now, TaskDraft *out, char *err, s
     tok_split(&t, text ? text : "");
     claim_people(&t, &out->who);
     When w;
-    if (when_parse(&t, now, &w)) {
+    bool when = when_parse(&t, now, &w);
+    if (!when && w.refused[0]) { /* "pay rent 31 sep": not an undated to-do called that */
+        snprintf(err, errcap, "%s", w.refused);
+        return false;
+    }
+    if (when) {
         out->repeat = w.repeat;
         bool dated = w.has_date || w.has_end_date || w.has_start || w.now || w.rel_min;
         int64_t s, e;
@@ -184,7 +189,8 @@ bool plan_parse_event(const char *text, int64_t now, EventDraft *out, char *err,
     plan_capitalise(out->title);
     int64_t s = 0, e = 0;
     if (!timed || !when_resolve(&w, now, 60, &s, &e)) {
-        snprintf(err, errcap, "When? Try “fri 18:00” or “sat-sun”");
+        if (w.refused[0]) snprintf(err, errcap, "%s", w.refused); /* "31 sep", an end before the start */
+        else snprintf(err, errcap, "When? Try “fri 18:00” or “sat-sun”");
         return false;
     }
     out->allday = !w.has_start && !w.now && !w.rel_min && !w.has_end && !w.dur_min;
@@ -339,12 +345,12 @@ static void widget(Ctx *c, Buf *b, int where) {
 }
 
 static const Action actions[] = {
-    {"plan.task_preview", plan_act_task_preview},   {"plan.task_add", plan_act_task_add},
+    {"plan.task_preview", plan_act_task_preview, true},   {"plan.task_add", plan_act_task_add},
     {"plan.task_done", plan_act_task_done},         {"plan.task_save", plan_act_task_save},
-    {"plan.task_delete", plan_act_task_delete},     {"plan.shop_preview", plan_act_shop_preview},
+    {"plan.task_delete", plan_act_task_delete},     {"plan.shop_preview", plan_act_shop_preview, true},
     {"plan.shop_add", plan_act_shop_add},           {"plan.shop_toggle", plan_act_shop_toggle},
     {"plan.shop_delete", plan_act_shop_delete},     {"plan.shop_clear", plan_act_shop_clear},
-    {"plan.event_preview", plan_act_event_preview}, {"plan.event_add", plan_act_event_add},
+    {"plan.event_preview", plan_act_event_preview, true}, {"plan.event_add", plan_act_event_add},
     {"plan.event_save", plan_act_event_save},       {"plan.event_delete", plan_act_event_delete},
     {0},
 };

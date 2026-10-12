@@ -282,3 +282,69 @@ TEST(server_bodies_share_a_memory_budget) {
     free(body);
     buf_free(&b);
 }
+
+/* Is the server's end of s closed (it reads EOF or an error within ~1 s)? */
+static bool closed_by_server(sock_t s) {
+    for (int64_t end = now_ms() + 1000; now_ms() < end;) {
+        pollfd_t pf = {.fd = s, .events = POLLIN};
+        if (plat_poll(&pf, 1, 50) != 1) continue;
+        char tmp[512];
+        long k = sock_recv(s, tmp, sizeof tmp);
+        if (k == 0 || (k < 0 && !sock_again(sock_errno()))) return true;
+    }
+    return false;
+}
+
+TEST(server_newcomers_take_the_place_of_idle_connections) {
+    /* issue #5: one host with a dozen addresses held every slot with a request a minute, and
+       nobody else could connect. Full, a newcomer takes an idle keep-alive connection's place
+       (the longest idle first); screens (WebSockets) are never pushed out. */
+    server_set_max_conns(4);
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    srv_done = 0;
+    CHECK(thread_spawn(server_thread, NULL));
+    const char *get = "GET /hello HTTP/1.1\r\nHost: t\r\n\r\n";
+    const char *up = "GET /ws HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+    Buf b = {0};
+    sock_t ws = dial(port); /* a screen */
+    send_all(ws, up, strlen(up));
+    recv_until(ws, &b, "\r\n\r\n", 4);
+    CHECK_HAS(buf_cstr(&b), "101 Switching Protocols");
+    sock_t s[5];
+    for (int i = 0; i < 3; i++) { /* three idle keep-alive connections: the server is full */
+        s[i] = dial(port);
+        buf_reset(&b);
+        send_all(s[i], get, strlen(get));
+        recv_until(s[i], &b, "hello", 5);
+        CHECK_HAS(buf_cstr(&b), "200 OK");
+        plat_sleep_ms(30);
+    }
+    s[3] = dial(port); /* a newcomer: served, in the place of the longest idle one */
+    buf_reset(&b);
+    send_all(s[3], get, strlen(get));
+    recv_until(s[3], &b, "hello", 5);
+    CHECK_HAS(buf_cstr(&b), "200 OK");
+    CHECK(closed_by_server(s[0]));
+    s[4] = dial(port); /* and another: the next longest idle one goes */
+    buf_reset(&b);
+    send_all(s[4], get, strlen(get));
+    recv_until(s[4], &b, "hello", 5);
+    CHECK_HAS(buf_cstr(&b), "200 OK");
+    CHECK(closed_by_server(s[1]));
+    /* the screen is still there */
+    uint8_t fr[64];
+    size_t n = client_frame(fr, WS_TEXT, true, "hi", 2);
+    send_all(ws, fr, n);
+    buf_reset(&b);
+    recv_until(ws, &b, "echo:hi", 7);
+    CHECK_HAS(buf_cstr(&b), "echo:hi");
+    for (int i = 0; i < 5; i++) sock_close(s[i]);
+    sock_close(ws);
+    server_stop();
+    for (int i = 0; i < 300 && !srv_done; i++) plat_sleep_ms(10);
+    CHECK(srv_done);
+    server_set_max_conns(0);
+    buf_free(&b);
+}
