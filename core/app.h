@@ -17,8 +17,8 @@
 #include "server.h"
 #include "store.h"
 
-#define HEMMA_VERSION "0.3.0" /* raised for every release (SECURITY.md, CHANGELOG.md) */
-/* With the commit the binary was built from: "0.3.0 (8242ca8f1a2b)", "-dirty" with uncommitted
+#define HEMMA_VERSION "0.4.0" /* raised for every release (SECURITY.md, CHANGELOG.md) */
+/* With the commit the binary was built from: "0.4.0 (8242ca8f1a2b)", "-dirty" with uncommitted
    changes (build.ps1 and the Makefile pass -DHEMMA_COMMIT=...); just the version outside git. */
 #define HEMMA_STR_(x) #x
 #define HEMMA_STR(x) HEMMA_STR_(x)
@@ -53,6 +53,7 @@ typedef struct {
     int64_t created, seen;
     char agent[64]; /* "Chrome on Windows" — for the signed-in devices list */
     bool remember;
+    int viewer; /* a display account (a TV): who is watching on it right now - 0 = nobody picked yet */
 } Session;
 
 extern Table T_person, T_session;
@@ -109,6 +110,12 @@ static inline bool is_admin(const Ctx *c) { return c->me && c->me->role == ROLE_
 /* Per-screen scratch state for live previews (survives re-renders of that screen). */
 const char *ctx_live(const Ctx *c, const char *key);
 void ctx_set_live(Ctx *c, const char *key, const char *val);
+/* Whose personal media state (progress, "continue watching") applies: the signed-in person -
+   or, on a display account such as the living-room TV, the person picked under "Who's
+   watching?" on it (0 = nobody picked yet). ctx_set_viewer picks (display accounts only). */
+int ctx_viewer(const Ctx *c);
+void ctx_set_viewer(Ctx *c, int person);
+#define PREF_START "start" /* display accounts: the page their "/" shows, e.g. "/screens/2" */
 
 /* ------------------------------------------------------------ modules */
 
@@ -118,7 +125,31 @@ typedef struct {
     bool live; /* may run from a quiet "live" message ([data-live] previews, video[data-report]): no
                   ack, and other screens aren't re-rendered unless the action calls app_changed()
                   itself. A "live" message naming any other action runs nothing (issue #8). */
+    bool display; /* a display account (a TV, a wall tablet) may run it too - watching on behalf of
+                     its viewer (ctx_viewer): progress, picking who's watching. Everything else
+                     stays refused for them ("This screen is view-only"). */
 } Action;
+
+/* Screens an admin puts together - the TV view, a wall tablet - are made of blocks that the
+   modules offer; modules/screens arranges them. A block draws one row's content. */
+enum { SCREEN_TV = 1, SCREEN_WALL = 2 };
+typedef struct {
+    char arg[64];   /* what the block will show, e.g. a series id */
+    char label[96]; /* how the builder lists it, e.g. "70's Show" */
+} BlockChoice;
+typedef struct {
+    const char *id;    /* global "<module>.<name>", e.g. "media.continue" */
+    const char *title; /* in the builder, and the row's heading unless the admin names it */
+    int kinds;         /* SCREEN_TV | SCREEN_WALL: the screens it suits */
+    /* The row's content, without a heading (the screen adds that): big focusable tiles on a TV.
+       false = nothing to show right now - the screen leaves the row out. arg: the BlockChoice
+       picked in the builder ("" for blocks without choices). Personal blocks use ctx_viewer().
+       kind 0 = an ordinary page borrowing the row (Watch's home shows "tv.onnow"): plain links,
+       not the TV-mode ones a screen gets. */
+    bool (*render)(Ctx *c, Buf *b, int kind, const char *arg);
+    /* Optional: what it can show (one series out of the library...); the builder offers a pick. */
+    int (*choices)(Ctx *c, BlockChoice *out, int max);
+} Block;
 
 /* Shared agenda: anything with a time (bookings, events, due chores) can show
  * up in other modules' calendars and overviews without them knowing each other. */
@@ -199,12 +230,18 @@ typedef struct Module {
     /* Checks and getting-started steps for the System page (health_add / health_step above).
        Only called for admins; cached facts only. */
     void (*health)(Ctx *c, Health *h);
+    const Block *blocks; /* what it offers to screens (the TV view, walls); terminated by {0} */
+    /* Not in the navigation itself (nav 0) but part of another section: its pages light up that
+       module's entry - tv's channels live under Watch ("media"). */
+    const char *parent;
 } Module;
 
 /* MOD_ADMIN modules exist only for admins (see the flags above). */
 static inline bool module_visible(const Module *m, const Ctx *c) {
     return m && (!(m->flags & MOD_ADMIN) || is_admin(c));
 }
+
+const Block *block_find(const char *id, const Module **owner); /* NULL when no module offers it */
 
 void module_register(const Module *m);
 #define MODULE(var)                                                                                                    \

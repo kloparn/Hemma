@@ -17,7 +17,7 @@ A sign-in is one of three kinds:
 |---|---|
 | **Member** | Use everything |
 | **Admin** | Use everything, and also add and remove people, rename the home, manage media folders |
-| **Display** | Only look. For a tablet on the wall: it shows the overview but can't change anything |
+| **Display** | Only look. For the living-room TV or a tablet on the wall: it shows its screen but can't change anything ([a TV](#a-tv-whos-watching)) |
 
 There is always at least one admin who can sign in. Hemma refuses any change that would
 leave none: removing the last one, making them a member, or taking their sign-in away.
@@ -79,7 +79,31 @@ password themselves under **Household → Your account → Change password**.
 That's also where admins change their own password: it asks for the current one first.
 (The pencil next to your own name edits your profile, not your password.)
 
-Each person can then make their own recovery codes (next section).
+Each person can then make their own recovery codes (see [Recovery codes](#recovery-codes)).
+
+## A TV: "Who's watching?"
+
+A TV everyone shares gets a **Display** sign-in of its own, set up once:
+
+1. As the admin, under **Household**, press **Add someone**: a name ("Living room TV"), a
+   username, a password, and the kind *Display*.
+2. On the TV's web browser, open Hemma - type the address with `http://`, like
+   `http://192.168.1.50` - and sign in with it, **Keep me signed in** ticked.
+3. Under **Screens**, edit a screen (Hemma starts with one called *TV*) and tick the TV
+   under **Shows on**. From then on the TV's Hemma address opens that screen by itself.
+
+The screen is big rows you move through with the remote's arrows, like a streaming app:
+Continue watching, On now, Recently added, Series, Movies. OK opens what's highlighted.
+Admins choose the rows and their order under **Screens → Edit** (Up, Down, Remove, Add a
+row) and can give a row a heading of its own. A row with nothing to show right now - no
+channels yet, nothing half-watched - is simply left out.
+
+The TV starts with everyone's picture: **Who's watching?** Pick yourself with the remote -
+no password. Continue watching then shows your shows, and what you watch on the TV counts
+as yours. That's all anyone can do on the TV: watch. **Switch** (top right) hands it to
+someone else, and after **4 hours without use** (nothing opened, nothing playing) the TV
+asks again by itself, so the next person doesn't watch as you. On your own phone or
+computer you're always yourself: **Screens** shows the same rows there, no question asked.
 
 ## Recovery codes
 

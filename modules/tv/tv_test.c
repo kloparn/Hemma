@@ -428,6 +428,10 @@ TEST(tv_channel_page_tunes_into_the_live_moment) {
     CHECK_HAS(h, "data-next=\"/tv/1\"");
     CHECK_HAS(h, "data-static");
     CHECK_HAS(h, "autoplay");
+    /* live (owner): no controls to pause or wind it - data-onair keeps it at "now"; only the sound */
+    CHECK_HAS(h, "data-onair");
+    CHECK(!strstr(h, " controls"));
+    CHECK_HAS(h, "data-mute data-static aria-pressed=\"false\"><span class=\"tv-mute-on\">Sound on</span>");
     CHECK_HAS(h, "CH 01");
     CHECK_HAS(h, "data-key=\"ArrowUp\"");
     CHECK_HAS(h, "Coming up");
@@ -521,5 +525,100 @@ TEST(tv_plan_cache_holds_every_channel) {
     for (int n = 1; n <= 40; n++) first[n] = tv_channel_plan(tv_channel_by_number(n));
     for (int n = 1; n <= 40; n++) CHECK(tv_channel_plan(tv_channel_by_number(n)) == first[n]); /* no rebuilds */
     CHECK_INT(first[40]->n, 4);
+    th_halt();
+}
+
+/* ===================================================== Live TV under Watch */
+
+TEST(tv_lives_under_watch) {
+    library();
+    const Module *m = module_find("tv");
+    CHECK(m && m->nav == 0 && str_eq(m->parent, "media"));
+    CHECK(th_act(adam, "tv.quick", "").ok);
+    static const char *const pages[] = {"/tv", "/tv/1", "/tv?new=1", "/tv/42"};
+    for (int i = 0; i < countof(pages); i++) {
+        const char *h = th_page(adam, pages[i]);
+        CHECK_HAS(h, "<a href=\"/media\" class=\"on\" aria-current=\"page\">"); /* Watch lights up */
+        CHECK(!strstr(h, "<span>TV</span>") && !strstr(h, "<span>Live TV</span>")); /* not in the navigation */
+        CHECK_HAS(h, "<a href=\"/media\">Home</a>");                                 /* Watch's tabs ... */
+        CHECK_HAS(h, "<a href=\"/tv\" class=\"on\" aria-current=\"page\">Live TV</a>"); /* ... Live TV on */
+        CHECK(!strstr(h, "data-live=\"media.search\"")); /* the search box opens Watch's results */
+    }
+    CHECK_HAS(th_page(adam, "/tv?new=1"), "name=\"show\"");
+    CHECK_HAS(th_page(adam, "/tv"), "New channel");
+    const char *h = th_page(adam, "/media");
+    CHECK_HAS(h, "<a href=\"/tv\">Live TV</a>");
+    CHECK_HAS(h, "<a href=\"/media\" class=\"on\" aria-current=\"page\">Home</a>");
+    th_halt();
+}
+
+TEST(tv_on_now_row_on_watch_home_and_screens) {
+    library();
+    const Block *bl = block_find("tv.onnow", NULL);
+    CHECK(bl && (bl->kinds & SCREEN_TV) && (bl->kinds & SCREEN_WALL) && !bl->choices);
+    Ctx c;
+    Buf b = {0};
+    app_ctx(&c, adam, "/screens/2");
+    CHECK(!bl->render(&c, &b, SCREEN_TV, "")); /* no channels: no row */
+    app_ctx_free(&c);
+    CHECK(!strstr(th_page(adam, "/media"), "On now"));
+
+    CHECK(th_act(adam, "tv.save", "number=1&name=Main&all=1&order=rotate&align=none").ok);
+    g_fake_now += 125; /* 2 min into Alpha S01E01 */
+    const char *h = th_page(adam, "/media");
+    CHECK_HAS(h, "<h2>On now</h2><a href=\"/tv\">Guide</a></header><div class=\"tiles\"><a class=\"tile wide\" "
+                 "href=\"/tv/1\">"); /* Watch's own home: the ordinary channel page */
+    CHECK_HAS(h, "<b class=\"tile-t\">Alpha</b><span class=\"tile-s\">Main · S01E01 · Pilot · 20 min left</span>");
+    CHECK_HAS(h, "<span class=\"tile-bar\"><i style=\"width:9%\"></i></span>");
+    CHECK(strstr(h, "On now") < strstr(h, "Recently added"));
+    app_ctx(&c, adam, "/screens/2");
+    CHECK(bl->render(&c, &b, SCREEN_TV, ""));
+    CHECK_HAS(buf_cstr(&b), "href=\"/tv/1?tv=1&amp;back=%2Fscreens%2F2\""); /* a screen: full screen, and back */
+    CHECK_HAS(buf_cstr(&b), "<span class=\"tv-num tv-tile-n\" style=\"--h:150\">01</span>");
+    app_ctx_free(&c);
+
+    /* a channel between programmes says what's next */
+    CHECK(th_act(adam, "tv.save", "number=2&name=Prime&all=1&align=half").ok);
+    Channel *ch = tv_channel_by_number(2);
+    g_fake_now = tv_epoch(tv_channel_plan(ch), ch->epoch) + 1320 + 60;
+    buf_reset(&b);
+    app_ctx(&c, adam, "/screens/2");
+    CHECK(bl->render(&c, &b, SCREEN_TV, ""));
+    CHECK_HAS(buf_cstr(&b), "<b class=\"tile-t\">Beta</b><span class=\"tile-s\">Prime · Up next at ");
+    app_ctx_free(&c);
+    buf_free(&b);
+    th_halt();
+}
+
+TEST(tv_channel_full_screen_for_the_tv) {
+    library();
+    CHECK(th_act(adam, "tv.save", "number=1&name=Main&all=1&order=rotate&align=none").ok);
+    CHECK(th_act(adam, "tv.save", "number=2&name=Films&movies=1&align=none").ok);
+    g_fake_now += 125;
+    const char *h = th_page(adam, "/tv/1?tv=1&back=%2Fscreens%2F2");
+    CHECK(str_starts(h, "<div id=\"app\" class=\"bare\" data-mod=\"tv\"><div class=\"media-tv tv-full\">"
+                        "<a class=\"media-tv-back\" href=\"/screens/2\" data-esc>")); /* Back comes first */
+    CHECK_HAS(h, "data-resume=\"125\"");
+    CHECK_HAS(h, "data-next=\"/tv/1?tv=1&amp;back=%2Fscreens%2F2\"");
+    CHECK_HAS(h, "autoplay");
+    CHECK_HAS(h, "aria-pressed=\"false\" autofocus>"); /* OK on the remote: the sound (live: nothing to pause) */
+    CHECK(!strstr(h, " controls"));
+    CHECK_HAS(h, "href=\"/tv/2?tv=1&amp;back=%2Fscreens%2F2\" data-key=\"ArrowUp\""); /* the remote's channel keys */
+    CHECK_HAS(h, "href=\"/tv/2?tv=1&amp;back=%2Fscreens%2F2\" data-key=\"ArrowDown\"");
+    CHECK_HAS(h, "data-key=\"2\" title=\"Films\"");
+    CHECK_HAS(h, "S01E01 · Pilot · 20 min left");
+    CHECK(!strstr(h, "class=\"side\"") && !strstr(h, "tv-info") && !strstr(h, "/tv?edit="));
+    CHECK_HAS(th_page(adam, "/tv/1?tv=1&back=%2F%2Fevil.example"), "<a class=\"media-tv-back\" href=\"/\" data-esc>");
+    CHECK_HAS(th_page(adam, "/tv/1?tv=1&back=%2F%5Cevil"), "<a class=\"media-tv-back\" href=\"/\" data-esc>");
+    /* without tv=1: the TV set under Watch's tabs, as before */
+    h = th_page(adam, "/tv/1");
+    CHECK(str_starts(h, "<div id=\"app\" class=\"shell\""));
+    CHECK_HAS(h, "tv-set");
+    CHECK_HAS(h, "data-next=\"/tv/1\"");
+    CHECK(!strstr(h, "autofocus"));
+    h = th_page(adam, "/tv/42?tv=1&back=%2Fscreens%2F2");
+    CHECK(str_starts(h, "<div id=\"app\" class=\"bare\""));
+    CHECK_HAS(h, "No such channel");
+    CHECK_HAS(h, "href=\"/screens/2\"");
     th_halt();
 }

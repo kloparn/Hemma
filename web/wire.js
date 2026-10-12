@@ -12,6 +12,12 @@
 //               data-convert/data-wasm the server's converter (C, as WebAssembly) can make
 //               play-everywhere copies first, in Workers (web/conv.js)
 //               [data-start="id"] open a horizontal scroller at that child
+//               video[data-onair] live: plays at "now", no pausing or winding · [data-mute] its sound
+//               [data-arrows] a remote control's arrow keys move focus inside it, to the nearest
+//               focusable thing that way (Left/Right along its row, Up/Down to the next row,
+//               whatever is closest across); Enter then opens it as usual. With nothing focused
+//               (a page load, a morph that took it away) [autofocus] - or the first focusable
+//               inside it, when it's a container - else the first focusable gets the focus
 (() => {
   'use strict';
   const root = document.documentElement;
@@ -166,6 +172,102 @@
     k.focus();
     if (k.tagName === 'A' || k.tagName === 'BUTTON') k.click();
   });
+
+  // ------------------------------------------------------------ remote control
+  // [data-arrows]: a TV remote has arrows and OK (Enter), nothing to Tab with. Focus moves by what
+  // is on screen: Left/Right only along the focused thing's row (what overlaps it vertically),
+  // Up/Down to the nearest row that way, then to what's closest across it - so rows that scroll
+  // sideways keep their place. Nothing that way: the key does what it always does.
+  const FOCUSABLE = 'a[href],button:not([disabled]),input:not([type=hidden]):not([disabled]),' +
+    'select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+  const ARROWS = { ArrowLeft: 'l', ArrowRight: 'r', ArrowUp: 'u', ArrowDown: 'd', Left: 'l', Right: 'r', Up: 'u', Down: 'd' };
+  const ARROW_CODES = { 37: 'l', 38: 'u', 39: 'r', 40: 'd' }; // engines without e.key
+  let pageUrl = here(); // the address the page on screen belongs to (a morph follows its "url" op)
+  const focusables = (box) => [...box.querySelectorAll(FOCUSABLE)].filter((el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  });
+  const across = (a, b) => b.top < a.bottom && b.bottom > a.top; // on the same row
+  function nearest(area, from, dir) {
+    const a = from.getBoundingClientRect(), x = a.left + a.width / 2;
+    const tx = a.width * 0.1, ty = a.height * 0.1; // the focused one may be drawn a little larger
+    let best = null, bestD = Infinity, bestS = Infinity, row = null;
+    const below = [];
+    for (const el of focusables(area)) {
+      if (el === from) continue;
+      const b = el.getBoundingClientRect();
+      let d;
+      if (dir === 'l' || dir === 'r') {
+        if (!across(a, b)) continue;
+        d = dir === 'r' ? b.left - (a.right - tx) : (a.left + tx) - b.right;
+        const s = Math.abs(b.top - a.top);
+        if (d >= 0 && (d < bestD || (d === bestD && s < bestS))) { best = el; bestD = d; bestS = s; }
+        continue;
+      }
+      d = dir === 'd' ? b.top - (a.bottom - ty) : (a.top + ty) - b.bottom;
+      if (d < 0) continue;
+      below.push([el, b]);
+      if (d < bestD) { bestD = d; row = b; }
+    }
+    if (dir === 'l' || dir === 'r') return best;
+    for (const [el, b] of below) { // the nearest row, then what's closest across it
+      const s = Math.abs(b.left + b.width / 2 - x);
+      if (across(row, b) && s < bestS) { best = el; bestS = s; }
+    }
+    return best;
+  }
+  function firstIn(area) {
+    const af = area.querySelector('[autofocus]');
+    const inside = af ? (af.matches(FOCUSABLE) ? [af] : focusables(af)) : [];
+    return inside[0] || focusables(area)[0] || null;
+  }
+  const moveTo = (el, smooth) => {
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: smooth ? 'smooth' : 'auto' });
+  };
+  document.addEventListener('keydown', (e) => {
+    const dir = ARROWS[e.key] || ARROW_CODES[e.keyCode];
+    if (!dir || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+    const t = document.activeElement, idle = !t || t === document.body;
+    const area = idle ? document.querySelector('[data-arrows]') : t.closest('[data-arrows]');
+    if (!area) return;
+    if (idle) { // nothing focused yet: the first press lands somewhere
+      const f = firstIn(area);
+      if (f) { e.preventDefault(); moveTo(f, false); }
+      return;
+    }
+    if (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' ||
+        (t.tagName === 'INPUT' && !/^(button|submit|reset|checkbox|image)$/.test(t.type))) return; // the caret's keys
+    const next = nearest(area, t, dir);
+    if (!next) return;
+    e.preventDefault();
+    moveTo(next, true);
+  });
+  // Where the remote is, just before a morph: {area, url, x, y} or null.
+  function focusSpot() {
+    const t = document.activeElement, area = t && t.closest ? t.closest('[data-arrows]') : null;
+    if (!area) return null;
+    const r = t.getBoundingClientRect();
+    return { area, url: pageUrl, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+  // After a load or a morph a [data-arrows] area always has something focused: when the morph
+  // took the focused thing away (a tile that went), whatever is nearest to where it was; on a
+  // fresh page (or area) its start.
+  function arrowsSettle(was) {
+    const area = document.querySelector('[data-arrows]'), t = document.activeElement;
+    if (!area || (t && t !== document.body)) return;
+    let pick = null;
+    if (was && was.area === area && was.url === here()) {
+      let bestD = Infinity;
+      for (const el of focusables(area)) {
+        const r = el.getBoundingClientRect();
+        const d = Math.hypot(r.left + r.width / 2 - was.x, r.top + r.height / 2 - was.y);
+        if (d < bestD) { bestD = d; pick = el; }
+      }
+    }
+    pick = pick || firstIn(area);
+    if (pick) pick.focus({ preventScroll: true });
+  }
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return;
@@ -339,7 +441,11 @@
         const t = document.createElement('template');
         t.innerHTML = op[1];
         const next = t.content.firstElementChild, app = document.getElementById('app');
-        if (next && app) { morph(app, next); settle(); starts(); gaps(); }
+        if (next && app) {
+          const was = focusSpot();
+          morph(app, next); settle(); starts(); gaps(); arrowsSettle(was);
+          pageUrl = here();
+        }
         break;
       }
       case 'url':
@@ -383,7 +489,7 @@
       return;
     }
     if (from.nodeType !== 1) return;
-    if (from.hasAttribute('data-static') && to.hasAttribute('data-static') && from.id === to.id) return;
+    if (from.hasAttribute('data-static') && to.hasAttribute('data-static') && key(from) === key(to)) return;
     attrs(from, to);
     if (from.nodeName === 'TEXTAREA') {
       if (from.defaultValue !== to.textContent) from.defaultValue = to.textContent;
@@ -401,23 +507,26 @@
     }
   }
 
+  // A node's key: its id attribute. (Not el.id: a form holding <input name="id"> answers el.id
+  // with that input, so such forms never matched and were rebuilt - typing lost - every morph.)
+  const key = (n) => (n.nodeType === 1 && n.getAttribute('id')) || '';
   function kids(from, to) {
     const keyed = new Map(), wanted = new Set();
-    for (let c = from.firstChild; c; c = c.nextSibling) if (c.nodeType === 1 && c.id) keyed.set(c.id, c);
-    for (let c = to.firstChild; c; c = c.nextSibling) if (c.nodeType === 1 && c.id) wanted.add(c.id);
+    for (let c = from.firstChild; c; c = c.nextSibling) if (key(c)) keyed.set(key(c), c);
+    for (let c = to.firstChild; c; c = c.nextSibling) if (key(c)) wanted.add(key(c));
     let cur = from.firstChild;
     for (let nxt = to.firstChild; nxt;) {
       const after = nxt.nextSibling;
       let match = null;
-      if (nxt.nodeType === 1 && nxt.id) {
-        match = keyed.get(nxt.id) || null;
-        if (match) keyed.delete(nxt.id);
+      if (key(nxt)) {
+        match = keyed.get(key(nxt)) || null;
+        if (match) keyed.delete(key(nxt));
       } else {
         // step over keyed nodes: gone ones are dropped now, moved ones get placed
         // when their turn comes - so the unkeyed node after them still lines up
-        while (cur && cur.nodeType === 1 && cur.id) {
+        while (cur && key(cur)) {
           const n = cur.nextSibling;
-          if (!wanted.has(cur.id)) cur.remove();
+          if (!wanted.has(key(cur))) cur.remove();
           cur = n;
         }
         if (cur && cur.nodeType === nxt.nodeType && cur.nodeName === nxt.nodeName) match = cur;
@@ -463,12 +572,59 @@
     }
   }
 
+  // <video data-onair data-resume="S">: a live broadcast (a TV channel). It plays where the
+  // programme is now - S when the page came, plus the time since - and can't be paused, wound
+  // or sped up: it jumps back to now and plays on. Only the sound is the viewer's ([data-mute]);
+  // their choice carries over to the next programme. A browser that won't start it with sound
+  // starts it muted.
+  let onairMuted = false;
+  const muteShow = (v) => {
+    for (const b of document.querySelectorAll('[data-mute]')) b.setAttribute('aria-pressed', v.muted ? 'true' : 'false');
+  };
+  function onair(m, at) {
+    const t0 = performance.now();
+    const now = () => at + (performance.now() - t0) / 1000;
+    const snap = () => {
+      if (m.duration && Math.abs(m.currentTime - now()) > 2) m.currentTime = Math.min(now(), m.duration - 0.5);
+    };
+    const go = () => {
+      const p = m.play();
+      if (p && p.catch) p.catch(() => {
+        if (m.muted) return;
+        m.muted = onairMuted = true; // no sound without a press first: muted, the button says so
+        muteShow(m);
+        m.play().catch(() => {});
+      });
+    };
+    m.muted = onairMuted;
+    muteShow(m);
+    m.addEventListener('loadedmetadata', () => { snap(); go(); });
+    m.addEventListener('pause', () => { if (!m.ended) { snap(); go(); } });
+    m.addEventListener('seeked', snap); // its own jump lands within 2 s: no loop
+    m.addEventListener('ratechange', () => { if (m.playbackRate !== 1) m.playbackRate = 1; });
+    m.addEventListener('volumechange', () => muteShow(m));
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && m.isConnected) { snap(); go(); }
+    });
+  }
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest && e.target.closest('[data-mute]');
+    const v = b && document.querySelector('video[data-onair]');
+    if (!v) return;
+    e.preventDefault();
+    v.muted = onairMuted = !v.muted;
+    if (!v.muted && v.paused) v.play().catch(() => {});
+    muteShow(v);
+  });
+
   // <video data-resume="123" data-report="media.progress" data-id="..." data-next="/tv/1">
   function media(m) {
     if (m._wired) return;
     m._wired = true;
     const resume = parseFloat(m.dataset.resume || '0');
-    if (resume > 0) {
+    if (m.hasAttribute('data-onair')) {
+      onair(m, resume);
+    } else if (resume > 0) {
       // "continue watching" (data-report) skips a resume point in the last seconds;
       // live playback (e.g. a TV channel) always joins at the exact offset.
       const guard = m.dataset.report ? 5 : 0;
@@ -495,5 +651,6 @@
   document.querySelectorAll('video,audio').forEach(media);
   starts();
   gaps();
+  arrowsSettle(null);
   connect();
 })();

@@ -3,7 +3,29 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.3.0 (not released yet)
+## 0.4.0 (not released yet)
+
+The look, round one.
+
+### New
+
+- **Watch and TV are one section**: Watch has the tabs Home, Movies, Series, **Live TV** and
+  Folders, and its home shows what's on now. New episodes of a series show as one card
+  ("70's Show · 8 new episodes"), and each series gets its own poster colour.
+- **Screens: Hemma on the TV.** A full-screen, streaming-app view with big rows you move
+  through with the remote's arrow keys; an admin picks the rows and their order (Screens →
+  Edit) and which TV shows it. The TV asks *Who's watching?*: pick yourself, no password,
+  and your progress follows you (it asks again after 4 hours without use). Videos and
+  channels open full screen with a Back button.
+- **Live TV is live**: a channel can't be paused, wound or sped up any more - it always
+  plays what's on now. The only thing to change is the sound (a Sound on / Sound off
+  button; OK on the remote). If the TV won't start it with sound, it starts muted.
+
+### Fixes
+
+- Forms with typed-in text no longer lose it when another screen's change arrives.
+
+## 0.3.0 (2026-10-12)
 
 ### Security
 

@@ -296,7 +296,9 @@ static void nav_links(Ctx *c, Buf *b, const Module *active, bool tabbar) {
     for (int i = 0; i < module_count(); i++) {
         const Module *m = module_at(i);
         if (!m->nav || !module_visible(m, c)) continue;
-        bool on = m == active, extra = tabbar && k++ >= TAB_SLOTS;
+        /* a section's pages that aren't in the navigation light up their parent (tv -> Watch) */
+        bool on = m == active || (active && active->parent && str_eq(active->parent, m->id));
+        bool extra = tabbar && k++ >= TAB_SLOTS;
         if (on && extra) more_on = true;
         H(b, "<a href=\"%s%s\"%r%r>", "/", str_eq(m->id, "home") ? "" : m->id,
           extra ? (on ? " class=\"tab-x on\"" : " class=\"tab-x\"") : on ? " class=\"on\"" : "",
