@@ -380,6 +380,25 @@ small { font-size: 12.5px; }
   border: 4px solid rgba(255, 255, 255, .25); border-top-color: #fff; border-radius: 50%; animation: pl-spin .8s linear infinite;
 }
 .pl[data-wait] .pl-spin { display: block; }
+/* it won't play here (data-err): the reason, not a spinner or a play button that does nothing */
+.pl-err {
+  display: none; position: absolute; left: 50%; top: 50%; width: 80%; max-width: 32em; margin: 0;
+  transform: translate(-50%, -50%); padding: 16px 20px; border-radius: 14px; background: rgba(0, 0, 0, .78);
+  text-align: center; font-size: 16px; font-weight: 600; line-height: 1.4;
+}
+.pl[data-err] .pl-err { display: block; }
+.pl[data-err] .pl-spin, .pl[data-err] .pl-big, .pl[data-err] .pl-bar { display: none; }
+/* the browser's own player in Hemma's place (data-native): its controls, plus full screen of the box */
+.pl[data-native] .pl-bar, .pl[data-native] .pl-big, .pl[data-native] .pl-spin { display: none; }
+.pl-natfs { display: none; }
+.pl[data-native] .pl-natfs {
+  display: grid; place-items: center; position: absolute; top: 12px; right: 12px; width: 44px; height: 44px;
+  border: 0; border-radius: 12px; background: rgba(0, 0, 0, .55); transition: opacity .3s;
+}
+.pl[data-native] .pl-natfs[hidden] { display: none; }
+.pl-natfs[aria-pressed="true"] .pl-a { display: none; }
+.pl-natfs[aria-pressed="true"] .pl-b { display: inline-flex; }
+html[data-idle] .pl-natfs { opacity: 0; }
 @keyframes pl-spin { to { transform: rotate(360deg); } }
 html[data-idle], html[data-idle] * { cursor: none; }
 @media (max-width: 600px) {

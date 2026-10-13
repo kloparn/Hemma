@@ -79,20 +79,36 @@ core/            framework with a stable API for modules
                  commit (build.ps1/Makefile pass -DHEMMA_COMMIT=<sha>[-dirty]) - raise the version per release
   ui.*           components: shell, icons, avatars, cards, forms, modals, time formatting
   main.c         command line (--gen-salt, --env, --web ...)
-modules/<id>/    one folder per feature; folder name == module id (home book plan media tv board net people wall
-                 system)
-  screens/       the TV view (and, next, walls): screens an admin builds from the Blocks modules offer.
-                 Tables `screen` + `screen_row` (position, block id, choice arg, custom heading); a "TV" screen
-                 seeded once (setting screens.seeded) with media.continue, tv.onnow, media.recent,
-                 media.series, media.movies. /screens = list (everyone opens, admins edit/new), /screens/<id>
-                 = full-screen view (bare, always dark, 5% overscan, [data-arrows]), /screens/<id>/edit = the
-                 builder (Up/Down/Remove, heading, choice, Add a row, "Shows on" = display accounts' PREF_START,
-                 one screen per account). Rows are left out when their block is unknown (builder: "missing"),
-                 not for this kind, an admin module's (for members) or renders nothing. WHO'S WATCHING (owner,
+modules/<id>/    one folder per feature; folder name == module id (home book plan media tv board net people
+                 screens system)
+  screens/       the TV view and walls: screens an admin builds from the Blocks modules offer.
+                 Tables `screen` + `screen_row` (position, block id, choice arg, custom heading); seeded once
+                 each: a "TV" (setting screens.seeded; TV_ROWS: media.continue, tv.onnow, media.recent,
+                 media.series, media.movies) and a "Wall" (screens.wall_seeded - households from before walls
+                 get one at their next start; WALL_CARDS: plan.today, book.now, plan.days, plan.shop,
+                 board.notes, tv.onnow, media.recent, home.latest). /screens = list (everyone opens, admins
+                 edit/new - TV or Wall), /screens/<id> = full-screen view, /screens/<id>/edit = the builder
+                 (Up/Down/Remove, heading, choice, "Add a row"/"Add a card", "Shows on" = display accounts'
+                 PREF_START, one screen per account). GET /wall (the old wall module's address; the home and
+                 Household buttons link it with data-native) = 302 to the first wall (screens_first), else
+                 /screens - the http hook, so only full loads. Rows/cards are left out when their block is
+                 unknown (builder: "missing"), not for this kind, an admin module's (for members) or renders
+                 nothing. A TV: bare, always dark, 5% overscan, [data-arrows]. A WALL (owner, 2026-10-12: "make
+                 it plain better"): bare, always dark, ~16px base (module card markup is px-sized); the top
+                 band = clock + date, now/next (agenda_collect now..end of tomorrow, 3 at most: running ones
+                 "Now ... until", then times, "Tomorrow" ones), who's home (home/away only when
+                 presence_known, online = Hemma open); cards (<section class=screens-card><h2>) in CSS columns
+                 (column-width 300px, inline column-count = cards, max 4: content-height masonry); no cards
+                 with anything: "All quiet". Look only - no forms on a wall. Edit/Exit faint, bottom right.
+                 WHO'S WATCHING (owner,
                  2026-10-12): a display account with ctx_viewer() == 0 gets the avatar picker (screens.viewer,
                  .display; who=0 = Switch); the pick lapses after SCREENS_IDLE_S (4 h) without use (the TV
                  session's `seen`), checked when rendering and on tick; people on their own devices are always
-                 the viewer. TODO: the wall builder ("New screen" offers TV only; WALL kind renders cards).
+                 the viewer. Walls are nobody's: no picker.
+                 Wall blocks (SCREEN_WALL): plan.today (events + chores due, plan-wall look), plan.days (the
+                 next 7 days, 8 rows; an event once, on its first day, "until Sun"), plan.shop, book.now
+                 (each thing by name: Free / "Adam · until 17:00", then what's coming), board.notes,
+                 home.latest (activity by people only: who != 0), plus media.recent and tv.onnow.
                  Tile vocabulary (web/app.css, shared): .tiles (sideways row; margin 0 -14px + padding 14px is
                  room for the focus ring), a.tile / button.tile (2:3 poster; .wide = 16:9), .tile-art (an <img>
                  covers it, else text on a --h gradient), .tile-t, .tile-s, .tile-bar > i[style=width:N%],
@@ -316,6 +332,11 @@ sooner asks from its tick with `app_wake_in(ms)` (net does while sweeping, uploa
 (progress bars). Other threads end the poll wait with `server_wake()`; a worker that finished
 something to show (an upload, a scan) calls `app_tick_soon()` so the modules' tick runs now
 instead of at the next idle tick (a wake alone doesn't run the tick).
+`{"t":"log","url":...,"m":...}` from a signed-in screen = the browser's own trouble, logged as a warning
+("browser of <username> (<ip>) on <url>: ..."), 20 per connection (Client.logs): wire.js report() sends
+window errors, unhandled rejections, a video's `error`, and a video meant to play (autoplay, live, or play
+pressed) that hasn't fired `playing` 25 s later (watch(): readyState, networkState, paused, buffered, the
+user agent) - a TV's browser has no readable console; read it on the System page or the journal.
 A `nav`/`hello` re-renders only that screen (plus `/` and `/people`, which show who is where;
 the shell's "Here now" names people only); navs are rate-limited per screen. Every page carries
 its hash (`<html data-h>`): the first `hello` after a load sends it, so an unchanged page isn't
@@ -389,7 +410,17 @@ it: the build embeds a `.gz` twin of each text file and av.wasm (~120 KB -> ~30 
 - Passwords: your own only via people.password (asks the current one, ends your other sessions);
   people.save refuses `password` for yourself. An admin setting someone else's ends their sessions.
 - Signed-out requests never reach module pages, actions or `http` hooks (unless `MOD_PUBLIC`), and
-  signed-out/revoked screens get no `app_notify` toasts. A signed-out WebSocket (hello/nav/act/close)
+  signed-out/revoked screens get no `app_notify` toasts. One exception, for `http` hooks only: an
+  ADDRESS KEY (`ctx_url_key(c, path, out)`, app.c url_key/session_by_url_key): `<path>?k=<session id>-<128
+  bits of HMAC(server salt, session token hash + path)>`. A GET/HEAD without a live session cookie whose
+  key fits its exact path runs the module endpoints as that session (live, not session_over); an
+  address no endpoint takes goes on as signed out - a key never opens a page, an action, /api or /ws.
+  Why (2026-10-13): a Samsung TV's browser (an update that week) lets its video player fetch the
+  <video>'s file WITHOUT the page's cookie (the navigation had it, the player's `Range: bytes=0-` didn't),
+  so Hemma answered with the sign-in page and the TV said "decode error" - every video, Live TV, every
+  Hemma version. media_file_src/media_sub_src put keys on video and subtitle addresses (media, tiles,
+  tv); pictures need none (the browser fetches those itself). No stored session (the harness's
+  app_ctx) = no key = the plain address. A signed-out WebSocket (hello/nav/act/close)
   only ever re-renders its own screen. `/api` is for members and admins (display accounts: 403); tables
   with `api_owner` (pref, media_watch) show a member only their own rows, admins all (owner, 2026-10-12).
   Signed-out WebSockets: 48 in all, 4 per address (`stranger_room`), past that the upgrade gets 503.
@@ -423,9 +454,11 @@ MODULE(things)   /* self-registers: no shared file to edit */
   in init = /api shows members only their own rows) + `TABLE(...)`,
   `store_register()` in `init`. Each becomes a SQLite table (new fields → new columns
   automatically). Reads are in-memory. Use `db.h` for big/queryable data. Keep ids, not row pointers.
-- **Widgets**: `widget(c, b, WIDGET_HOME | WIDGET_WALL)`. Must cope with `c->me == NULL` and with a
-  display account. **Agenda**: `agenda(c, from, to, out)` + `agenda_add()` puts timed things into
-  shared calendars; read them with `agenda_collect(c, from, to, except_id, &ag)`.
+- **Widgets**: `widget(c, b, WIDGET_HOME)` - a card for the home dashboard (walls are screens of blocks,
+  not widgets, since 0.6.0). Must cope with `c->me == NULL` and with a display account. **Agenda**:
+  `agenda(c, from, to, out)` + `agenda_add()` puts timed things into shared calendars (book: bookings,
+  plan: calendar events); read them with `agenda_collect(c, from, to, except_id, &ag)` - a module that
+  shows its own items itself reads with except = its id (plan's calendar does).
 - **Sidebar foot**: `side(c, b)` renders a small block above the profile in the sidebar (phones: under
   the sections on /more). Every page calls it - cached numbers only, no disk/network work (media's
   storage meter refreshes its cache from `tick` every 30 s).
@@ -450,8 +483,9 @@ MODULE(things)   /* self-registers: no shared file to edit */
   `.display = true` (`{"media.progress", act_progress, true, true}`) may run from a display account -
   watching only; everything else stays "view-only" for them. A display account's "/" shows the page
   in its pref `PREF_START` (e.g. "/screens/2"; the query goes along) - use absolute links on such pages.
-- **Raw endpoints**: `http()` hook (files, streams, JSON) — only called for signed-in requests.
-  Bodies over 1 MB are not buffered: the hook gets `req->streaming` (body NULL, `content_length`
+- **Raw endpoints**: `http()` hook (files, streams, JSON) — only called for signed-in requests
+  (or ones with an address key: an address a media player fetches goes out with `ctx_url_key` - see
+  Accounts). Bodies over 1 MB are not buffered: the hook gets `req->streaming` (body NULL, `content_length`
   set) and must take the socket with `conn_detach(conn, req, &d)` — `d.body` holds the bytes that
   already arrived, `d.unsent` any queued output (send it first) — and read the rest on a thread
   (see media/upload.c). Otherwise the core answers 413 and closes. Same hand-off for streaming out
@@ -485,7 +519,25 @@ data-muted. Parts [data-p]: play back fwd seek at dur mute vol subs; [data-sub="
 (the pick carries into the next episode, v._sub). Keys (registered BEFORE [data-arrows]): Space/K, Left/
 Right ±10 s, M, F; on a computer they stay the video's even on a focused bar button; UiPlayer.tv puts
 data-arrows on the bar (a remote moves along it; Down/Up on the picture go to the bar, Up on the seek bar
-back). A mouse click on the picture plays/pauses, a tap shows/hides the bar. Live (.pl-live): Live badge,
+back). Keys come by e.key, else by keyCode (KEY_CODES: a TV's browser may say "Unidentified"), the
+remote's MediaPlay/Pause/PlayPause/Rewind/FastForward included; Enter with nothing focused plays (live: the
+sound, or starts a channel that never did). The spinner (data-wait) ends on playing/pause/seeked/canplay/
+loadeddata or moving time - else a TV that blocks autoplay could keep the big play button hidden; paused
+shows .pl-big, live channels too. A video `error`: .pl-err (UiPlayer.trouble - media: the HEVC sentence for
+HEVC copies; tv: "The next one starts at HH:MM") instead of spinner/play - but first TWO PLAYERS (owner,
+2026-10-13: "default to our own, if that does not work ... the original video player"): any `error` in
+Hemma's player -> nativePlayer(): a NEW <video> with every attribute + <track>s copied, data-native,
+`controls` (not for live), autoplay, data-resume = where it was (live: where the channel is now), the old
+element's src removed + load() (a TV has one decoder; a TV refused the SAME element after its decode error
+- error 4), replaceWith; media() wires it (progress, next episode, live rules). plWire puts data-native on the
+overlay: bar/big/spinner gone, only .pl-natfs (a second [data-fullscreen] button, top right) - the video has
+controlslist=nofullscreen, so full screen stays the BOX's: the "Next episode" card shows in it and the next
+episode (or another switch: a new element inside the box) keeps it. Our clicks/keys leave a data-native
+player alone (its own controls). Only when that fails too: .pl-err. Logged both ways ("plays in the browser's
+own player" / "in the browser's own player too"). The next video (renewal) tries Hemma's player again.
+(Built while chasing the owner's Samsung TV failing every video with PIPELINE_ERROR_DECODE; the real cause
+was its player fetching without cookies - see "address key" under Accounts. The fallback stays, owner's
+choice.) A mouse click on the picture plays/pauses, a tap shows/hides the bar. Live (.pl-live): Live badge,
 sound ("Sound off" in words and the bar stays while muted), full screen) · `[data-fullscreen="id"]` (the
 player's full-screen button: #id - the box, so the bar and the card show too - full screen and back;
 double-click on the video too; arrives hidden, shown where the browser can - an iPhone can't put a page
@@ -597,11 +649,13 @@ CHANGELOG.md). 0.4.0 (PR #17, the GUI redesign round 1) = Watch absorbs TV, Scre
 0.5.0 (PR #18 + the version bump after it) = full screen survives the next episode, a "Next episode in N s"
 card, full screen for Live TV (survives programme and channel changes), Hemma's own player controls
 (ui_player + wire.js [data-player]) instead of each browser's, and the fix for live TV playing on, unseen,
-after leaving it. Next: the Wall as a screen kind
-(blocks for clock, who's home, today, bookings, shopping list, notes), then calmer cards (hide empty ones).
+after leaving it. 0.6.0 (branch feat/update-wall) = the wall as a Screen kind (top band, card columns, wall
+blocks from plan/book/board/home, seeded once, /wall forwards), the old wall module and WIDGET_WALL gone,
+plan's events in the shared agenda. Next ideas: calmer home cards (hide empty ones), touch on the wall
+(ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,
-agenda, JSON API), people/household, home, book, plan, board, wall, net, media (library, player, Range
+agenda, JSON API), people/household, home, book, plan, board, screens (TV + wall), net, media (library, player, Range
 streaming, progress, uploads that convert on the sending device, disc rips, pictures), tv.
 (2026-10-11: 398 tests green (1.6M checks)), incl. end-to-end socket tests (core/app_http_test.c, core/auth_setup_test.c;
 media/upload_test.c with a dropped-and-resumed 3 MB upload).

@@ -29,9 +29,13 @@ static int64_t selected_day(Ctx *c) {
     return day_start(c->now);
 }
 
-static void time_label(Buf *b, const Event *e, int64_t day) {
+/* span: one row for an event that lasts several days ("until Sun") instead of one per day */
+static void time_label(Buf *b, const Event *e, int64_t day, bool span) {
     int64_t next = add_days(day, 1);
-    if (e->allday || (e->start <= day && e->end >= next)) buf_puts(b, "All day");
+    if (span && e->end > next) {
+        buf_puts(b, "until ");
+        buf_puts(b, weekday_name(dt_local(e->end - 1).wday, true));
+    } else if (e->allday || (e->start <= day && e->end >= next)) buf_puts(b, "All day");
     else if (e->start >= day && e->end <= next) ui_span(b, e->start, e->end);
     else if (e->start >= day) {
         ui_hm(b, e->start);
@@ -42,12 +46,12 @@ static void time_label(Buf *b, const Event *e, int64_t day) {
     }
 }
 
-static void event_row(Ctx *c, Buf *b, const Event *e, int64_t day, const char *href, const char *idp) {
+static void event_row(Ctx *c, Buf *b, const Event *e, int64_t day, const char *href, const char *idp, bool span) {
     Person *p = person_get(e->who);
     H(b, "<li class=\"plan-ev%r\" id=\"%s%d-%L\"", e->allday ? " plan-allday" : "", idp, e->id, (long long)day);
     if (p) ui_hue_style(b, p->hue);
     buf_puts(b, "><span class=\"plan-ev-time\">");
-    time_label(b, e, day);
+    time_label(b, e, day, span);
     buf_puts(b, "</span>");
     const char *icon = plan_task_icon(e->title);
     if (href) H(b, "<a class=\"plan-ev-main\" href=\"%s\">", href);
@@ -317,7 +321,7 @@ void plan_cal_page(Ctx *c, Buf *b) {
                 snprintf(ids, sizeof ids, "%d", e->id);
                 buf_reset(&u);
                 ctx_url(c, &u, "edit", ids, "new", NULL, NULL);
-                event_row(c, b, e, day, buf_cstr(&u), "plan-e");
+                event_row(c, b, e, day, buf_cstr(&u), "plan-e", false);
             }
             for (int k = 0; k < ext.n; k++)
                 if (ext_overlaps(&ext.items[k], day, add_days(day, 1))) ext_row(b, &ext.items[k], day);
@@ -346,10 +350,72 @@ int plan_today_events(Ctx *c, Buf *b, bool wall) {
     for (int k = 0; k < n && k < 6; k++) {
         Event *e = tbl_at(&T_event, idx[k]);
         snprintf(href, sizeof href, "/plan/cal?edit=%d", e->id);
-        event_row(c, b, e, today, wall || !c->me ? NULL : href, wall ? "plan-we" : "plan-he");
+        event_row(c, b, e, today, wall || !c->me ? NULL : href, wall ? "plan-we" : "plan-he", false);
     }
     buf_puts(b, "</ul>");
     return n;
+}
+
+void plan_agenda(Ctx *c, int64_t from, int64_t to, Agenda *out) {
+    (void)c;
+    static int idx[MAX_EVENTS];
+    int n = events_between(from, to, idx, MAX_EVENTS);
+    for (int k = 0; k < n; k++) {
+        const Event *e = tbl_at(&T_event, idx[k]);
+        AgendaItem it = {0};
+        it.start = e->start;
+        it.end = e->end;
+        it.allday = e->allday;
+        str_copy(it.title, sizeof it.title, e->title);
+        str_copy(it.icon, sizeof it.icon, plan_task_icon(e->title));
+        char ymd[11];
+        fmt_ymd(e->start, ymd);
+        snprintf(it.link, sizeof it.link, "/plan/cal?day=%s&edit=%d", ymd, e->id);
+        it.who = e->who;
+        str_copy(it.kind, sizeof it.kind, "Event");
+        agenda_add(out, &it);
+    }
+}
+
+int plan_days(Ctx *c, Buf *b, int days, int max) {
+    static int idx[MAX_EVENTS];
+    int64_t today = day_start(c->now);
+    int rows = 0;
+    for (int d = 1; d <= days && rows < max; d++) {
+        int64_t day = add_days(today, d), next = add_days(day, 1);
+        int found = events_between(day, next, idx, MAX_EVENTS), n = 0, due = 0;
+        for (int k = 0; k < found; k++) /* once, on its first day (one that began earlier is today's) */
+            if (((const Event *)tbl_at(&T_event, idx[k]))->start >= day) idx[n++] = idx[k];
+        for (int i = 0; i < tbl_count(&T_task); i++) {
+            const Task *t = tbl_at(&T_task, i);
+            due += !t->done_at && t->due && day_start(t->due) == day;
+        }
+        if (!n && !due) continue;
+        DateTime dt = dt_local(day);
+        if (d == 1) buf_puts(b, "<h3 class=\"plan-day-h\">Tomorrow</h3>");
+        else H(b, "<h3 class=\"plan-day-h\">%s %d</h3>", weekday_name(dt.wday, false), dt.day);
+        buf_puts(b, "<ul class=\"plan-evs plan-compact\">");
+        for (int k = 0; k < n && rows < max; k++, rows++) event_row(c, b, tbl_at(&T_event, idx[k]), day, NULL, "plan-wd", true);
+        for (int i = 0; i < tbl_count(&T_task) && rows < max; i++) {
+            const Task *t = tbl_at(&T_task, i);
+            if (t->done_at || !t->due || day_start(t->due) != day) continue;
+            Person *p = person_get(t->who);
+            H(b, "<li class=\"plan-ev plan-day-task\" id=\"plan-wdt%d\"", t->id);
+            if (p) ui_hue_style(b, p->hue);
+            const char *icon = plan_task_icon(t->title);
+            H(b, "><span class=\"plan-ev-time\">To do</span><div class=\"plan-ev-main\"><b>%s%r%s</b></div>", icon,
+              icon[0] ? " " : "", t->title);
+            if (p) {
+                buf_puts(b, "<span class=\"plan-ev-who\">");
+                ui_avatar(b, p, "sm");
+                buf_puts(b, "</span>");
+            }
+            buf_puts(b, "</li>");
+            rows++;
+        }
+        buf_puts(b, "</ul>");
+    }
+    return rows;
 }
 
 /* ---------------------------------------------------------------- actions */

@@ -318,11 +318,11 @@ TEST(net_pages_and_widgets_render) {
     CHECK_HAS(th_page(adam, "/"), "devices online"); /* dashboard card */
     CHECK_HAS(th_page(adam, "/"), "Turn on discovery");
 
-    /* the wall display is public: render the widget with nobody signed in */
+    /* the card renders with nobody signed in too */
     Ctx c;
-    app_ctx(&c, 0, "/wall");
+    app_ctx(&c, 0, "/");
     Buf b = {0};
-    module_find("net")->widget(&c, &b, WIDGET_WALL);
+    module_find("net")->widget(&c, &b, WIDGET_HOME);
     CHECK_HAS(buf_cstr(&b), "devices online");
     int eva = th_person("Eva");
     CHECK(!th_act(eva, "net.scan", "on=1").ok); /* members can't switch discovery on */
@@ -331,9 +331,8 @@ TEST(net_pages_and_widgets_render) {
     net_ingest(r, 2, T0 + 30, true);
     buf_reset(&b);
     c.now = T0 + 30;
-    module_find("net")->widget(&c, &b, WIDGET_WALL);
-    CHECK_HAS(buf_cstr(&b), "Who&#39;s home"); /* card titles are escaped */
-    CHECK_HAS(buf_cstr(&b), "Adam");
+    module_find("net")->widget(&c, &b, WIDGET_HOME);
+    CHECK_HAS(buf_cstr(&b), "Home now"); /* a device has an owner now: who's home shows */
     buf_free(&b);
     app_ctx_free(&c);
     CHECK_HAS(th_page(adam, "/net"), "aria-checked=\"true\"");

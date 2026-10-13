@@ -567,6 +567,16 @@ static void init(void) {
 
 static void widget(Ctx *c, Buf *b, int where) { book_widget(c, b, where); }
 
+static bool row_now(Ctx *c, Buf *b, int kind, const char *arg) {
+    (void)kind, (void)arg;
+    return book_wall(c, b);
+}
+
+static const Block blocks[] = {
+    {"book.now", "Bookings", SCREEN_WALL, row_now, NULL},
+    {0},
+};
+
 /* Bookings in other modules' agendas (the planner's calendar, ...). */
 static void agenda(Ctx *c, int64_t from, int64_t to, Agenda *out) {
     for (int i = 0; i < tbl_count(&T_booking); i++) {
@@ -613,5 +623,6 @@ static const Module book = {
     .widget = widget,
     .widget_order = 10,
     .agenda = agenda,
+    .blocks = blocks,
 };
 MODULE(book)

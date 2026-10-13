@@ -52,6 +52,28 @@ static void activity_card(Ctx *c, Buf *b) {
     ui_card_end(b);
 }
 
+/* The wall's "Latest": what people did (not the network's own news - a new device, say), one
+   line each, newest first. Nothing yet: the wall leaves the card out. */
+static bool row_latest(Ctx *c, Buf *b, int kind, const char *arg) {
+    (void)kind, (void)arg;
+    int shown = 0;
+    for (int i = tbl_count(&T_activity) - 1; i >= 0 && shown < 6; i--) {
+        Activity *a = tbl_at(&T_activity, i);
+        if (!a->who) continue;
+        if (!shown++) buf_puts(b, "<ul class=\"feed home-wall-feed\">");
+        H(b, "<li><span class=\"feed-i\">%s</span><span class=\"feed-t\">%s</span><time>", a->icon[0] ? a->icon : "•", a->text);
+        ui_ago(b, a->ts, c->now);
+        buf_puts(b, "</time></li>");
+    }
+    if (shown) buf_puts(b, "</ul>");
+    return shown > 0;
+}
+
+static const Block blocks[] = {
+    {"home.latest", "Latest", SCREEN_WALL, row_latest, NULL},
+    {0},
+};
+
 static void page(Ctx *c, Buf *b) {
     ctx_title(c, "Home");
     DateTime d = dt_local(c->now);
@@ -65,7 +87,8 @@ static void page(Ctx *c, Buf *b) {
     snprintf(sub, sizeof sub, "%s %d %s · week %d", weekday_name(d.wday, false), d.day, month_name(d.mon, false),
              iso_week(c->now, NULL));
     ui_head(b, title, sub);
-    H(b, "<a class=\"btn ghost\" href=\"/wall\" title=\"Wall display\">");
+    /* /wall is the household's first wall screen (modules/screens answers it): a full load */
+    H(b, "<a class=\"btn ghost\" href=\"/wall\" data-native title=\"Wall display\">");
     ui_icon(b, "monitor");
     buf_puts(b, "<span>Wall</span></a>");
     ui_head_end(b);
@@ -89,5 +112,6 @@ static const Module home = {
     .icon = "home",
     .nav = 1,
     .page = page,
+    .blocks = blocks,
 };
 MODULE(home)

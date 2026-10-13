@@ -11,6 +11,12 @@ static int g_iter = 120000;
 
 bool auth_ready(void) { return g_salt[0] != '\0'; }
 
+bool auth_mac(const void *msg, size_t n, uint8_t out[32]) {
+    if (!g_salt[0]) return false;
+    hmac_sha256(g_salt, strlen(g_salt), msg, n, out);
+    return true;
+}
+
 void auth_configure(const char *server_salt, int iterations) {
     str_copy(g_salt, sizeof g_salt, server_salt ? server_salt : "");
     if (iterations > 0) g_iter = iterations;

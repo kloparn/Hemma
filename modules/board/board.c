@@ -400,37 +400,52 @@ static void page(Ctx *c, Buf *b) {
 
 /* ------------------------------------------------------------------ widget */
 
+/* The newest notes (pinned first) as little coloured notes; links only where they lead somewhere
+   one can go (the dashboard, not a wall). */
+static void minis(Ctx *c, Buf *b, Note **v, int show, bool links) {
+    buf_puts(b, "<div class=\"board-minis\">");
+    for (int i = 0; i < show; i++) {
+        Note *x = v[i];
+        H(b, "<div class=\"board-mini%r\"", x->pinned ? " pinned" : "");
+        ui_hue_style(b, x->hue);
+        buf_puts(b, "><p>");
+        render_text(b, x->text, links);
+        buf_puts(b, "</p><small>");
+        if (x->pinned) ui_icon(b, "pin");
+        Person *p = person_get(x->by);
+        H(b, "%s · ", p ? p->name : "Someone");
+        ui_ago(b, x->created, c->now);
+        buf_puts(b, "</small></div>");
+    }
+    buf_puts(b, "</div>");
+}
+
 static void widget(Ctx *c, Buf *b, int where) {
+    (void)where;
     Note **v;
     int n = collect(c->now, false, &v);
-    if (!n && where == WIDGET_WALL) { /* a calm wall: no empty cards */
-        free(v);
-        return;
-    }
-    int show = MIN(n, where == WIDGET_WALL ? 5 : 4);
-    ui_card(b, "Board", where == WIDGET_HOME ? "/board" : NULL, n > show ? "All notes" : "Open");
-    if (!n) {
-        buf_puts(b, "<p class=\"muted\">Nothing on the board. <a href=\"/board\">Leave a note</a></p>");
-    } else {
-        buf_puts(b, "<div class=\"board-minis\">");
-        for (int i = 0; i < show; i++) {
-            Note *x = v[i];
-            H(b, "<div class=\"board-mini%r\"", x->pinned ? " pinned" : "");
-            ui_hue_style(b, x->hue);
-            buf_puts(b, "><p>");
-            render_text(b, x->text, where == WIDGET_HOME);
-            buf_puts(b, "</p><small>");
-            if (x->pinned) ui_icon(b, "pin");
-            Person *p = person_get(x->by);
-            H(b, "%s · ", p ? p->name : "Someone");
-            ui_ago(b, x->created, c->now);
-            buf_puts(b, "</small></div>");
-        }
-        buf_puts(b, "</div>");
-    }
+    int show = MIN(n, 4);
+    ui_card(b, "Board", "/board", n > show ? "All notes" : "Open");
+    if (!n) buf_puts(b, "<p class=\"muted\">Nothing on the board. <a href=\"/board\">Leave a note</a></p>");
+    else minis(c, b, v, show, true);
     ui_card_end(b);
     free(v);
 }
+
+/* The wall's "Notes": a calm wall leaves the card out when there are none. */
+static bool row_notes(Ctx *c, Buf *b, int kind, const char *arg) {
+    (void)kind, (void)arg;
+    Note **v;
+    int n = collect(c->now, false, &v);
+    if (n) minis(c, b, v, MIN(n, 5), false);
+    free(v);
+    return n > 0;
+}
+
+static const Block blocks[] = {
+    {"board.notes", "Notes", SCREEN_WALL, row_notes, NULL},
+    {0},
+};
 
 /* ----------------------------------------------------------------- actions */
 
@@ -548,5 +563,6 @@ static const Module board = {
     .actions = actions,
     .widget = widget,
     .widget_order = 40,
+    .blocks = blocks,
 };
 MODULE(board)

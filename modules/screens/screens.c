@@ -1,6 +1,9 @@
 /* modules/screens — screens an admin puts together out of what the other modules offer: the TV
  * view (big rows you scroll down with the remote: Continue watching, On now, Series, Movies...)
- * and, next, wall displays.
+ * and walls (a tablet in the hall: a big clock, now and next, who's home, then cards - Today,
+ * Bookings, Coming days, the shopping list, notes... - as tall as what they show, in columns).
+ * One of each is made once (TV_ROWS, WALL_CARDS); "/wall", the old wall's address, opens the
+ * first wall.
  *
  * A screen is a list of rows. Each row names a Block some module offers ("media.continue",
  * core/app.h), what it shows when the block has choices (one series out of the library) and,
@@ -81,24 +84,38 @@ static void renumber(int screen) {
     }
 }
 
-/* A new screen's first rows: the ones a streaming app opens with, those whose module is here. */
-static void seed(void) {
-    static const char *const first[] = {"media.continue", "tv.onnow", "media.recent", "media.series", "media.movies"};
+/* A screen to start from, with those of `blocks` whose module is here. */
+static void seed(const char *name, int kind, const char *const *blocks, int n) {
     Screen s = {0};
-    str_copy(s.name, sizeof s.name, "TV");
-    s.kind = SCREEN_TV;
+    str_copy(s.name, sizeof s.name, name);
+    s.kind = kind;
     s.created = now_sec();
     tbl_put(&T_screen, &s);
     int pos = 0;
-    for (int i = 0; i < countof(first); i++) {
-        const Block *bl = block_find(first[i], NULL);
-        if (!bl || !(bl->kinds & SCREEN_TV)) continue;
+    for (int i = 0; i < n; i++) {
+        const Block *bl = block_find(blocks[i], NULL);
+        if (!bl || !(bl->kinds & kind)) continue;
         ScreenRow r = {0};
         r.screen = s.id;
         r.pos = ++pos;
-        str_copy(r.block, sizeof r.block, first[i]);
+        str_copy(r.block, sizeof r.block, blocks[i]);
         tbl_put(&T_screen_row, &r);
     }
+}
+
+/* The TV: the rows a streaming app opens with. */
+static const char *const TV_ROWS[] = {"media.continue", "tv.onnow", "media.recent", "media.series", "media.movies"};
+/* A wall: the day first (today, bookings, what's coming), then the list and the notes, then what's
+   on and what's new. */
+static const char *const WALL_CARDS[] = {"plan.today", "book.now",     "plan.days",    "plan.shop",
+                                         "board.notes", "tv.onnow",    "media.recent", "home.latest"};
+
+int screens_first(int kind) {
+    for (int i = 0; i < tbl_count(&T_screen); i++) {
+        const Screen *s = tbl_at(&T_screen, i);
+        if (s->kind == kind) return s->id;
+    }
+    return 0;
 }
 
 /* ======================================================= who's watching */
@@ -270,7 +287,7 @@ static void act_create(Ctx *c, Fields *f) {
         ctx_fail(c, "That's %d screens already - remove one first", SCREENS_MAX);
         return;
     }
-    s.kind = str_eq(fields_str(f, "kind"), "wall") ? SCREEN_WALL : SCREEN_TV; /* the form offers TV only, for now */
+    s.kind = str_eq(fields_str(f, "kind"), "wall") ? SCREEN_WALL : SCREEN_TV;
     s.created = c->now;
     s.created_by = c->me->id;
     tbl_put(&T_screen, &s);
@@ -418,9 +435,28 @@ static void init(void) {
 static void start(void) {
     g_nseats = 0;
     seats_watch(now_sec());
-    if (setting_int("screens.seeded", 0)) return; /* once: a household that removed every screen keeps none */
-    if (!tbl_count(&T_screen)) seed();
-    setting_set_int("screens.seeded", 1);
+    /* once each: a household that removed them keeps none */
+    if (!setting_int("screens.seeded", 0)) {
+        if (!tbl_count(&T_screen)) seed("TV", SCREEN_TV, TV_ROWS, countof(TV_ROWS));
+        setting_set_int("screens.seeded", 1);
+    }
+    if (!setting_int("screens.wall_seeded", 0)) { /* (walls came later: a household with a TV gets one too) */
+        if (!screens_first(SCREEN_WALL)) seed("Wall", SCREEN_WALL, WALL_CARDS, countof(WALL_CARDS));
+        setting_set_int("screens.wall_seeded", 1);
+    }
+}
+
+/* "/wall" - the old wall display's address (bookmarks, the home page's Wall button): the first
+   wall screen, or the list when there's none. */
+static bool http(Ctx *c, Conn *conn, HttpReq *r) {
+    (void)c;
+    if (!str_eq(r->path, "/wall") || (!str_eq(r->method, "GET") && !str_eq(r->method, "HEAD"))) return false;
+    char loc[64];
+    int id = screens_first(SCREEN_WALL);
+    if (id) snprintf(loc, sizeof loc, "Location: /screens/%d\r\n", id);
+    else snprintf(loc, sizeof loc, "Location: /screens\r\n");
+    conn_reply(conn, 302, "text/plain; charset=utf-8", "", 0, loc);
+    return true;
 }
 
 static void tick(int64_t now_ms) {
@@ -438,5 +474,6 @@ static const Module screens = {
     .tick = tick,
     .page = screens_page,
     .actions = actions,
+    .http = http,
 };
 MODULE(screens)

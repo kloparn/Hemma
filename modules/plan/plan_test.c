@@ -357,22 +357,70 @@ TEST(plan_widgets_render_today_and_shopping) {
     CHECK_HAS(home, "Oat milk");
     CHECK_HAS(home, "data-a=\"plan.task_done\""); /* tick it off right from the dashboard */
 
-    /* the wall display: big type, read-only for anonymous viewers */
+    /* a wall's "Today" and "Shopping list" cards: big type, nothing to tick or open */
     const Module *m = module_find("plan");
     CHECK(m && m->widget);
     Ctx c;
-    app_ctx(&c, 0, "/wall");
+    app_ctx(&c, 0, "/screens/2");
     Buf b = {0};
-    m->widget(&c, &b, WIDGET_WALL);
+    CHECK(block_find("plan.today", NULL)->render(&c, &b, SCREEN_WALL, ""));
     CHECK_HAS(buf_cstr(&b), "plan-wall");
     CHECK_HAS(buf_cstr(&b), "Take out trash");
+    CHECK_HAS(buf_cstr(&b), "Dinner with eva");
     CHECK(!strstr(buf_cstr(&b), "<form"));
+    CHECK(!strstr(buf_cstr(&b), "?edit="));
+    buf_reset(&b);
+    CHECK(block_find("plan.shop", NULL)->render(&c, &b, SCREEN_WALL, ""));
+    CHECK_HAS(buf_cstr(&b), "Oat milk");
     /* nobody signed in on a home-style render either: still fine, just not interactive */
     buf_reset(&b);
     m->widget(&c, &b, WIDGET_HOME);
     CHECK_HAS(buf_cstr(&b), "Take out trash");
     CHECK(!strstr(buf_cstr(&b), "<form"));
     CHECK(!strstr(buf_cstr(&b), "?edit="));
+    buf_free(&b);
+    app_ctx_free(&c);
+    th_halt();
+}
+
+TEST(plan_wall_coming_days_and_the_shared_agenda) {
+    g_fake_now = NOW; /* Wednesday 7 October, 10:00 */
+    th_boot();
+    int adam = th_person("Adam");
+    Ctx c;
+    app_ctx(&c, 0, "/screens/2");
+    Buf b = {0};
+    const Block *days = block_find("plan.days", NULL);
+    CHECK(days && !days->render(&c, &b, SCREEN_WALL, "")); /* nothing coming: the wall leaves it out */
+    CHECK(th_act(adam, "plan.event_add", "q=dentist+tomorrow+14%3A30").ok);
+    CHECK(th_act(adam, "plan.task_add", "q=water+plants+tomorrow").ok);
+    CHECK(th_act(adam, "plan.event_add", "q=book+club+sat+19%3A00").ok);
+    CHECK(th_act(adam, "plan.event_add", "q=party+today+20%3A00").ok); /* today's: the "Today" card's */
+    CHECK(th_act(adam, "plan.event_add", "q=grandma+visits+fri-sun").ok); /* three days: one row */
+    buf_reset(&b);
+    CHECK(days->render(&c, &b, SCREEN_WALL, ""));
+    const char *s = buf_cstr(&b);
+    const char *g = strstr(s, "Grandma visits");
+    CHECK(g && !strstr(g + 1, "Grandma visits"));
+    CHECK_HAS(s, "<h3 class=\"plan-day-h\">Friday 9</h3>");
+    CHECK_HAS(s, ">until Sun</span>");
+    CHECK_HAS(s, "<h3 class=\"plan-day-h\">Tomorrow</h3>");
+    CHECK_HAS(s, "Dentist");
+    CHECK_HAS(s, "Water plants");
+    CHECK_HAS(s, "<h3 class=\"plan-day-h\">Saturday 10</h3>");
+    CHECK(strstr(s, "Dentist") < strstr(s, "Book club"));
+    CHECK(!strstr(s, "Party"));
+    CHECK(!strstr(s, "<form"));
+    /* the calendar's events go into the shared agenda (a wall's "now and next")... */
+    Agenda ag = {0};
+    agenda_collect(&c, day_start(NOW), add_days(day_start(NOW), 2), NULL, &ag);
+    CHECK_INT(ag.n, 2); /* the party, the dentist (Grandma comes Friday) */
+    CHECK_STR(ag.items[0].kind, "Event");
+    agenda_free(&ag);
+    /* ...which the plan's own calendar reads without them: nothing twice */
+    agenda_collect(&c, day_start(NOW), add_days(day_start(NOW), 2), "plan", &ag);
+    CHECK_INT(ag.n, 0);
+    agenda_free(&ag);
     buf_free(&b);
     app_ctx_free(&c);
     th_halt();

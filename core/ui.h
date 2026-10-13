@@ -45,6 +45,7 @@ typedef struct {
     int nsubs;
     bool focus_sound;        /* autofocus the sound button (a live channel on a TV: OK = sound) */
     bool tv;                 /* a remote: arrows move between the bar's buttons (else they're the video's) */
+    const char *trouble;     /* shown when the browser can't play it (NULL: "This video won't play in this browser.") */
 } UiPlayer;
 void ui_player(Buf *b, const UiPlayer *p);
 

@@ -80,7 +80,7 @@ files, HTML that is escaped by default, and several full code reviews so far.
 | **Board** | The fridge door: notes with pins and colours that disappear when they're out of date |
 | **Network** | The devices on your network, who owns which, a good guess at who's home (from phones on the Wi-Fi) and Wake-on-LAN |
 | **Screens** | Hemma on the TV: a streaming-app view with big rows you move through with the remote (Continue watching, On now, Recently added, Series, Movies), arranged by an admin. The TV asks *Who's watching?*: pick yourself (no password) and your progress follows you; on the TV you can only watch |
-| **Wall** | An always-on dashboard for a tablet on the wall, signed in with a read-only *display* account |
+| **Wall** | An always-on overview for a tablet on the wall (a Screen too): a big clock, what's on now and next, who's home, then cards for today, bookings, the coming days, the shopping list, notes, Live TV and what's new - an admin picks them. Cards with nothing to show stay away. Signed in with a read-only *display* account |
 | **Household** | People, sign-ins and roles, and your home's name |
 | **System** | For admins: is everything working (in plain words), a getting-started list that ticks itself off, the server's log live, and what to do when something's wrong |
 

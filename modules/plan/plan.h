@@ -96,7 +96,14 @@ void plan_shop_page(Ctx *c, Buf *b);
 void plan_cal_page(Ctx *c, Buf *b);
 int plan_today_tasks(Ctx *c, Buf *b, bool wall);  /* overdue + due today rows; returns how many */
 int plan_today_events(Ctx *c, Buf *b, bool wall); /* today's event rows; returns how many */
-void plan_shop_widget(Ctx *c, Buf *b, bool wall);
+void plan_shop_widget(Ctx *c, Buf *b); /* the home dashboard's card */
+/* Calendar events for other modules' agendas (the wall's "now and next"); the plan's own calendar
+   reads the agenda without "plan", so they never show twice there. */
+void plan_agenda(Ctx *c, int64_t from, int64_t to, Agenda *out);
+int plan_shop_items(Buf *b, int max);   /* what's still to buy (max shown, "+N more"); returns how many, 0 = nothing drawn */
+/* The days after today, up to `days` of them: each day with something on it under its name
+   (events; chores due then), at most `max` rows in all. Returns the rows drawn. */
+int plan_days(Ctx *c, Buf *b, int days, int max);
 int plan_open_tasks(int who); /* who: 0 = everyone */
 int plan_open_items(void);
 void plan_subtitle(Buf *b); /* "4 to-dos · 3 on the list · 2 events this week" */

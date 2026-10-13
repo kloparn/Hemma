@@ -39,6 +39,7 @@ int screens_choices(Ctx *c, const Block *bl, BlockChoice **out);
 int screens_viewer(Ctx *c);
 /* "/screens/<id>": the screen's address, and what PREF_START holds for a display account showing it. */
 void screens_url(int screen, char out[32]);
+int screens_first(int kind); /* the first screen of that kind (SCREEN_TV / SCREEN_WALL), 0 = none */
 
 void screens_page(Ctx *c, Buf *b); /* screens_page.c */
 

@@ -181,11 +181,22 @@ static void pl_button(Buf *b, const char *what, const char *label, const char *i
 void ui_player(Buf *b, const UiPlayer *p) {
     H(b, "<div class=\"pl%r\" id=\"%s-pl\" data-player=\"%s\" data-static=\"%s\" data-paused hidden>", p->live ? " pl-live" : "",
       p->box, p->video, p->key);
-    if (!p->live) { /* big in the middle while paused (the bar's own play button is the one to tab to) */
-        buf_puts(b, "<button type=\"button\" class=\"pl-big\" data-p=\"play\" tabindex=\"-1\" aria-label=\"Play\">");
-        ui_icon(b, "go");
-        buf_puts(b, "</button>");
-    }
+    /* big in the middle while paused (the bar's own play button is the one to tab to) - a live
+       channel too: a browser that won't start one by itself waits for a press */
+    buf_puts(b, "<button type=\"button\" class=\"pl-big\" data-p=\"play\" tabindex=\"-1\" aria-label=\"Play\">");
+    ui_icon(b, "go");
+    buf_puts(b, "</button>");
+    /* with the browser's own player in Hemma's place (wire.js: data-native) the bar is gone, but full
+       screen stays the box's - the "Next episode" card shows there, and the next episode keeps it */
+    H(b, "<button type=\"button\" class=\"pl-natfs\" id=\"%s-natfs\" data-fullscreen=\"%s\" data-static hidden "
+         "aria-pressed=\"false\" aria-label=\"Full screen\" title=\"Full screen\"><span class=\"pl-a\">",
+      p->box, p->box);
+    ui_icon(b, "expand");
+    buf_puts(b, "</span><span class=\"pl-b\">");
+    ui_icon(b, "shrink");
+    buf_puts(b, "</span></button>");
+    /* the browser can't play it (wire.js sets data-err on the video's "error"): say so, not spin */
+    H(b, "<p class=\"pl-err\" role=\"alert\">%s</p>", p->trouble ? p->trouble : "This video won't play in this browser.");
     H(b, "<span class=\"pl-spin\" aria-hidden=\"true\"></span><div class=\"pl-bar\"%r>", p->tv ? " data-arrows" : "");
     if (!p->live)
         H(b, "<div class=\"pl-seek\"><span class=\"pl-buf\"></span><span class=\"pl-fill\"></span><input type=\"range\" "

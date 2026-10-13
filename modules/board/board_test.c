@@ -170,11 +170,12 @@ TEST(board_widgets_render_for_anonymous_screens) {
     g_fake_now += 60;
     CHECK(th_act(adam, "board.post", "text=Loose+thing").ok);
     const Module *m = module_find("board");
-    CHECK(m && m->widget);
+    const Block *bl = block_find("board.notes", NULL); /* a wall's "Notes" */
+    CHECK(m && m->widget && bl && (bl->kinds & SCREEN_WALL));
     Ctx c;
-    app_ctx(&c, 0, "/wall");
+    app_ctx(&c, 0, "/screens/2");
     Buf b = {0};
-    m->widget(&c, &b, WIDGET_WALL);
+    CHECK(bl->render(&c, &b, SCREEN_WALL, ""));
     const char *s = buf_cstr(&b);
     CHECK(strstr(s, "Pinned thing") && strstr(s, "Loose thing"));
     CHECK(strstr(s, "Pinned thing") < strstr(s, "Loose thing"));
@@ -195,8 +196,8 @@ TEST(board_empty_states) {
     Ctx c;
     app_ctx(&c, 0, "/");
     Buf b = {0};
-    m->widget(&c, &b, WIDGET_WALL);
-    CHECK_INT(b.len, 0); /* a calm wall shows nothing rather than an empty card */
+    CHECK(!block_find("board.notes", NULL)->render(&c, &b, SCREEN_WALL, ""));
+    CHECK_INT(b.len, 0); /* a calm wall leaves the card out rather than show it empty */
     m->widget(&c, &b, WIDGET_HOME);
     CHECK_HAS(buf_cstr(&b), "Nothing on the board");
     buf_free(&b);

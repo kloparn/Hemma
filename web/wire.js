@@ -56,6 +56,7 @@
       const h = root.dataset.h;
       if (h) delete root.dataset.h;
       send(h ? { t: 'hello', url: here(), v: VERSION, h } : { t: 'hello', url: here(), v: VERSION });
+      while (later.length) send({ t: 'log', url: here(), m: later.shift() });
     };
     ws.onmessage = (e) => {
       let ops;
@@ -73,6 +74,16 @@
     };
   }
   const send = (msg) => (open && ws.send(JSON.stringify(msg)), open);
+  // Trouble goes to Hemma's log (the System page): a TV's browser has no console anyone can read.
+  // A script error here, a video that errs or doesn't start (see media()). The server takes 20
+  // lines per connection; lines from before the socket opened wait for it (10 at most).
+  const later = [];
+  const report = (what) => {
+    const m = String(what).slice(0, 400);
+    if (!send({ t: 'log', url: here(), m }) && later.length < 10) later.push(m);
+  };
+  addEventListener('error', (e) => report(`script error: ${e.message} (${String(e.filename || '').split('/').pop()}:${e.lineno})`));
+  addEventListener('unhandledrejection', (e) => report(`script error: ${e.reason && e.reason.message ? e.reason.message : e.reason}`));
   const pairs = (fd) => [...fd].filter(([, v]) => typeof v === 'string');
   const busy = (f, on) => (on ? f.setAttribute('aria-busy', 'true') : f.removeAttribute('aria-busy'));
 
@@ -638,18 +649,48 @@
     m._t0 = performance.now();
     m._last = 0;
     m._away = false; // the "next episode" card put away
+    m._played = false;
+    m._nativeOk = false; /* (a new video: Hemma's player again - see "error") */
+    clearTimeout(m._dog);
+    if (m.autoplay || m.hasAttribute('data-onair')) watch(m); /* (others: once someone presses play) */
     plWire(m);
     if (again) return;
-    // its player shows how it's doing
-    for (const t of ['play', 'pause', 'playing', 'waiting', 'seeked', 'volumechange', 'durationchange', 'progress', 'ended']) {
+    // its player shows how it's doing; "waiting" (the spinner) ends with anything that says the
+    // picture can go on - an engine that never says "playing" mustn't leave it spinning
+    const onward = { playing: 1, pause: 1, seeked: 1, canplay: 1, loadeddata: 1 };
+    for (const t of ['play', 'pause', 'playing', 'waiting', 'seeked', 'canplay', 'loadeddata', 'volumechange',
+      'durationchange', 'progress', 'ended']) {
       m.addEventListener(t, () => {
+        if (t === 'playing') { m._played = true; clearTimeout(m._dog); }
+        if (t === 'play' && !m._played) watch(m);
         const pl = plOf(m);
         if (!pl) return;
-        if (t === 'waiting' || t === 'playing' || t === 'pause' || t === 'seeked') flag(pl, 'data-wait', t === 'waiting');
+        if (t === 'waiting' || onward[t]) flag(pl, 'data-wait', t === 'waiting');
         plSync(pl, m);
         if (t === 'play' || t === 'pause' || t === 'volumechange') plWake(pl);
       });
     }
+    m.addEventListener('error', () => {
+      const e = m.error;
+      if (!e || !m.isConnected) return; /* (one taken off the page: not the next page's player's business) */
+      clearTimeout(m._dog);
+      const id = m.dataset.id || m.id, why = `error ${e.code}${e.message ? ` (${e.message})` : ''}`;
+      const pl = plOf(m), native = m.hasAttribute('data-native');
+      // Hemma's player couldn't play it: the browser's own player takes over (nativePlayer).
+      if (pl && !native) {
+        report(`video ${id}: ${why} in Hemma's player - switching to the browser's own player - ${navigator.userAgent}`);
+        nativePlayer(m, pl);
+        return;
+      }
+      if (pl) { pl.hidden = false; flag(pl, 'data-err', true); flag(pl, 'data-wait', false); plShow(pl, true); }
+      report(`video ${id}: ${why}${native ? " - in the browser's own player too" : ''} - ${navigator.userAgent}`);
+    });
+    m.addEventListener('playing', () => { /* (the browser's own player plays it: say so once) */
+      if (m.hasAttribute('data-native') && !m._nativeOk) {
+        m._nativeOk = true;
+        report(`video ${m.dataset.id || m.id} plays in the browser's own player - ${navigator.userAgent}`);
+      }
+    });
     if (m.hasAttribute('data-onair')) onair(m);
     else {
       // "continue watching" (data-report) skips a resume point in the last seconds
@@ -668,7 +709,9 @@
       if (Math.abs(m.currentTime - m._last) >= 15) { m._last = m.currentTime; tell(false); }
       upnext(m);
       const pl = plOf(m);
-      if (pl) plSync(pl, m);
+      if (!pl) return;
+      if (!m.paused) flag(pl, 'data-wait', false); /* (time moves: not waiting) */
+      plSync(pl, m);
     });
     m.addEventListener('pause', () => {
       if (!m.ended) tell(false);
@@ -679,6 +722,48 @@
       tell(true);
       if (m.dataset.next) send({ t: 'nav', url: m.dataset.next }) || (location.href = m.dataset.next);
     });
+  }
+
+  // Two players (owner, 2026-10-13): Hemma's first; a video it can't play gets the browser's own -
+  // a NEW <video> with the browser's controls in its place, Hemma's overlay hidden (a TV that
+  // gave a decode error under Hemma's player may refuse that element after, and some TVs decode
+  // HEVC only in a plain player). From the same spot (live: where the channel is now); the old
+  // element lets go of its stream first (a TV has one decoder). Progress, the next episode and live
+  // TV's rules carry on (media()); the next video tries Hemma's player again.
+  function nativePlayer(m, pl) {
+    const n = document.createElement('video'), live = m.hasAttribute('data-onair'), focused = document.activeElement === m;
+    for (let i = 0; i < m.attributes.length; i++) n.setAttribute(m.attributes[i].name, m.attributes[i].value);
+    for (const t of m.querySelectorAll('track')) n.append(t.cloneNode(true));
+    const at = live ? m._at + (performance.now() - m._t0) / 1000
+      : m.currentTime > 1 ? m.currentTime : parseFloat(m.dataset.resume || '0');
+    n.setAttribute('data-resume', String(Math.floor(at)));
+    n.setAttribute('data-native', '');
+    n.setAttribute('autoplay', '');
+    if (!live) n.setAttribute('controls', ''); /* (a live channel stays without: nothing to pause or wind) */
+    n.setAttribute('controlslist', 'nofullscreen'); /* full screen stays the box's: the card shows, the next episode keeps it */
+    n.muted = m.muted;
+    n.volume = m.volume;
+    m.removeAttribute('src');
+    m.load();
+    m.replaceWith(n);
+    media(n); /* (plWire: the overlay keeps only its full-screen button - data-native) */
+    if (focused) n.focus();
+    const p = n.play();
+    if (p && p.catch) p.catch(() => {});
+  }
+
+  // A video meant to play (autoplay, live, or play pressed) that hasn't started 25 s later says how
+  // it looks, in the log: ready/network state, paused, buffered, the browser.
+  function watch(m) {
+    clearTimeout(m._dog);
+    m._dog = setTimeout(() => {
+      if (m._played || !m.isConnected) return;
+      let buf = '';
+      for (let i = 0; i < m.buffered.length; i++) buf += `${m.buffered.start(i).toFixed(0)}-${m.buffered.end(i).toFixed(0)} `;
+      report(`video ${m.dataset.id || m.id} hasn't started after 25 s: readyState ${m.readyState}, networkState ` +
+        `${m.networkState}, paused ${m.paused}, muted ${m.muted}, at ${(m.currentTime || 0).toFixed(1)} s, buffered ` +
+        `${buf || 'nothing'}, error ${m.error ? m.error.code : 'none'} - ${navigator.userAgent}`);
+    }, 25000);
   }
 
   // [data-upnext="S"]: the page's "next episode" card. It shows in the video's last S seconds and
@@ -736,15 +821,18 @@
   function plWire(v) {
     const pl = plOf(v);
     if (!pl) return;
-    v.controls = false;
     pl.hidden = false;
+    flag(pl, 'data-native', v.hasAttribute('data-native'));
+    if (v.hasAttribute('data-native')) return; /* (the browser's own player for this video: see nativePlayer) */
+    v.controls = false;
     pl._drag = false;
+    flag(pl, 'data-err', false); /* (a new video: whatever the last one couldn't do) */
     if (v._sub !== undefined) subPick(pl, v, v._sub);
     plSync(pl, v);
     plWake(pl);
   }
   function plSync(pl, v) {
-    flag(pl, 'data-paused', v.paused && !v.hasAttribute('data-onair'));
+    flag(pl, 'data-paused', v.paused); /* (a live channel too: one that never started) */
     flag(pl, 'data-muted', v.muted || v.volume === 0);
     const d = v.duration, seek = pl.querySelector('[data-p="seek"]');
     if (seek && d > 0 && isFinite(d)) {
@@ -790,7 +878,7 @@
     const v = plVideo(pl);
     if (!v || !pl.isConnected) return;
     const live = v.hasAttribute('data-onair');
-    if (v.paused && !live) return; // paused: it stays until playing again
+    if (v.paused) return; // paused: it stays until playing again
     if ((live && v.muted) || pl._drag || pl.querySelector('[role="menu"]:not([hidden])') ||
         (pointer === 'mouse' && pl.querySelector('.pl-bar:hover'))) {
       pl._t = setTimeout(() => plSleep(pl), 3000);
@@ -800,6 +888,7 @@
   }
   const play = (v) => {
     if (!v.paused) { v.pause(); return; }
+    if (v.hasAttribute('data-onair')) v.muted = false; /* (a channel that never started: a press may have sound) */
     const p = v.play();
     if (p && p.catch) p.catch(() => {});
   };
@@ -846,7 +935,7 @@
     const part = t.closest('[data-player] [data-p], [data-player] [data-sub]');
     const pic = part ? null : t.closest('video');
     const pl = part ? part.closest('[data-player]') : plOf(pic);
-    const v = pl && !pl.hidden && plVideo(pl);
+    const v = pl && !pl.hidden && !pl.hasAttribute('data-native') && plVideo(pl); /* (the browser's own player: its own clicks) */
     if (!v) { if (!t.closest('[data-player] [role="menu"]')) menus(null); return; }
     const was = pl.hasAttribute('data-on');
     plWake(pl);
@@ -904,17 +993,30 @@
     moved = Date.now();
     for (const pl of players()) if (pl.parentNode.contains(e.target)) plWake(pl);
   }, true);
+  const KEY_CODES = {
+    13: 'Enter', 32: ' ', 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown', 70: 'f', 75: 'k', 77: 'm',
+    415: 'MediaPlay', 19: 'MediaPause', 10252: 'MediaPlayPause', 412: 'MediaRewind', 417: 'MediaFastForward',
+  };
   // (registered before [data-arrows]: on a player the arrows are its keys first)
   function playerKeys(e) {
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
     const t = document.activeElement, none = unfocused();
     let pl = null;
     for (const p of players()) if (none || p.parentNode.contains(t)) { pl = p; break; }
-    const v = pl && plVideo(pl);
+    const v = pl && !pl.hasAttribute('data-native') && plVideo(pl); /* (the browser's own player: its own keys) */
     if (!v) return;
     if (!none && (t.isContentEditable || /^(TEXTAREA|SELECT)$/.test(t.tagName) || (t.tagName === 'INPUT' && t.type !== 'range'))) return;
     plWake(pl);
-    const k = e.key, live = v.hasAttribute('data-onair'), onSeek = !none && t.dataset.p === 'seek';
+    // (a TV's browser may not name its keys: by their numbers then - OK, Space, arrows, the remote's
+    // play/pause/rewind/forward buttons)
+    const k = e.key && e.key !== 'Unidentified' ? e.key : KEY_CODES[e.keyCode] || '';
+    const live = v.hasAttribute('data-onair'), onSeek = !none && t.dataset.p === 'seek';
+    if (!live && /^Media(Play|Pause|PlayPause|Rewind|FastForward)$/.test(k)) {
+      e.preventDefault();
+      if (k === 'MediaRewind' || k === 'MediaFastForward') seekBy(v, k === 'MediaRewind' ? -10 : 10);
+      else if (k === 'MediaPlayPause' || (k === 'MediaPlay') === v.paused) play(v);
+      return;
+    }
     // the picture, or one of its buttons (a computer's: Space and the arrows stay the video's, as on
     // any player); a TV's bar ([data-arrows]) moves the remote's focus between them instead
     const bare = none || t === v || (t.tagName === 'BUTTON' && pl.contains(t) && !t.closest('[data-arrows], [role="menu"]'));
@@ -924,7 +1026,15 @@
     if (item && (up || down)) {
       const s = up ? item.previousElementSibling : item.nextElementSibling;
       if (s) act = () => s.focus();
-    } else if (!live && (k === 'k' || k === 'K' || (k === ' ' && (bare || onSeek)) || (k === 'Enter' && t === v))) act = () => play(v);
+    } else if (!live && (k === 'k' || k === 'K' || (k === ' ' && (bare || onSeek)) || (k === 'Enter' && (t === v || none)))) act = () => play(v);
+    else if (live && k === 'Enter' && none) act = () => { // (OK with nothing focused: the sound - or the picture, if it never started)
+      if (!v.paused) mute(v);
+      else {
+        v.muted = false;
+        const p = v.play();
+        if (p && p.catch) p.catch(() => {});
+      }
+    };
     else if (!live && (bare || onSeek) && (k === 'ArrowLeft' || k === 'Left')) act = () => seekBy(v, -10);
     else if (!live && (bare || onSeek) && (k === 'ArrowRight' || k === 'Right')) act = () => seekBy(v, 10);
     else if (k === 'm' || k === 'M') act = () => mute(v);

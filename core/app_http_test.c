@@ -211,6 +211,97 @@ TEST(app_http_sign_in_pages_wire_and_sign_out) {
     th_halt();
 }
 
+/* A Samsung TV's video player (2026) fetches the <video>'s file without the page's cookie: the
+   address carries a key instead (ctx_url_key) - for that one path and session, endpoints only. */
+TEST(app_http_address_keys_open_one_endpoint_for_one_session) {
+    if (!module_find("media")) return; /* the endpoint that answers */
+    th_boot();
+    auth_configure("e2e-salt", 1000);
+    int adam = th_person("Adam");
+    Person p = *person_get(adam);
+    str_copy(p.username, sizeof p.username, "adam");
+    auth_hash("correct horse", p.pass, sizeof p.pass);
+    p.role = ROLE_ADMIN; /* (no admin: strangers would get the welcome page, not the sign-in page) */
+    tbl_put(&T_person, &p);
+
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    Buf r = {0};
+    char req[1024], cookie[64];
+    const char *good = "username=adam&password=correct+horse";
+    snprintf(req, sizeof req, "POST /login HTTP/1.1\r\nHost: t\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",
+             strlen(good), good);
+    request(port, req, &r);
+    cookie_of(&r, cookie, sizeof cookie);
+    CHECK_INT(strlen(cookie), 32);
+
+    /* the key a page of this session puts on a video's address */
+    char token[65];
+    sha256_hex(cookie, strlen(cookie), token);
+    Session *s = NULL;
+    for (int i = 0; i < tbl_count(&T_session); i++)
+        if (str_eq(((Session *)tbl_at(&T_session, i))->token, token)) s = tbl_at(&T_session, i);
+    CHECK(s != NULL);
+    Ctx kc = {.sess = s};
+    char key[CTX_KEY_LEN], page_key[CTX_KEY_LEN];
+    ctx_url_key(&kc, "/media/file/0123456789abcdef", key);
+    ctx_url_key(&kc, "/people", page_key);
+    CHECK(key[0] && !str_eq(key, page_key));
+
+    /* no cookie, the key: the endpoint answers as Adam (an id not in the library: its own 404) */
+    snprintf(req, sizeof req, "GET /media/file/0123456789abcdef?k=%s HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n",
+             key);
+    request(port, req, &r);
+    CHECK_HAS(buf_cstr(&r), "HTTP/1.1 404");
+    CHECK_HAS(body_of(&r), "not in the library");
+    snprintf(req, sizeof req, "HEAD /media/file/0123456789abcdef?k=%s HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n",
+             key);
+    request(port, req, &r);
+    CHECK_HAS(buf_cstr(&r), "HTTP/1.1 404");
+
+    /* ...and nothing else: no key, another file, a changed key, a page, a form post */
+    request(port, "GET /media/file/0123456789abcdef HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", &r);
+    CHECK_HAS(body_of(&r), "action=\"/login\"");
+    snprintf(req, sizeof req, "GET /media/file/1111111111111111?k=%s HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n",
+             key);
+    request(port, req, &r);
+    CHECK_HAS(body_of(&r), "action=\"/login\"");
+    char bent[CTX_KEY_LEN];
+    str_copy(bent, sizeof bent, key);
+    if (bent[0]) bent[strlen(bent) - 1] = bent[strlen(bent) - 1] == '0' ? '1' : '0';
+    snprintf(req, sizeof req, "GET /media/file/0123456789abcdef?k=%s HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n",
+             bent);
+    request(port, req, &r);
+    CHECK_HAS(body_of(&r), "action=\"/login\"");
+    snprintf(req, sizeof req, "GET /people?k=%s HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", page_key);
+    request(port, req, &r);
+    CHECK_HAS(body_of(&r), "action=\"/login\""); /* a key never opens a page */
+    snprintf(req, sizeof req,
+             "POST /media/file/0123456789abcdef?k=%s HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+             key);
+    request(port, req, &r);
+    CHECK(!strstr(body_of(&r), "not in the library"));
+
+    /* signed out: the key dies with the session */
+    snprintf(req, sizeof req,
+             "POST /logout HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+             cookie);
+    request(port, req, &r);
+    snprintf(req, sizeof req, "GET /media/file/0123456789abcdef?k=%s HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n",
+             key);
+    request(port, req, &r);
+    CHECK_HAS(body_of(&r), "action=\"/login\"");
+
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    th_halt();
+}
+
 /* ---- the wire: who re-renders what ---- */
 
 static int account(const char *name, const char *user, const char *pw, int role) {
@@ -556,6 +647,76 @@ TEST(app_live_messages_and_signed_out_screens_are_bounded) {
     server_shutdown();
     buf_free(&a);
     buf_free(&r);
+    th_halt();
+}
+
+/* The log lines a test sees (the server thread logs too: a lock) */
+static Lock g_seen_lock = LOCK_INIT;
+static int g_browser_lines;
+static char g_browser_last[600];
+static void seen_sink(LogLevel level, int64_t ts, const char *line) {
+    (void)level, (void)ts;
+    if (!strstr(line, "browser of ")) return;
+    lock_take(&g_seen_lock);
+    g_browser_lines++;
+    str_copy(g_browser_last, sizeof g_browser_last, line);
+    lock_give(&g_seen_lock);
+}
+
+static int browser_lines(char *last, size_t cap) {
+    lock_take(&g_seen_lock);
+    int n = g_browser_lines;
+    if (last) str_copy(last, cap, g_browser_last);
+    lock_give(&g_seen_lock);
+    return n;
+}
+
+TEST(app_a_browser_reports_its_trouble_to_the_log) {
+    /* a TV's browser has no console anyone can read: wire.js sends script errors and stuck videos */
+    th_boot();
+    auth_configure("e2e-salt", 1000);
+    account("Living room TV", "tv", "tv password", ROLE_DISPLAY);
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char tv[64], last[600];
+    sign_in(port, "username=tv&password=tv+password", tv, sizeof tv);
+    LogSink was = log_set_sink(seen_sink);
+    LogLevel level = g_log_level;
+    bool to_stderr = g_log_stderr;
+    g_log_level = LOG_WARN; /* (tests run quiet: listen, without printing) */
+    g_log_stderr = false;
+    g_browser_lines = 0;
+    Buf a = {0};
+    sock_t st = ws_open(port, tv);
+    ws_say(st, "{\"t\":\"hello\",\"url\":\"/tv/1\"}");
+    CHECK(ws_wait(st, &a, "[\"morph\",", 3000));
+    ws_say(st, "{\"t\":\"log\",\"url\":\"/tv/1\",\"m\":\"video tv-video hasn't started after 25 s\\nFAKE line\"}");
+    for (int i = 0; i < 200 && !browser_lines(NULL, 0); i++) plat_sleep_ms(10);
+    CHECK_INT(browser_lines(last, sizeof last), 1);
+    CHECK_HAS(last, "browser of tv (127.0.0.1) on /tv/1: video tv-video hasn't started after 25 s");
+    CHECK(!strchr(last, '\n')); /* (a browser can't forge log lines) */
+    for (int i = 0; i < 30; i++) ws_say(st, "{\"t\":\"log\",\"url\":\"/\",\"m\":\"again\"}");
+    ws_wait(st, &a, NULL, 400);
+    CHECK_INT(browser_lines(last, sizeof last), 20); /* 20 per connection, then quiet */
+    CHECK_HAS(last, "(and no more from it)");
+    /* signed out: nothing */
+    sock_t sx = ws_open(port, "");
+    ws_say(sx, "{\"t\":\"hello\",\"url\":\"/\"}");
+    ws_say(sx, "{\"t\":\"log\",\"url\":\"/\",\"m\":\"stranger\"}");
+    ws_wait(sx, &a, NULL, 300);
+    CHECK_INT(browser_lines(NULL, 0), 20);
+    log_set_sink(was);
+    g_log_level = level;
+    g_log_stderr = to_stderr;
+    sock_close(st);
+    sock_close(sx);
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&a);
     th_halt();
 }
 

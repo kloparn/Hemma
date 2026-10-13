@@ -58,6 +58,10 @@ int media_episodes_in(const MediaSeries *s); /* both halves of a "S01E01-E02" co
 void media_ep_code(Buf *b, const MediaFile *f); /* "S01E02", "S01E01–E02" */
 void media_ep_title(Buf *b, const MediaFile *f); /* its title, or "Episode 3" */
 void media_tracks(const Ctx *c, Buf *b, const MediaFile *f); /* <track>s of its subtitles */
+/* A video's / a subtitle's address with its key (ctx_url_key), for src="...": a TV's video player
+   fetches without the page's cookies. "/media/file/<id>?k=..." and "/media/sub/<id>.vtt?k=..." */
+void media_file_src(const Ctx *c, uint64_t id, char *out, size_t cap);
+void media_sub_src(const Ctx *c, uint64_t id, char *out, size_t cap);
 /* The player's own controls (ui_player) for f inside #media-box over #media-video: its length, its
    subtitles in a menu (as media_tracks has them). tv: a remote's arrows move along the bar. */
 void media_controls(const Ctx *c, Buf *b, const MediaFile *f, bool tv);

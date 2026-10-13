@@ -51,6 +51,8 @@
 #define AUTH_CODE_LEN 15 /* "7KQ4-M2XP-9RTA" + NUL */
 
 bool auth_ready(void);                /* a server salt is configured */
+/* HMAC-SHA256 keyed with the server salt (false while there is none): core/app.c's address keys */
+bool auth_mac(const void *msg, size_t n, uint8_t out[32]);
 void auth_configure(const char *server_salt, int iterations); /* tests; app_boot reads the env */
 /* A new install makes its own secret: without HEMMA_AUTH_SALT and before anyone has a
    password, a fresh random one goes into the settings file (created if missing, readable

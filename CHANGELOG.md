@@ -3,7 +3,47 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.5.0 (not released yet)
+## 0.6.0 (not released yet)
+
+The wall.
+
+### New
+
+- **A new wall**: the wall tablet is a Screen now, put together like the TV's. At the top a
+  big clock and the date, what's on **now and next** (a booking that's running, the next
+  thing in the calendar) and **who's home**. Below, cards as tall as what they show, in
+  columns: Today, Bookings (each thing by name - free, or whose and until when), **Coming
+  days** (the week ahead; a visit over several days shows once, "until Sun"), the shopping
+  list, notes, what's on Live TV, what's new to watch, and the latest things people did (not
+  the network's own news). A card with nothing to show stays away. Admins pick the cards and
+  their order under Screens → Edit, and can make more walls (New screen → Wall). Every
+  household gets a wall to start from; `/wall` opens it.
+- Calendar events now reach the shared agenda too (the wall's "now and next").
+
+### Changes
+
+- The old wall page is gone: `/wall` and its buttons lead to the new one.
+- **A browser's own trouble goes in the log** (System page): a script error, a video that
+  errs, or one that still hasn't started 25 seconds after it should have - with what the
+  browser says about it. A TV's browser has no console anyone can read.
+
+### Fixes
+
+- **Videos and Live TV play on Samsung TVs again.** After an update, the TV's browser lets its
+  video player fetch the video without the browser's sign-in, so Hemma sent it the sign-in page
+  and every video and channel "buffered" or failed. Video and subtitle addresses now carry their
+  own key: it works for that one video, only for the screen it was shown on, and only while that
+  screen stays signed in.
+- The player on TVs: a video the TV's browser won't start by itself shows the big play
+  button again instead of what looked like endless loading, and OK plus the remote's
+  play/pause/rewind/forward buttons work where the TV names its keys differently. A Live TV
+  channel that won't start by itself gets the play button too.
+- **Two players**: a video Hemma's player can't play gets the browser's own player in its
+  place, from the same spot (Live TV too, still without pausing), with the "Next episode" card
+  and full screen as before; the next video tries Hemma's player again. A video neither can
+  play says why instead of loading forever.
+
+## 0.5.0 (2026-10-12)
 
 The player.
 

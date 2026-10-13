@@ -115,6 +115,18 @@ a.book-wk-s:hover { background: var(--accent-soft); box-shadow: inset 0 0 0 1.5p
 .book-up-r small { color: var(--muted); }
 @media (max-width: 600px) { .book-up-row { grid-template-columns: 92px minmax(0, 1fr) auto; } .book-up-row .who span { display: none; } }
 
+/* a wall's "Bookings" card (book.now): each thing by name, free or whose until when */
+.book-wall-now { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.book-wall-now li {
+  display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: 12px; background: var(--panel-2);
+}
+.book-wall-e { font-size: 20px; text-align: center; }
+.book-wall-now b { font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.book-wall-s { font-size: 14px; font-weight: 650; color: var(--ok); white-space: nowrap; }
+.book-wall-now .book-busy .book-wall-s { color: var(--warn); }
+.book-wall .book-up-row { grid-template-columns: 96px minmax(0, 1fr) auto; }
+
 /* ------------------------------------------------------------- modals */
 .book-bk-detail { display: flex; gap: 14px; align-items: flex-start; margin: 6px 0 16px; }
 .book-bk-who { font-size: 18px; }

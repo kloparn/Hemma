@@ -1,0 +1,3 @@
+/* modules/home — the wall's "Latest" card (home.latest): one line per thing someone did */
+.home-wall-feed { gap: 8px; }
+.home-wall-feed .feed-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

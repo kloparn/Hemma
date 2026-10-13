@@ -351,6 +351,7 @@
 .media-tv .pl-menu button[aria-checked="true"]::before { left: 14px; }
 .media-tv .pl-menu button:focus { outline: 4px solid #fff; outline-offset: -4px; }
 .media-tv .pl-big { width: 110px; height: 110px; margin: -55px 0 0 -55px; }
+.media-tv .pl-err { font-size: 26px; padding: 26px 32px; border-radius: 20px; }
 .media-tv .pl-big .i { width: 52px; height: 52px; }
 .media-tv .media-upnext { right: 56px; bottom: 150px; max-width: 640px; gap: 18px; padding: 24px 28px; border-radius: 20px; }
 .media-tv .media-upnext-t small { font-size: 17px; }

@@ -446,7 +446,9 @@ TEST(tv_channel_page_tunes_into_the_live_moment) {
     CHECK_HAS(h, want);
     CHECK_HAS(h, "<span class=\"pl-onair\">Live</span>");
     CHECK_HAS(h, "data-p=\"mute\"");
-    CHECK(!strstr(h, "data-p=\"play\"") && !strstr(h, "data-p=\"seek\"") && !strstr(h, "data-p=\"back\""));
+    CHECK(!strstr(h, "class=\"pl-play\"") && !strstr(h, "data-p=\"seek\"") && !strstr(h, "data-p=\"back\""));
+    CHECK_HAS(h, "class=\"pl-big\" data-p=\"play\""); /* (only for a browser that won't start it by itself) */
+    CHECK_HAS(h, "<p class=\"pl-err\" role=\"alert\">This programme won&#39;t play on this screen. The next one starts at ");
     CHECK_HAS(h, "CH 01");
     CHECK_HAS(h, "data-key=\"ArrowUp\"");
     CHECK_HAS(h, "Coming up");
@@ -492,8 +494,7 @@ TEST(tv_widgets_render_without_a_person) {
     CHECK(m && m->widget);
     Ctx c;
     Buf b = {0};
-    app_ctx(&c, 0, "/wall");
-    m->widget(&c, &b, WIDGET_WALL);
+    app_ctx(&c, 0, "/");
     m->widget(&c, &b, WIDGET_HOME);
     CHECK_INT(b.len, 0); /* no channels: nothing, and no hint for strangers */
     app_ctx_free(&c);
@@ -503,8 +504,8 @@ TEST(tv_widgets_render_without_a_person) {
     app_ctx_free(&c);
     CHECK(th_act(adam, "tv.quick", "").ok);
     buf_reset(&b);
-    app_ctx(&c, 0, "/wall");
-    m->widget(&c, &b, WIDGET_WALL);
+    app_ctx(&c, 0, "/");
+    m->widget(&c, &b, WIDGET_HOME);
     CHECK_HAS(buf_cstr(&b), "On TV now");
     CHECK_HAS(buf_cstr(&b), "href=\"/tv/1\"");
     app_ctx_free(&c);

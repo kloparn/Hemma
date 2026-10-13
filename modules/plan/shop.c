@@ -168,27 +168,28 @@ void plan_shop_page(Ctx *c, Buf *b) {
     buf_puts(b, "</div>");
 }
 
-void plan_shop_widget(Ctx *c, Buf *b, bool wall) {
-    int open = plan_open_items();
-    H(b, "<section class=\"card plan-w%r\"><header class=\"card-h\"><h2>Shopping list", wall ? " plan-wall" : "");
-    if (open) H(b, " <span class=\"plan-n\">%d</span>", open);
-    buf_puts(b, "</h2>");
-    if (!wall) buf_puts(b, "<a class=\"more\" href=\"/plan/shop\">Open</a>");
-    buf_puts(b, "</header>");
-    if (!open) {
-        buf_puts(b, "<p class=\"muted plan-w-empty\">Nothing on the list</p>");
-    } else {
-        int max = wall ? 12 : 8, shown = 0;
-        buf_puts(b, "<ul class=\"plan-shop-mini\">");
-        for (int i = 0; i < tbl_count(&T_item) && shown < max; i++) {
-            Item *it = tbl_at(&T_item, i);
-            if (it->done) continue;
-            H(b, "<li>%s</li>", it->text);
-            shown++;
-        }
-        buf_puts(b, "</ul>");
-        if (open > max) H(b, "<p class=\"muted plan-more\">+%d more</p>", open - max);
+int plan_shop_items(Buf *b, int max) {
+    int open = plan_open_items(), shown = 0;
+    if (!open) return 0;
+    buf_puts(b, "<ul class=\"plan-shop-mini\">");
+    for (int i = 0; i < tbl_count(&T_item) && shown < max; i++) {
+        Item *it = tbl_at(&T_item, i);
+        if (it->done) continue;
+        H(b, "<li>%s</li>", it->text);
+        shown++;
     }
+    buf_puts(b, "</ul>");
+    if (open > max) H(b, "<p class=\"muted plan-more\">+%d more</p>", open - max);
+    return open;
+}
+
+void plan_shop_widget(Ctx *c, Buf *b) {
+    (void)c;
+    int open = plan_open_items();
+    buf_puts(b, "<section class=\"card plan-w\"><header class=\"card-h\"><h2>Shopping list");
+    if (open) H(b, " <span class=\"plan-n\">%d</span>", open);
+    buf_puts(b, "</h2><a class=\"more\" href=\"/plan/shop\">Open</a></header>");
+    if (!plan_shop_items(b, 8)) buf_puts(b, "<p class=\"muted plan-w-empty\">Nothing on the list</p>");
     buf_puts(b, "</section>");
 }
 
