@@ -593,17 +593,8 @@ void book_page(Ctx *c, Buf *b) {
 
 /* ----------------------------------------------------------------- widgets */
 
-void book_widget(Ctx *c, Buf *b, int where) {
-    Resource *rs[64];
-    int n = res_list(rs, 64, false);
-    if (!n && where == WIDGET_WALL) return;
-    ui_card(b, "Bookings", "/book", n ? "Book" : "Set up");
-    if (!n) {
-        buf_puts(b, "<p class=\"muted\">Share the car, the laundry room or the guest room — add them under "
-                    "<a href=\"/book\">Book</a>.</p>");
-        ui_card_end(b);
-        return;
-    }
+/* Each thing, free or whose it is right now. */
+static void now_pills(Ctx *c, Buf *b, Resource **rs, int n) {
     buf_puts(b, "<div class=\"book-res-now\">");
     for (int i = 0; i < n && i < 8; i++) {
         Booking *cur = book_current(rs[i]->id, c->now);
@@ -613,6 +604,45 @@ void book_widget(Ctx *c, Buf *b, int where) {
         buf_puts(b, "</a>");
     }
     buf_puts(b, "</div>");
-    upcoming(c, b, 0, where == WIDGET_WALL ? 8 : 5);
+}
+
+void book_widget(Ctx *c, Buf *b, int where) {
+    (void)where;
+    Resource *rs[64];
+    int n = res_list(rs, 64, false);
+    ui_card(b, "Bookings", "/book", n ? "Book" : "Set up");
+    if (!n) {
+        buf_puts(b, "<p class=\"muted\">Share the car, the laundry room or the guest room — add them under "
+                    "<a href=\"/book\">Book</a>.</p>");
+        ui_card_end(b);
+        return;
+    }
+    now_pills(c, b, rs, n);
+    upcoming(c, b, 0, 5);
     ui_card_end(b);
+}
+
+bool book_wall(Ctx *c, Buf *b) {
+    Resource *rs[64];
+    int n = res_list(rs, 64, false);
+    if (!n) return false; /* nothing to book: the wall leaves the card out */
+    /* each thing by name, read from across the room: free, or whose and until when */
+    buf_puts(b, "<div class=\"book-wall\"><ul class=\"book-wall-now\">");
+    for (int i = 0; i < n && i < 8; i++) {
+        Booking *cur = book_current(rs[i]->id, c->now);
+        Person *p = cur ? person_get(cur->who) : NULL;
+        H(b, "<li class=\"%s\"><span class=\"book-wall-e\">%s</span><b>%s</b><span class=\"book-wall-s\">",
+          cur ? "book-busy" : "book-free", rs[i]->emoji[0] ? rs[i]->emoji : "📅", rs[i]->name);
+        if (!cur) buf_puts(b, "Free");
+        else {
+            H(b, "%s · until ", p ? p->name : "Busy");
+            if (day_start(cur->end) == day_start(c->now)) ui_hm(b, cur->end);
+            else ui_day(b, cur->end, c->now);
+        }
+        buf_puts(b, "</span></li>");
+    }
+    buf_puts(b, "</ul>");
+    upcoming(c, b, 0, 5);
+    buf_puts(b, "</div>");
+    return true;
 }

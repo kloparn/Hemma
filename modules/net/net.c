@@ -1070,41 +1070,11 @@ static bool tracking(void) {
     return false;
 }
 
-static bool has_device(int person) {
-    for (int i = 0; i < tbl_count(&T_device); i++)
-        if (((Device *)tbl_at(&T_device, i))->owner == person) return true;
-    return false;
-}
-
 static void widget(Ctx *c, Buf *b, int where) {
     int online = 0;
     for (int i = 0; i < tbl_count(&T_device); i++) online += net_online(tbl_at(&T_device, i), c->now);
     bool track = tracking();
-    if (where == WIDGET_WALL) {
-        ui_card(b, track ? "Who's home" : "Network", NULL, NULL);
-        if (track) {
-            buf_puts(b, "<ul class=\"net-whohome\">");
-            for (int i = 0; i < person_count(); i++) {
-                Person *p = person_at(i);
-                if (!has_device(p->id)) continue;
-                int64_t since = 0;
-                bool home = presence_is_home(p->id, &since);
-                H(b, "<li class=\"%s\">", home ? "home" : "away");
-                ui_avatar(b, p, "md");
-                H(b, "<span><b>%s</b><small>%s", p->name, home ? "home" : "away");
-                if (since) {
-                    buf_puts(b, " · since ");
-                    if (day_start(since) == day_start(c->now)) ui_hm(b, since);
-                    else ui_day(b, since, c->now);
-                }
-                buf_puts(b, "</small></span></li>");
-            }
-            buf_puts(b, "</ul>");
-        }
-        H(b, "<p class=\"net-w-count\"><b>%d</b> device%s online</p>", online, online == 1 ? "" : "s");
-        ui_card_end(b);
-        return;
-    }
+    (void)where; /* (a wall's "who's home" is the wall's own: modules/screens) */
     ui_card(b, "Network", "/net", "Devices");
     H(b, "<div class=\"net-w-big\"><b>%d</b><span>device%s online</span></div>", online, online == 1 ? "" : "s");
     if (track) {

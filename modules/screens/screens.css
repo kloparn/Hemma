@@ -69,11 +69,57 @@
 .screens-dark .empty h3 { color: var(--text); font-size: 1.3em; }
 .screens-dark .empty-e { font-size: 3em; }
 
-/* ---- a wall: the same rows as cards ---- */
-.screens-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(24vw, 1fr)); gap: 1.4vw; margin-top: 2.6vh; align-items: start; }
-.screens-grid > .card + .card { margin-top: 0; }
-.screens-card { background: var(--panel); border-color: var(--line); padding: 1.2vw; }
-.screens-card .card-h h2 { font-size: 1.15em; }
+/* ---- a wall: a tablet across the room. The top band (clock, now and next, who's home), then the
+   cards in columns, each as tall as what it shows - three across a landscape tablet, two standing
+   up. The modules' own card contents are sized in px: the base stays near 16px (a TV-sized wall
+   grows a little) ---- */
+.screens-wall { font-size: 16px; font-size: clamp(15px, 1.1vw, 21px); padding: 3vh 3vw 2vh; }
+.screens-wtop { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 18px 3vw; margin-bottom: 3.4vh; }
+.screens-wclock { display: flex; flex-direction: column; }
+.screens-wclock time {
+  margin-top: .1em; font-size: 6em; font-weight: 760; line-height: .9; letter-spacing: -.045em;
+  font-variant-numeric: tabular-nums;
+}
+.screens-wdate { margin-top: .55em; font-size: 1.3em; color: var(--muted); }
+.screens-wnext {
+  flex: 1 1 18em; min-width: 0; list-style: none; margin: 0 0 .2em; padding: 0 0 0 3vw;
+  border-left: 1px solid var(--line-2); display: flex; flex-direction: column; gap: .45em;
+}
+.screens-wnext li { display: flex; align-items: baseline; gap: .9em; font-size: 1.25em; min-width: 0; }
+.screens-wn-when { flex: none; min-width: 3.4em; color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; }
+.screens-wn-now .screens-wn-when { color: var(--accent); }
+.screens-wn-what { min-width: 0; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.screens-wn-what small { font-size: .8em; color: var(--muted); font-weight: 550; }
+.screens-wpeople { display: flex; flex-wrap: wrap; gap: 14px 22px; margin-left: auto; }
+.screens-wp { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 64px; }
+.screens-wp .av { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5.5px var(--line-2); }
+.screens-wp.home .av { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5.5px var(--ok); }
+.screens-wp.online .av { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5.5px var(--accent); }
+.screens-wp.away { opacity: .42; }
+.screens-wp b { font-size: 15px; line-height: 1.1; }
+.screens-wp small { font-size: 12.5px; color: var(--muted); }
+.screens-wp.home small { color: var(--ok); font-weight: 650; }
+
+.screens-cards { column-width: 300px; column-gap: 18px; } /* (column-count, inline: how many cards there are) */
+.screens-card {
+  display: inline-block; width: 100%; margin: 0 0 18px; padding: 16px 18px 18px;
+  border: 1px solid var(--line); border-radius: 18px; background: var(--panel);
+  -webkit-column-break-inside: avoid; page-break-inside: avoid; break-inside: avoid;
+}
+.screens-card > h2 {
+  margin: 0 0 12px; font-size: 12.5px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+}
+.screens-card .tiles { margin: 0 -18px; padding: 6px 18px 4px; gap: 12px; }
+.screens-card .tile { width: 112px; }
+.screens-card .tile.wide { width: 210px; }
+@supports not (aspect-ratio: 1 / 1) {
+  .screens-card .tile-art { height: 168px; }
+  .screens-card .tile.wide .tile-art { height: 118px; }
+}
+.screens-calm { margin-top: 12vh; text-align: center; color: var(--muted); font-size: 1.3em; }
+/* Edit / Exit: out of the way, for whoever stands at the tablet */
+.screens-wfoot { position: fixed; right: 14px; bottom: 10px; z-index: 2; display: flex; gap: 6px; opacity: .3; transition: opacity .2s; }
+.screens-wfoot:hover, .screens-wfoot:focus-within { opacity: 1; }
 
 /* ---- who's watching? ---- */
 .screens-pick { display: flex; text-align: center; }
@@ -102,8 +148,10 @@
   .screens-tv .tile-art { border-radius: 10px; }
   .screens-tv .tile-bar { height: 4px; }
   .screens-tv .tile:focus .tile-art { box-shadow: 0 0 0 3px var(--bg), 0 0 0 6px var(--text); }
-  .screens-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
-  .screens-card { padding: 16px; }
+  .screens-wall { padding: 18px 16px 56px; }
+  .screens-wclock time { font-size: 4.6em; }
+  .screens-wnext { flex-basis: 100%; order: 3; padding-left: 0; border-left: 0; }
+  .screens-wpeople { margin-left: 0; }
   .screens-people { gap: 18px; }
   .screens-person { min-width: 96px; gap: 8px; padding: 8px; border-radius: 16px; }
   .screens-person .av { width: 76px; height: 76px; font-size: 36px; }

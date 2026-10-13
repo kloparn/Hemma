@@ -411,11 +411,17 @@ static void screen(Ctx *c, Buf *b, const Channel *ch, const TvPlan *p, const cha
            player's live bar has the sound and full screen only. TV mode: OK on the remote = sound. */
         char key[48];
         snprintf(key, sizeof key, "%016llx-%lld", (unsigned long long)s.file, (long long)mark);
+        char src[100];
+        media_file_src(c, s.file, src, sizeof src);
         H(b,
-          "<video id=\"tv-video\" class=\"tv-video\" src=\"/media/file/%X\" autoplay playsinline preload=\"auto\" "
+          "<video id=\"tv-video\" class=\"tv-video\" src=\"%s\" autoplay playsinline preload=\"auto\" "
           "data-static=\"%s\" data-onair data-resume=\"%L\" data-next=\"/tv/%d%r\"></video>",
-          s.file, key, (long long)s.offset, ch->number, tvq);
-        UiPlayer pl = {.box = "tv-screen", .video = "tv-video", .key = key, .live = true, .focus_sound = *tvq != 0, .tv = *tvq != 0};
+          src, key, (long long)s.offset, ch->number, tvq);
+        char hm[6], trouble[120];
+        fmt_hm(s.end, hm);
+        snprintf(trouble, sizeof trouble, "This programme won't play on this screen. The next one starts at %s.", hm);
+        UiPlayer pl = {.box = "tv-screen", .video = "tv-video", .key = key, .live = true, .focus_sound = *tvq != 0,
+                       .tv = *tvq != 0, .trouble = trouble};
         ui_player(b, &pl);
     } else if (on) {
         TvSlot nx;
@@ -728,7 +734,7 @@ static void widget(Ctx *c, Buf *b, int where) {
     int n = channel_list(chs, MAX_CHANNELS);
     if (!n) {
         const MediaIndex *ix = media_lib();
-        if (where == WIDGET_HOME && ix->nseries && c->me && c->me->role != ROLE_DISPLAY) {
+        if (where == WIDGET_HOME && ix->nseries && c->me && c->me->role != ROLE_DISPLAY) { /* (a hint: people only) */
             ui_card(b, "Live TV", "/tv", "Start");
             buf_puts(b, "<p class=\"muted\">Turn your series into channels that never stop — <a href=\"/tv\">start "
                         "one</a>.</p>");
@@ -738,7 +744,7 @@ static void widget(Ctx *c, Buf *b, int where) {
     }
     ui_card(b, "On TV now", "/tv", "Guide");
     buf_puts(b, "<ul class=\"tv-w\">");
-    for (int i = 0; i < n && i < (where == WIDGET_WALL ? 6 : 4); i++) {
+    for (int i = 0; i < n && i < 4; i++) {
         Channel *ch = chs[i];
         TvSlot s;
         const MediaFile *f = NULL;

@@ -27,6 +27,24 @@ static const char *lang_name(const char *code) {
     return code && *code ? code : "Subtitles";
 }
 
+static void keyed_src(const Ctx *c, const char *path, char *out, size_t cap) {
+    char k[CTX_KEY_LEN];
+    ctx_url_key(c, path, k);
+    snprintf(out, cap, "%s%s%s", path, k[0] ? "?k=" : "", k);
+}
+
+void media_file_src(const Ctx *c, uint64_t id, char *out, size_t cap) {
+    char path[40];
+    snprintf(path, sizeof path, "/media/file/%016llx", (unsigned long long)id);
+    keyed_src(c, path, out, cap);
+}
+
+void media_sub_src(const Ctx *c, uint64_t id, char *out, size_t cap) {
+    char path[40];
+    snprintf(path, sizeof path, "/media/sub/%016llx.vtt", (unsigned long long)id);
+    keyed_src(c, path, out, cap);
+}
+
 /* The video's subtitles as <track>s; the viewer's language (Library settings) is on by default. */
 void media_tracks(const Ctx *c, Buf *b, const MediaFile *f) {
     const MediaIndex *ix = media_lib();
@@ -38,7 +56,9 @@ void media_tracks(const Ctx *c, Buf *b, const MediaFile *f) {
         if (sub->type != MF_SUB || sub->video != f->id) continue;
         bool def = !defaulted && *want && str_ieq(sub->lang, want);
         defaulted |= def;
-        H(b, "<track kind=\"subtitles\" src=\"/media/sub/%X.vtt\" srclang=\"%s\" label=\"%s\"%r>", sub->id,
+        char src[100];
+        media_sub_src(c, sub->id, src, sizeof src);
+        H(b, "<track kind=\"subtitles\" src=\"%s\" srclang=\"%s\" label=\"%s\"%r>", src,
           sub->lang[0] ? sub->lang : "und", lang_name(sub->lang), def ? " default" : "");
     }
 }
@@ -64,8 +84,11 @@ void media_controls(const Ctx *c, Buf *b, const MediaFile *f, bool tv) {
     UiSub subs[16];
     char key[17];
     media_id_hex(f->id, key);
-    int64_t ms = f->probe.duration_ms ? f->probe.duration_ms : media_playable(f)->probe.duration_ms;
+    const MediaFile *pf = media_playable(f);
+    int64_t ms = f->probe.duration_ms ? f->probe.duration_ms : pf->probe.duration_ms;
     UiPlayer p = {.box = "media-box", .video = "media-video", .key = key, .seconds = (int)(ms / 1000), .subs = subs, .tv = tv};
+    if (str_eq(pf->probe.vcodec, "hevc")) /* (an HEVC copy plays where the device decodes HEVC - not every TV's browser) */
+        p.trouble = "This video is HEVC (x265), which this browser can't play. Most phones, computers and iPads can.";
     p.nsubs = media_subs(c, f, subs, countof(subs));
     ui_player(b, &p);
 }
@@ -869,10 +892,12 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     bool autoplay = str_eq(ctx_q(c, "auto"), "1");
     Buf go = {0};
     if (next) H(&go, "/media/watch/%X?auto=1", next->id);
+    char src[100];
+    media_file_src(c, f->id, src, sizeof src);
     H(b, "<div class=\"media-player-box\" id=\"media-box\"><video id=\"media-video\" class=\"media-player\" "
-         "src=\"/media/file/%X\" controls preload=\"metadata\" playsinline data-static=\"%X\" data-id=\"%X\" "
+         "src=\"%s\" controls preload=\"metadata\" playsinline data-static=\"%X\" data-id=\"%X\" "
          "data-report=\"media.progress\"",
-      f->id, f->id, f->id);
+      src, f->id, f->id);
     if (w && !w->done && w->pos > 10 && !autoplay) H(b, " data-resume=\"%d\"", w->pos);
     if (next) H(b, " data-next=\"%r\"", buf_cstr(&go));
     if (autoplay) buf_puts(b, " autoplay");
@@ -1199,7 +1224,8 @@ static void going_card(Ctx *c, Buf *b, const MediaFile *f, bool small) {
 
 static void widget(Ctx *c, Buf *b, int where) {
     const MediaIndex *ix = media_lib();
-    if (where == WIDGET_HOME && ix->nroots == 0) {
+    (void)where;
+    if (ix->nroots == 0) {
         ui_card(b, "Watch", "/media/settings", "Set up");
         buf_puts(b, "<p class=\"muted\">Point Hemma at the drive with your movies and series, and everyone can watch "
                     "them on any screen at home — offline.</p>");
@@ -1208,7 +1234,7 @@ static void widget(Ctx *c, Buf *b, int where) {
     }
     if (!ix->nrecent) return;
     const MediaFile *list[4];
-    int n = where == WIDGET_HOME ? media_in_progress(c, list, 4) : 0;
+    int n = media_in_progress(c, list, 4);
     bool resuming = n > 0;
     for (int i = 0; !resuming && i < ix->nrecent && n < 4; i++) list[n++] = &ix->files[ix->recent[i]];
     ui_card(b, resuming ? "Continue watching" : "Recently added", "/media", "Watch");

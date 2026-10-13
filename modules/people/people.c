@@ -274,8 +274,9 @@ static void home_card(Ctx *c, Buf *b) {
         H(b, "<p><b>%s</b></p>", app_name());
     }
     H(b, "<h3 class=\"mt\">Wall display</h3><p class=\"muted\">An always-on overview for a tablet in the hallway or "
-         "kitchen. Tip: give the tablet its own <i>Display</i> sign-in so it can only look.</p>"
-         "<a class=\"btn\" href=\"/wall\">Open wall display</a>");
+         "kitchen. Tip: give the tablet its own <i>Display</i> sign-in so it can only look, and pick its cards under "
+         "<a href=\"/screens\">Screens</a>.</p>"
+         "<a class=\"btn\" href=\"/wall\" data-native>Open wall display</a>");
     ui_card_end(b);
 }
 

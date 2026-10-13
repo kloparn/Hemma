@@ -330,7 +330,7 @@ TEST(media_a_display_account_gets_pictures_and_streams) {
     app_ctx_free(&c);
     buf_reset(&b);
     app_ctx(&c, 0, "/");
-    m->widget(&c, &b, WIDGET_WALL);
+    m->widget(&c, &b, WIDGET_HOME);
     CHECK(!strstr(buf_cstr(&b), "<img"));
     app_ctx_free(&c);
     pick(tv, 0);

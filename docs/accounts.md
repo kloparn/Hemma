@@ -105,6 +105,20 @@ someone else, and after **4 hours without use** (nothing opened, nothing playing
 asks again by itself, so the next person doesn't watch as you. On your own phone or
 computer you're always yourself: **Screens** shows the same rows there, no question asked.
 
+## A tablet on the wall
+
+A wall tablet works the same way: its own **Display** sign-in, then under **Screens**, edit
+the screen called *Wall* (Hemma makes one for you) and tick the tablet under **Shows on**.
+On a computer, `http://<your Hemma address>/wall` opens it too.
+
+The wall shows a big clock and the date, what's on **now and next** (a booking that's
+running, the next thing in the calendar - today or tomorrow) and **who's home**. Below come
+cards: Today, Bookings (each thing, free or whose and until when), Coming days, the
+shopping list, notes, what's on Live TV, what's new to watch, and the latest things people
+did. A card with nothing to show stays away, so a quiet day makes a calm wall. Admins pick
+the cards and their order under **Screens → Edit**, and can make more walls (**New screen →
+Wall**). The wall only shows: ticking things off happens on your phone.
+
 ## Recovery codes
 
 Recovery codes are your spare keys. If you ever forget your password, one code lets you
@@ -272,6 +286,10 @@ or removed. (To force a change, use `HEMMA_ADMIN_RESET` as described above.)
   use it now and then (unticked: until a week without use). **Admins sign in again every
   30 days**, however much they use it: Hemma runs on plain http, so a stolen admin cookie
   stops working within a month.
+- **Video addresses carry a key** (`?k=...` at the end). Some TVs' video players fetch the
+  video without the browser's sign-in, so the address proves it instead. A key works for
+  that one video (or subtitle), only for the device it was shown on, and stops working
+  when that device signs out or its sign-in runs out. It never opens a page.
 - **"Welcome back, Eva" when you aren't Eva?** The sign-in page guesses who you are from
   the device's address on the network. Tap **Not Eva? Sign in as someone else**.
 - **Nobody can sign in, and the log says "HEMMA_AUTH_SALT isn't the secret this

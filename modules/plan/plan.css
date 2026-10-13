@@ -141,11 +141,14 @@ form.plan-shop-f { display: flex; flex: 1; min-width: 0; }
 .plan-more { font-size: 13px; margin-top: 6px; }
 .plan-w-empty { padding: 2px 0; }
 
-/* the wall display reads these from across the room */
-.plan-wall { font-size: 19px; }
-.plan-wall .card-h h2 { font-size: 22px; }
-.plan-wall .plan-task-t small, .plan-wall .plan-ev-main small { font-size: 15px; }
-.plan-wall .plan-task-e { font-size: 24px; width: 30px; }
-.plan-wall .tick { width: 30px; height: 30px; }
-.plan-wall .plan-ev-time, .plan-wall .plan-evs.plan-compact .plan-ev-time { width: 130px; font-size: 17px; }
-.plan-wall .plan-shop-mini li { font-size: 19px; padding: 6px 15px; }
+/* a wall's cards (plan.today / plan.days / plan.shop) are read from across the room */
+.plan-wall { font-size: 18px; }
+.plan-wall .plan-evs + .plan-tasks { margin-top: 8px; }
+.plan-wall .plan-evs.plan-compact .plan-ev { padding: 7px 10px; }
+.plan-wall .plan-task-t small, .plan-wall .plan-ev-main small { font-size: 14px; }
+.plan-wall .plan-task-e { font-size: 22px; width: 28px; }
+.plan-wall .tick { width: 28px; height: 28px; }
+.plan-wall .plan-ev-time, .plan-wall .plan-evs.plan-compact .plan-ev-time { width: 92px; font-size: 15px; }
+.plan-wall .plan-shop-mini li { font-size: 18px; padding: 6px 14px; }
+.plan-day-h { margin: 14px 0 6px; font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.plan-day-h:first-child { margin-top: 0; }

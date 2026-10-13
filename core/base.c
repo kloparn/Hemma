@@ -551,7 +551,11 @@ size_t log_clean(const char *in, char *out, size_t cap) {
 bool g_log_stderr = true;
 static LogSink g_log_sink;
 
-void log_set_sink(LogSink fn) { g_log_sink = fn; }
+LogSink log_set_sink(LogSink fn) {
+    LogSink was = g_log_sink;
+    g_log_sink = fn;
+    return was;
+}
 
 void log_at(LogLevel level, const char *fmt, ...) {
     if (level < g_log_level) return;

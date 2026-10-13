@@ -17,8 +17,8 @@
 #include "server.h"
 #include "store.h"
 
-#define HEMMA_VERSION "0.5.0" /* raised for every release (SECURITY.md, CHANGELOG.md) */
-/* With the commit the binary was built from: "0.5.0 (8242ca8f1a2b)", "-dirty" with uncommitted
+#define HEMMA_VERSION "0.6.0" /* raised for every release (SECURITY.md, CHANGELOG.md) */
+/* With the commit the binary was built from: "0.6.0 (8242ca8f1a2b)", "-dirty" with uncommitted
    changes (build.ps1 and the Makefile pass -DHEMMA_COMMIT=...); just the version outside git. */
 #define HEMMA_STR_(x) #x
 #define HEMMA_STR(x) HEMMA_STR_(x)
@@ -101,6 +101,13 @@ void ctx_redirect(Ctx *c, const char *fmt, ...) FMT(2, 3);
 /* Current URL with some query parameters replaced or removed:
  *   ctx_url(c, &b, "w", "2026-10-12", "new", NULL, NULL);   // NULL value removes, NULL key ends */
 void ctx_url(const Ctx *c, Buf *out, ...);
+/* An address key: some media players fetch a <video>'s file without the browser's cookies (a
+   Samsung TV's browser since an update in 2026), so a module endpoint's address can carry its own
+   proof - "<path>?k=<key>". The key holds for exactly that path, as this screen's session, while
+   that session lasts; it opens module endpoints (http hooks) only - never pages, actions, the API
+   or the wire. "" when there's no stored session (signed out; the test harness's pages). */
+#define CTX_KEY_LEN 48
+void ctx_url_key(const Ctx *c, const char *path, char out[CTX_KEY_LEN]);
 
 /* Sessions (core/auth.c signs people in; the household module manages them). */
 bool session_create(int person, bool remember, const char *user_agent, char sid_out[33]);
@@ -202,8 +209,8 @@ void health_collect(Ctx *c, Health *out); /* every module's health hook, in navi
 int health_worst(const Health *h);        /* the worst check (steps don't count); HEALTH_OK when none */
 void health_free(Health *h);
 
-enum { WIDGET_HOME, WIDGET_WALL };
-/* MOD_PUBLIC: usable without picking a person (e.g. the wall display).
+enum { WIDGET_HOME }; /* a widget's `where`: the home dashboard (walls are screens of blocks now) */
+/* MOD_PUBLIC: usable without picking a person.
    MOD_ADMIN: only admins see it in the navigation, open its pages or reach its http hook
    (others get "not found"); its actions still check is_admin themselves. */
 enum { MOD_PUBLIC = 1, MOD_ADMIN = 2 };
@@ -221,7 +228,7 @@ typedef struct Module {
     void (*page)(Ctx *c, Buf *b); /* render /<id> and /<id>/... */
     const Action *actions;        /* terminated by {0} */
     bool (*http)(Ctx *c, Conn *conn, HttpReq *r); /* raw endpoints (files, streams); true = handled */
-    void (*widget)(Ctx *c, Buf *b, int where);    /* cards for the home dashboard / wall display */
+    void (*widget)(Ctx *c, Buf *b, int where);    /* a card for the home dashboard (WIDGET_HOME) */
     int widget_order;
     void (*agenda)(Ctx *c, int64_t from, int64_t to, Agenda *out); /* timed things for shared agendas */
     /* A small block at the foot of the sidebar, above the profile (phones: on the More page).

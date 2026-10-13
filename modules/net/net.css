@@ -69,14 +69,6 @@
 .net-w-big span { color: var(--muted); font-weight: 600; }
 .net-w-home { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 .net-w-av { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
-.net-whohome { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 12px; }
-.net-whohome li { display: flex; align-items: center; gap: 12px; }
-.net-whohome li span { display: flex; flex-direction: column; line-height: 1.25; }
-.net-whohome small { color: var(--muted); }
-.net-whohome li.home small { color: var(--ok); font-weight: 600; }
-.net-whohome li.away .av { opacity: .5; filter: grayscale(.6); }
-.net-w-count { color: var(--muted); }
-.net-w-count b { color: var(--text); font-variant-numeric: tabular-nums; }
 
 @media (max-width: 600px) {
   .net-list { padding: 2px 6px; }

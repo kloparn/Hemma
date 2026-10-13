@@ -1,6 +1,7 @@
 /* Screens: the seeded TV screen, the builder (admins only), rows that render or are left out,
  * "Who's watching?" on a display account and when it comes back, "Shows on", walls. Blocks come
  * from two test modules registered here (their output only while these tests run). */
+#include "../../core/plat.h"
 #include "../../tests/harness.h"
 #include "screens.h"
 
@@ -132,34 +133,54 @@ static int viewer_of(int account) {
     return v;
 }
 
-TEST(screens_seed_a_tv_screen_once) {
-    boot();
-    CHECK_INT(tbl_count(&T_screen), 1);
-    Screen *s = tbl_at(&T_screen, 0);
-    CHECK_STR(s->name, "TV");
-    CHECK_INT(s->kind, SCREEN_TV);
-    /* the streaming-app rows, in this order - those whose module is here */
-    static const char *const want[] = {"media.continue", "tv.onnow", "media.recent", "media.series", "media.movies"};
+/* Does the screen hold `want` - those of them offered for its kind - in that order, and nothing else? */
+static bool holds(int screen, int kind, const char *const *want, int nwant) {
     ScreenRow *rows[SCREENS_MAX_ROWS];
-    int n = screen_rows(s->id, rows, SCREENS_MAX_ROWS), k = 0;
-    for (int i = 0; i < countof(want); i++) {
+    int n = screen_rows(screen, rows, SCREENS_MAX_ROWS), k = 0;
+    for (int i = 0; i < nwant; i++) {
         const Block *bl = block_find(want[i], NULL);
-        if (!bl || !(bl->kinds & SCREEN_TV)) continue;
-        CHECK(k < n);
-        CHECK_STR(rows[k]->block, want[i]);
+        if (!bl || !(bl->kinds & kind)) continue;
+        if (k >= n || !str_eq(rows[k]->block, want[i])) return false;
         k++;
     }
-    CHECK_INT(n, k);
-    /* a household that deleted it keeps none: no new TV screen at the next start */
-    int adam = with_role("Adam", ROLE_ADMIN);
+    return n == k;
+}
+
+static void delete_screen(int admin, int id) {
     char form[32];
-    snprintf(form, sizeof form, "id=%d", s->id);
-    CHECK(th_act(adam, "screens.delete", form).ok);
+    snprintf(form, sizeof form, "id=%d", id);
+    CHECK(th_act(admin, "screens.delete", form).ok);
+}
+
+TEST(screens_seed_a_tv_and_a_wall_once) {
+    boot();
+    CHECK_INT(tbl_count(&T_screen), 2);
+    int tv = screens_first(SCREEN_TV), wall = screens_first(SCREEN_WALL);
+    CHECK(tv && wall);
+    CHECK_STR(screen_get(tv)->name, "TV");
+    CHECK_STR(screen_get(wall)->name, "Wall");
+    /* the streaming-app rows; the day first on the wall - those whose module is here */
+    static const char *const tv_rows[] = {"media.continue", "tv.onnow", "media.recent", "media.series", "media.movies"};
+    static const char *const wall_cards[] = {"plan.today", "book.now", "plan.days", "plan.shop",
+                                             "board.notes", "tv.onnow", "media.recent", "home.latest"};
+    CHECK(holds(tv, SCREEN_TV, tv_rows, countof(tv_rows)));
+    CHECK(holds(wall, SCREEN_WALL, wall_cards, countof(wall_cards)));
+    CHECK(block_find("plan.today", NULL) && block_find("home.latest", NULL)); /* (all here in this build) */
+    /* a household that deleted them keeps none: nothing new at the next start */
+    int adam = with_role("Adam", ROLE_ADMIN);
+    delete_screen(adam, tv);
+    delete_screen(adam, wall);
     CHECK_INT(tbl_count(&T_screen), 0);
     CHECK_INT(tbl_count(&T_screen_row), 0);
     th_halt();
     CHECK(app_boot(app_config()->data_dir));
     CHECK_INT(tbl_count(&T_screen), 0);
+    /* a household from before walls (its TV seeded already) gets a wall at its next start, once */
+    setting_set_int("screens.wall_seeded", 0);
+    th_halt();
+    CHECK(app_boot(app_config()->data_dir));
+    CHECK_INT(tbl_count(&T_screen), 1);
+    CHECK(screens_first(SCREEN_WALL) && !screens_first(SCREEN_TV));
     halt();
 }
 
@@ -487,13 +508,123 @@ TEST(screens_a_wall_shows_its_rows_as_cards) {
     const char *h = th_page(tablet, url);
     CHECK(!strstr(h, "Who's watching?")); /* nothing personal on a wall */
     CHECK_HAS(h, "screens-wall");
-    CHECK_HAS(h, "<section class=\"card screens-card\"");
-    CHECK_HAS(h, "zz-wall");
+    CHECK_HAS(h, "<section class=\"screens-card\" id=\"screens-r");
+    CHECK_HAS(h, "<h2>Wall only</h2><p>zz-wall</p>");
     CHECK_HAS(h, "zz-on kind 2");
     snprintf(url, sizeof url, "/screens/%d/edit", id);
     h = th_page(adam, url);
+    CHECK_HAS(h, "<h2>Cards</h2>"); /* a wall's words */
+    CHECK_HAS(h, "<h2>Add a card</h2>");
     CHECK_HAS(h, "id=\"screens-a-zzscr.wall\"");
     CHECK(!strstr(h, "id=\"screens-a-zzscr.pick\""));
+    CHECK_HAS(th_page(adam, "/screens?new=1"), "value=\"wall\""); /* "New screen" offers walls */
+    halt();
+}
+
+TEST(screens_a_wall_has_the_time_now_and_next_and_whos_home) {
+    boot();
+    g_fake_now = dt_make(2026, 10, 10, 13, 5); /* a Saturday */
+    int adam = with_role("Adam", ROLE_ADMIN), eva = th_person("Eva"), tablet = with_role("Hall tablet", ROLE_DISPLAY);
+    char url[40];
+    snprintf(url, sizeof url, "/screens/%d", screens_first(SCREEN_WALL));
+    const char *h = th_page(tablet, url);
+    CHECK_HAS(h, "class=\"bare\"");
+    CHECK(!strstr(h, "class=\"side\"")); /* no app chrome */
+    CHECK_HAS(h, ">13:05</time>");
+    CHECK_HAS(h, "Saturday 10 October · week 41");
+    CHECK_HAS(h, "<div class=\"screens-wp \">"); /* nobody's whereabouts known yet: neutral */
+    CHECK_HAS(h, "<b>Eva</b>");
+    CHECK(!strstr(h, "screens-wnext")); /* nothing on, nothing next */
+    CHECK_HAS(h, "All quiet");          /* every card empty: left out */
+    CHECK_HAS(h, "href=\"/\">Exit</a>"); /* (not this tablet's own start page) */
+    CHECK(!strstr(h, "/edit\">Edit</a>"));
+
+    /* the car's out now, the dentist later, a note; Adam's home, Eva isn't */
+    CHECK(th_act(adam, "book.preset", "name=Car").ok);
+    g_fake_now = dt_make(2026, 10, 10, 11, 0); /* (booked this morning) */
+    CHECK(th_act(adam, "book.create", "res=1&date=2026-10-10&from=12:00&to=15:00").ok);
+    g_fake_now = dt_make(2026, 10, 10, 13, 5);
+    CHECK(th_act(adam, "plan.event_add", "q=dentist+today+16%3A30").ok);
+    CHECK(th_act(eva, "board.post", "text=Buy+milk").ok);
+    presence_set_home(adam, true, g_fake_now);
+    presence_set_home(eva, false, g_fake_now);
+    h = th_page(tablet, url);
+    CHECK_HAS(h, "<li class=\"screens-wn-now\"><span class=\"screens-wn-when\">Now</span>");
+    CHECK_HAS(h, "Car <small>· Adam</small> <small>until 15:00</small>");
+    CHECK_HAS(h, "<span class=\"screens-wn-when\">16:30</span>");
+    CHECK_HAS(h, "<div class=\"screens-wp home\">");
+    CHECK_HAS(h, "<div class=\"screens-wp away\">");
+    CHECK_HAS(h, "<h2>Today</h2>");
+    CHECK_HAS(h, "<h2>Bookings</h2>");
+    CHECK_HAS(h, "<h2>Notes</h2>");
+    CHECK_HAS(h, "Buy milk");
+    CHECK_HAS(h, "<h2>Latest</h2>");
+    CHECK(!strstr(h, "<h2>Shopping list</h2>")); /* empty: left out */
+    CHECK(!strstr(h, "All quiet"));
+    CHECK(!strstr(h, "<form")); /* a wall shows; it doesn't tick things off */
+    CHECK(strstr(h, "<h2>Today</h2>") < strstr(h, "<h2>Bookings</h2>")); /* the wall's order */
+
+    /* admins can edit it from there; a tablet whose own start page it is has no Exit */
+    CHECK_HAS(th_page(adam, url), "/edit\">Edit</a>");
+    pref_set(tablet, PREF_START, url);
+    CHECK(!strstr(th_page(tablet, url), ">Exit</a>"));
+    halt();
+}
+
+/* One request through the screens module's HTTP hook, with a socket-less Conn (the reply stays in conn.out). */
+static const char *serve(int person, const char *method, const char *path, Buf *keep) {
+    char raw[400];
+    snprintf(raw, sizeof raw, "%s %s HTTP/1.1\r\nHost: t\r\n\r\n", method, path);
+    HttpReq r;
+    if (http_parse(raw, strlen(raw), 1 << 20, &r) != 1) return "unparsable";
+    Conn conn;
+    memset(&conn, 0, sizeof conn);
+    conn.fd = SOCK_BAD;
+    conn.keep_alive = true;
+    Ctx c;
+    app_ctx(&c, person, r.target);
+    bool handled = module_find("screens")->http(&c, &conn, &r);
+    app_ctx_free(&c);
+    http_req_free(&r);
+    buf_reset(keep);
+    buf_put(keep, conn.out.p, conn.out.len);
+    buf_free(&conn.out);
+    buf_free(&conn.in);
+    return handled ? buf_cstr(keep) : "not handled";
+}
+
+TEST(screens_the_old_wall_address_opens_the_first_wall) {
+    boot();
+    int adam = with_role("Adam", ROLE_ADMIN);
+    Buf out = {0};
+    char want[64];
+    snprintf(want, sizeof want, "Location: /screens/%d\r\n", screens_first(SCREEN_WALL));
+    CHECK(str_starts(serve(adam, "GET", "/wall", &out), "HTTP/1.1 302"));
+    CHECK_HAS(buf_cstr(&out), want);
+    CHECK(str_starts(serve(adam, "HEAD", "/wall", &out), "HTTP/1.1 302"));
+    CHECK_STR(serve(adam, "POST", "/wall", &out), "not handled");
+    CHECK_STR(serve(adam, "GET", "/walls", &out), "not handled");
+    delete_screen(adam, screens_first(SCREEN_WALL)); /* no wall: the list of screens */
+    CHECK_HAS(serve(adam, "GET", "/wall", &out), "Location: /screens\r\n");
+    buf_free(&out);
+    halt();
+}
+
+TEST(screens_wall_latest_is_what_people_did) {
+    boot();
+    int adam = th_person("Adam");
+    activity_add(0, "🆕", "/net", "New device on the network: a phone");
+    activity_add(adam, "📌", "/board", "Adam pinned a note");
+    const Block *bl = block_find("home.latest", NULL);
+    CHECK(bl && (bl->kinds & SCREEN_WALL));
+    Ctx c;
+    app_ctx(&c, 0, "/screens/2");
+    Buf b = {0};
+    CHECK(bl->render(&c, &b, SCREEN_WALL, ""));
+    CHECK_HAS(buf_cstr(&b), "Adam pinned a note");
+    CHECK(!strstr(buf_cstr(&b), "New device"));
+    buf_free(&b);
+    app_ctx_free(&c);
     halt();
 }
 

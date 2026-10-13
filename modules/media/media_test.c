@@ -1,4 +1,5 @@
 /* Media pages, actions, widgets and the streaming endpoint logic. */
+#include "../../core/auth.h"
 #include "../../core/plat.h"
 #include "../../tests/harness.h"
 #include "../av/mp4.h"
@@ -154,6 +155,8 @@ TEST(media_player_page_has_tracks_next_and_badges) {
     CHECK_HAS(html, "<button type=\"button\" role=\"menuitemradio\" data-sub=\"\" aria-checked=\"true\">Off</button>");
     CHECK_HAS(html, "data-sub=\"sv\" aria-checked=\"false\">Svenska</button>");
     CHECK(!strstr(html, "<span class=\"pl-onair\">")); /* (not live) */
+    /* what it says when the browser can't play it (wire.js: the video's "error") */
+    CHECK_HAS(html, "<p class=\"pl-err\" role=\"alert\">This video won&#39;t play in this browser.</p>");
     CHECK_HAS(html, "data-report=\"media.progress\"");
     CHECK(!strstr(html, "data-upnext")); /* a film: nothing comes next */
     CHECK_HAS(html, "srclang=\"sv\" label=\"Svenska\"");
@@ -251,8 +254,8 @@ TEST(media_widgets_for_home_and_wall) {
     CHECK(m && m->widget);
     Ctx c;
     Buf b = {0};
-    app_ctx(&c, 0, "/wall"); /* the wall display: nobody in particular */
-    m->widget(&c, &b, WIDGET_WALL);
+    app_ctx(&c, 0, "/"); /* nobody in particular: nothing to continue, so what's new */
+    m->widget(&c, &b, WIDGET_HOME);
     CHECK_HAS(buf_cstr(&b), "Recently added");
     app_ctx_free(&c);
     const MediaFile *f = find("Inception.2010.1080p.BluRay.x264.mkv");
@@ -431,6 +434,42 @@ TEST(media_endpoints_require_sign_in) {
     snprintf(path, sizeof path, "/media/file/%016llx", (unsigned long long)f->id);
     CHECK(str_starts(serve(adam, "POST", path, NULL, &out), "HTTP/1.1 405"));
     buf_free(&out);
+    th_halt();
+}
+
+/* A Samsung TV's video player fetches without the page's cookie: the player's addresses carry the
+   screen's key (ctx_url_key; core/app_http_test.c checks what a key opens). */
+TEST(media_player_addresses_carry_the_screens_key) {
+    int adam = boot_with_library();
+    auth_configure("media-salt", 1000);
+    char sid[33];
+    CHECK(session_create(adam, false, "test", sid));
+    Session *s = NULL;
+    for (int i = 0; i < tbl_count(&T_session); i++)
+        if (((Session *)tbl_at(&T_session, i))->person == adam) s = tbl_at(&T_session, i);
+    CHECK(s != NULL);
+    const MediaFile *f = find("Flower.mp4"), *sv = find("Flower.sv.srt");
+    Ctx c;
+    app_ctx(&c, adam, url("/media/watch/%s", f->id));
+    c.sess = s; /* a stored session, as a real screen has */
+    Buf page = {0};
+    app_render(&c, &page);
+    app_ctx_free(&c);
+    Ctx kc = {.sess = s};
+    char path[60], k[CTX_KEY_LEN], want[160];
+    snprintf(path, sizeof path, "/media/file/%016llx", (unsigned long long)f->id);
+    ctx_url_key(&kc, path, k);
+    CHECK(k[0]);
+    snprintf(want, sizeof want, "src=\"%s?k=%s\"", path, k);
+    CHECK_HAS(buf_cstr(&page), want);
+    snprintf(path, sizeof path, "/media/sub/%016llx.vtt", (unsigned long long)sv->id);
+    ctx_url_key(&kc, path, k);
+    snprintf(want, sizeof want, "src=\"%s?k=%s\"", path, k);
+    CHECK_HAS(buf_cstr(&page), want);
+    /* no stored session (the harness's pages): plain addresses */
+    snprintf(want, sizeof want, "src=\"/media/file/%016llx\"", (unsigned long long)f->id);
+    CHECK_HAS(th_page(adam, url("/media/watch/%s", f->id)), want);
+    buf_free(&page);
     th_halt();
 }
 

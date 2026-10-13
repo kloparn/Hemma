@@ -40,10 +40,10 @@ static void new_modal(Buf *b) {
     buf_puts(b, "<label class=\"field\"><span>Name</span><input name=\"name\" maxlength=\"40\" required "
                 "placeholder=\"Living room TV\" autofocus></label>"
                 "<div class=\"field\"><span>Kind</span><div class=\"chips\"><label class=\"chip-r\"><input "
-                "type=\"radio\" name=\"kind\" value=\"tv\" checked><span>TV</span></label></div><small "
-                "class=\"muted\">Big rows you scroll with the remote, like a streaming app.</small></div>");
-    /* TODO(screens): offer "Wall" here once walls get a builder of their own - the data model
-       (SCREEN_WALL) and the view (rows as cards) already handle that kind. */
+                "type=\"radio\" name=\"kind\" value=\"tv\" checked><span>TV</span></label><label class=\"chip-r\"><input "
+                "type=\"radio\" name=\"kind\" value=\"wall\"><span>Wall</span></label></div><small class=\"muted\">TV: "
+                "big rows you scroll with the remote, like a streaming app. Wall: an always-on overview for a tablet - "
+                "the clock, who's home, today, bookings, the shopping list...</small></div>");
     buf_puts(b, "<div class=\"modal-f\"><a class=\"btn ghost\" href=\"/screens\">Cancel</a>"
                 "<button class=\"btn primary\">Make it</button></div>");
     ui_form_end(b);
@@ -52,7 +52,7 @@ static void new_modal(Buf *b) {
 
 static void list_page(Ctx *c, Buf *b) {
     ctx_title(c, "Screens");
-    ui_head(b, "Screens", "What the TV shows, row by row");
+    ui_head(b, "Screens", "What the TV and the wall tablets show");
     if (is_admin(c)) {
         buf_puts(b, "<a class=\"btn primary\" href=\"/screens?new=1\">");
         ui_icon(b, "plus");
@@ -72,8 +72,8 @@ static void list_page(Ctx *c, Buf *b) {
             int nr = screen_rows(s->id, rows, SCREENS_MAX_ROWS);
             H(b, "<li class=\"row\" id=\"screens-s%d\"><span class=\"screens-kind\">", s->id);
             ui_icon(b, s->kind == SCREEN_WALL ? "grid" : "tv");
-            H(b, "</span><div class=\"row-main\"><b>%s</b><small>%s · %d row%r", s->name, kind_name(s->kind), nr,
-              nr == 1 ? "" : "s");
+            H(b, "</span><div class=\"row-main\"><b>%s</b><small>%s · %d %s%r", s->name, kind_name(s->kind), nr,
+              s->kind == SCREEN_WALL ? "card" : "row", nr == 1 ? "" : "s");
             Buf on = {0};
             shown_on(s->id, &on);
             if (on.len) H(b, " · on %s", buf_cstr(&on));
@@ -90,10 +90,10 @@ static void list_page(Ctx *c, Buf *b) {
     }
     if (is_admin(c)) {
         ui_card(b, "On the TV", NULL, NULL);
-        buf_puts(b, "<ol class=\"steps\"><li>Under <a href=\"/people\">Household</a>, add someone for the TV and "
-                    "choose the sign-in kind <b>Display</b>: it can only look.</li><li>On the TV's web browser, "
-                    "open Hemma (type the address with <code>http://</code>) and sign in with it.</li><li>Edit a "
-                    "screen and tick the TV under <b>Shows on</b>: the TV opens it by itself, and asks "
+        buf_puts(b, "<ol class=\"steps\"><li>Under <a href=\"/people\">Household</a>, add someone for the TV (or the "
+                    "wall tablet) and choose the sign-in kind <b>Display</b>: it can only look.</li><li>On its web "
+                    "browser, open Hemma (type the address with <code>http://</code>) and sign in with it.</li><li>Edit "
+                    "a screen and tick it under <b>Shows on</b>: it opens that screen by itself. A TV asks "
                     "<i>Who's watching?</i> - nobody types a password there.</li></ol>");
         ui_card_end(b);
     }
@@ -148,21 +148,13 @@ static void picker(Ctx *c, Buf *b) {
     buf_puts(b, "</div></div></div>");
 }
 
-static void view_page(Ctx *c, Buf *b, const Screen *s) {
-    ctx_title(c, "%s", s->name);
-    c->bare = true;
+/* The screen's rows that have something to show right now, in order: a TV's rows of tiles, or a
+   wall's cards. Returns how many. */
+static int draw_rows(Ctx *c, Buf *b, const Screen *s, int *total) {
     bool wall = s->kind == SCREEN_WALL;
-    int viewer = wall ? 0 : screens_viewer(c);
-    if (!wall && !viewer && c->me->role == ROLE_DISPLAY) {
-        picker(c, b);
-        return;
-    }
-    H(b, "<div class=\"screens-dark %r\" id=\"screens-view\" data-arrows>", wall ? "screens-wall" : "screens-tv");
-    top_bar(c, b, s, viewer);
-    /* autofocus: the remote starts on the first row, not on the buttons up top (web/wire.js) */
-    H(b, "<div class=\"%r\" autofocus>", wall ? "screens-grid" : "screens-rows");
     ScreenRow *rows[SCREENS_MAX_ROWS];
     int n = screen_rows(s->id, rows, SCREENS_MAX_ROWS), shown = 0;
+    *total = n;
     for (int i = 0; i < n; i++) {
         const Module *owner = NULL;
         const Block *bl = block_find(rows[i]->block, &owner);
@@ -170,10 +162,7 @@ static void view_page(Ctx *c, Buf *b, const Screen *s) {
         Buf row = {0};
         if (bl->render(c, &row, s->kind, rows[i]->arg)) {
             const char *title = rows[i]->title[0] ? rows[i]->title : bl->title;
-            if (wall)
-                H(b, "<section class=\"card screens-card\" id=\"screens-r%d\"><header class=\"card-h\"><h2>%s</h2>"
-                     "</header>",
-                  rows[i]->id, title);
+            if (wall) H(b, "<section class=\"screens-card\" id=\"screens-r%d\"><h2>%s</h2>", rows[i]->id, title);
             else H(b, "<section class=\"screens-row\" id=\"screens-r%d\"><h2>%s</h2>", rows[i]->id, title);
             buf_put(b, row.p, row.len);
             buf_puts(b, "</section>");
@@ -181,10 +170,116 @@ static void view_page(Ctx *c, Buf *b, const Screen *s) {
         }
         buf_free(&row);
     }
+    return shown;
+}
+
+/* ---- a wall: the top band, then the cards ---- */
+
+/* Now and next from the shared agenda (bookings, the calendar...): what's on right now, then what
+   comes - today, else tomorrow. Three at most: the cards below have the rest. */
+static void wall_next(Ctx *c, Buf *b) {
+    int64_t today = day_start(c->now), tomorrow = add_days(today, 1);
+    Agenda ag = {0};
+    agenda_collect(c, c->now, add_days(today, 2), NULL, &ag);
+    int shown = 0;
+    for (int i = 0; i < ag.n && shown < 3; i++) {
+        const AgendaItem *it = &ag.items[i];
+        bool now = it->start <= c->now && it->end > c->now;
+        if (!now && it->start < c->now) continue; /* (a moment that's passed) */
+        if (!shown++) buf_puts(b, "<ul class=\"screens-wnext\">");
+        H(b, "<li class=\"%r\"><span class=\"screens-wn-when\">", now ? "screens-wn-now" : "");
+        if (now) buf_puts(b, it->allday ? "Today" : "Now");
+        else {
+            if (it->start >= tomorrow) buf_puts(b, "Tomorrow ");
+            if (!it->allday) ui_hm(b, it->start);
+        }
+        H(b, "</span><span class=\"screens-wn-what\">%s%r%s", it->icon, it->icon[0] ? " " : "", it->title);
+        Person *p = person_get(it->who);
+        if (p) H(b, " <small>· %s</small>", p->name);
+        if (now && !it->allday && it->end > it->start) {
+            buf_puts(b, " <small>until ");
+            ui_hm(b, it->end);
+            buf_puts(b, "</small>");
+        }
+        buf_puts(b, "</span></li>");
+    }
+    if (shown) buf_puts(b, "</ul>");
+    agenda_free(&ag);
+}
+
+/* Everyone, with whether they're home (when Hemma can tell: a device of theirs on the network) or
+   have Hemma open somewhere. */
+static void wall_people(Buf *b) {
+    if (!person_count()) return;
+    bool tracking = presence_tracking();
+    buf_puts(b, "<div class=\"screens-wpeople\">");
+    for (int i = 0; i < person_count(); i++) {
+        Person *p = person_at(i);
+        bool home = presence_is_home(p->id, NULL);
+        const char *state = home ? "home" : tracking && presence_known(p->id) ? "away" : presence_screens(p->id) ? "online" : "";
+        H(b, "<div class=\"screens-wp %s\">", state);
+        ui_avatar(b, p, "lg");
+        H(b, "<b>%s</b><small>%s</small></div>", p->name, *state ? state : "\xC2\xA0");
+    }
+    buf_puts(b, "</div>");
+}
+
+/* A tablet on the wall: big clock, the date, now and next, who's home - then the cards, as tall
+   as what they show, flowing in columns. Cards with nothing to show stay away (a calm wall). The
+   core re-renders every minute: the clock needs nothing else. */
+static void wall_page(Ctx *c, Buf *b, const Screen *s) {
+    DateTime d = dt_local(c->now);
+    char hm[6];
+    fmt_hm(c->now, hm);
+    H(b, "<div class=\"screens-dark screens-wall\" id=\"screens-view\"><header class=\"screens-wtop\"><div "
+         "class=\"screens-wclock\"><span class=\"screens-home\">%s</span><time datetime=\"%s\">%s</time><span "
+         "class=\"screens-wdate\">%s %d %s · week %d</span></div>",
+      app_name(), hm, hm, weekday_name(d.wday, false), d.day, month_name(d.mon, false), iso_week(c->now, NULL));
+    wall_next(c, b);
+    wall_people(b);
+    buf_puts(b, "</header>");
+    /* columns at least ~300px wide, never more of them than cards: a few cards on a wide screen
+       spread out instead of huddling on the left */
+    Buf cards = {0};
+    int total = 0, shown = draw_rows(c, &cards, s, &total);
+    H(b, "<div class=\"screens-cards\" style=\"column-count:%d\">", CLAMP(shown, 1, 4));
+    buf_put(b, cards.p, cards.len);
+    buf_puts(b, "</div>");
+    buf_free(&cards);
+    if (!shown)
+        buf_puts(b, total ? "<p class=\"screens-calm\">All quiet - nothing booked, planned or on the list.</p>"
+                          : "<p class=\"screens-calm\">No cards on this wall yet.</p>");
+    /* out of the way, for whoever stands at the tablet */
+    buf_puts(b, "<nav class=\"screens-wfoot\">");
+    if (is_admin(c)) H(b, "<a class=\"screens-btn\" href=\"/screens/%d/edit\">Edit</a>", s->id);
+    char url[32];
+    screens_url(s->id, url);
+    if (c->me->role != ROLE_DISPLAY || !str_eq(pref(c->me->id, PREF_START, ""), url))
+        buf_puts(b, "<a class=\"screens-btn\" href=\"/\">Exit</a>");
+    buf_puts(b, "</nav></div>");
+}
+
+static void view_page(Ctx *c, Buf *b, const Screen *s) {
+    ctx_title(c, "%s", s->name);
+    c->bare = true;
+    if (s->kind == SCREEN_WALL) {
+        wall_page(c, b, s);
+        return;
+    }
+    int viewer = screens_viewer(c);
+    if (!viewer && c->me->role == ROLE_DISPLAY) {
+        picker(c, b);
+        return;
+    }
+    buf_puts(b, "<div class=\"screens-dark screens-tv\" id=\"screens-view\" data-arrows>");
+    top_bar(c, b, s, viewer);
+    /* autofocus: the remote starts on the first row, not on the buttons up top (web/wire.js) */
+    buf_puts(b, "<div class=\"screens-rows\" autofocus>");
+    int total = 0, shown = draw_rows(c, b, s, &total);
     buf_puts(b, "</div>");
     if (!shown) {
-        ui_empty(b, "📺", n ? "Nothing to show yet" : "No rows yet",
-                 n ? "When there's something to watch, it shows up here." : "This screen has nothing on it yet.");
+        ui_empty(b, "📺", total ? "Nothing to show yet" : "No rows yet",
+                 total ? "When there's something to watch, it shows up here." : "This screen has nothing on it yet.");
         if (is_admin(c)) H(b, "<p class=\"center\"><a class=\"screens-btn\" href=\"/screens/%d/edit\">Add rows</a></p>", s->id);
     }
     buf_puts(b, "</div>");
@@ -224,10 +319,15 @@ static void rows_card(Ctx *c, Buf *b, const Screen *s) {
     int n = screen_rows(s->id, rows, SCREENS_MAX_ROWS);
     Buf trash = {0};
     ui_icon(&trash, "trash");
-    ui_card(b, "Rows", NULL, NULL);
-    buf_puts(b, n ? "<p class=\"muted small screens-hint\">Top to bottom, as the screen shows them. A row with nothing "
-                    "to show right now is left out.</p>"
-                  : "<p class=\"muted screens-hint\">No rows yet: add some below.</p>");
+    bool wall = s->kind == SCREEN_WALL;
+    ui_card(b, wall ? "Cards" : "Rows", NULL, NULL);
+    if (!n) H(b, "<p class=\"muted screens-hint\">No %s yet: add some below.</p>", wall ? "cards" : "rows");
+    else if (wall)
+        buf_puts(b, "<p class=\"muted small screens-hint\">In this order, flowing down the wall's columns. A card with "
+                    "nothing to show right now is left out.</p>");
+    else
+        buf_puts(b, "<p class=\"muted small screens-hint\">Top to bottom, as the screen shows them. A row with nothing "
+                    "to show right now is left out.</p>");
     buf_puts(b, "<ol class=\"screens-ed\">");
     for (int i = 0; i < n; i++) {
         const ScreenRow *r = rows[i]; /* (blocks' choices() don't touch this table: the pointers hold) */
@@ -266,7 +366,7 @@ static void rows_card(Ctx *c, Buf *b, const Screen *s) {
 }
 
 static void add_card(Ctx *c, Buf *b, const Screen *s) {
-    ui_card(b, "Add a row", NULL, NULL);
+    ui_card(b, s->kind == SCREEN_WALL ? "Add a card" : "Add a row", NULL, NULL);
     buf_puts(b, "<ul class=\"rows screens-add\">");
     int k = 0;
     for (int i = 0; i < module_count(); i++) {

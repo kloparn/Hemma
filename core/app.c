@@ -15,6 +15,7 @@
 #include "lan.h"
 #include "ui.h"
 
+#include <limits.h>
 #include <stdatomic.h>
 
 /* ================================================================ tables */
@@ -335,6 +336,42 @@ void session_end(const char *sid) {
     if (s) tbl_del(&T_session, s->id);
 }
 
+/* Address keys (ctx_url_key): "<session id>-<HMAC(server secret, session token + path), 128 bits>".
+   The token (the cookie's hash) never leaves the server, so a key can't be made without the secret,
+   doesn't fit any other path, and dies with its session (signing out, expiry). Found 2026-10-13: a
+   Samsung TV's video player asked for the file without the page's cookie and got the sign-in page,
+   which it reported as a decode error - every video, every Hemma version. */
+static bool url_key(const Session *s, const char *path, char out[CTX_KEY_LEN]) {
+    out[0] = '\0';
+    if (!s || s->id <= 0 || !s->token[0]) return false;
+    Buf msg = {0};
+    buf_printf(&msg, "hemma address key\n%s\n%s", s->token, path);
+    uint8_t mac[32];
+    bool ok = auth_mac(msg.p, msg.len, mac);
+    buf_free(&msg);
+    if (!ok) return false;
+    char hex[33];
+    hex_encode(mac, 16, hex);
+    snprintf(out, CTX_KEY_LEN, "%d-%s", s->id, hex);
+    return true;
+}
+
+/* The session a request's ?k= stands for: only a live one, and only with the key for its path. */
+static Session *session_by_url_key(const HttpReq *r) {
+    if (!r->query[0]) return NULL;
+    Fields q = {0};
+    fields_parse(&q, r->query, strlen(r->query));
+    const char *k = fields_str(&q, "k");
+    char *end = NULL;
+    long id = strtol(k, &end, 10);
+    Session *s = id > 0 && id < INT_MAX && end && *end == '-' ? tbl_get(&T_session, (int)id) : NULL;
+    char want[CTX_KEY_LEN];
+    bool ok = s && !session_over(s, now_sec()) && url_key(s, r->path, want) && strlen(k) == strlen(want) &&
+              ct_equal(k, want, strlen(want));
+    fields_free(&q);
+    return ok ? s : NULL;
+}
+
 int sessions_drop(int person, const Session *keep) {
     char keep_token[65] = ""; /* copy: deleting rows moves the table under `keep` */
     if (keep) str_copy(keep_token, sizeof keep_token, keep->token);
@@ -366,6 +403,7 @@ struct Client {
     bool ready, dirty, push;
     bool late;       /* navigated past its budget: rendered on the next tick */
     int64_t nav_tat; /* monotonic ms: when its navigation budget is whole again (plus the burst) */
+    int logs;        /* lines it has put in the log (the browser's own trouble: see "log" below) */
     struct {
         char k[32];
         char v[256];
@@ -469,6 +507,7 @@ static void client_ctx(Client *cl, Ctx *c) {
 
 const char *ctx_q(const Ctx *c, const char *key) { return fields_str(&c->q, key); }
 long long ctx_qint(const Ctx *c, const char *key, long long dflt) { return fields_int(&c->q, key, dflt); }
+void ctx_url_key(const Ctx *c, const char *path, char out[CTX_KEY_LEN]) { url_key(c->sess, path, out); }
 
 void ctx_title(Ctx *c, const char *fmt, ...) {
     va_list ap;
@@ -1081,6 +1120,18 @@ static void on_ws_message(Conn *conn, const char *msg, size_t n) {
         cl->head_hash = 0;
         client_wants_render(cl);
         if (moved && !cl->late) presence_moved();
+    } else if (str_eq(t, "log")) {
+        /* The browser's own trouble (wire.js: a script error, a video that won't play): a TV's
+           browser has no console anyone can read, so it goes in the log - the System page. Signed-in
+           screens only, BROWSER_LOGS lines per connection. */
+        enum { BROWSER_LOGS = 20 };
+        char m[420];
+        const Session *s = session_by_token(cl->token);
+        const Person *p = s ? person_get(s->person) : NULL;
+        if (!p || cl->logs >= BROWSER_LOGS || !json_string(&j, json_get(&j, 0, "m"), m, sizeof m)) return;
+        cl->logs++;
+        log_warn("browser of %s (%s) on %s: %s%s", p->username[0] ? p->username : p->name, conn->peer, url, utf8_scrub(m),
+                 cl->logs == BROWSER_LOGS ? " (and no more from it)" : "");
     } else if (str_eq(t, "act") || str_eq(t, "live")) {
         char a[64];
         json_string(&j, json_get(&j, 0, "a"), a, sizeof a);
@@ -1414,6 +1465,22 @@ static void on_http(Conn *conn, HttpReq *r) {
         }
         ctx_free(&c);
         return;
+    }
+
+    /* No session cookie, but an address key (?k=, ctx_url_key) for exactly this path: a module
+       endpoint answers as that session - a TV's video player that fetches without cookies. Nothing
+       else does: an address no endpoint takes goes on as a signed-out request. */
+    if (!live && (str_eq(r->method, "GET") || str_eq(r->method, "HEAD"))) {
+        Session *keyed = session_by_url_key(r);
+        if (keyed) {
+            Ctx c;
+            ctx_init(&c, keyed, NULL, conn->ip, r->target);
+            bool taken = false;
+            for (int i = 0; i < nmods && !taken; i++)
+                if (mods[i]->http && c.me && module_visible(mods[i], &c)) taken = mods[i]->http(&c, conn, r);
+            ctx_free(&c);
+            if (taken) return;
+        }
     }
 
     if (str_eq(r->path, "/ws")) {

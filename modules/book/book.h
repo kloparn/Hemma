@@ -73,5 +73,6 @@ void book_quick_parse(const char *q, int default_res, int64_t now, Quick *out);
 void book_span_text(const Resource *r, int64_t start, int64_t end, int64_t now, Buf *b);
 void book_page(Ctx *c, Buf *b);
 void book_widget(Ctx *c, Buf *b, int where);
+bool book_wall(Ctx *c, Buf *b); /* the "Bookings" wall block: free or whose now, what's coming (false: nothing to book) */
 
 #endif

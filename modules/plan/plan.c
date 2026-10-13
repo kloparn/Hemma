@@ -333,16 +333,54 @@ static void page(Ctx *c, Buf *b) {
 }
 
 static void widget(Ctx *c, Buf *b, int where) {
-    bool wall = where == WIDGET_WALL;
-    H(b, "<section class=\"card plan-w%r\"><header class=\"card-h\"><h2>Today</h2>", wall ? " plan-wall" : "");
-    if (!wall) buf_puts(b, "<a class=\"more\" href=\"/plan\">Plan</a>");
-    buf_puts(b, "</header>");
-    int n = plan_today_events(c, b, wall);
-    n += plan_today_tasks(c, b, wall);
+    (void)where;
+    buf_puts(b, "<section class=\"card plan-w\"><header class=\"card-h\"><h2>Today</h2><a class=\"more\" "
+                "href=\"/plan\">Plan</a></header>");
+    int n = plan_today_events(c, b, false);
+    n += plan_today_tasks(c, b, false);
     if (!n) buf_puts(b, "<p class=\"muted plan-w-empty\">Nothing due today ✨</p>");
     buf_puts(b, "</section>");
-    plan_shop_widget(c, b, wall);
+    plan_shop_widget(c, b);
 }
+
+/* ---------------------------------------------------- blocks for walls */
+
+/* A wall shows, it doesn't tick off: no forms, no edit links (the plan-wall look: big type).
+   Nothing to show = false: the wall leaves the card out. */
+static bool wall_card(Buf *b, Buf *in, int n) {
+    if (n) H(b, "<div class=\"plan-wall\">%r</div>", buf_cstr(in));
+    buf_free(in);
+    return n > 0;
+}
+
+static bool row_today(Ctx *c, Buf *b, int kind, const char *arg) {
+    (void)kind, (void)arg;
+    Buf t = {0};
+    int n = plan_today_events(c, &t, true);
+    n += plan_today_tasks(c, &t, true);
+    return wall_card(b, &t, n);
+}
+
+static bool row_days(Ctx *c, Buf *b, int kind, const char *arg) {
+    (void)kind, (void)arg;
+    Buf t = {0};
+    int n = plan_days(c, &t, 7, 8);
+    return wall_card(b, &t, n);
+}
+
+static bool row_shop(Ctx *c, Buf *b, int kind, const char *arg) {
+    (void)c, (void)kind, (void)arg;
+    Buf t = {0};
+    int n = plan_shop_items(&t, 14);
+    return wall_card(b, &t, n);
+}
+
+static const Block blocks[] = {
+    {"plan.today", "Today", SCREEN_WALL, row_today, NULL},
+    {"plan.days", "Coming days", SCREEN_WALL, row_days, NULL},
+    {"plan.shop", "Shopping list", SCREEN_WALL, row_shop, NULL},
+    {0},
+};
 
 static const Action actions[] = {
     {"plan.task_preview", plan_act_task_preview, true},   {"plan.task_add", plan_act_task_add},
@@ -366,5 +404,7 @@ static const Module plan = {
     .actions = actions,
     .widget = widget,
     .widget_order = 20,
+    .agenda = plan_agenda,
+    .blocks = blocks,
 };
 MODULE(plan)

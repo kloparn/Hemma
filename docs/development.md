@@ -83,7 +83,7 @@ the codec tests.
 ```
 core/       the framework: platform layer, HTTP/WebSocket server, HTML, SQLite store,
             sign-in, the live UI (app.c), UI components (ui.c), command line (main.c)
-modules/    one folder per feature: home book plan media tv board net people wall,
+modules/    one folder per feature: home book plan media tv board net people screens system,
             plus av (a pure-C video/audio codec library used by media)
 web/        app.css, wire.js (the generic transport), conv.js (upload converter worker), icons, manifest
 deploy/     hemma.service + install-pi.sh (systemd Linux), local.hemma.plist (macOS)
