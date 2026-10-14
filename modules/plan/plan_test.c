@@ -369,6 +369,8 @@ TEST(plan_widgets_render_today_and_shopping) {
     CHECK_HAS(buf_cstr(&b), "Dinner with eva");
     CHECK(!strstr(buf_cstr(&b), "<form"));
     CHECK(!strstr(buf_cstr(&b), "?edit="));
+    CHECK_HAS(buf_cstr(&b), "plan-dot"); /* a dot, not a tick circle that reads "tap me" (issue #80) */
+    CHECK(!strstr(buf_cstr(&b), "class=\"tick"));
     buf_reset(&b);
     CHECK(block_find("plan.shop", NULL)->render(&c, &b, SCREEN_WALL, ""));
     CHECK_HAS(buf_cstr(&b), "Oat milk");
@@ -402,12 +404,12 @@ TEST(plan_wall_coming_days_and_the_shared_agenda) {
     const char *s = buf_cstr(&b);
     const char *g = strstr(s, "Grandma visits");
     CHECK(g && !strstr(g + 1, "Grandma visits"));
-    CHECK_HAS(s, "<h3 class=\"plan-day-h\">Friday 9</h3>");
+    CHECK_HAS(s, "<h3 class=\"plan-day-h\" data-fit-head>Friday 9</h3>");
     CHECK_HAS(s, ">until Sun</span>");
-    CHECK_HAS(s, "<h3 class=\"plan-day-h\">Tomorrow</h3>");
+    CHECK_HAS(s, "<h3 class=\"plan-day-h\" data-fit-head>Tomorrow</h3>");
     CHECK_HAS(s, "Dentist");
     CHECK_HAS(s, "Water plants");
-    CHECK_HAS(s, "<h3 class=\"plan-day-h\">Saturday 10</h3>");
+    CHECK_HAS(s, "<h3 class=\"plan-day-h\" data-fit-head>Saturday 10</h3>");
     CHECK(strstr(s, "Dentist") < strstr(s, "Book club"));
     CHECK(!strstr(s, "Party"));
     CHECK(!strstr(s, "<form"));

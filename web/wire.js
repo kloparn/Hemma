@@ -467,7 +467,7 @@
         const next = t.content.firstElementChild, app = document.getElementById('app');
         if (next && app) {
           const was = focusSpot();
-          morph(app, next); settle(); starts(); gaps(); arrowsSettle(was);
+          morph(app, next); settle(); starts(); gaps(); fits(); arrowsSettle(was);
           pageUrl = here();
         }
         break;
@@ -606,6 +606,87 @@
       box.scrollLeft += t.getBoundingClientRect().left - box.getBoundingClientRect().left - pad;
     }
   }
+
+  // [data-fit]: a box of cards (its children, the admin's order) that must fit the screen it's on - a
+  // wall tablet nobody scrolls (issue #77). Its CSS bounds its height. While a card spills over the
+  // edges: 1. the longest cards give up their last rows (li), down to FIT_ROWS each; 2. whole cards go,
+  // from the end; 3. a card left alone gets shorter still; then rows come back while they fit.
+  // "+N more" says how many went (or adds to the server's own [data-fit-more="N"]); [data-fit-keep]
+  // rows stay; a [data-fit-head] (a day's heading) goes when nothing under it is left. From the start
+  // after every morph and resize: the server's HTML always has everything.
+  const FIT_ROWS = 4;
+  const fitCut = (el) => { el.hidden = true; el.setAttribute('data-fit-cut', ''); };
+  const fitShow = (el) => { el.hidden = false; el.removeAttribute('data-fit-cut'); };
+  function fit(box) {
+    for (const x of box.querySelectorAll('[data-fit-cut]')) fitShow(x);
+    for (const x of box.querySelectorAll('.fit-more')) x.remove();
+    for (const x of box.querySelectorAll('[data-fit-more]')) x.textContent = `+${x.dataset.fitMore} more`;
+    const shown = () => [...box.children].filter((c) => !c.hidden);
+    /* (per card: in CSS columns a card too tall for its column doesn't count in the box's scroll size) */
+    const spills = () => {
+      const b = box.getBoundingClientRect();
+      return shown().some((card) => {
+        const r = card.getBoundingClientRect();
+        return r.bottom > b.bottom + 1 || r.right > b.right + 1;
+      });
+    };
+    const rows = (card) => [...card.querySelectorAll('li:not([data-fit-cut]):not([data-fit-keep]):not([data-fit-head])')];
+    /* the card again as it now is: its headings, and how many rows went */
+    const settle = (card) => {
+      let head = null, under = 0;
+      const end = () => { if (head) (under ? fitShow : fitCut)(head); };
+      for (const el of card.querySelectorAll('[data-fit-head], li:not([data-fit-keep])')) {
+        if (el.hasAttribute('data-fit-head')) { end(); head = el; under = 0; }
+        else if (!el.hasAttribute('data-fit-cut')) under++;
+      }
+      end();
+      const n = card.querySelectorAll('li[data-fit-cut]:not([data-fit-head])').length, own = card.querySelector('[data-fit-more]');
+      let p = card.querySelector('.fit-more');
+      if (own) own.textContent = `+${n + (parseInt(own.dataset.fitMore, 10) || 0)} more`;
+      else if (n) {
+        if (!p) { p = document.createElement('p'); p.className = 'fit-more'; card.append(p); }
+        p.textContent = `+${n} more`;
+      } else if (p) p.remove();
+    };
+    const cuts = [];
+    const shorten = (card) => { const r = rows(card); fitCut(r[r.length - 1]); cuts.push(r[r.length - 1]); settle(card); };
+    for (let g = 0; g < 400 && spills(); g++) { /* 1. the longest cards, down to FIT_ROWS rows */
+      let best = null, most = FIT_ROWS;
+      for (const card of shown()) {
+        const n = rows(card).length;
+        if (n > most) { most = n; best = card; }
+      }
+      if (!best) break;
+      shorten(best);
+    }
+    while (spills() && shown().length > 1) { const s = shown(); fitCut(s[s.length - 1]); } /* 2. cards, from the end */
+    for (const card of [...box.children].filter((c) => c.hasAttribute('data-fit-cut'))) { /* ...back where room's left */
+      fitShow(card);
+      while (spills() && rows(card).length > FIT_ROWS) shorten(card);
+      if (spills()) fitCut(card);
+    }
+    for (let g = 0; g < 400 && spills(); g++) { /* 3. the one card left */
+      const card = shown()[0];
+      if (!card || rows(card).length <= 1) break;
+      shorten(card);
+    }
+    while (cuts.length) { /* rows back where they fit (a card that went may have made room) */
+      const r = cuts.pop(), card = [...box.children].find((c) => c.contains(r));
+      if (card.hasAttribute('data-fit-cut')) continue;
+      fitShow(r);
+      settle(card);
+      if (spills()) { fitCut(r); settle(card); }
+    }
+    /* data-fit="<id>": that element names the cards that didn't fit (by their headings) */
+    const say = box.dataset.fit && document.getElementById(box.dataset.fit);
+    if (say) {
+      const gone = [...box.children].filter((c) => c.hasAttribute('data-fit-cut'));
+      say.textContent = gone.length ? `Didn't fit: ${gone.map((c) => (c.querySelector('h2,h3') || c).textContent.trim()).join(', ')}` : '';
+    }
+  }
+  const fits = () => document.querySelectorAll('[data-fit]').forEach(fit);
+  let fitLater;
+  addEventListener('resize', () => { clearTimeout(fitLater); fitLater = setTimeout(fits, 150); });
 
   // <video data-onair data-resume="S">: a live broadcast (a TV channel). It plays where the
   // programme is now - S when it came (m._at, m._t0: see media()), plus the time since - and can't
@@ -1114,6 +1195,7 @@
   document.querySelectorAll('[data-fullscreen]').forEach(fsButton);
   starts();
   gaps();
+  fits();
   arrowsSettle(null);
   connect();
 })();

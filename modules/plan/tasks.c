@@ -47,10 +47,12 @@ static void task_row(Ctx *c, Buf *b, const Task *t, const char *idp, const char 
         ui_icon(b, "check");
         buf_puts(b, "</button>");
         ui_form_end(b);
-    } else {
-        H(b, "<span class=\"tick%r\" aria-hidden=\"true\">", done ? " on" : "");
+    } else if (done) {
+        buf_puts(b, "<span class=\"tick on\" aria-hidden=\"true\">");
         ui_icon(b, "check");
         buf_puts(b, "</span>");
+    } else { /* a dot, not a tick circle: there's nothing to tap here (issue #80, the wall) */
+        buf_puts(b, "<span class=\"plan-dot\" aria-hidden=\"true\"></span>");
     }
     const char *icon = plan_task_icon(t->title);
     if (href) H(b, "<a class=\"plan-task-main\" href=\"%s\">", href);
@@ -144,14 +146,14 @@ static void task_modal(Ctx *c, Buf *b, const Task *t) {
     buf_puts(b, "</select></label><div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>");
     ui_form_end(b);
     if (t) {
-        H(b,
-          "<form method=\"post\" action=\"/a/plan.task_delete\" data-a=\"plan.task_delete\" class=\"danger-zone\" "
-          "data-confirm=\"Delete “%s”?\">",
-          t->title);
+        char q[300];
+        snprintf(q, sizeof q, "Delete “%s”?", t->title);
+        ui_form_confirm(b, "plan.task_delete", "danger-zone", q);
         ui_hidden_int(b, "id", t->id);
         buf_puts(b, "<button class=\"btn danger\">");
         ui_icon(b, "trash");
-        buf_puts(b, "<span>Delete</span></button></form>");
+        buf_puts(b, "<span>Delete</span></button>");
+        ui_form_end(b);
     }
     ui_modal_end(b);
     buf_free(&close);
@@ -289,7 +291,7 @@ int plan_today_tasks(Ctx *c, Buf *b, bool wall) {
         task_row(c, b, t, wall ? "plan-wt" : "plan-ht", act ? href : NULL, act);
     }
     buf_puts(b, "</ul>");
-    if (n > max) H(b, "<p class=\"muted plan-more\">+%d more on the list</p>", n - max);
+    if (n > max) H(b, "<p class=\"muted plan-more\" data-fit-more=\"%d\">+%d more on the list</p>", n - max, n - max);
     return n;
 }
 

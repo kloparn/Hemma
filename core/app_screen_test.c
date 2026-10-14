@@ -152,3 +152,44 @@ TEST(app_a_sections_pages_light_up_their_parent) {
     g_on = false;
     th_halt();
 }
+
+/* Issue #54: a display account (the hallway tablet) saw quick-add boxes, ticks and x buttons on
+   every page, and each tap only answered "This screen is view-only". Its pages now carry only the
+   forms it may use (Action.display) - here every module's own page, with something on it. */
+TEST(app_display_pages_offer_only_what_a_display_may_do) {
+    th_boot();
+    int adam = th_person("Adam");
+    Person p = *person_get(adam);
+    p.role = ROLE_ADMIN;
+    tbl_put(&T_person, &p);
+    int tablet = th_person("Hall tablet");
+    p = *person_get(tablet);
+    p.role = ROLE_DISPLAY;
+    tbl_put(&T_person, &p);
+    /* something to show (actions of modules that aren't built are simply unknown) */
+    th_act(adam, "board.post", "text=Plumber+comes+Thursday&hue=45");
+    th_act(adam, "plan.task_add", "q=vacuum+today");
+    th_act(adam, "plan.shop_add", "q=milk%2C+eggs");
+    th_act(adam, "plan.event_add", "q=dentist+tomorrow+14%3A30");
+    th_act(adam, "book.res_save", "name=Car&kind=hourly&always=1");
+    th_act(adam, "book.quick", "q=car+tomorrow+14-17");
+    int pages = 0;
+    for (int i = 0; i < module_count(); i++) {
+        const Module *m = module_at(i);
+        if (!m->page || (m->flags & MOD_ADMIN)) continue;
+        char url[64];
+        snprintf(url, sizeof url, "/%s", m->id);
+        const char *h = th_page(tablet, url);
+        pages++;
+        for (const char *s = strstr(h, "data-a=\""); s; s = strstr(s + 1, "data-a=\"")) {
+            char name[64];
+            size_t n = strcspn(s + 8, "\"");
+            str_ncopy(name, sizeof name, s + 8, n);
+            if (!app_action_display(name)) test_fail(__FILE__, __LINE__, "%s offers %s to a display account", url, name);
+        }
+    }
+    CHECK(pages > 3);
+    /* (a person still gets the forms) */
+    CHECK_HAS(th_page(adam, "/plan"), "data-a=\"plan.task_add\"");
+    th_halt();
+}

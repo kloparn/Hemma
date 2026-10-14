@@ -240,12 +240,13 @@ static void note_actions(Buf *b, const Note *n, bool expired_view) {
       expired_view ? "expired=1&amp;" : "", n->id);
     ui_icon(b, "edit");
     buf_puts(b, "</a>");
-    H(b, "<form method=\"post\" action=\"/a/board.delete\" data-a=\"board.delete\" class=\"inline\" "
-         "data-confirm=\"Remove this note?\">");
+    ui_form_confirm(b, "board.delete", "inline", "Remove this note?");
     ui_hidden_int(b, "id", n->id);
     buf_puts(b, "<button class=\"icon-btn\" title=\"Remove\" aria-label=\"Remove\">");
     ui_icon(b, "trash");
-    buf_puts(b, "</button></form></div>");
+    buf_puts(b, "</button>");
+    ui_form_end(b);
+    buf_puts(b, "</div>");
 }
 
 static void note_card(Ctx *c, Buf *b, const Note *n, bool expired_view) {
@@ -272,7 +273,7 @@ static void note_card(Ctx *c, Buf *b, const Note *n, bool expired_view) {
         H(b, " · <span title=\"Edited by %s\">edited</span>", e ? e->name : "someone");
     }
     buf_puts(b, "</span>");
-    note_actions(b, n, expired_view);
+    if (c->me && c->me->role != ROLE_DISPLAY) note_actions(b, n, expired_view); /* (a hall tablet only reads: #54) */
     buf_puts(b, "</footer></article>");
 }
 
@@ -332,10 +333,10 @@ static void edit_modal(Ctx *c, Buf *b, const Note *n, bool expired_view) {
       today);
     buf_puts(b, "<div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>");
     ui_form_end(b);
-    H(b, "<form method=\"post\" action=\"/a/board.delete\" data-a=\"board.delete\" class=\"danger-zone\" "
-         "data-confirm=\"Remove this note?\">");
+    ui_form_confirm(b, "board.delete", "danger-zone", "Remove this note?");
     ui_hidden_int(b, "id", n->id);
-    buf_puts(b, "<button class=\"btn danger\">Remove note</button></form>");
+    buf_puts(b, "<button class=\"btn danger\">Remove note</button>");
+    ui_form_end(b);
     ui_modal_end(b);
 }
 

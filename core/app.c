@@ -203,6 +203,14 @@ const Block *block_find(const char *id, const Module **owner) {
     return NULL;
 }
 
+static const Action *action_find(const char *name, const Module **owner);
+
+bool app_action_display(const char *name) {
+    const Module *owner = NULL;
+    const Action *a = action_find(name, &owner);
+    return a && a->display;
+}
+
 static const Action *action_find(const char *name, const Module **owner) {
     for (int i = 0; i < nmods; i++) {
         for (const Action *a = mods[i]->actions; a && a->name; a++) {
@@ -808,6 +816,7 @@ void activity_add(int who, const char *icon, const char *link, const char *fmt, 
 static void display_start(Ctx *c) {
     if (!c->me || c->me->role != ROLE_DISPLAY || !str_eq(c->path, "/")) return;
     const char *start = pref(c->me->id, PREF_START, "");
+    if (!start[0]) start = setting(SETTING_DISPLAY_START, "");
     if (start[0] != '/' || start[1] == '/' || str_eq(start, "/") || strchr(start, '?')) return;
     const char *q = strchr(c->url, '?');
     char url[sizeof c->url];
@@ -817,6 +826,7 @@ static void display_start(Ctx *c) {
 
 static void render_app(Ctx *c, Buf *out) {
     display_start(c);
+    ui_view_only(c->me && c->me->role == ROLE_DISPLAY); /* (its forms that only answer "view-only" stay out) */
     const Module *m = module_for_path(c->path);
     Buf page = {0};
     c->title[0] = '\0';
@@ -851,6 +861,7 @@ static void render_app(Ctx *c, Buf *out) {
     else ui_shell(c, out, m, page.p, page.len);
     buf_puts(out, "</div>");
     buf_free(&page);
+    ui_view_only(false);
 }
 
 static void send_ops(Client *cl, const Buf *ops) {

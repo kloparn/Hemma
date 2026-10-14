@@ -118,6 +118,14 @@ int screens_first(int kind) {
     return 0;
 }
 
+/* Where a display account no screen claims starts: the first wall (issue #53), kept for the core. */
+static void display_default(void) {
+    char url[32] = "";
+    int wall = screens_first(SCREEN_WALL);
+    if (wall) screens_url(wall, url);
+    if (!str_eq(setting(SETTING_DISPLAY_START, ""), url)) setting_set(SETTING_DISPLAY_START, url);
+}
+
 /* ======================================================= who's watching */
 
 /* What's known about each TV's pick: when it was last in use. Memory only - after a restart the
@@ -321,6 +329,7 @@ static void act_create(Ctx *c, Fields *f) {
     s.created = c->now;
     s.created_by = c->me->id;
     tbl_put(&T_screen, &s);
+    display_default();
     ctx_ok(c, "%s is ready for its rows", s.name);
     ctx_redirect(c, "/screens/%d/edit", s.id);
 }
@@ -347,9 +356,10 @@ static void act_delete(Ctx *c, Fields *f) {
         ScreenRow *r = tbl_at(&T_screen_row, i);
         if (r->screen == id) tbl_del(&T_screen_row, r->id);
     }
-    for (int i = 0; i < account_count(); i++) /* displays that opened it: their usual home page again */
+    for (int i = 0; i < account_count(); i++) /* displays that opened it: the household's wall again */
         if (str_eq(pref(account_at(i)->id, PREF_START, ""), url)) pref_set(account_at(i)->id, PREF_START, "");
     tbl_del(&T_screen, id);
+    display_default();
     forget_viewers();
     ctx_ok(c, "%s is gone", name);
     ctx_redirect(c, "/screens");
@@ -477,6 +487,7 @@ static void start(void) {
         if (!screens_first(SCREEN_WALL)) seed("Wall", SCREEN_WALL, WALL_CARDS, countof(WALL_CARDS));
         setting_set_int("screens.wall_seeded", 1);
     }
+    display_default();
 }
 
 /* "/wall" - the old wall display's address (bookmarks, the home page's Wall button): the first

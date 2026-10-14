@@ -1276,6 +1276,13 @@ static void mini(Ctx *c, Buf *b, const MediaFile *f) {
     buf_puts(b, "</small></span></a>");
 }
 
+/* A series' new episodes as one small card ("70's Show · 8 new episodes"), as Watch groups them. */
+static void mini_series(Ctx *c, Buf *b, const MediaSeries *s, int new_eps) {
+    H(b, "<a class=\"media-mini\" href=\"/media/series/%X\">", s->id);
+    poster_art(b, s->title, 0, "Series", c->me ? s->poster : 0, 0, false);
+    H(b, "<span class=\"media-mini-cap\">%s<small>%d new episodes</small></span></a>", s->title, new_eps);
+}
+
 /* A "continue watching" card: the poster, and an x that drops the viewer's progress in it (the
    video then starts from the beginning, and leaves the list). Everyone else's progress stays.
    On a display account the x is there while someone is picked under "Who's watching?". */
@@ -1312,12 +1319,16 @@ static void widget(Ctx *c, Buf *b, int where) {
     const MediaFile *list[4];
     int n = media_in_progress(c, list, 4);
     bool resuming = n > 0;
-    for (int i = 0; !resuming && i < ix->nrecent && n < 4; i++) list[n++] = &ix->files[ix->recent[i]];
     ui_card(b, resuming ? "Continue watching" : "Recently added", "/media", "Watch");
     buf_puts(b, "<div class=\"media-minis\">");
-    for (int i = 0; i < n; i++) {
-        if (resuming) going_card(c, b, list[i], true);
-        else mini(c, b, list[i]);
+    for (int i = 0; i < n; i++) going_card(c, b, list[i], true);
+    if (!resuming) { /* a series' new episodes as one card, as Watch has them (issue #59: one per episode) */
+        MediaRecent r[4];
+        int nr = media_recent(r, countof(r));
+        for (int i = 0; i < nr; i++) {
+            if (r[i].n > 1) mini_series(c, b, r[i].series, r[i].n);
+            else mini(c, b, r[i].f);
+        }
     }
     buf_puts(b, "</div>");
     ui_card_end(b);

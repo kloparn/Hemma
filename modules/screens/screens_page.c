@@ -242,15 +242,17 @@ static void wall_page(Ctx *c, Buf *b, const Screen *s) {
        spread out instead of huddling on the left */
     Buf cards = {0};
     int total = 0, shown = draw_rows(c, &cards, s, &total);
-    H(b, "<div class=\"screens-cards\" style=\"column-count:%d\">", CLAMP(shown, 1, 4));
+    /* data-fit (web/wire.js): the cards fit the tablet's screen - rows give way with "+N more", whole
+       cards only when nothing else can (issue #77: cards below the edge were never seen) */
+    H(b, "<div class=\"screens-cards\" data-fit=\"screens-fitsay\" style=\"column-count:%d\">", CLAMP(shown, 1, 4));
     buf_put(b, cards.p, cards.len);
     buf_puts(b, "</div>");
     buf_free(&cards);
     if (!shown)
         buf_puts(b, total ? "<p class=\"screens-calm\">All quiet - nothing booked, planned or on the list.</p>"
                           : "<p class=\"screens-calm\">No cards on this wall yet.</p>");
-    /* out of the way, for whoever stands at the tablet */
-    buf_puts(b, "<nav class=\"screens-wfoot\">");
+    /* out of the way, for whoever stands at the tablet - and what didn't fit its screen (wire.js) */
+    buf_puts(b, "<nav class=\"screens-wfoot\"><span class=\"screens-fitsay\" id=\"screens-fitsay\"></span>");
     if (is_admin(c)) H(b, "<a class=\"screens-btn\" href=\"/screens/%d/edit\">Edit</a>", s->id);
     char url[32];
     screens_url(s->id, url);

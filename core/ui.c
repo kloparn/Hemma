@@ -252,19 +252,52 @@ void ui_player(Buf *b, const UiPlayer *p) {
 
 /* ----------------------------------------------------------------- forms */
 
+/* Open forms, innermost last: where each began, and whether it goes again at its end (ui_view_only). */
+static bool g_view_only;
+static struct {
+    Buf *b;
+    size_t mark;
+    bool cut;
+} g_forms[8];
+static int g_nforms;
+
+void ui_view_only(bool on) {
+    g_view_only = on;
+    g_nforms = 0;
+}
+
+static void form_begins(Buf *b, const char *action) {
+    if (g_nforms < countof(g_forms)) {
+        g_forms[g_nforms].b = b;
+        g_forms[g_nforms].mark = b->len;
+        g_forms[g_nforms].cut = g_view_only && !app_action_display(action);
+    }
+    g_nforms++;
+}
+
 void ui_form(Buf *b, const char *action, const char *cls) {
+    form_begins(b, action);
     H(b, "<form method=\"post\" action=\"/a/%s\" data-a=\"%s\"", action, action);
     if (cls) H(b, " class=\"%s\"", cls);
     buf_putc(b, '>');
 }
 
 void ui_form_confirm(Buf *b, const char *action, const char *cls, const char *question) {
+    form_begins(b, action);
     H(b, "<form method=\"post\" action=\"/a/%s\" data-a=\"%s\" data-confirm=\"%s\"", action, action, question);
     if (cls) H(b, " class=\"%s\"", cls);
     buf_putc(b, '>');
 }
 
-void ui_form_end(Buf *b) { buf_puts(b, "</form>"); }
+void ui_form_end(Buf *b) {
+    buf_puts(b, "</form>");
+    if (g_nforms <= 0) return;
+    int i = --g_nforms;
+    if (i < countof(g_forms) && g_forms[i].cut && g_forms[i].b == b && g_forms[i].mark <= b->len) {
+        b->len = g_forms[i].mark; /* the whole form, gone */
+        if (b->p) b->p[b->len] = '\0';
+    }
+}
 
 void ui_hidden(Buf *b, const char *name, const char *value) {
     H(b, "<input type=\"hidden\" name=\"%s\" value=\"%s\">", name, value);

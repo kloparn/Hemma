@@ -108,8 +108,10 @@ a.book-wk-s:hover { background: var(--accent-soft); box-shadow: inset 0 0 0 1.5p
   display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 10px; align-items: center;
   padding: 9px 10px; margin: 0 -10px; border-radius: 10px; text-decoration: none;
 }
-.book-up-row:hover { background: var(--panel-2); }
+a.book-up-row:hover { background: var(--panel-2); } /* (a wall's rows aren't links: no hover) */
 .book-up-row.book-now .book-up-t { color: var(--warn); }
+.book-up-more { padding: 8px 0 0; font-size: 13px; font-weight: 650; color: var(--muted); }
+.book-up-more a { color: inherit; }
 .book-up-t { font-variant-numeric: tabular-nums; font-weight: 650; }
 .book-up-r { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .book-up-r small { color: var(--muted); }

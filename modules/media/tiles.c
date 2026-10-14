@@ -95,10 +95,14 @@ static void duration(Buf *b, int64_t ms) {
 /* A film or other video (or one episode) as a poster tile. */
 static void video_tile(Ctx *c, Buf *b, const MediaFile *f, int kind, const char *back) {
     const MediaWatch *w = media_watch_of(c, f);
-    bool ep = f->name.kind == MEDIA_EPISODE;
-    buf_puts(b, "<a class=\"tile\" href=\"");
-    watch_href(b, f, kind, back);
-    buf_puts(b, "\">");
+    bool ep = f->name.kind == MEDIA_EPISODE, wall = kind == SCREEN_WALL;
+    if (wall) { /* a wall only shows (issue #80: a tap on the hallway tablet started the TV player) */
+        buf_puts(b, "<div class=\"tile\">");
+    } else {
+        buf_puts(b, "<a class=\"tile\" href=\"");
+        watch_href(b, f, kind, back);
+        buf_puts(b, "\">");
+    }
     media_tile_art(b, f->name.title, f->name.kind == MEDIA_OTHER ? "Video" : NULL, NULL, media_picture(f),
                    w && w->done ? 0 : media_percent(w));
     H(b, "<b class=\"tile-t\">%s</b><span class=\"tile-s\">", f->name.title);
@@ -111,13 +115,18 @@ static void video_tile(Ctx *c, Buf *b, const MediaFile *f, int kind, const char 
         if (f->probe.duration_ms) duration(b, f->probe.duration_ms);
     }
     if (w && w->done) buf_puts(b, " · Watched");
-    buf_puts(b, "</span></a>");
+    buf_puts(b, wall ? "</span></div>" : "</span></a>");
 }
 
 static void series_tile(Buf *b, const MediaSeries *s, int kind, const char *back, int new_eps) {
-    buf_puts(b, "<a class=\"tile\" href=\"");
-    series_href(b, s, kind, back);
-    buf_puts(b, "\">");
+    bool wall = kind == SCREEN_WALL;
+    if (wall) {
+        buf_puts(b, "<div class=\"tile\">");
+    } else {
+        buf_puts(b, "<a class=\"tile\" href=\"");
+        series_href(b, s, kind, back);
+        buf_puts(b, "\">");
+    }
     media_tile_art(b, s->title, "Series", NULL, s->poster, 0);
     H(b, "<b class=\"tile-t\">%s</b><span class=\"tile-s\">", s->title);
     if (new_eps) H(b, "%d new episodes", new_eps);
@@ -126,7 +135,7 @@ static void series_tile(Buf *b, const MediaSeries *s, int kind, const char *back
         H(b, "%d episode%s", eps, eps == 1 ? "" : "s");
         if (s->nseasons > 1) H(b, " · %d seasons", s->nseasons);
     }
-    buf_puts(b, "</span></a>");
+    buf_puts(b, wall ? "</span></div>" : "</span></a>");
 }
 
 /* An episode as a wide tile: its title, its number and length, the viewer's progress. `up`: the

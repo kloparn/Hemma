@@ -38,6 +38,10 @@ a.plan-task-main:hover b { text-decoration: underline; text-decoration-color: va
 .plan-task.plan-done .plan-task-t b { text-decoration: line-through; color: var(--muted); font-weight: 500; }
 .plan-task-who { flex: none; }
 .plan-tasks.plan-compact .plan-task { padding: 7px 0; gap: 10px; }
+/* a to-do that can't be ticked here (a wall, a display account): a dot where the tick circle goes */
+.plan-dot { display: grid; place-items: center; flex: none; width: 26px; height: 26px; }
+.plan-dot::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.plan-late .plan-dot::before { background: var(--danger); }
 
 /* ------------------------------------------------------------ shopping */
 

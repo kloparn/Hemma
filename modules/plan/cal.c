@@ -229,14 +229,14 @@ static void event_modal(Ctx *c, Buf *b, const Event *e, int64_t day) {
       e ? e->note : "");
     ui_form_end(b);
     if (e) {
-        H(b,
-          "<form method=\"post\" action=\"/a/plan.event_delete\" data-a=\"plan.event_delete\" class=\"danger-zone\" "
-          "data-confirm=\"Delete “%s”?\">",
-          e->title);
+        char q[300];
+        snprintf(q, sizeof q, "Delete “%s”?", e->title);
+        ui_form_confirm(b, "plan.event_delete", "danger-zone", q);
         ui_hidden_int(b, "id", e->id);
         buf_puts(b, "<button class=\"btn danger\">");
         ui_icon(b, "trash");
-        buf_puts(b, "<span>Delete</span></button></form>");
+        buf_puts(b, "<span>Delete</span></button>");
+        ui_form_end(b);
     }
     ui_modal_end(b);
     buf_free(&close);
@@ -392,8 +392,8 @@ int plan_days(Ctx *c, Buf *b, int days, int max) {
         }
         if (!n && !due) continue;
         DateTime dt = dt_local(day);
-        if (d == 1) buf_puts(b, "<h3 class=\"plan-day-h\">Tomorrow</h3>");
-        else H(b, "<h3 class=\"plan-day-h\">%s %d</h3>", weekday_name(dt.wday, false), dt.day);
+        if (d == 1) buf_puts(b, "<h3 class=\"plan-day-h\" data-fit-head>Tomorrow</h3>"); /* (a wall too short: wire.js) */
+        else H(b, "<h3 class=\"plan-day-h\" data-fit-head>%s %d</h3>", weekday_name(dt.wday, false), dt.day);
         buf_puts(b, "<ul class=\"plan-evs plan-compact\">");
         for (int k = 0; k < n && rows < max; k++, rows++) event_row(c, b, tbl_at(&T_event, idx[k]), day, NULL, "plan-wd", true);
         for (int i = 0; i < tbl_count(&T_task) && rows < max; i++) {

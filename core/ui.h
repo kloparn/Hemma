@@ -54,6 +54,11 @@ void ui_form(Buf *b, const char *action, const char *cls); /* <form method=post 
 /* Same, but the browser asks `question` first (e.g. "Remove this note?"). */
 void ui_form_confirm(Buf *b, const char *action, const char *cls, const char *question);
 void ui_form_end(Buf *b);
+/* View-only pages (a display account's; the core switches it on around its render - issue #54): a
+   ui_form / ui_form_confirm / ui_act whose action the account may not run is left out whole, so a
+   hallway tablet shows no quick-add boxes, ticks or x buttons that only answer "view-only". Forms
+   written by hand aren't covered: use these helpers. */
+void ui_view_only(bool on);
 void ui_hidden(Buf *b, const char *name, const char *value);
 void ui_hidden_int(Buf *b, const char *name, long long v);
 /* One-button form: label is raw HTML (icons allowed); name/value may be NULL. */

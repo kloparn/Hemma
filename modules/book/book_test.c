@@ -383,3 +383,34 @@ TEST(book_times_snap_to_the_slot_grid) {
     CHECK_INT(b->end, dt_make(2026, 10, 8, 16, 0));
     th_halt();
 }
+
+TEST(book_wall_card_only_shows_and_says_what_it_leaves_out) {
+    /* issue #80: the wall's rows were links into the booking page (and a tap on the hallway tablet
+       left the wall), the thing's own line dropped the time ("until Tomorrow"); issue #53: bookings
+       beyond the five shown vanished without a word */
+    setup();
+    int car = add_res("Car", "🚗", 30, 0, 1440, 120, 0);
+    Booking now = {.res = car, .who = eva, .by = eva, .start = dt_make(2026, 10, 7, 9, 0), .end = dt_make(2026, 10, 8, 2, 0)};
+    tbl_put(&T_booking, &now);
+    for (int i = 0; i < 7; i++) {
+        Booking later = {.res = car, .who = adam, .by = adam, .start = dt_make(2026, 10, 9 + i, 8, 0),
+                         .end = dt_make(2026, 10, 9 + i, 9, 0)};
+        tbl_put(&T_booking, &later);
+    }
+    Ctx c;
+    app_ctx(&c, 0, "/screens/2");
+    Buf b = {0};
+    CHECK(block_find("book.now", NULL)->render(&c, &b, SCREEN_WALL, ""));
+    const char *h = buf_cstr(&b);
+    CHECK_HAS(h, "Eva · until Tomorrow 02:00");
+    CHECK(!strstr(h, "href="));
+    CHECK_HAS(h, "<div class=\"book-up-row");
+    CHECK_HAS(h, "data-fit-more=\"3\">+3 more</li>"); /* 8 coming, 5 shown */
+    buf_free(&b);
+    app_ctx_free(&c);
+    /* the home card's rows still open the booking, and its "+N more" leads to Book */
+    const char *home = th_page(adam, "/");
+    CHECK_HAS(home, "<a class=\"book-up-row");
+    CHECK_HAS(home, "<a href=\"/book\">+3 more</a>");
+    th_halt();
+}

@@ -115,7 +115,17 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  "Now ... until", then times, "Tomorrow" ones), who's home (home/away only when
                  presence_known, online = Hemma open); cards (<section class=screens-card><h2>) in CSS columns
                  (column-width 300px, inline column-count = cards, max 4: content-height masonry); no cards
-                 with anything: "All quiet". Look only - no forms on a wall. Edit/Exit faint, bottom right.
+                 with anything: "All quiet". Look only - no forms on a wall, and no links either (issue #80:
+                 blocks render kind == SCREEN_WALL as <div class="tile">, book's upcoming(..., links=false)
+                 rows; plan's to-dos a .plan-dot, not a tick circle). Edit/Exit at .65, bottom right, with
+                 #screens-fitsay naming the cards that didn't fit. FITTING (issue #77): the cards box is
+                 [data-fit="screens-fitsay"] (wire.js) and, wider than 600 px, flex-bounded to the screen
+                 (overflow hidden; a phone just scrolls): rows give way ("+N more"), then whole cards from
+                 the end, then rows come back where they fit - checked at 1024x768, 1280x800, 800x1280,
+                 1920x1080. Lists mark day headings data-fit-head and their own "+N more" data-fit-more="N"
+                 data-fit-keep (book, plan). A display account without PREF_START opens the first wall
+                 (setting SETTING_DISPLAY_START, kept by display_default() at start/create/delete; issue
+                 #53) - none: the home page.
                  WHO'S WATCHING (owner,
                  2026-10-12): a display account with ctx_viewer() == 0 gets the avatar picker (screens.viewer,
                  .display; who=0 = Switch); the pick lapses after SCREENS_IDLE_S (4 h) without use (the TV
@@ -540,6 +550,11 @@ MODULE(things)   /* self-registers: no shared file to edit */
   with `<id>-`** (one shared bundle: generic names collide). Reuse the shared vocabulary in
   web/app.css unprefixed: .card .btn .chip .chips .chip-r .check .seg .tick .quick .preview .rows
   .row .badge .hued .field .field-row .stack .modal* .empty .toolbar .notice .muted .small .center.
+- **Forms through the helpers** (`ui_form` / `ui_form_confirm` / `ui_act`, closed with `ui_form_end`):
+  a display account's pages render in view-only mode (core render_app -> ui_view_only), where a form
+  whose action isn't `.display` is cut out whole (issue #54: the hall tablet showed quick-add boxes,
+  ticks and x buttons that only answered "view-only"). A form written by hand isn't covered.
+  core/app_screen_test.c renders every module page as a display account and fails on any other form.
 - **Rules**: no `#ifdef _WIN32` (use plat.h/lan.h); don't block the event loop (threads for disk
   scans/streaming, results handed back on `tick`); check `app_testing()` before opening sockets or
   starting threads; don't edit core/ or web/ for one module's needs — ask for a core change instead.
@@ -603,7 +618,14 @@ only the bytes before `end`; `{i, f}` = convert file f here first (web/conv.js W
 max 8, a few ahead of the upload), POST ?size= / ?original=1, then PUT the result as entry i; a `conv`
 form field is dropped when the browser can't run WebAssembly; the server renders progress) ·
 `video[data-resume|data-report|data-next]` · `[data-start="id"]` (open a horizontal scroller at that
-child, once per URL — e.g. today's column on a phone).
+child, once per URL — e.g. today's column on a phone) · `[data-fit="<id>"]` (a box of cards, its
+children, that must fit its CSS-bounded height - a wall tablet nobody scrolls: 1. the longest cards give
+up their last `li` rows down to FIT_ROWS (4), 2. whole cards go from the end, 2b. cards come back where
+room is left, 3. a lone card shrinks further, then rows come back where they fit; "+N more" (.fit-more,
+or the server's `[data-fit-more="N"]` row gets the total), `[data-fit-keep]` rows stay, a
+`[data-fit-head]` goes when nothing under it is left; per-card rects, since a card too tall for its CSS
+column doesn't show in the box's scroll size; `[data-fit-cut]` is display:none !important and animations
+are off inside; again after every morph and resize; the element with that id names the cards left out).
 Phones (≤600 px): the tab bar shows the first 4 sections + "More" (`/more`, core/ui.c `TAB_SLOTS`);
 wide grids scroll sideways with a sticky first column (hours, channels). Check new pages at
 390×844 (chrome-devtools `emulate` "390x844x3,mobile,touch"): no sideways page scroll.
@@ -723,7 +745,7 @@ screen's address, #79 browser-log limits per person an hour (PR #81). 0.7.0 (bra
 guard + FIELD_WAS + the media cache's format + install-pi.sh keeps hemma.prev, #39 part 1 the time zone on
 System and a warning when it changes (PR #82). 0.7.1 (branch fix/library-keeps-progress) = #36 watch
 history follows videos to a new library folder, #40 unfinished uploads listed + removable, #28 left-out
-videos listed + long "sample..." films kept, #29 one rule for disk room. Next ideas: calmer home cards (hide empty ones), touch on the wall
+videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes. Next ideas: calmer home cards (hide empty ones), touch on the wall
 (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,

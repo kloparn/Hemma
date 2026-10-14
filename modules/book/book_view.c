@@ -415,16 +415,18 @@ static bool sooner(const Booking *a, const Booking *b) {
     return a->start != b->start ? a->start < b->start : a->id < b->id;
 }
 
-static void upcoming(Ctx *c, Buf *b, int only_res, int max) {
+/* `links` = each row opens the booking (not on a wall: it only shows - issue #80). */
+static void upcoming(Ctx *c, Buf *b, int only_res, int max, bool links) {
     /* the `max` soonest bookings that haven't ended yet, in order — picked from all of them,
        so today's never drown behind a pile booked months ahead */
     Booking *list[64];
-    int cap = CLAMP(max, 1, countof(list)), n = 0;
+    int cap = CLAMP(max, 1, countof(list)), n = 0, all = 0;
     for (int i = 0; i < tbl_count(&T_booking); i++) {
         Booking *bk = tbl_at(&T_booking, i);
         if (bk->end <= c->now || (only_res && bk->res != only_res)) continue;
         Resource *r = res_get(bk->res);
         if (!r || r->archived) continue;
+        all++;
         if (n == cap && !sooner(bk, list[n - 1])) continue;
         int j = n < cap ? n++ : n - 1; /* insert in order; when full, the latest drops out */
         for (; j > 0 && sooner(bk, list[j - 1]); j--) list[j] = list[j - 1];
@@ -442,7 +444,7 @@ static void upcoming(Ctx *c, Buf *b, int only_res, int max) {
         Person *p = person_get(bk->who);
         int64_t d = MAX(day_start(bk->start), day_start(c->now));
         if (d != last_day) {
-            buf_puts(b, "<li class=\"book-up-day\">");
+            buf_puts(b, "<li class=\"book-up-day\" data-fit-head>"); /* (a wall too short: never left alone) */
             ui_day(b, d, c->now);
             buf_puts(b, "</li>");
             last_day = d;
@@ -454,7 +456,9 @@ static void upcoming(Ctx *c, Buf *b, int only_res, int max) {
         fmt_ymd(bk->start, ymd);
         buf_printf(&u, "/book/%d?w=%s&b=%s", r->id, ymd, id);
         bool now = bk->start <= c->now;
-        H(b, "<li><a class=\"book-up-row%r\" href=\"%s\"><span class=\"book-up-t\">", now ? " book-now" : "", buf_cstr(&u));
+        if (links) H(b, "<li><a class=\"book-up-row%r\" href=\"%s\">", now ? " book-now" : "", buf_cstr(&u));
+        else H(b, "<li><div class=\"book-up-row%r\">", now ? " book-now" : "");
+        buf_puts(b, "<span class=\"book-up-t\">");
         if (res_daily(r)) buf_puts(b, "all day");
         else ui_span(b, bk->start, bk->end);
         buf_puts(b, "</span><span class=\"book-up-r\">");
@@ -462,8 +466,13 @@ static void upcoming(Ctx *c, Buf *b, int only_res, int max) {
         if (bk->note[0]) H(b, " <small>· %s</small>", bk->note);
         buf_puts(b, "</span>");
         ui_person(b, p);
-        buf_puts(b, "</a></li>");
+        buf_puts(b, links ? "</a></li>" : "</div></li>");
         buf_free(&u);
+    }
+    /* more than fit: say so, rather than letting them go unseen (issue #53: Friday's car vanished) */
+    if (all > n) {
+        if (links && !str_starts(c->path, "/book")) H(b, "<li class=\"book-up-more\" data-fit-keep><a href=\"/book\">+%d more</a></li>", all - n);
+        else H(b, "<li class=\"book-up-more\" data-fit-keep data-fit-more=\"%d\">+%d more</li>", all - n, all - n);
     }
     buf_puts(b, "</ul>");
 }
@@ -501,7 +510,7 @@ static void overview(Ctx *c, Buf *b) {
         }
         buf_puts(b, "</div>");
         ui_card(b, "Coming up", NULL, NULL);
-        upcoming(c, b, 0, 30);
+        upcoming(c, b, 0, 30, true);
         ui_card_end(b);
     }
     const char *rq = ctx_q(c, "res");
@@ -557,7 +566,7 @@ static void resource_page(Ctx *c, Buf *b, Resource *r) {
     buf_puts(b, "</div>");
 
     ui_card(b, "Coming up", NULL, NULL);
-    upcoming(c, b, r->id, 12);
+    upcoming(c, b, r->id, 12, true);
     ui_card_end(b);
 
     /* modals */
@@ -618,7 +627,7 @@ void book_widget(Ctx *c, Buf *b, int where) {
         return;
     }
     now_pills(c, b, rs, n);
-    upcoming(c, b, 0, 5);
+    upcoming(c, b, 0, 5, true);
     ui_card_end(b);
 }
 
@@ -634,15 +643,18 @@ bool book_wall(Ctx *c, Buf *b) {
         H(b, "<li class=\"%s\"><span class=\"book-wall-e\">%s</span><b>%s</b><span class=\"book-wall-s\">",
           cur ? "book-busy" : "book-free", rs[i]->emoji[0] ? rs[i]->emoji : "📅", rs[i]->name);
         if (!cur) buf_puts(b, "Free");
-        else {
+        else { /* "until 17:00", another day "until Tomorrow 02:00" (issue #80: the time went missing) */
             H(b, "%s · until ", p ? p->name : "Busy");
-            if (day_start(cur->end) == day_start(c->now)) ui_hm(b, cur->end);
-            else ui_day(b, cur->end, c->now);
+            if (day_start(cur->end) != day_start(c->now)) {
+                ui_day(b, cur->end, c->now);
+                buf_putc(b, ' ');
+            }
+            ui_hm(b, cur->end);
         }
         buf_puts(b, "</span></li>");
     }
     buf_puts(b, "</ul>");
-    upcoming(c, b, 0, 5);
+    upcoming(c, b, 0, 5, false); /* (a wall only shows: rows, not links) */
     buf_puts(b, "</div>");
     return true;
 }
