@@ -21,6 +21,11 @@
 #define SET_SALT "system.salt_saved"
 #define SET_HIDDEN "system.start_hidden"
 #define SET_PHONE "system.phone"
+#define SET_TZ "system.time_zone"          /* this computer's zone at the last start: "+01:00/+02:00" */
+#define SET_TZ_CHANGED "system.tz_changed" /* "<from>|<to>|<day>" until an admin has seen it */
+
+static void zone_sig(char *out, size_t cap);
+static void zone_words(const char *sig, char *out, size_t cap);
 
 static int64_t g_started; /* unix seconds */
 static LogLevel g_level_at_start = LOG_INFO;
@@ -150,8 +155,50 @@ static void own_checks(Ctx *c, Health *h) {
         health_add(h, HEALTH_OK, "Address", d, NULL, NULL);
     }
 
+    /* the clock and its time zone (issue #39): wrong on day one is easy to fix, wrong for a week isn't */
+    char sig[32], words[80], hm[6];
+    zone_sig(sig, sizeof sig);
+    zone_words(sig, words, sizeof words);
+    fmt_hm(now, hm);
+    char from[32] = "", to[32] = "", day[16] = "";
+    if (sscanf(setting(SET_TZ_CHANGED, ""), "%31[^|]|%31[^|]|%15s", from, to, day) == 3) {
+        char a[80], b[80];
+        zone_words(from, a, sizeof a);
+        zone_words(to, b, sizeof b);
+        snprintf(d, sizeof d, "The time zone changed on %s, from %s to %s. Bookings and events entered before then may "
+                              "show at times shifted by the difference.", day, a, b);
+        health_add(h, HEALTH_WARN, "Time zone", d,
+                   "Look at a few bookings and events from before that day and move any that are off. \"Got it\" "
+                   "above hides this.",
+                   NULL);
+    } else if (str_eq(sig, "+00:00")) {
+        snprintf(d, sizeof d, "The clock says %s, in UTC all year - a Raspberry Pi's own setting, not many homes' "
+                              "time.", hm);
+        health_add(h, HEALTH_INFO, "Time zone", d,
+                   "If that isn't the time at home, set the zone now, before people add things: sudo raspi-config, "
+                   "Localisation Options, Timezone. Then restart Hemma.",
+                   NULL);
+    } else {
+        snprintf(d, sizeof d, "The clock says %s (%s).", hm, words);
+        health_add(h, HEALTH_OK, "Time zone", d, NULL, NULL);
+    }
+
+    /* the database: damaged and rescued at the start (store_open), or damaged now */
+    const char *rescued = setting(SETTING_RESCUED, "");
+    if (rescued[0])
+        health_add(h, HEALTH_BAD, "Database rescued", rescued,
+                   "If you have a backup from before, restoring it brings the lost rows back (docs/troubleshooting.md). "
+                   "Otherwise carry on: everything that could be read is here.",
+                   NULL);
+
     /* saving */
-    if (store_failed()) {
+    if (store_damaged()) {
+        health_add(h, HEALTH_BAD, "Saving",
+                   "Saving failed: the database file is damaged. Recent changes are only in memory.",
+                   "Restart Hemma: at the start it copies the damaged file aside and rescues every row it can still "
+                   "read into a fresh one.",
+                   "/system/log?f=warn");
+    } else if (store_failed()) {
         snprintf(d, sizeof d, "Saving changes to the disk failed - is it full? Recent changes are only in memory "
                               "and will be lost when Hemma stops.");
         snprintf(todo, sizeof todo, "Make room on the disk with %s, then restart Hemma. The log says what failed.",
@@ -376,6 +423,16 @@ static void page_checks(Ctx *c, Buf *b) {
         H(b, "<p class=\"notice system-sum system-good\" id=\"system-sum\">Everything works. Hemma %s has been running for "
              "%s.</p>",
           HEMMA_VERSION, up);
+    if (setting(SETTING_RESCUED, "")[0]) { /* (the check says what happened; this puts it away) */
+        buf_puts(b, "<div class=\"system-again\">");
+        ui_act(b, "system.rescued_seen", "btn sm", "Got it - I've read about the rescued database", NULL, NULL, NULL);
+        buf_puts(b, "</div>");
+    }
+    if (setting(SET_TZ_CHANGED, "")[0]) {
+        buf_puts(b, "<div class=\"system-again\">");
+        ui_act(b, "system.tz_seen", "btn sm", "Got it - I've checked the times", NULL, NULL, NULL);
+        buf_puts(b, "</div>");
+    }
     bool start = setting_int(SET_HIDDEN, 0) != 1;
     if (looks || !start) checks_card(b, &h);
     if (start) steps_card(c, b, &h);
@@ -646,6 +703,18 @@ static void act_salt_saved(Ctx *c, Fields *f) {
     ctx_ok(c, "Ticked off - keep that copy safe");
 }
 
+static void act_tz_seen(Ctx *c, Fields *f) {
+    if (!admin_only(c)) return;
+    setting_set(SET_TZ_CHANGED, "");
+    ctx_ok(c, "Noted");
+}
+
+static void act_rescued_seen(Ctx *c, Fields *f) {
+    if (!admin_only(c)) return;
+    setting_set(SETTING_RESCUED, "");
+    ctx_ok(c, "Noted - the damaged file stays in the data folder until you delete it");
+}
+
 static void act_start_hide(Ctx *c, Fields *f) {
     if (!admin_only(c)) return;
     setting_set(SET_HIDDEN, "1");
@@ -659,7 +728,8 @@ static void act_start_show(Ctx *c, Fields *f) {
 
 static const Action actions[] = {
     {"system.search", act_search, true},  {"system.verbose", act_verbose},     {"system.salt_saved", act_salt_saved},
-    {"system.start_hide", act_start_hide}, {"system.start_show", act_start_show}, {0},
+    {"system.start_hide", act_start_hide}, {"system.start_show", act_start_show}, {"system.rescued_seen", act_rescued_seen},
+    {"system.tz_seen", act_tz_seen}, {0},
 };
 
 /* ------------------------------------------------------------- endpoints */
@@ -687,8 +757,63 @@ static bool http(Ctx *c, Conn *conn, HttpReq *r) {
 
 /* -------------------------------------------------------------- lifecycle */
 
+/* ------------------------------------------------------------ time zone */
+
+static char g_zone_test[32];
+void system_test_zone(const char *sig) { str_copy(g_zone_test, sizeof g_zone_test, sig ? sig : ""); }
+
+static void offset_text(int secs, char out[8]) {
+    char sign = secs < 0 ? '-' : '+';
+    if (secs < 0) secs = -secs;
+    snprintf(out, 8, "%c%02d:%02d", sign, secs / 3600 % 100, secs / 60 % 60);
+}
+
+/* This computer's time zone, as its offsets from UTC in January and July: "+01:00/+02:00", or
+   "+00:00" when they're the same. (A zone's name isn't portable; what it does to times is.) */
+static void zone_sig(char *out, size_t cap) {
+    if (g_zone_test[0]) {
+        str_copy(out, cap, g_zone_test);
+        return;
+    }
+    int year = dt_local(now_sec()).year;
+    char a[8], b[8];
+    offset_text(utc_offset(dt_make(year, 1, 15, 12, 0)), a);
+    offset_text(utc_offset(dt_make(year, 7, 15, 12, 0)), b);
+    if (str_eq(a, b)) snprintf(out, cap, "%s", a);
+    else snprintf(out, cap, "%s/%s", a, b);
+}
+
+/* "UTC+01:00 in January, UTC+02:00 in July" / "UTC+00:00 all year" */
+static void zone_words(const char *sig, char *out, size_t cap) {
+    const char *slash = strchr(sig, '/');
+    if (slash) snprintf(out, cap, "UTC%.*s in January, UTC%s in July", (int)(slash - sig), sig, slash + 1);
+    else snprintf(out, cap, "UTC%s all year", sig);
+}
+
+/* Issue #39: times are kept as moments, worked out from the zone when they were typed - a Pi left on
+   UTC for a week and then corrected shows every booking from that week hours off. The zone is kept
+   at each start; a change is said on the System page until an admin has seen it. */
+static void zone_watch(void) {
+    char sig[32];
+    zone_sig(sig, sizeof sig);
+    char was[32];
+    str_copy(was, sizeof was, setting(SET_TZ, ""));
+    if (str_eq(was, sig)) return;
+    if (was[0]) {
+        char day[11], rec[96], a[80], b[80];
+        fmt_ymd(now_sec(), day);
+        snprintf(rec, sizeof rec, "%s|%s|%s", was, sig, day);
+        setting_set(SET_TZ_CHANGED, rec);
+        zone_words(was, a, sizeof a);
+        zone_words(sig, b, sizeof b);
+        log_warn("the time zone changed from %s to %s: times entered before may look shifted", a, b);
+    }
+    setting_set(SET_TZ, sig);
+}
+
 static void start(void) {
     g_started = now_sec();
+    zone_watch();
     if (!g_level_known) {
         g_level_at_start = g_log_level;
         g_level_known = true;

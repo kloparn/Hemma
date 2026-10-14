@@ -382,6 +382,22 @@ DateTime dt_local(int64_t t) {
     return d;
 }
 
+/* Days from 1970-01-01 to a date (proleptic Gregorian; H. Hinnant's days_from_civil). */
+static int64_t days_from_civil(int64_t y, int m, int d) {
+    y -= m <= 2;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    int64_t yoe = y - era * 400;
+    int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+int utc_offset(int64_t t) {
+    DateTime d = dt_local(t);
+    int64_t o = days_from_civil(d.year, d.mon, d.day) * 86400 + d.hour * 3600 + d.min * 60 + d.sec - t;
+    return o > 86400 || o < -86400 ? 0 : (int)o; /* (0: the C library can't say) */
+}
+
 int64_t dt_make(int year, int mon, int day, int hour, int min) {
     struct tm tm;
     memset(&tm, 0, sizeof tm);

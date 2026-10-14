@@ -23,6 +23,7 @@ typedef struct {
 } ThResult;
 
 void th_boot(void);
+void th_boot_in(const char *dir); /* the same, in a data folder the test prepared (a damaged database) */
 void th_halt(void);
 int th_person(const char *name);
 const char *th_page(int person, const char *url); /* the rendered #app; valid until the next call */

@@ -28,11 +28,15 @@ typedef struct {
     const char *name; /* column name: [a-z0-9_] */
     FieldType type;
     size_t offset, size;
-    bool secret; /* stored, but never leaves the server (e.g. password hashes) */
+    bool secret;     /* stored, but never leaves the server (e.g. password hashes) */
+    const char *was; /* the column's old name (FIELD_WAS): renamed at the next start, data kept */
 } FieldDef;
 
-#define FIELD(T, member, type) {#member, type, offsetof(T, member), sizeof(((T *)0)->member), false}
-#define FIELD_SECRET(T, member, type) {#member, type, offsetof(T, member), sizeof(((T *)0)->member), true}
+#define FIELD(T, member, type) {#member, type, offsetof(T, member), sizeof(((T *)0)->member), false, NULL}
+#define FIELD_SECRET(T, member, type) {#member, type, offsetof(T, member), sizeof(((T *)0)->member), true, NULL}
+/* A renamed field: FIELD_WAS(Note, body, F_STR, "text") moves the "text" column's data to "body".
+   Older programs would read the old column (empty now): add a migration that breaks_older too. */
+#define FIELD_WAS(T, member, type, old) {#member, type, offsetof(T, member), sizeof(((T *)0)->member), false, old}
 
 typedef struct Table {
     const char *name; /* table name: [a-z0-9_] */
@@ -52,10 +56,35 @@ typedef struct Table {
 #define TABLE(name, T, fields) {name, sizeof(T), fields, (int)(sizeof(fields) / sizeof((fields)[0]))}
 
 void store_register(Table *t); /* from module init hooks, before store_open */
-bool store_open(const char *dir); /* opens dir/hemma.db, creates/extends tables, loads rows */
+/* Opens dir/hemma.db, creates/extends tables, loads rows. A damaged file (PRAGMA quick_check, or a
+   table that can't be read to its end) is copied aside untouched as hemma.db.damaged-<when>, and
+   every row that can still be read goes into a fresh hemma.db (store_rescue_report says what
+   happened). False for a database it can't open, and for one a newer Hemma changed in a way this
+   one would misread (see the data format below). */
+bool store_open(const char *dir);
 void store_close(void);
 void store_maintain(void); /* periodic: checkpoint the WAL, let SQLite optimise */
 bool store_failed(void);   /* a write failed (disk full?) since start */
+bool store_damaged(void);  /* ... and SQLite said the file is damaged: a restart rescues what it can read */
+/* What the last store_open did about a damaged database, for people ("" = nothing), e.g.
+   "2026-10-14 10:02: the database was damaged (parts of it can't be read). The damaged file is kept
+   as hemma.db.damaged-2026-10-14-1002. 2872 rows were rescued into a fresh one; rows were lost in:
+   note." (SQLite's own words are in the log.) */
+const char *store_rescue_report(void);
+
+/* The data format (PRAGMA user_version): numbered migrations, oldest first. A start runs the ones
+   past the file's format (a copy of the file is kept first, hemma.db.before-format-<n>, when one
+   changes data); `breaks_older` = a program from before it would misread the data (a rename, a
+   new meaning), so older programs refuse to start on it. Additive changes (new tables, new
+   fields) need no migration at all - older programs simply don't see them. */
+typedef struct {
+    int format;
+    bool breaks_older;
+    const char *what;
+    bool (*run)(void); /* SQL on db(); NULL = nothing to do */
+} StoreMigration;
+int store_format(void);                                    /* the newest format this program knows */
+void store_test_migrations(const StoreMigration *m, int n); /* tests: another list (NULL = the real one) */
 
 static inline int tbl_count(const Table *t) { return t->n; }
 static inline void *tbl_at(const Table *t, int i) { return t->rows + (size_t)i * t->rec_size; }

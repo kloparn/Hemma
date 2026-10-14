@@ -463,6 +463,59 @@ TEST(system_home_card_only_when_something_needs_a_look) {
     th_halt();
 }
 
+TEST(system_says_when_the_database_was_rescued) {
+    /* issue #37: a damaged database used to start with what happened to be readable, and nothing said */
+    char dir[512], path[600];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    snprintf(path, sizeof path, "%s/hemma.db", dir);
+    Buf junk = {0};
+    for (int i = 0; i < 100; i++) buf_puts(&junk, "an SD card after a power cut. ");
+    CHECK(file_write_atomic(path, junk.p, junk.len));
+    th_boot_in(dir);
+    int adam = all_well(), eva = th_person("Eva");
+    const char *h = th_page(adam, "/system");
+    CHECK_HAS(h, "<b>Database rescued</b>");
+    CHECK_HAS(h, "The damaged file is kept as hemma.db.damaged-");
+    CHECK_HAS(h, "system.rescued_seen");
+    CHECK_HAS(th_page(adam, "/"), "Hemma rescued what it could still read");
+    CHECK(!strstr(th_page(eva, "/"), "rescued what it could")); /* members: nothing they can do about it */
+    CHECK(!th_act(eva, "system.rescued_seen", "").ok);
+    CHECK(th_act(adam, "system.rescued_seen", "").ok);
+    CHECK(!strstr(th_page(adam, "/system"), "Database rescued"));
+    CHECK(!strstr(th_page(adam, "/"), "rescued what it could"));
+    th_halt();
+    buf_free(&junk);
+}
+
+TEST(system_watches_the_time_zone) {
+    /* issue #39: a Pi left on UTC for a week and then corrected showed that week's bookings hours off -
+       and nothing anywhere said which zone the clock was in */
+    system_test_zone("+00:00");
+    th_boot();
+    int adam = all_well();
+    const char *h = th_page(adam, "/system");
+    CHECK_HAS(h, "in UTC all year");
+    CHECK_HAS(h, "sudo raspi-config");
+    const Module *m = module_find("system");
+    CHECK(m && m->start && m->stop);
+    system_test_zone("+01:00/+02:00"); /* set to Stockholm, and Hemma restarted */
+    m->stop();
+    m->start();
+    h = th_page(adam, "/system");
+    CHECK_HAS(h, "The time zone changed on ");
+    CHECK_HAS(h, "from UTC+00:00 all year to UTC+01:00 in January, UTC+02:00 in July");
+    CHECK_HAS(h, "system.tz_seen");
+    CHECK(th_act(adam, "system.tz_seen", "").ok);
+    h = th_page(adam, "/system");
+    CHECK(!strstr(h, "The time zone changed"));
+    CHECK_HAS(h, "(UTC+01:00 in January, UTC+02:00 in July)");
+    m->stop(); /* the same zone at the next start: nothing new */
+    m->start();
+    CHECK(!strstr(th_page(adam, "/system"), "The time zone changed"));
+    system_test_zone("");
+    th_halt();
+}
+
 TEST(system_is_only_for_admins) {
     th_boot();
     int adam = all_well(), eva = th_person("Eva");
