@@ -7,6 +7,7 @@
  *
  * Screens are often a display account's "/" (PREF_START): every link here is absolute. */
 #include "screens.h"
+#include "../../core/qr.h"
 #include "../../core/ui.h"
 
 /* ui_icon has nothing pointing up or down: the builder's Up / Down arrows */
@@ -33,6 +34,44 @@ static void shown_on(int screen, Buf *out) {
 }
 
 /* ================================================================ the list */
+
+/* Step 2 of "On the TV": the address to type, big (issue #61), with http:// - a TV's browser may
+   try https and get nowhere - and as a QR code a tablet or phone can scan instead. The numbers
+   come first: many TVs can't look up <name>.local. */
+static void address_step(Buf *b) {
+    char addr[2][96];
+    int n = screens_addresses(addr);
+    const char *host = app_config()->host;
+    uint32_t bound = 0;
+    if (host && ip_parse(host, &bound) && (bound >> 24) == 127) { /* listening on this computer only */
+        H(b, "On its web browser, open Hemma and sign in with it. Hemma only listens on this computer (%s) now, so "
+             "a TV can't reach it: start it for the home network (see <a href=\"/system\">System</a>).",
+          host);
+        return;
+    }
+    if (!n) {
+        buf_puts(b, "On its web browser, open Hemma - type the address this browser shows, with <code>http://</code> "
+                    "in front (not <i>localhost</i>) - and sign in with it.");
+        return;
+    }
+    buf_puts(b, "On its web browser, open Hemma at this address - all of it, with <code>http://</code> - and sign in "
+                "with it:<div class=\"screens-addr\"><div><p class=\"screens-addr-big\">");
+    html_esc(b, addr[0]);
+    buf_puts(b, "</p>");
+    if (n > 1) {
+        buf_puts(b, "<p class=\"muted small\">Phones and computers can use <b>");
+        html_esc(b, addr[1]);
+        buf_puts(b, "</b> too; many TVs can't.</p>");
+    }
+    buf_puts(b, "</div>");
+    QrCode q;
+    if (qr_make(&q, addr[0], strlen(addr[0]), QR_M, -1)) {
+        buf_puts(b, "<figure class=\"screens-qr\">");
+        qr_svg(b, &q, addr[0]);
+        buf_puts(b, "<figcaption class=\"muted small\">A tablet or phone can scan this instead</figcaption></figure>");
+    }
+    buf_puts(b, "</div>");
+}
 
 static void new_modal(Buf *b) {
     ui_modal(b, "New screen", "/screens");
@@ -91,10 +130,10 @@ static void list_page(Ctx *c, Buf *b) {
     if (is_admin(c)) {
         ui_card(b, "On the TV", NULL, NULL);
         buf_puts(b, "<ol class=\"steps\"><li>Under <a href=\"/people\">Household</a>, add someone for the TV (or the "
-                    "wall tablet) and choose the sign-in kind <b>Display</b>: it can only look.</li><li>On its web "
-                    "browser, open Hemma (type the address with <code>http://</code>) and sign in with it.</li><li>Edit "
-                    "a screen and tick it under <b>Shows on</b>: it opens that screen by itself. A TV asks "
-                    "<i>Who's watching?</i> - nobody types a password there.</li></ol>");
+                    "wall tablet) and choose the sign-in kind <b>Display</b>: it can only look.</li><li>");
+        address_step(b);
+        buf_puts(b, "</li><li>Edit a screen and tick it under <b>Shows on</b>: it opens that screen by itself. A TV "
+                    "asks <i>Who's watching?</i> - nobody types a password there.</li></ol>");
         ui_card_end(b);
     }
     if (is_admin(c) && str_eq(ctx_q(c, "new"), "1")) new_modal(b);

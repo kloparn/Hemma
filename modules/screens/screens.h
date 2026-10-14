@@ -44,6 +44,11 @@ int screens_first(int kind); /* the first screen of that kind (SCREEN_TV / SCREE
    account picks who's watching. */
 bool screens_drives_tv(int account);
 
+/* Hemma's addresses for other devices (the LAN IP first, then <name>.local), as last asked of the
+   OS - none under tests unless screens_test_addresses() set some (NULL: ask the OS again). */
+int screens_addresses(char out[2][96]);
+void screens_test_addresses(const char *a, const char *b);
+
 void screens_page(Ctx *c, Buf *b); /* screens_page.c */
 
 #endif

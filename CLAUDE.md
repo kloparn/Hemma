@@ -94,6 +94,10 @@ core/            framework with a stable API for modules
                  hint, where the log is). HEMMA_VERSION lives in app.h; HEMMA_VERSION_FULL adds the
                  commit (build.ps1/Makefile pass -DHEMMA_COMMIT=<sha>[-dirty]) - raise the version per release
   ui.*           components: shell, icons, avatars, cards, forms, modals, time formatting
+  qr.*           QR codes (byte mode, versions 1-10, levels L-H, best of 8 masks) -> qr_svg(); ours, not a
+                 library (after ISO 18004 / Nayuki's reference). qr_test.c holds fingerprints of codes the
+                 independent reader jsQR decoded back (137 cases, every version/level/mask, checked in Node
+                 from a wasm32-wasi build - Windows Defender quarantines tiny unsigned test exes here)
   main.c         command line (--gen-salt, --env, --web ...)
 modules/<id>/    one folder per feature; folder name == module id (home book plan media tv board net people
                  screens system)
@@ -125,7 +129,11 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  1920x1080. Lists mark day headings data-fit-head and their own "+N more" data-fit-more="N"
                  data-fit-keep (book, plan). A display account without PREF_START opens the first wall
                  (setting SETTING_DISPLAY_START, kept by display_default() at start/create/delete; issue
-                 #53) - none: the home page.
+                 #53) - none: the home page. /screens' "On the TV" steps (admins) show the address to type
+                 (issue #61): screens_addresses() = app_addresses() asked from tick once a minute (never on
+                 render; screens_test_addresses() in tests), the LAN IP big with http://, the .local name
+                 for phones ("many TVs can't"), and a QR code of the IP (core/qr) for tablets/phones;
+                 listening on 127.x says a TV can't reach it.
                  WHO'S WATCHING (owner,
                  2026-10-12): a display account with ctx_viewer() == 0 gets the avatar picker (screens.viewer,
                  .display; who=0 = Switch); the pick lapses after SCREENS_IDLE_S (4 h) without use (the TV
@@ -240,11 +248,19 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  next-up first), tv.onnow (TV + wall). Drawn posters: media_tile_art / media_art_style
                  (--h/--h2/--h3 from a title hash, comma hsl() and no calc() for old TVs). TV MODE
                  (?tv=1&back=<path> on /media/watch/<id>, /media/series/<id>, /tv/<n>): bare, always dark,
-                 Back first (data-esc), back checked by media_safe_back (else "/"); the player autoplays +
+                 Back first (data-esc data-back: Escape, the remote's Back key and the arrows reach it -
+                 issue #57), back checked by media_safe_back (else "/"); the player autoplays +
                  autofocuses, resumes for the viewer, data-next keeps tv/back; a channel: ArrowUp/Down
                  change channel, 1-9 pick one. Live TV's picture has NO scan lines or vignette over it (owner,
                  2026-10-14: "overkill, kills the quality of the show"); the old-TV touches left are the set's
                  frame, the brief static between channels, the fading "CH 03" and the On-now tiles' lines.
+                 SCHEDULE (tv_plan.c, issue #56): a channel starts at once - lap 0's first airing is a
+                 LEAD-IN from `epoch` (when it was made) for the programme's own length; on the half hour
+                 the second starts at the first :00/:30 after it, and tv_epoch() = that minus starts[1] (so
+                 every later airing is aligned; a slot = the length rounded UP to whole half hours: a
+                 45-min show takes an hour, a 1 h 52 film two). Laps before the epoch (a clock set back)
+                 end exactly at it. tv_window walks the same sequence (advance()). On now, between
+                 programmes: the next one's tile dimmed (.tv-tile-off) + "Up next · HH:MM" (.tv-tile-up).
                  PLAYERS (owner, 2026-10-12: full screen must survive the
                  next episode): our own controls (media_controls -> ui_player, subtitles from media_subs;
                  tv: a live UiPlayer), the box (#media-box / #tv-screen) goes full screen, the <video>
@@ -608,7 +624,12 @@ check real full screen in a normal browser) ·
 seconds, `[data-count]` = seconds left, `[data-hide]` puts it away for that video, a link in it reports
 the video watched BEFORE the nav goes; an [autofocus] in it takes the focus from the video) ·
 `form[data-a]` · `[data-live]` · `[data-auto]` (submit on change) ·
-`[data-esc]` (Escape) · `[data-key="/"]` (shortcut) · `[data-static]` (never morphed; `data-static="v"`:
+`[data-esc]` (Escape) · `[data-back]` (TV mode's Back - issue #57: remotes rarely send Escape. The
+remote's Back key clicks it: Backspace outside text fields, BrowserBack, GoBack, XF86Back, keyCodes 8,
+166, 461 (LG), 10009 (Samsung); full screen is left first, an open menu closed; it waits 150 ms and
+skips the click when the browser went back itself (popstate/pagehide) - no double step. The arrows
+reach it: Up on a player's picture, Left/Up past the edge of a [data-arrows] area (toBack); from it Down/
+Right go back where the focus came from, else [autofocus]) · `[data-key="/"]` (shortcut) · `[data-static]` (never morphed; `data-static="v"`:
 skipped while v stays, a new v morphs the SAME element in place and settles it again - how a player
 keeps full screen into the next episode/programme/channel: stable ids media-video / tv-video) ·
 `a[data-native]` (full load) · `form[data-keep]` (don't reset) · `form[data-confirm]` (asked before
@@ -745,7 +766,7 @@ screen's address, #79 browser-log limits per person an hour (PR #81). 0.7.0 (bra
 guard + FIELD_WAS + the media cache's format + install-pi.sh keeps hemma.prev, #39 part 1 the time zone on
 System and a warning when it changes (PR #82). 0.7.1 (branch fix/library-keeps-progress) = #36 watch
 history follows videos to a new library folder, #40 unfinished uploads listed + removable, #28 left-out
-videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes. Next ideas: calmer home cards (hide empty ones), touch on the wall
+videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr). Next ideas: calmer home cards (hide empty ones), touch on the wall
 (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,

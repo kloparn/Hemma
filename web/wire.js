@@ -179,6 +179,35 @@
     if (el && el.form) submit(el.form);
   });
 
+  // A TV remote's Back key (issue #57: remotes rarely send Escape): Samsung's says 10009, LG's 461,
+  // others BrowserBack / GoBack; Backspace too, outside a text field. On a page with [data-back]
+  // (TV mode's Back) it goes there. Some TV browsers go back in their history themselves: when
+  // that happens (popstate, or the page leaves) we don't go a second step.
+  const BACK_KEYS = { Backspace: 1, BrowserBack: 1, GoBack: 1, XF86Back: 1 }, BACK_CODES = { 8: 1, 166: 1, 461: 1, 10009: 1 };
+  const typing = (t) => !!t && (t.isContentEditable || /^(TEXTAREA|SELECT)$/.test(t.tagName) ||
+    (t.tagName === 'INPUT' && !/^(button|submit|reset|checkbox|radio|range|image)$/.test(t.type)));
+  function remoteBack(e) {
+    const x = document.querySelector('[data-back]');
+    if (!x || e.ctrlKey || e.metaKey || e.altKey || typing(e.target)) return false;
+    e.preventDefault();
+    if (fsEl()) { // full screen first, as Escape does
+      const p = (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      if (p && p.catch) p.catch(() => {});
+      return true;
+    }
+    if (menus(null)) return true;
+    let went = false;
+    const gone = () => { went = true; };
+    addEventListener('popstate', gone);
+    addEventListener('pagehide', gone);
+    setTimeout(() => {
+      removeEventListener('popstate', gone);
+      removeEventListener('pagehide', gone);
+      if (!went && x.isConnected) x.click();
+    }, 150);
+    return true;
+  }
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (fsEl()) return; // the browser leaves full screen; going back too would be one step too many
@@ -187,6 +216,7 @@
       if (x) { e.preventDefault(); x.click(); }
       return;
     }
+    if ((BACK_KEYS[e.key] || BACK_CODES[e.keyCode]) && remoteBack(e)) return;
     const t = e.target;
     if (e.ctrlKey || e.metaKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable) return;
     const k = document.querySelector(`[data-key="${CSS.escape(e.key)}"]`);
@@ -248,12 +278,35 @@
     el.focus({ preventScroll: true });
     el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: smooth ? 'smooth' : 'auto' });
   };
+  // [data-back] (TV mode's Back) is in reach of the arrows too (issue #57: a playing video had no
+  // way out on a remote): Up from the picture, Left or Up past the edge of a [data-arrows] area;
+  // Down or Right from it returns to where the focus came from (else the page's [autofocus]).
+  let backFrom = null;
+  const onScreen = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  function toBack(from) {
+    const x = document.querySelector('[data-back]'), f = fsEl();
+    if (!x || x === from || (f && !f.contains(x)) || !onScreen(x)) return false; // (full screen hides what's outside it)
+    backFrom = from;
+    moveTo(x, false);
+    return true;
+  }
+  function fromBack() {
+    let to = backFrom && backFrom.isConnected && onScreen(backFrom) ? backFrom : document.querySelector('[autofocus]');
+    if (to && !to.matches(FOCUSABLE)) to = focusables(to)[0] || null;
+    if (!to || !onScreen(to)) to = firstIn(document.querySelector('[data-arrows]') || document.body);
+    if (to) moveTo(to, false);
+    return !!to;
+  }
   document.addEventListener('keydown', (e) => playerKeys(e)); // a player's keys come first (see below)
   document.addEventListener('keydown', (e) => {
     const dir = ARROWS[e.key] || ARROW_CODES[e.keyCode];
     if (!dir || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
     const t = document.activeElement, idle = !t || t === document.body;
     const area = idle ? document.querySelector('[data-arrows]') : t.closest('[data-arrows]');
+    if (!area && !idle && t.matches('[data-back]')) {
+      if ((dir === 'd' || dir === 'r') && fromBack()) e.preventDefault();
+      return;
+    }
     if (!area) return;
     if (idle) { // nothing focused yet: the first press lands somewhere
       const f = firstIn(area);
@@ -263,7 +316,10 @@
     if (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' ||
         (t.tagName === 'INPUT' && !/^(button|submit|reset|checkbox|image)$/.test(t.type))) return; // the caret's keys
     const next = nearest(area, t, dir);
-    if (!next) return;
+    if (!next) {
+      if ((dir === 'l' || dir === 'u') && toBack(t)) e.preventDefault();
+      return;
+    }
     e.preventDefault();
     moveTo(next, true);
   });
@@ -1123,6 +1179,8 @@
     else if (k === 'f' || k === 'F') {
       const b = pl.querySelector('[data-fullscreen]');
       if (b && !b.hidden) act = () => b.click();
+    } else if (up && t === v && document.querySelector('[data-back]')) {
+      act = () => { if (!toBack(v)) { const b = pl.querySelector(live ? '[data-p="mute"]' : '.pl-bar [data-p="play"]'); if (b) b.focus(); } };
     } else if ((up || down) && t === v) {
       const b = pl.querySelector(live ? '[data-p="mute"]' : '.pl-bar [data-p="play"]');
       if (b) act = () => b.focus();

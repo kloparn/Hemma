@@ -385,7 +385,7 @@ TEST(media_tv_mode_pages_are_bare_with_a_way_back) {
     snprintf(url, sizeof url, "/media/watch/%016llx?tv=1&back=%%2Fscreens%%2F2", (unsigned long long)ep1->id);
     const char *h = th_page(adam, url);
     CHECK(str_starts(h, "<div id=\"app\" class=\"bare\" data-mod=\"media\"><div class=\"media-tv media-tv-watch\">"
-                        "<a class=\"media-tv-back\" href=\"/screens/2\" data-esc>")); /* Back comes first */
+                        "<a class=\"media-tv-back\" href=\"/screens/2\" data-esc data-back>")); /* Back comes first */
     CHECK_HAS(h, "class=\"media-tv-video\"");
     CHECK_HAS(h, " autoplay ");
     CHECK_HAS(h, "autofocus");
@@ -422,9 +422,9 @@ TEST(media_tv_mode_pages_are_bare_with_a_way_back) {
     static const char *const evil[] = {"%2F%2Fevil.example", "%2F%5Cevil", "https%3A%2F%2Fevil.example", ""};
     for (int i = 0; i < countof(evil); i++) {
         snprintf(url, sizeof url, "/media/watch/%016llx?tv=1&back=%s", (unsigned long long)flower->id, evil[i]);
-        CHECK_HAS(th_page(adam, url), "<a class=\"media-tv-back\" href=\"/\" data-esc>");
+        CHECK_HAS(th_page(adam, url), "<a class=\"media-tv-back\" href=\"/\" data-esc data-back>");
         snprintf(url, sizeof url, "/media/series/%016llx?tv=1&back=%s", (unsigned long long)garden->id, evil[i]);
-        CHECK_HAS(th_page(adam, url), "<a class=\"media-tv-back\" href=\"/\" data-esc>");
+        CHECK_HAS(th_page(adam, url), "<a class=\"media-tv-back\" href=\"/\" data-esc data-back>");
     }
 
     /* without tv=1 nothing changes */
@@ -438,7 +438,7 @@ TEST(media_tv_mode_pages_are_bare_with_a_way_back) {
     snprintf(url, sizeof url, "/media/series/%016llx?tv=1&back=%%2Fscreens%%2F2", (unsigned long long)garden->id);
     h = th_page(adam, url);
     CHECK(str_starts(h, "<div id=\"app\" class=\"bare\""));
-    CHECK_HAS(h, "<a class=\"media-tv-back\" href=\"/screens/2\" data-esc>");
+    CHECK_HAS(h, "<a class=\"media-tv-back\" href=\"/screens/2\" data-esc data-back>");
     CHECK_HAS(h, "autofocus");
     CHECK_HAS(h, "<span>Resume S01E01</span>");
     CHECK_HAS(h, "Season 2");

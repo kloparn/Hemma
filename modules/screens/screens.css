@@ -181,6 +181,15 @@
 }
 .screens-list-a { display: flex; gap: 6px; }
 .screens-hint { margin-bottom: 6px; }
+/* "On the TV": the address to type, big enough to read across the room, and its QR code */
+.screens-addr { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin: 10px 0 4px; }
+.screens-addr-big {
+  margin: 0 0 6px; font-family: var(--mono); font-size: 28px; font-weight: 700; line-height: 1.2;
+  overflow-wrap: anywhere; user-select: all;
+}
+.screens-qr { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.screens-qr .qr { display: block; width: 156px; height: 156px; border-radius: 8px; }
+@media (max-width: 600px) { .screens-addr-big { font-size: 22px; } }
 
 .screens-ed { list-style: none; margin: 0; padding: 0; }
 .screens-ed-row { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }

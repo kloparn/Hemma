@@ -66,53 +66,86 @@ static int64_t floor_div(int64_t a, int64_t b) {
     return q;
 }
 
+/* A channel goes on the air the moment it's made (issue #56: a half-hour channel used to round its
+   start down to the last :00/:30, so a short first programme could be over already - colour bars
+   until the next half hour). Lap 0's first airing is that LEAD-IN: the first programme from
+   `epoch`, for its own length. The second starts at the first :00/:30 at or after it ends, and the
+   rhythm goes on from there - tv_epoch() puts lap 0 where that works. Laps before the channel
+   existed (a clock set back) end exactly at `epoch`. Back to back, all of this is the plain loop. */
 int64_t tv_epoch(const TvPlan *p, int64_t epoch) {
-    /* Unix half-hours line up with local :00/:30 in every whole- or half-hour time zone */
-    return p && p->half_hour ? floor_div(epoch, TV_SLOT_S) * TV_SLOT_S : epoch;
+    if (!p || !p->half_hour || p->n <= 0) return epoch;
+    int64_t second = -floor_div(-(epoch + p->items[0].dur_s), TV_SLOT_S) * TV_SLOT_S; /* (rounded up) */
+    return second - p->starts[1];
 }
 
-static void airing(const TvPlan *p, int k, int64_t base, TvSlot *out) {
+/* Where an airing sits: programme k of the lap that begins at base. Laps before the channel
+   existed are counted from epoch (`before`); from lap 0 on, from tv_epoch(). */
+typedef struct {
+    int k;
+    int64_t base;
+    bool before;
+} Pos;
+
+static void airing(const TvPlan *p, int64_t epoch, int64_t e, Pos at, TvSlot *out) {
+    int k = at.k;
     out->index = k;
     out->file = p->items[k].file;
-    out->start = base + p->starts[k];
+    out->start = at.base + p->starts[k];
+    out->next = at.base + p->starts[k + 1];
+    if (!at.before && k == 0 && at.base == e) out->start = epoch; /* the lead-in (next: the slot's end) */
     out->end = out->start + p->items[k].dur_s;
-    out->next = base + p->starts[k + 1];
     out->offset = 0;
     out->gap = false;
 }
 
-bool tv_now(const TvPlan *p, int64_t epoch, int64_t now, TvSlot *out) {
-    if (!p || p->n <= 0 || p->cycle <= 0) return false;
-    int64_t e = tv_epoch(p, epoch);
-    int64_t laps = floor_div(now - e, p->cycle);
-    int64_t base = e + laps * p->cycle;
-    int64_t pos = now - base; /* 0 <= pos < cycle, also for epochs in the future */
+static Pos advance(const TvPlan *p, int64_t epoch, int64_t e, Pos at) {
+    if (++at.k < p->n) return at;
+    at.k = 0;
+    at.base += p->cycle;
+    if (at.before && at.base >= epoch) { /* (lands on epoch exactly) */
+        at.before = false;
+        at.base = e;
+    }
+    return at;
+}
+
+/* the airing going out at `now` */
+static Pos position(const TvPlan *p, int64_t epoch, int64_t e, int64_t now) {
+    Pos at = {0, 0, now < epoch};
+    if (at.before) at.base = epoch + floor_div(now - epoch, p->cycle) * p->cycle;
+    else if (now < e + p->starts[1]) return (Pos){0, e, false}; /* the lead-in, and its intermission */
+    else at.base = e + floor_div(now - e, p->cycle) * p->cycle;
+    int64_t pos = now - at.base; /* 0 <= pos < cycle */
     int lo = 0, hi = p->n - 1;
     while (lo < hi) { /* last airing that started at or before pos */
         int mid = lo + (hi - lo + 1) / 2;
         if (p->starts[mid] <= pos) lo = mid;
         else hi = mid - 1;
     }
-    airing(p, lo, base, out);
+    at.k = lo;
+    return at;
+}
+
+bool tv_now(const TvPlan *p, int64_t epoch, int64_t now, TvSlot *out) {
+    if (!p || p->n <= 0 || p->cycle <= 0) return false;
+    int64_t e = tv_epoch(p, epoch);
+    airing(p, epoch, e, position(p, epoch, e, now), out);
     out->gap = now >= out->end;
     out->offset = out->gap ? 0 : now - out->start;
     return true;
 }
 
 int tv_window(const TvPlan *p, int64_t epoch, int64_t from, int64_t to, TvSlot *out, int max) {
-    TvSlot s;
-    if (max <= 0 || to <= from || !tv_now(p, epoch, from, &s)) return 0;
-    int n = 0, k = s.index;
-    int64_t base = s.start - p->starts[k];
+    if (max <= 0 || to <= from || !p || p->n <= 0 || p->cycle <= 0) return 0;
+    int64_t e = tv_epoch(p, epoch);
+    Pos at = position(p, epoch, e, from);
+    int n = 0;
     while (n < max) {
         TvSlot x;
-        airing(p, k, base, &x);
+        airing(p, epoch, e, at, &x);
         if (x.start >= to) break;
         if (x.next > from) out[n++] = x;
-        if (++k == p->n) {
-            k = 0;
-            base += p->cycle;
-        }
+        at = advance(p, epoch, e, at);
     }
     return n;
 }
