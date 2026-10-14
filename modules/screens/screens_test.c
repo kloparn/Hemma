@@ -237,6 +237,29 @@ TEST(screens_are_put_together_by_admins_only) {
     halt();
 }
 
+/* Issue #61: "type the address" - which one? The admin's steps show it, big, and as a QR code. */
+TEST(screens_show_the_address_to_type_on_the_tv) {
+    boot();
+    int adam = with_role("Adam", ROLE_ADMIN), eva = th_person("Eva");
+    screens_test_addresses("http://192.168.1.50:8080", "http://hemma.local:8080");
+    const char *h = th_page(adam, "/screens");
+    CHECK_HAS(h, "<p class=\"screens-addr-big\">http://192.168.1.50:8080</p>");
+    CHECK_HAS(h, "Phones and computers can use <b>http://hemma.local:8080</b> too; many TVs can't.");
+    CHECK_HAS(h, "<svg class=\"qr\" viewBox=\"-4 -4 33 33\" role=\"img\" aria-label=\"http://192.168.1.50:8080\"");
+    CHECK(strstr(h, "Under <a href=\"/people\">Household</a>") < strstr(h, "screens-addr-big"));
+    CHECK(!strstr(th_page(eva, "/screens"), "screens-addr")); /* the steps are for admins */
+    screens_test_addresses("http://192.168.1.50", NULL); /* port 80, and no name to offer */
+    h = th_page(adam, "/screens");
+    CHECK_HAS(h, ">http://192.168.1.50</p></div><figure class=\"screens-qr\">");
+    CHECK(!strstr(h, "Phones and computers"));
+    screens_test_addresses("", NULL); /* no network found: what the browser shows */
+    h = th_page(adam, "/screens");
+    CHECK(!strstr(h, "screens-addr"));
+    CHECK_HAS(h, "type the address this browser shows");
+    screens_test_addresses(NULL, NULL);
+    halt();
+}
+
 TEST(screens_rows_are_added_moved_named_and_removed) {
     boot();
     int adam = with_role("Adam", ROLE_ADMIN);

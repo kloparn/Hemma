@@ -41,8 +41,9 @@ void media_tv_open(Ctx *c, Buf *b, const char *back, const char *cls) {
     /* rows of tiles (a series) move with the remote's arrows; a player keeps them for the video */
     bool rows = cls && str_eq(cls, "media-tv-series");
     H(b, "<div class=\"media-tv%r%r\"%r>", cls ? " " : "", cls ? cls : "", rows ? " data-arrows" : "");
-    /* first in the tab order; Escape (a computer's keyboard) goes back too */
-    H(b, "<a class=\"media-tv-back\" href=\"%s\" data-esc>", back);
+    /* first in the tab order; Escape (a computer's keyboard) goes back too, and so does the remote's Back key,
+       and the arrows reach it (wire.js [data-back], issue #57) */
+    H(b, "<a class=\"media-tv-back\" href=\"%s\" data-esc data-back>", back);
     ui_icon(b, "left");
     buf_puts(b, "<span>Back</span></a>");
 }

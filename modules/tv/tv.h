@@ -62,7 +62,9 @@ typedef struct {
 
 void tv_plan_init(TvPlan *p, const TvItem *items, int n, bool half_hour); /* copies items */
 void tv_plan_free(TvPlan *p);
-int64_t tv_epoch(const TvPlan *p, int64_t epoch); /* effective start (rounded down to :00/:30 for half-hour) */
+/* Where lap 0 begins: epoch back to back; on the half hour, the :00/:30 that puts the second programme on
+   the first :00/:30 after the first one ends - the first itself goes out from epoch (the channel starts at once) */
+int64_t tv_epoch(const TvPlan *p, int64_t epoch);
 
 typedef struct {
     int index;      /* position in the playlist */

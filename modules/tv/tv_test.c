@@ -80,28 +80,85 @@ TEST(tv_half_hour_alignment_leaves_intermissions) {
     TvPlan p;
     tv_plan_init(&p, it, 3, true);
     CHECK_INT(p.cycle, 1800 + 3600 + 1800);
-    int64_t E = 1800000000 + 1000; /* not on a half hour */
+    int64_t H = 1800000000; /* on a half hour */
+    CHECK(tv_epoch(&p, H) == H); /* made on the half hour: the plain loop from there */
+    int64_t E = H + 1000; /* made 16 minutes 40 past */
     int64_t e = tv_epoch(&p, E);
-    CHECK(e % 1800 == 0 && e <= E && E - e < 1800);
+    CHECK(e % 1800 == 0);
     TvSlot s;
-    CHECK(tv_now(&p, E, e + 100, &s));
+    CHECK(tv_now(&p, E, E, &s)); /* the first programme goes out at once, from its start (issue #56) */
+    CHECK(s.file == 1 && !s.gap && s.offset == 0 && s.start == E && s.end == E + 1320);
+    CHECK(s.next == H + 3600); /* it ends at :38:40 - the second starts on the next :00 */
+    CHECK(e + 1800 == H + 3600);
+    CHECK(tv_now(&p, E, E + 100, &s));
     CHECK(s.file == 1 && !s.gap && s.offset == 100);
-    CHECK(tv_now(&p, E, e + 1400, &s)); /* 22 minutes are over: intermission until :30 */
-    CHECK(s.file == 1 && s.gap && s.offset == 0 && s.end == e + 1320 && s.next == e + 1800);
+    CHECK(tv_now(&p, E, E + 1400, &s)); /* 22 minutes are over: intermission until :00 */
+    CHECK(s.file == 1 && s.gap && s.offset == 0 && s.end == E + 1320 && s.next == e + 1800);
     CHECK(tv_now(&p, E, e + 1800, &s));
     CHECK(s.file == 2 && !s.gap && s.start == e + 1800);
     CHECK(tv_now(&p, E, e + 1800 + 2800, &s));
     CHECK(s.file == 2 && s.gap && s.next == e + 5400);
-    CHECK(tv_now(&p, E, e + 7200, &s));
-    CHECK(s.file == 1 && s.start == e + 7200);
-    for (int64_t t = e - 5000; t < e + 3 * 7200; t += 997) { /* every programme starts on :00 or :30 */
+    CHECK(tv_now(&p, E, e + 7200, &s)); /* the next lap: on the half hour like the rest */
+    CHECK(s.file == 1 && s.start == e + 7200 && s.end == e + 7200 + 1320);
+    for (int64_t t = e + 1800; t < e + 3 * 7200; t += 997) { /* after the first, every one starts on :00 or :30 */
         CHECK(tv_now(&p, E, t, &s));
         CHECK(s.start % 1800 == 0 && s.next % 1800 == 0 && s.start <= t && t < s.next);
     }
+    CHECK(tv_now(&p, E, E - 1, &s)); /* before it existed (a clock set back): that lap ends as it starts */
+    CHECK(s.next == E && s.start < E);
     TvPlan q;
     tv_plan_init(&q, it, 3, false);
     CHECK(tv_epoch(&q, E) == E); /* back-to-back plans keep the exact epoch */
     tv_plan_free(&q);
+    tv_plan_free(&p);
+}
+
+/* Issue #56: a channel made at 09:45 showed colour bars, "back at 10:00". Whatever the minute and
+   however long the first programme, it starts when the channel does; the guide agrees with what's
+   on, nothing overlaps, and from the second programme on, the half hours hold. */
+TEST(tv_a_new_channel_starts_its_first_programme_at_once) {
+    TvItem it[] = {{1, 600}, {2, 1320}, {3, 2700}, {4, 6720}}; /* 10 and 22 min, 45 min, a 1 h 52 film */
+    int64_t H = 1800000000 + 1800; /* a :00 (1800000000 is a :30) */
+    for (int first = 0; first < 4; first++) {
+        TvItem order[4];
+        for (int i = 0; i < 4; i++) order[i] = it[(first + i) % 4];
+        TvPlan p;
+        tv_plan_init(&p, order, 4, true);
+        for (int64_t m = 0; m < 1800; m += 60 * 7 + 13) {
+            int64_t E = H + 900 + m; /* from 09:45 on, say */
+            int64_t e = tv_epoch(&p, E), second = e + p.starts[1];
+            TvSlot s;
+            CHECK(tv_now(&p, E, E, &s));
+            CHECK(s.file == order[0].file && !s.gap && s.offset == 0 && s.start == E);
+            CHECK(second % 1800 == 0 && second >= E + order[0].dur_s && second - (E + order[0].dur_s) < 1800);
+            CHECK(tv_now(&p, E, second, &s));
+            CHECK(s.file == order[1].file && s.start == second && s.offset == 0);
+            TvSlot w[32];
+            int n = tv_window(&p, E, H, H + 6 * 3600, w, 32);
+            CHECK(n > 3);
+            bool lead = false;
+            for (int i = 0; i < n; i++) {
+                CHECK(w[i].start <= w[i].end && w[i].end <= w[i].next);
+                if (i) CHECK(w[i - 1].next == w[i].start); /* one after the other, never on top */
+                lead |= w[i].start == E;
+                if (w[i].start > E) CHECK(w[i].start % 1800 == 0);
+                if (w[i].start < H) continue;
+                CHECK(tv_now(&p, E, w[i].start, &s)); /* the guide says what tv_now says */
+                CHECK(s.file == w[i].file && s.start == w[i].start && s.next == w[i].next);
+            }
+            CHECK(lead);
+        }
+        tv_plan_free(&p);
+    }
+    /* the issue's case: 09:45, a 10-minute first programme - on at once, the second at 10:00 */
+    TvItem short_one[] = {{1, 600}, {2, 1320}};
+    TvPlan p;
+    tv_plan_init(&p, short_one, 2, true);
+    TvSlot s;
+    CHECK(tv_now(&p, H - 900, H - 900 + 30, &s));
+    CHECK(s.file == 1 && !s.gap && s.offset == 30 && s.next == H);
+    CHECK(tv_now(&p, H - 900, H, &s));
+    CHECK(s.file == 2 && !s.gap && s.start == H);
     tv_plan_free(&p);
 }
 
@@ -458,6 +515,25 @@ TEST(tv_channel_page_tunes_into_the_live_moment) {
     th_halt();
 }
 
+/* Issue #56: made at 20:25, a half-hour channel used to start at 20:00 - Alpha's 22 minutes over
+   already, colour bars until 20:30. Now Alpha starts at 20:25 and Beta comes at 21:00. */
+TEST(tv_a_channel_made_between_half_hours_plays_at_once) {
+    library();
+    g_fake_now += 25 * 60;
+    CHECK(th_act(adam, "tv.save", "number=2&name=Prime&all=1&align=half").ok);
+    g_fake_now += 10;
+    const char *h = th_page(adam, "/tv/2");
+    CHECK_HAS(h, "<video id=\"tv-video\"");
+    CHECK_HAS(h, "data-resume=\"10\"");
+    CHECK(!strstr(h, "tv-bars"));
+    CHECK_HAS(th_page(adam, "/tv/2?tv=1&back=/"), "Alpha");
+    Channel *ch = tv_channel_by_number(2);
+    TvSlot s;
+    CHECK(tv_now(tv_channel_plan(ch), ch->epoch, g_fake_now + 1320, &s)); /* 20:47:10: over, Beta at 21:00 */
+    CHECK(s.gap && s.next == dt_make(2026, 10, 10, 21, 0));
+    th_halt();
+}
+
 TEST(tv_half_hour_channel_shows_an_intermission) {
     library();
     CHECK(th_act(adam, "tv.save", "number=2&name=Prime&all=1&align=half").ok);
@@ -596,11 +672,13 @@ TEST(tv_on_now_row_on_watch_home_and_screens) {
     /* a channel between programmes says what's next */
     CHECK(th_act(adam, "tv.save", "number=2&name=Prime&all=1&align=half").ok);
     Channel *ch = tv_channel_by_number(2);
-    g_fake_now = tv_epoch(tv_channel_plan(ch), ch->epoch) + 1320 + 60;
+    g_fake_now = ch->epoch + 1320 + 60; /* made at 20:02: Alpha from then (issue #56), Beta at 20:30 */
     buf_reset(&b);
     app_ctx(&c, adam, "/screens/2");
     CHECK(bl->render(&c, &b, SCREEN_TV, ""));
-    CHECK_HAS(buf_cstr(&b), "<b class=\"tile-t\">Beta</b><span class=\"tile-s\">Prime · Up next at ");
+    CHECK_HAS(buf_cstr(&b), "<b class=\"tile-t\">Beta</b><span class=\"tile-s\">Prime · Intermission</span>");
+    CHECK_HAS(buf_cstr(&b), "tile-art tv-tile tv-tile-off"); /* dimmed, not "on now" (issue #56) */
+    CHECK_HAS(buf_cstr(&b), "<span class=\"tv-tile-up\">Up next · 20:30</span>");
     app_ctx_free(&c);
     buf_free(&b);
     th_halt();
@@ -613,7 +691,7 @@ TEST(tv_channel_full_screen_for_the_tv) {
     g_fake_now += 125;
     const char *h = th_page(adam, "/tv/1?tv=1&back=%2Fscreens%2F2");
     CHECK(str_starts(h, "<div id=\"app\" class=\"bare\" data-mod=\"tv\"><div class=\"media-tv tv-full\">"
-                        "<a class=\"media-tv-back\" href=\"/screens/2\" data-esc>")); /* Back comes first */
+                        "<a class=\"media-tv-back\" href=\"/screens/2\" data-esc data-back>")); /* Back comes first */
     CHECK_HAS(h, "data-resume=\"125\"");
     CHECK_HAS(h, "data-next=\"/tv/1?tv=1&amp;back=%2Fscreens%2F2\"");
     CHECK_HAS(h, "autoplay");
@@ -625,8 +703,8 @@ TEST(tv_channel_full_screen_for_the_tv) {
     CHECK_HAS(h, "data-key=\"2\" title=\"Films\"");
     CHECK_HAS(h, "S01E01 · Pilot · 20 min left");
     CHECK(!strstr(h, "class=\"side\"") && !strstr(h, "tv-info") && !strstr(h, "/tv?edit="));
-    CHECK_HAS(th_page(adam, "/tv/1?tv=1&back=%2F%2Fevil.example"), "<a class=\"media-tv-back\" href=\"/\" data-esc>");
-    CHECK_HAS(th_page(adam, "/tv/1?tv=1&back=%2F%5Cevil"), "<a class=\"media-tv-back\" href=\"/\" data-esc>");
+    CHECK_HAS(th_page(adam, "/tv/1?tv=1&back=%2F%2Fevil.example"), "<a class=\"media-tv-back\" href=\"/\" data-esc data-back>");
+    CHECK_HAS(th_page(adam, "/tv/1?tv=1&back=%2F%5Cevil"), "<a class=\"media-tv-back\" href=\"/\" data-esc data-back>");
     /* without tv=1: the TV set under Watch's tabs, as before */
     h = th_page(adam, "/tv/1");
     CHECK(str_starts(h, "<div id=\"app\" class=\"shell\""));

@@ -88,12 +88,18 @@ A TV everyone shares gets a **Display** sign-in of its own, set up once:
 1. As the admin, under **Household**, press **Add someone**: a name ("Living room TV"), a
    username, a password, and the kind *Display*.
 2. On the TV's web browser, open Hemma - type the address with `http://`, like
-   `http://192.168.1.50` - and sign in with it, **Keep me signed in** ticked.
+   `http://192.168.1.50` - and sign in with it, **Keep me signed in** ticked. The
+   **Screens** page shows the address to type, in big letters, and as a QR code a tablet or
+   phone can scan instead (TVs can't). Type the numbers: many TVs can't look up
+   `hemma.local` names.
 3. Under **Screens**, edit a screen (Hemma starts with one called *TV*) and tick the TV
    under **Shows on**. From then on the TV's Hemma address opens that screen by itself.
 
 The screen is big rows you move through with the remote's arrows, like a streaming app:
 Continue watching, On now, Recently added, Series, Movies. OK opens what's highlighted.
+The remote's **Back** key goes back from a series, a video or a channel (in full screen it
+leaves full screen first); the arrows reach the **Back** button at the top too - press Up
+on a playing video.
 Admins choose the rows and their order under **Screens → Edit** (Up, Down, Remove, Add a
 row) and can give a row a heading of its own. A row with nothing to show right now - no
 channels yet, nothing half-watched - is simply left out.

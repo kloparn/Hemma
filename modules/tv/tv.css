@@ -222,6 +222,12 @@ a.tv-g-row:hover .tv-g-lane { background: var(--panel-2); }
   position: absolute; top: 6%; right: 4%; z-index: 1; padding: .1em .4em; border-radius: 8px;
   font-size: 1.3em; background: rgba(0, 0, 0, .7);
 }
+/* between programmes: the next one's picture, dimmed, and when it starts */
+.tv-tile-off img, .tv-tile-off .tv-tile-t { opacity: .38; }
+.tv-tile-up {
+  position: absolute; top: 6%; left: 5%; z-index: 1; padding: .2em .55em; border-radius: 8px;
+  font-weight: 700; background: rgba(0, 0, 0, .75); color: #fff;
+}
 
 /* ---- a channel on the TV (?tv=1): the picture fills the screen, the knobs and the remote below ---- */
 .tv-full-screen { position: relative; height: 100vh; background: #000; }

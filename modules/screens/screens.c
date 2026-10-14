@@ -467,6 +467,34 @@ static const Action actions[] = {
     {0},
 };
 
+/* ============================================================ the address */
+
+/* Where a TV or tablet opens Hemma, for the "On the TV" steps (issue #61: they said to type the
+   address and never showed it). app_addresses() asks the OS - not for every render: once a minute
+   from tick (a DHCP lease can change it). */
+static char g_addr[2][96];
+static int g_naddr;
+static int64_t g_addr_at; /* monotonic ms; 0 = not asked yet */
+static bool g_addr_fixed; /* tests */
+
+static void refresh_addresses(int64_t now) {
+    g_addr_at = now ? now : 1;
+    if (!g_addr_fixed) g_naddr = app_addresses(g_addr, countof(g_addr));
+}
+
+int screens_addresses(char out[2][96]) {
+    for (int i = 0; i < g_naddr; i++) str_copy(out[i], sizeof out[i], g_addr[i]);
+    return g_naddr;
+}
+
+void screens_test_addresses(const char *a, const char *b) {
+    g_addr_fixed = a != NULL;
+    g_naddr = 0;
+    g_addr_at = 0;
+    if (a && *a) str_copy(g_addr[g_naddr++], sizeof g_addr[0], a);
+    if (a && *a && b && *b) str_copy(g_addr[g_naddr++], sizeof g_addr[0], b);
+}
+
 /* ================================================================ module */
 
 static void init(void) {
@@ -476,6 +504,10 @@ static void init(void) {
 
 static void start(void) {
     g_nseats = 0;
+    if (!g_addr_fixed) {
+        g_naddr = 0;
+        g_addr_at = 0;
+    }
     forget_viewers(); /* (picks made before only TVs could pick) */
     seats_watch(now_sec());
     /* once each: a household that removed them keeps none */
@@ -503,9 +535,9 @@ static bool http(Ctx *c, Conn *conn, HttpReq *r) {
     return true;
 }
 
-static void tick(int64_t now_ms) {
-    (void)now_ms;
+static void tick(int64_t now) {
     seats_watch(now_sec());
+    if (!app_testing() && !g_addr_fixed && (!g_addr_at || now - g_addr_at >= 60000)) refresh_addresses(now);
 }
 
 static const Module screens = {

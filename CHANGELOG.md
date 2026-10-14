@@ -3,7 +3,31 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.8.0 (not released yet)
+## 0.9.0 (not released yet)
+
+The TV, on a remote.
+
+### Changes
+
+- **The remote's Back key goes back** (#57). In the TV view - a series, a video, a Live TV
+  channel - Back on a Samsung or LG remote, BrowserBack and Backspace now do what Escape did.
+  In full screen it leaves full screen first. The arrows reach the on-screen Back button too:
+  Up from a playing video, or Left/Up past the end of the player's buttons.
+- **Screens shows the address to type** (#61), big, with `http://` in front, and the
+  `.local` name for phones and computers. A QR code next to it lets a tablet or phone open
+  Hemma without typing (Hemma draws it itself).
+
+### Fixes
+
+- **A new channel starts at once** (#56). A channel on the half hour used to count from the
+  last :00 or :30, so it could show colour bars - "back at 10:00" - for up to half an hour
+  after you made it. Now its first programme starts the moment you make it, and the
+  half-hour rhythm picks up with the second. Channels on the half hour may move their
+  schedule by half an hour once, when you update.
+- **On now says when a channel is between programmes**: the next programme's picture is
+  dimmed and labelled "Up next · 10:00" instead of looking like it's playing.
+
+## 0.8.0 (2026-10-14)
 
 The wall, finished.
 

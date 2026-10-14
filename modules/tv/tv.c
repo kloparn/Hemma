@@ -812,7 +812,9 @@ static bool row_onnow(Ctx *c, Buf *b, int kind, const char *arg) {
             media_tv_href(&row, path, kind, back);
             buf_puts(&row, "\">");
         }
-        H(&row, "<span class=\"tile-art tv-tile\" style=\"--h:%d\">", ch->hue);
+        /* between programmes the tile is the next one's, dimmed and labelled with when it starts (issue #56: it
+           read as playing under "On now") */
+        H(&row, "<span class=\"tile-art tv-tile%r\" style=\"--h:%d\">", s.gap ? " tv-tile-off" : "", ch->hue);
         uint64_t img = media_picture(f);
         if (img) {
             buf_puts(&row, "<img src=\"");
@@ -824,15 +826,19 @@ static bool row_onnow(Ctx *c, Buf *b, int kind, const char *arg) {
             buf_puts(&row, "</span>");
         }
         H(&row, "<span class=\"tv-num tv-tile-n\" style=\"--h:%d\">%02d</span>", ch->hue, ch->number);
-        if (!s.gap) /* how far into the programme, along the foot of the picture */
+        if (s.gap) {
+            buf_puts(&row, "<span class=\"tv-tile-up\">Up next · ");
+            ui_hm(&row, s.next);
+            buf_puts(&row, "</span>");
+        } else { /* how far into the programme, along the foot of the picture */
             H(&row, "<span class=\"tile-bar\"><i style=\"width:%d%%\"></i></span>",
               bp(c->now - s.start, s.end - s.start) / 100);
+        }
         buf_puts(&row, "</span><b class=\"tile-t\">");
         prog_title(&row, f);
         H(&row, "</b><span class=\"tile-s\">%s · ", ch->name);
         if (s.gap) {
-            buf_puts(&row, "Up next at ");
-            ui_hm(&row, s.next);
+            buf_puts(&row, "Intermission");
         } else {
             prog_sub(&row, f);
             if (f && (f->name.kind == MEDIA_EPISODE || f->name.year)) buf_puts(&row, " · ");
