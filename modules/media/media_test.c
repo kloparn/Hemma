@@ -442,6 +442,7 @@ TEST(media_endpoints_require_sign_in) {
 TEST(media_player_addresses_carry_the_screens_key) {
     int adam = boot_with_library();
     auth_configure("media-salt", 1000);
+    g_fake_now = now_sec(); /* (one clock for the page and the check: no hour turning in between) */
     char sid[33];
     CHECK(session_create(adam, false, "test", sid));
     Session *s = NULL;
@@ -455,7 +456,7 @@ TEST(media_player_addresses_carry_the_screens_key) {
     Buf page = {0};
     app_render(&c, &page);
     app_ctx_free(&c);
-    Ctx kc = {.sess = s};
+    Ctx kc = {.sess = s, .ip = 0x7F000001}; /* (app_ctx's screen is at 127.0.0.1) */
     char path[60], k[CTX_KEY_LEN], want[160];
     snprintf(path, sizeof path, "/media/file/%016llx", (unsigned long long)f->id);
     ctx_url_key(&kc, path, k);
@@ -469,6 +470,7 @@ TEST(media_player_addresses_carry_the_screens_key) {
     /* no stored session (the harness's pages): plain addresses */
     snprintf(want, sizeof want, "src=\"/media/file/%016llx\"", (unsigned long long)f->id);
     CHECK_HAS(th_page(adam, url("/media/watch/%s", f->id)), want);
+    g_fake_now = 0;
     buf_free(&page);
     th_halt();
 }

@@ -3,7 +3,31 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.6.0 (not released yet)
+## 0.6.1 (not released yet)
+
+Hardening, from an outside review of 0.6.0.
+
+### Security
+
+- **One device can't lock everyone out any more** (#32): a device that asked for something and
+  then read the answer a few bytes at a time kept its connection for good, so a dozen addresses
+  could take every slot. When Hemma is full, such slow readers now make room for newcomers.
+- **Only a TV picks who's watching** (#33): any display account, the hallway tablet too, could
+  pick anyone under "Who's watching?" and then see, change or clear their Continue watching.
+  Now only a display account that shows a TV screen (Screens, Edit, Shows on) can, and one that
+  stops showing it forgets who was watching.
+- **No more passwords in the log** (#34): a password typed into the name box (a phone filling
+  the wrong one) went into the log every admin reads. A failed sign-in now names the account
+  only when the name is one, and otherwise just says how long it was.
+- **Video keys expire and stay on their screen** (#78): the key on a video's address (0.6.0)
+  worked from any device for as long as the sign-in lasted. Now it works only from the address
+  of the screen it was made for, for about two days.
+- **A browser can't flood the log** (#79): the limit of 20 trouble lines from a browser started
+  again with every reload. It's now 20 an hour per person; a line repeating the last one is only
+  counted, and what was left out is said once. A browser's user agent goes with its first line
+  only.
+
+## 0.6.0 (2026-10-13)
 
 The wall.
 
@@ -32,8 +56,8 @@ The wall.
 - **Videos and Live TV play on Samsung TVs again.** After an update, the TV's browser lets its
   video player fetch the video without the browser's sign-in, so Hemma sent it the sign-in page
   and every video and channel "buffered" or failed. Video and subtitle addresses now carry their
-  own key: it works for that one video, only for the screen it was shown on, and only while that
-  screen stays signed in.
+  own key: it works for that one video, and only while the sign-in it was made for lasts (0.6.1
+  ties it to the screen's address and lets it expire).
 - The player on TVs: a video the TV's browser won't start by itself shows the big play
   button again instead of what looked like endless loading, and OK plus the remote's
   play/pause/rewind/forward buttons work where the TV names its keys differently. A Live TV

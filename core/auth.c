@@ -1379,6 +1379,15 @@ static void setup_post(Conn *conn, HttpReq *r, Fields *f) {
     app_changed(); /* other open welcome pages turn into the sign-in page */
 }
 
+/* A typed sign-in name as the log shows it: the account's username when it names one (by
+   username or name), else only how long it was. People type their password into the name box
+   (a phone fills the wrong one), and every admin reads the log (issue #34). */
+static void typed_for_log(const char *typed, char *out, size_t cap) {
+    const Person *p = person_for_sign_in(typed);
+    if (p) snprintf(out, cap, "\"%s\"", p->username);
+    else snprintf(out, cap, "an unknown name (%d characters)", (int)utf8_count(typed));
+}
+
 /* POST /forgot: username + recovery code + a new password. */
 static void forgot_post(Conn *conn, HttpReq *r, Fields *f) {
     char user[64]; /* a username or a name */
@@ -1392,7 +1401,11 @@ static void forgot_post(Conn *conn, HttpReq *r, Fields *f) {
         else if (res != LOGIN_OK) err = "code";
     }
     if (err) {
-        if (str_eq(err, "code")) log_info("failed password recovery for \"%s\" from %s", user, conn->peer);
+        if (str_eq(err, "code")) {
+            char who[80];
+            typed_for_log(user, who, sizeof who);
+            log_info("failed password recovery for %s from %s", who, conn->peer);
+        }
         Buf loc = {0};
         buf_printf(&loc, "/forgot?e=%s", err);
         if (wait > 0) buf_printf(&loc, "&w=%d", wait);
@@ -1501,9 +1514,12 @@ bool auth_http(Ctx *c, Conn *conn, HttpReq *r) {
         if (wait_more) buf_printf(&loc, "&w=%d%s", wait, res == LOGIN_BUSY ? "&busy=1" : "");
         buf_puts(&loc, "&next=");
         url_encode(&loc, next, false);
-        if (res == LOGIN_WRONG)
-            log_info("failed sign-in for \"%s\" from %s%s", user, conn->peer,
+        if (res == LOGIN_WRONG) {
+            char who[80];
+            typed_for_log(user, who, sizeof who);
+            log_info("failed sign-in for %s from %s%s", who, conn->peer,
                      auth_salt_mismatch() ? " (HEMMA_AUTH_SALT isn't the passwords' secret - see the warning at start)" : "");
+        }
         redirect(conn, buf_cstr(&loc), NULL);
         buf_free(&loc);
     }

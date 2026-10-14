@@ -29,6 +29,8 @@
 #define T_LINGER 2000   /* after half-closing, wait this long for the peer */
 #define T_CLOSING 5000  /* a WebSocket close handshake gets this long */
 #define T_STALL 60000   /* queued output that makes no progress for this long: the peer is gone */
+#define T_SLOW 10000             /* queued output that hasn't moved a SLOW_CHUNK in this long ... */
+#define SLOW_CHUNK (64 * 1024)   /* ... is read too slowly to count (6.4 KB/s; a phone on bad Wi-Fi reads far faster) */
 
 typedef struct {
     sock_t fd;
@@ -51,9 +53,11 @@ static int nwatches, capwatches;
 static unsigned next_id;
 static size_t g_buffer_budget = BUFFER_BUDGET;
 static int g_max_conns = MAX_CONNS;
+static int g_slow_after = T_SLOW;
 
 void server_set_buffer_budget(size_t bytes) { g_buffer_budget = bytes ? bytes : BUFFER_BUDGET; }
 void server_set_max_conns(int n) { g_max_conns = n > 0 ? n : MAX_CONNS; }
+void server_set_slow_after(int ms) { g_slow_after = ms > 0 ? ms : T_SLOW; }
 
 bool server_listen(const char *host, int port) {
     char err[200];
@@ -103,6 +107,10 @@ static void conn_flush(Conn *c) {
         if (n > 0) {
             buf_consume(&c->out, (size_t)n);
             c->t_sent = now_ms();
+            if ((c->moved += (size_t)n) >= SLOW_CHUNK) {
+                c->moved = 0;
+                c->t_moved = c->t_sent;
+            }
             continue;
         }
         if (n < 0 && sock_again(sock_errno())) break;
@@ -122,7 +130,10 @@ static void conn_flush(Conn *c) {
 
 void conn_write(Conn *c, const void *p, size_t n) {
     if (c->dead || c->lingering) return;
-    if (!c->out.len) c->t_sent = now_ms(); /* the stall clock starts with the first queued byte */
+    if (!c->out.len) { /* the stall and slow-reader clocks start with the first queued byte */
+        c->t_sent = c->t_moved = now_ms();
+        c->moved = 0;
+    }
     buf_put(&c->out, p, n);
     if (c->out.len > MAX_PENDING_OUT) {
         log_warn("dropping slow client %s", c->peer);
@@ -473,22 +484,32 @@ static int live_conns(void) {
     return n;
 }
 
-/* A connection that only holds a slot: an idle keep-alive one, or one still dribbling in its
-   request. Screens (WebSockets), handed-over streams and anything owed a reply never are. */
-static bool holds_a_slot(const Conn *c) {
-    return !c->dead && !c->ws && !c->detached && !c->closing && !c->lingering && !c->peer_eof && !c->out.len;
+/* Owed a reply, but reading it so slowly that it only keeps the slot busy: its queued output
+   hasn't moved a SLOW_CHUNK in T_SLOW. A client that reads a few bytes now and then resets
+   the stall clock forever (issue #32: thirteen addresses with 32 such connections each held
+   every slot); any real browser on a home network reads a thousand times faster. */
+static bool slow_reader(const Conn *c, int64_t now) {
+    return c->out.len && !c->ws && !c->detached && now - c->t_moved > g_slow_after;
+}
+
+/* A connection that only holds a slot: an idle keep-alive one, one still dribbling in its
+   request, or a slow reader. Screens (WebSockets), handed-over streams and anything still
+   being sent a reply at a real pace never are. */
+static bool holds_a_slot(const Conn *c, int64_t now) {
+    if (c->dead || c->ws || c->detached) return false;
+    return slow_reader(c, now) || (!c->closing && !c->lingering && !c->peer_eof && !c->out.len);
 }
 
 /* When every slot is taken, a newcomer takes the place of a slot holder - from the address
-   holding the most connections, idle ones before half-sent requests, the longest-waiting
-   first. Without this, one host with a dozen addresses could keep every slot with a request
-   every minute and nobody else could connect (issue #5). */
-static Conn *slot_holder(void) {
+   holding the most connections, idle ones (and slow readers) before half-sent requests, the
+   longest-waiting first. Without this, one host with a dozen addresses could keep every slot
+   with a request every minute and nobody else could connect (issue #5). */
+static Conn *slot_holder(int64_t now) {
     Conn *best = NULL;
     int best_n = 0;
     for (int i = 0; i < nconns; i++) {
         Conn *c = conns[i];
-        if (!holds_a_slot(c)) continue;
+        if (!holds_a_slot(c, now)) continue;
         int n = conns_from(c->ip);
         bool idle = !c->t_req, best_idle = best && !best->t_req;
         int64_t since = idle ? c->t_last : c->t_req, best_since = best ? (best_idle ? best->t_last : best->t_req) : 0;
@@ -501,16 +522,17 @@ static Conn *slot_holder(void) {
     return best;
 }
 
-static bool any_slot_holder(void) {
+static bool any_slot_holder(int64_t now) {
     for (int i = 0; i < nconns; i++)
-        if (holds_a_slot(conns[i])) return true;
+        if (holds_a_slot(conns[i], now)) return true;
     return false;
 }
 
 static void accept_all(void) {
     for (int k = 0; k < 64; k++) {
+        int64_t now = now_ms();
         bool full = live_conns() >= g_max_conns;
-        if (full && !any_slot_holder()) break;
+        if (full && !any_slot_holder(now)) break;
         uint32_t ip = 0;
         sock_t s = tcp_accept(g_listen, &ip);
         if (s == SOCK_BAD) break;
@@ -518,7 +540,7 @@ static void accept_all(void) {
             sock_close(s);
             continue;
         }
-        if (full) conn_kill(slot_holder()); /* freed by the next compact() */
+        if (full) conn_kill(slot_holder(now)); /* freed by the next compact() */
         Conn *c = xcalloc(1, sizeof *c);
         c->fd = s;
         c->ip = ip;
@@ -597,7 +619,7 @@ void server_run(const ServerHooks *hooks) {
         int n = 0, nc = nconns, nw = nwatches;
         /* at capacity - nothing a newcomer could take the place of - the listener stays out of
            the poll set (or poll would spin on it) */
-        bool room = nconns < g_max_conns || any_slot_holder();
+        bool room = nconns < g_max_conns || any_slot_holder(now_ms());
         pf[n++] = (pollfd_t){.fd = g_listen, .events = (short)(room ? POLLIN : 0)};
         pf[n++] = (pollfd_t){.fd = g_wake, .events = (short)(g_wake != SOCK_BAD ? POLLIN : 0)};
         for (int i = 0; i < nc; i++) pf[n++] = (pollfd_t){.fd = conns[i]->fd, .events = conn_events(conns[i])};

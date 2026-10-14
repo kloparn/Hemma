@@ -56,7 +56,7 @@
       const h = root.dataset.h;
       if (h) delete root.dataset.h;
       send(h ? { t: 'hello', url: here(), v: VERSION, h } : { t: 'hello', url: here(), v: VERSION });
-      while (later.length) send({ t: 'log', url: here(), m: later.shift() });
+      while (later.length) send({ t: 'log', url: here(), m: later.shift(), ua: navigator.userAgent });
     };
     ws.onmessage = (e) => {
       let ops;
@@ -76,11 +76,12 @@
   const send = (msg) => (open && ws.send(JSON.stringify(msg)), open);
   // Trouble goes to Hemma's log (the System page): a TV's browser has no console anyone can read.
   // A script error here, a video that errs or doesn't start (see media()). The server takes 20
-  // lines per connection; lines from before the socket opened wait for it (10 at most).
+  // lines per person an hour and logs the user agent (ua) once per browser; lines from before the
+  // socket opened wait for it (10 at most).
   const later = [];
   const report = (what) => {
     const m = String(what).slice(0, 400);
-    if (!send({ t: 'log', url: here(), m }) && later.length < 10) later.push(m);
+    if (!send({ t: 'log', url: here(), m, ua: navigator.userAgent }) && later.length < 10) later.push(m);
   };
   addEventListener('error', (e) => report(`script error: ${e.message} (${String(e.filename || '').split('/').pop()}:${e.lineno})`));
   addEventListener('unhandledrejection', (e) => report(`script error: ${e.reason && e.reason.message ? e.reason.message : e.reason}`));
@@ -678,17 +679,17 @@
       const pl = plOf(m), native = m.hasAttribute('data-native');
       // Hemma's player couldn't play it: the browser's own player takes over (nativePlayer).
       if (pl && !native) {
-        report(`video ${id}: ${why} in Hemma's player - switching to the browser's own player - ${navigator.userAgent}`);
+        report(`video ${id}: ${why} in Hemma's player - switching to the browser's own player`);
         nativePlayer(m, pl);
         return;
       }
       if (pl) { pl.hidden = false; flag(pl, 'data-err', true); flag(pl, 'data-wait', false); plShow(pl, true); }
-      report(`video ${id}: ${why}${native ? " - in the browser's own player too" : ''} - ${navigator.userAgent}`);
+      report(`video ${id}: ${why}${native ? " - in the browser's own player too" : ''}`);
     });
     m.addEventListener('playing', () => { /* (the browser's own player plays it: say so once) */
       if (m.hasAttribute('data-native') && !m._nativeOk) {
         m._nativeOk = true;
-        report(`video ${m.dataset.id || m.id} plays in the browser's own player - ${navigator.userAgent}`);
+        report(`video ${m.dataset.id || m.id} plays in the browser's own player`);
       }
     });
     if (m.hasAttribute('data-onair')) onair(m);
@@ -762,7 +763,7 @@
       for (let i = 0; i < m.buffered.length; i++) buf += `${m.buffered.start(i).toFixed(0)}-${m.buffered.end(i).toFixed(0)} `;
       report(`video ${m.dataset.id || m.id} hasn't started after 25 s: readyState ${m.readyState}, networkState ` +
         `${m.networkState}, paused ${m.paused}, muted ${m.muted}, at ${(m.currentTime || 0).toFixed(1)} s, buffered ` +
-        `${buf || 'nothing'}, error ${m.error ? m.error.code : 'none'} - ${navigator.userAgent}`);
+        `${buf || 'nothing'}, error ${m.error ? m.error.code : 'none'}`);
     }, 25000);
   }
 

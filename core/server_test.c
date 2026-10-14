@@ -14,6 +14,9 @@ static void t_http(Conn *c, HttpReq *r) {
         conn_reply(c, 200, "text/plain", "hello", 5, NULL);
     } else if (str_eq(r->path, "/echo")) {
         conn_reply(c, 200, "text/plain", r->body, r->body_len, NULL);
+    } else if (str_eq(r->path, "/big")) { /* more than the sockets' own buffers take */
+        static char big[16 << 20];
+        conn_reply(c, 200, "application/octet-stream", big, sizeof big, NULL);
     } else {
         conn_reply(c, 404, "text/plain", "nf", 2, NULL);
     }
@@ -346,5 +349,44 @@ TEST(server_newcomers_take_the_place_of_idle_connections) {
     for (int i = 0; i < 300 && !srv_done; i++) plat_sleep_ms(10);
     CHECK(srv_done);
     server_set_max_conns(0);
+    buf_free(&b);
+}
+
+TEST(server_slow_readers_make_room_for_newcomers) {
+    /* issue #32: connections that ask for something and then read it a few bytes now and then
+       were never pushed out (they're owed a reply, and every byte restarts the stall clock), so
+       a dozen addresses could hold every slot. Full, a newcomer takes a slow reader's place. */
+    server_set_max_conns(4);
+    server_set_slow_after(300);
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    srv_done = 0;
+    CHECK(thread_spawn(server_thread, NULL));
+    /* three big replies in a row: more than the sockets' buffers can hold, so output stays queued */
+    const char *big = "GET /big HTTP/1.1\r\nHost: t\r\n\r\nGET /big HTTP/1.1\r\nHost: t\r\n\r\n"
+                      "GET /big HTTP/1.1\r\nHost: t\r\n\r\n",
+               *get = "GET /hello HTTP/1.1\r\nHost: t\r\n\r\n";
+    sock_t s[4];
+    for (int i = 0; i < 4; i++) { /* every slot: replies it never reads */
+        s[i] = dial(port);
+        CHECK(s[i] != SOCK_BAD);
+        send_all(s[i], big, strlen(big));
+    }
+    plat_sleep_ms(800); /* past slow_after: none of them has moved a chunk since the start */
+    sock_t n = dial(port);
+    Buf b = {0};
+    send_all(n, get, strlen(get));
+    recv_until(n, &b, "hello", 5);
+    CHECK_HAS(buf_cstr(&b), "200 OK");
+    bool one_went = false;
+    for (int i = 0; i < 4 && !one_went; i++) one_went = closed_by_server(s[i]);
+    CHECK(one_went);
+    sock_close(n);
+    for (int i = 0; i < 4; i++) sock_close(s[i]);
+    server_stop();
+    for (int i = 0; i < 300 && !srv_done; i++) plat_sleep_ms(10);
+    CHECK(srv_done);
+    server_set_max_conns(0);
+    server_set_slow_after(0);
     buf_free(&b);
 }

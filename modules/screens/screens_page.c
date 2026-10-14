@@ -116,7 +116,7 @@ static void top_bar(Ctx *c, Buf *b, const Screen *s, int viewer) {
         ui_avatar(b, p, "md");
         H(b, "<b>%s</b>", p->name);
     }
-    if (display && tv) { /* someone else's turn: back to "Who's watching?" */
+    if (display && tv && screens_drives_tv(c->me->id)) { /* someone else's turn: back to "Who's watching?" */
         ui_form(b, "screens.viewer", "inline");
         ui_hidden(b, "who", "0");
         buf_puts(b, "<button class=\"screens-btn\">Switch</button>");
@@ -267,7 +267,7 @@ static void view_page(Ctx *c, Buf *b, const Screen *s) {
         return;
     }
     int viewer = screens_viewer(c);
-    if (!viewer && c->me->role == ROLE_DISPLAY) {
+    if (!viewer && c->me->role == ROLE_DISPLAY && screens_drives_tv(c->me->id)) { /* (others watch as nobody) */
         picker(c, b);
         return;
     }

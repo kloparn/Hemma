@@ -104,7 +104,12 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  2026-10-12): a display account with ctx_viewer() == 0 gets the avatar picker (screens.viewer,
                  .display; who=0 = Switch); the pick lapses after SCREENS_IDLE_S (4 h) without use (the TV
                  session's `seen`), checked when rendering and on tick; people on their own devices are always
-                 the viewer. Walls are nobody's: no picker.
+                 the viewer. Walls are nobody's: no picker. Only a display account that DRIVES A TV picks
+                 (screens_drives_tv: its PREF_START is a SCREEN_TV screen; issue #33 - the hall tablet could
+                 pick anyone and read/rewrite/clear their Continue watching): others get no picker or Switch
+                 and watch as nobody; forget_viewers() clears the pick from the sessions of display accounts
+                 that stop driving a TV (Shows on, a deleted screen, and at start). PIN / leaving admins off
+                 the picker: issue #42.
                  Wall blocks (SCREEN_WALL): plan.today (events + chores due, plan-wall look), plan.days (the
                  next 7 days, 8 rows; an event once, on its first day, "until Sun"), plan.shop, book.now
                  (each thing by name: Free / "Adam · until 17:00", then what's coming), board.notes,
@@ -332,11 +337,15 @@ sooner asks from its tick with `app_wake_in(ms)` (net does while sweeping, uploa
 (progress bars). Other threads end the poll wait with `server_wake()`; a worker that finished
 something to show (an upload, a scan) calls `app_tick_soon()` so the modules' tick runs now
 instead of at the next idle tick (a wake alone doesn't run the tick).
-`{"t":"log","url":...,"m":...}` from a signed-in screen = the browser's own trouble, logged as a warning
-("browser of <username> (<ip>) on <url>: ..."), 20 per connection (Client.logs): wire.js report() sends
-window errors, unhandled rejections, a video's `error`, and a video meant to play (autoplay, live, or play
-pressed) that hasn't fired `playing` 25 s later (watch(): readyState, networkState, paused, buffered, the
-user agent) - a TV's browser has no readable console; read it on the System page or the journal.
+`{"t":"log","url":...,"m":...,"ua":...}` from a signed-in screen = the browser's own trouble, logged as a
+warning ("browser of <username> (<ip>) on <url>: ..."): wire.js report() sends window errors, unhandled
+rejections, a video's `error`, and a video meant to play (autoplay, live, or play pressed) that hasn't
+fired `playing` 25 s later (watch(): readyState, networkState, paused, buffered) - a TV's browser has no
+readable console; read it on the System page or the journal. Limits (app.c browser_log_ok, issue #79 -
+the old per-connection cap restarted with every reload): per PERSON, 20 lines an hour (BROWSER_LOGS,
+g_blog: 32 people, the oldest hour gives way); a line the same as that person's last one is only counted;
+what was left out is one line with the next one after the hour ("N more lines since HH:MM left out");
+the user agent (`ua`) goes with a session's first line only (ua_first, the last 64 sessions).
 A `nav`/`hello` re-renders only that screen (plus `/` and `/people`, which show who is where;
 the shell's "Here now" names people only); navs are rate-limited per screen. Every page carries
 its hash (`<html data-h>`): the first `hello` after a load sends it, so an unchanged page isn't
@@ -411,10 +420,13 @@ it: the build embeds a `.gz` twin of each text file and av.wasm (~120 KB -> ~30 
   people.save refuses `password` for yourself. An admin setting someone else's ends their sessions.
 - Signed-out requests never reach module pages, actions or `http` hooks (unless `MOD_PUBLIC`), and
   signed-out/revoked screens get no `app_notify` toasts. One exception, for `http` hooks only: an
-  ADDRESS KEY (`ctx_url_key(c, path, out)`, app.c url_key/session_by_url_key): `<path>?k=<session id>-<128
-  bits of HMAC(server salt, session token hash + path)>`. A GET/HEAD without a live session cookie whose
-  key fits its exact path runs the module endpoints as that session (live, not session_over); an
-  address no endpoint takes goes on as signed out - a key never opens a page, an action, /api or /ws.
+  ADDRESS KEY (`ctx_url_key(c, path, out)`, app.c url_key/session_by_url_key): `<path>?k=<session id>-
+  <expires>-<128 bits of HMAC(server salt, session token hash + path + expires + c->ip)>`. A GET/HEAD
+  without a live session cookie whose key fits its exact path, comes from the address the key was made
+  for (the screen's: a TV's browser and its player share one) and hasn't expired (KEY_HOURS = 48, rounded
+  up to the hour so a page's hash changes hourly, not per render) runs the module endpoints as that
+  session (live, not session_over); an address no endpoint takes goes on as signed out - a key never
+  opens a page, an action, /api or /ws. (0.6.0's keys had no expiry or address: issue #78.)
   Why (2026-10-13): a Samsung TV's browser (an update that week) lets its video player fetch the
   <video>'s file WITHOUT the page's cookie (the navigation had it, the player's `Range: bytes=0-` didn't),
   so Hemma answered with the sign-in page and the TV said "decode error" - every video, Live TV, every
@@ -426,6 +438,8 @@ it: the build embeds a `.gz` twin of each text file and av.wasm (~120 KB -> ~30 
   Signed-out WebSockets: 48 in all, 4 per address (`stranger_room`), past that the upgrade gets 503.
   `MOD_ADMIN` modules exist only for admins: nav, /more, pages ("not found" for others) and http hooks.
 - Log lines go through `log_clean()`: control characters become visible escapes (no forged lines).
+  A typed sign-in name is logged only as the account's username when it names one, else as "an unknown
+  name (N characters)" (auth.c typed_for_log, issue #34: passwords typed into the name box reached the log).
 
 ## Writing a module (the contract — see core/app.h)
 
@@ -594,8 +608,10 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
 - The server faces every device on the LAN: Host must be an IP, a single-label name or a private
   suffix (.local .lan .home .home.arpa .internal …) — more via `HEMMA_HOSTS` (DNS-rebinding guard).
   Per-device connection cap (32; streams/uploads handed to threads don't count); at the total cap (400) a
-  newcomer takes the place of a slot holder - an idle keep-alive connection, else a half-sent request -
-  from the address holding the most (server.c slot_holder; screens/WebSockets never), a shared 32 MB budget
+  newcomer takes the place of a slot holder - an idle keep-alive connection, a slow reader (queued output
+  that hasn't moved SLOW_CHUNK = 64 KB in T_SLOW = 10 s: Conn.t_moved/moved, issue #32 - a few bytes now and
+  then used to keep a slot for good), else a half-sent request - from the address holding the most
+  (server.c slot_holder; screens/WebSockets never; `server_set_slow_after` in tests), a shared 32 MB budget
   for request bodies / WebSocket messages still arriving (past it: 503 + close; `server_set_buffer_budget`
   in tests), output backpressure, stall timeouts; keep new code bounded too.
 - Bind 127.0.0.1 for dev servers (0.0.0.0 pops a Windows Firewall prompt). Never send Wake-on-LAN to
@@ -649,9 +665,12 @@ CHANGELOG.md). 0.4.0 (PR #17, the GUI redesign round 1) = Watch absorbs TV, Scre
 0.5.0 (PR #18 + the version bump after it) = full screen survives the next episode, a "Next episode in N s"
 card, full screen for Live TV (survives programme and channel changes), Hemma's own player controls
 (ui_player + wire.js [data-player]) instead of each browser's, and the fix for live TV playing on, unseen,
-after leaving it. 0.6.0 (branch feat/update-wall) = the wall as a Screen kind (top band, card columns, wall
+after leaving it. 0.6.0 (PR #76, merged 2026-10-13) = the wall as a Screen kind (top band, card columns, wall
 blocks from plan/book/board/home, seeded once, /wall forwards), the old wall module and WIDGET_WALL gone,
-plan's events in the shared agenda. Next ideas: calmer home cards (hide empty ones), touch on the wall
+plan's events in the shared agenda, address keys for TV players. An outside review then opened issues
+#19-#80 (2026-10-13), worked through in groups, one branch each: 0.6.1 (branch fix/hardening) = #32 slow
+readers, #33 only a TV picks who's watching, #34 typed names out of the log, #78 keys expire + bound to the
+screen's address, #79 browser-log limits per person an hour. Next ideas: calmer home cards (hide empty ones), touch on the wall
 (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,

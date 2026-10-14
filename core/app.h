@@ -17,7 +17,7 @@
 #include "server.h"
 #include "store.h"
 
-#define HEMMA_VERSION "0.6.0" /* raised for every release (SECURITY.md, CHANGELOG.md) */
+#define HEMMA_VERSION "0.6.1" /* raised for every release (SECURITY.md, CHANGELOG.md) */
 /* With the commit the binary was built from: "0.6.0 (8242ca8f1a2b)", "-dirty" with uncommitted
    changes (build.ps1 and the Makefile pass -DHEMMA_COMMIT=...); just the version outside git. */
 #define HEMMA_STR_(x) #x
@@ -103,10 +103,11 @@ void ctx_redirect(Ctx *c, const char *fmt, ...) FMT(2, 3);
 void ctx_url(const Ctx *c, Buf *out, ...);
 /* An address key: some media players fetch a <video>'s file without the browser's cookies (a
    Samsung TV's browser since an update in 2026), so a module endpoint's address can carry its own
-   proof - "<path>?k=<key>". The key holds for exactly that path, as this screen's session, while
-   that session lasts; it opens module endpoints (http hooks) only - never pages, actions, the API
-   or the wire. "" when there's no stored session (signed out; the test harness's pages). */
-#define CTX_KEY_LEN 48
+   proof - "<path>?k=<key>". The key holds for exactly that path, as this screen's session, from this
+   screen's network address, for about two days (and never past the session); it opens module
+   endpoints (http hooks) only - never pages, actions, the API or the wire. "" when there's no
+   stored session (signed out; the test harness's pages). */
+#define CTX_KEY_LEN 64
 void ctx_url_key(const Ctx *c, const char *path, char out[CTX_KEY_LEN]);
 
 /* Sessions (core/auth.c signs people in; the household module manages them). */

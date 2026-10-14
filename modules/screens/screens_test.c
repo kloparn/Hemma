@@ -334,6 +334,8 @@ TEST(screens_ask_whos_watching_on_a_tv) {
     int id = new_screen(adam, "name=Kids");
     CHECK(add(adam, id, "zzscr.on", NULL).ok);
     char url[40], form[40];
+    snprintf(form, sizeof form, "id=%d&acc=%d", id, tv); /* the TV shows it (only a TV picks) */
+    CHECK(th_act(adam, "screens.shows", form).ok);
     snprintf(url, sizeof url, "/screens/%d", id);
     const char *h = th_page(tv, url);
     CHECK_HAS(h, "<h1>Who's watching?</h1>");
@@ -379,6 +381,45 @@ TEST(screens_ask_whos_watching_on_a_tv) {
     halt();
 }
 
+TEST(screens_only_a_tv_picks_whos_watching) {
+    /* issue #33: any display account - the hallway tablet too - could pick anyone, then read,
+       rewrite or clear their Continue watching for as long as its year-long sign-in lasted */
+    boot();
+    int adam = with_role("Adam", ROLE_ADMIN), eva = th_person("Eva");
+    int tv = with_role("Living room TV", ROLE_DISPLAY), tablet = with_role("Hall tablet", ROLE_DISPLAY);
+    int screen = new_screen(adam, "name=Evenings"), wall = new_screen(adam, "name=Hall&kind=wall");
+    CHECK(add(adam, screen, "zzscr.on", NULL).ok);
+    char form[80], pick[40], url[40];
+    snprintf(pick, sizeof pick, "who=%d", eva);
+    CHECK(!th_act(tv, "screens.viewer", pick).ok); /* not ticked for any screen yet */
+    snprintf(form, sizeof form, "id=%d&acc=%d", wall, tablet);
+    CHECK(th_act(adam, "screens.shows", form).ok);
+    CHECK(!th_act(tablet, "screens.viewer", pick).ok); /* a wall tablet never */
+    CHECK_INT(viewer_of(tablet), 0);
+    snprintf(url, sizeof url, "/screens/%d", screen); /* a TV screen it doesn't drive: watched by nobody */
+    const char *h = th_page(tablet, url);
+    CHECK(!strstr(h, "Who's watching?"));
+    CHECK(!strstr(h, ">Switch</button>"));
+    CHECK_HAS(h, "zz-on kind 1 viewer 0");
+    /* ticked for the TV screen: it picks */
+    snprintf(form, sizeof form, "id=%d&acc=%d", screen, tv);
+    CHECK(th_act(adam, "screens.shows", form).ok);
+    CHECK(th_act(tv, "screens.viewer", pick).ok);
+    CHECK_INT(viewer_of(tv), eva);
+    CHECK(th_act(tv, "screens.viewer", "who=0").ok);
+    /* unticked: its sessions forget who was watching */
+    Session s = {0};
+    str_copy(s.token, sizeof s.token, "tv-session");
+    s.person = tv;
+    s.created = s.seen = now_sec();
+    s.viewer = eva;
+    tbl_put(&T_session, &s);
+    snprintf(form, sizeof form, "id=%d", screen);
+    CHECK(th_act(adam, "screens.shows", form).ok);
+    CHECK_INT(((Session *)tbl_get(&T_session, s.id))->viewer, 0);
+    halt();
+}
+
 TEST(screens_ask_again_once_the_tv_sat_unused) {
     boot();
     int adam = with_role("Adam", ROLE_ADMIN), eva = th_person("Eva"), tv = with_role("Living room TV", ROLE_DISPLAY);
@@ -387,6 +428,8 @@ TEST(screens_ask_again_once_the_tv_sat_unused) {
     int64_t t = dt_make(2026, 10, 12, 19, 0);
     g_fake_now = t;
     char url[40], form[40];
+    snprintf(form, sizeof form, "id=%d&acc=%d", id, tv);
+    CHECK(th_act(adam, "screens.shows", form).ok);
     snprintf(url, sizeof url, "/screens/%d", id);
     snprintf(form, sizeof form, "who=%d", eva);
     CHECK(th_act(tv, "screens.viewer", form).ok);

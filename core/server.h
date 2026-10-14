@@ -20,6 +20,8 @@ struct Conn {
     Buf in, out;
     int64_t t_open, t_last, t_req; /* monotonic ms: opened, last activity, start of a partial request */
     int64_t t_sent;                /* last time queued output made progress */
+    int64_t t_moved;               /* last time queued output moved a whole chunk (or began) */
+    size_t moved;                  /* bytes sent since then */
     bool ws, keep_alive, closing, lingering, dead, detached, ping_sent;
     bool head_req; /* the request being answered is HEAD: replies carry no body */
     bool peer_eof; /* the peer finished sending; we are still sending to it */
@@ -58,6 +60,7 @@ int server_conn_count(void);
    0 = default): past it a request is answered 503 and closed. Tests make it small. */
 void server_set_buffer_budget(size_t bytes);
 void server_set_max_conns(int n); /* tests: fewer connection slots (0 = the default, 400) */
+void server_set_slow_after(int ms); /* tests: when a slow reader may be pushed out (0 = the default, 10 s) */
 
 void conn_write(Conn *c, const void *p, size_t n);
 /* Full response honouring the request's keep-alive. */
