@@ -232,7 +232,10 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  (?tv=1&back=<path> on /media/watch/<id>, /media/series/<id>, /tv/<n>): bare, always dark,
                  Back first (data-esc), back checked by media_safe_back (else "/"); the player autoplays +
                  autofocuses, resumes for the viewer, data-next keeps tv/back; a channel: ArrowUp/Down
-                 change channel, 1-9 pick one. PLAYERS (owner, 2026-10-12: full screen must survive the
+                 change channel, 1-9 pick one. Live TV's picture has NO scan lines or vignette over it (owner,
+                 2026-10-14: "overkill, kills the quality of the show"); the old-TV touches left are the set's
+                 frame, the brief static between channels, the fading "CH 03" and the On-now tiles' lines.
+                 PLAYERS (owner, 2026-10-12: full screen must survive the
                  next episode): our own controls (media_controls -> ui_player, subtitles from media_subs;
                  tv: a live UiPlayer), the box (#media-box / #tv-screen) goes full screen, the <video>
                  keeps one id with data-static="<file>" (tv: "<file>-<airing start>"; the overlay has the

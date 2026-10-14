@@ -17,7 +17,7 @@
 #include "server.h"
 #include "store.h"
 
-#define HEMMA_VERSION "0.7.1" /* raised for every release (SECURITY.md, CHANGELOG.md) */
+#define HEMMA_VERSION "0.7.2" /* raised for every release (SECURITY.md, CHANGELOG.md) */
 /* With the commit the binary was built from: "0.6.0 (8242ca8f1a2b)", "-dirty" with uncommitted
    changes (build.ps1 and the Makefile pass -DHEMMA_COMMIT=...); just the version outside git. */
 #define HEMMA_STR_(x) #x

@@ -441,7 +441,9 @@ static void screen(Ctx *c, Buf *b, const Channel *ch, const TvPlan *p, const cha
         else buf_puts(b, "This channel has nothing to air yet.");
         buf_puts(b, "</span></div></div>");
     }
-    H(b, "<div class=\"tv-scan\"></div><div class=\"tv-static\" id=\"tv-s-%d-%L\"></div>", ch->number, (long long)mark);
+    /* (no scan lines over the picture any more - owner, 2026-10-14: they cost the show its quality;
+       the static between channels and the channel's number fade within seconds) */
+    H(b, "<div class=\"tv-static\" id=\"tv-s-%d-%L\"></div>", ch->number, (long long)mark);
     H(b, "<div class=\"tv-osd\" id=\"tv-o-%d-%L\"><span class=\"tv-osd-n\">CH %02d</span>", ch->number,
       (long long)mark, ch->number);
     if (on && !s.gap) {

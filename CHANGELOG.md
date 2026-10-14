@@ -3,6 +3,14 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
+## 0.7.2 (not released yet)
+
+### Fixes
+
+- **Live TV shows the picture as it is.** The old-TV scan lines and darkened edges laid over
+  every programme are gone - in the window and full screen. The brief static between
+  channels and the channel number stay.
+
 ## 0.7.1 (not released yet)
 
 The library keeps what it knows.
