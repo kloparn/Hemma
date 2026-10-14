@@ -17,7 +17,7 @@
 #include "server.h"
 #include "store.h"
 
-#define HEMMA_VERSION "0.6.1" /* raised for every release (SECURITY.md, CHANGELOG.md) */
+#define HEMMA_VERSION "0.7.0" /* raised for every release (SECURITY.md, CHANGELOG.md) */
 /* With the commit the binary was built from: "0.6.0 (8242ca8f1a2b)", "-dirty" with uncommitted
    changes (build.ps1 and the Makefile pass -DHEMMA_COMMIT=...); just the version outside git. */
 #define HEMMA_STR_(x) #x
@@ -298,6 +298,9 @@ const char *setting(const char *key, const char *dflt);
 long long setting_int(const char *key, long long dflt);
 void setting_set(const char *key, const char *val);
 void setting_set_int(const char *key, long long v);
+/* store_open rescued a damaged database (store_rescue_report): the report, kept until an admin
+   presses "Got it" on the System page (system.rescued_seen) - a notice on admins' pages till then. */
+#define SETTING_RESCUED "store.rescued"
 /* per-person preferences (theme, favourite resource, wall layout, ...) */
 const char *pref(int person, const char *key, const char *dflt);
 void pref_set(int person, const char *key, const char *val);

@@ -1113,12 +1113,6 @@ static int64_t civil_sec(DateTime d) {
     return (int64_t)days_from_civil(d.year, d.mon, d.day) * 86400 + d.hour * 3600 + d.min * 60 + d.sec;
 }
 
-/* How far the local clock is ahead of UTC at instant t (0 if the C library can't say). */
-static int64_t utc_offset(int64_t t) {
-    int64_t o = civil_sec(dt_local(t)) - t;
-    return o > 86400 || o < -86400 ? 0 : o;
-}
-
 /* The instant the clock here shows `min` minutes after the start of `day` (1440 and up: the
  * days after). The clock changes are settled here, the same on every C library: a time in the
  * hour skipped in spring moves forward by the jump (02:30 -> 03:30, what calendars do, RFC 5545);

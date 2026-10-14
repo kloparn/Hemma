@@ -1,5 +1,6 @@
 /* Media pages, actions, widgets and the streaming endpoint logic. */
 #include "../../core/auth.h"
+#include "../../core/db.h"
 #include "../../core/plat.h"
 #include "../../tests/harness.h"
 #include "../av/mp4.h"
@@ -434,6 +435,30 @@ TEST(media_endpoints_require_sign_in) {
     snprintf(path, sizeof path, "/media/file/%016llx", (unsigned long long)f->id);
     CHECK(str_starts(serve(adam, "POST", path, NULL, &out), "HTTP/1.1 405"));
     buf_free(&out);
+    th_halt();
+}
+
+static int cache_rows(void) {
+    sqlite3_stmt *st = db_prep("SELECT count(*) FROM media_file");
+    int n = st && sqlite3_step(st) == SQLITE_ROW ? sqlite3_column_int(st, 0) : -1;
+    if (st) sqlite3_reset(st); /* (a statement still reading keeps the table from being dropped) */
+    return n;
+}
+
+TEST(media_cache_in_an_older_layout_is_dropped) {
+    /* issue #38: CREATE TABLE IF NOT EXISTS never changes a table that's there, so a new column
+       would have broken the library cache quietly. The cache has a format of its own. */
+    boot_with_library();
+    int n = cache_rows();
+    CHECK(n > 0);
+    media_lib_start(); /* the same layout: kept */
+    CHECK_INT(cache_rows(), n);
+    setting_set_int("media.cache_format", 0); /* written by an older layout */
+    media_lib_start();
+    CHECK_INT(cache_rows(), 0); /* dropped: the next scan fills it again */
+    CHECK(setting_int("media.cache_format", 0) > 0);
+    media_scan_sync();
+    CHECK_INT(cache_rows(), n);
     th_halt();
 }
 

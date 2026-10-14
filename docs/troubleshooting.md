@@ -123,6 +123,20 @@ file, so Hemma may write there ([raspberry-pi.md](raspberry-pi.md#7-a-usb-disk-f
 DVD rips, MKV files and Dolby sound don't play everywhere. **Watch → Library settings**
 makes a copy of each that does.
 
+**"Database rescued" on the System page.**
+At the start, Hemma found its database damaged - on a memory card that's usually after a
+power cut, or a card wearing out. It copied the damaged file aside untouched
+(`hemma.db.damaged-<date>` in the data folder) and carried on with every row it could still
+read. The check says which kinds of things lost rows. If you have a backup from before, stop
+Hemma, put the backup in place as `hemma.db`, and start it again: that brings the lost rows
+back (and loses what was added since). Otherwise carry on. Either way, a card that damaged
+one file may damage more: think about a new one. Press **Got it** once you've read it.
+
+**"Hemma was changed by a newer Hemma" in the log, and it won't start.**
+You went back to an older version, and the newer one had changed the data in a way the older
+one would misread. Put the newer version back (`/opt/hemma/hemma.prev` is the one the
+installer replaced).
+
 **A library folder is missing.**
 The disk isn't plugged in or mounted. Plug it in (on a Pi, check `/etc/fstab` so it's
 mounted at every start), then rescan in **Watch → Library settings**.

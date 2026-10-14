@@ -29,6 +29,10 @@ fi
 id hemma >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/hemma --shell /usr/sbin/nologin hemma
 install -d -o hemma -g hemma -m 750 /var/lib/hemma
 install -d -m 755 /opt/hemma
+# the program it replaces stays as hemma.prev: the way back if the new one misbehaves
+if [ -f /opt/hemma/hemma ] && ! { command -v cmp >/dev/null 2>&1 && cmp -s "$BIN" /opt/hemma/hemma; }; then
+    cp -p /opt/hemma/hemma /opt/hemma/hemma.prev
+fi
 install -m 755 "$BIN" /opt/hemma/hemma
 install -d -o root -g hemma -m 750 /etc/hemma
 install -m 644 "$HERE/hemma.service" /etc/systemd/system/hemma.service

@@ -831,9 +831,15 @@ static void render_app(Ctx *c, Buf *out) {
     } else if (!m && str_eq(c->path, "/more")) {
         ui_more_page(c, &page);
     } else if (m && m->page) {
-        if (store_failed() && is_admin(c)) /* e.g. a full disk: say so where someone can act on it */
+        if (store_damaged() && is_admin(c)) /* say so where someone can act on it */
+            buf_puts(&page, "<p class=\"notice bad\" role=\"alert\">Saving failed: the database file is damaged. Recent "
+                            "changes are only in memory. Restart Hemma - it rescues everything it can still read.</p>");
+        else if (store_failed() && is_admin(c)) /* e.g. a full disk */
             buf_puts(&page, "<p class=\"notice bad\" role=\"alert\">Saving to disk failed - the disk may be full. "
                             "Recent changes are only in memory and will be lost on restart; see the server log.</p>");
+        else if (setting(SETTING_RESCUED, "")[0] && is_admin(c) && !str_starts(c->path, "/system"))
+            buf_puts(&page, "<p class=\"notice bad\" role=\"alert\">The database was damaged, and Hemma rescued what it "
+                            "could still read. <a href=\"/system\">See what happened</a></p>");
         m->page(c, &page);
     } else {
         ctx_title(c, "Not found");
@@ -1767,6 +1773,7 @@ bool app_boot(const char *data_dir) {
     for (int i = 0; i < nmods; i++)
         if (mods[i]->init) mods[i]->init();
     if (!store_open(data_dir)) return false;
+    if (store_rescue_report()[0]) setting_set(SETTING_RESCUED, store_rescue_report()); /* (System: until seen) */
     if (!g_testing) {
         char why[300];
         int made = auth_ensure_secret(g_cfg.env_file, why, sizeof why);

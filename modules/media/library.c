@@ -846,6 +846,7 @@ static MediaIndex *scan_run(Scan *sc) {
 
 /* ============================================================ SQLite cache */
 
+#define CACHE_FORMAT 1 /* raise it with every change to SCHEMA: a cache in an older layout is dropped */
 static const char *SCHEMA =
     "CREATE TABLE IF NOT EXISTS media_file ("
     " id TEXT PRIMARY KEY, root TEXT NOT NULL, type TEXT NOT NULL, rel TEXT NOT NULL,"
@@ -1087,6 +1088,14 @@ void media_lib_start(void) {
     watch_map_reset();
     atomic_store(&g_abort, false);
     g_rescan_again = false;
+    /* the cache's own format (issue #38: CREATE TABLE IF NOT EXISTS never changes an old table, so a
+       new column would have broken the cache quietly). Older ones go; the next scan fills it again. */
+    bool current = setting_int("media.cache_format", CACHE_FORMAT) == CACHE_FORMAT; /* (none yet: today's) */
+    if (!current && db_exec("DROP TABLE IF EXISTS media_file")) {
+        log_info("media: the library cache's layout changed - the next scan fills it again");
+        current = true;
+    }
+    if (current && setting_int("media.cache_format", 0) != CACHE_FORMAT) setting_set_int("media.cache_format", CACHE_FORMAT);
     db_exec(SCHEMA);
     cache_load();
     g_next_scan = now_ms() + RESCAN_EVERY_MS;

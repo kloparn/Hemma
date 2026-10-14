@@ -52,7 +52,23 @@ core/            framework with a stable API for modules
   codec.*        SHA-1, SHA-256, HMAC, PBKDF2, Base64, hex, URL encoding
   json.* http.* ws.* server.*   protocol stack + event loop
   html.*         H() — HTML formatter that escapes by default (%s escaped, %r raw, %02d padding ok)
-  store.*, db.h  typed tables kept in RAM, persisted in SQLite; db.h = raw SQL (+FTS5)
+  store.*, db.h  typed tables kept in RAM, persisted in SQLite; db.h = raw SQL (+FTS5). store_open checks the
+                 file first (PRAGMA quick_check) and reads every table to its end (load() checks the last step):
+                 a DAMAGED file (issue #37; owner, 2026-10-14: "rescue and carry on") is copied aside untouched
+                 (hemma.db.damaged-<day>-<hhmm>, its -wal too) and every row that can still be read goes into a
+                 fresh file (rescue_table: id order; a failing read skips the damaged page - 1, 2, 4 ... ids on,
+                 then back by halves - so only that page's rows are lost; the old sqlite_sequence, or +1000 when
+                 unreadable, so lost ids never come back); store_rescue_report() -> app_boot keeps it as setting
+                 SETTING_RESCUED ("store.rescued") -> System "Database rescued" check + an admin notice on every
+                 page until "Got it" (system.rescued_seen). A busy/unreadable file is no damage: it fails to open.
+                 store_damaged() = a write failed with SQLITE_CORRUPT (System says restart, not "disk full?").
+                 DATA FORMAT (issue #38): PRAGMA user_version = the newest StoreMigration in store.c's MIGRATIONS
+                 (format 1 = the baseline); a start runs those past the file's format (after ensure_schema, in the
+                 open transaction), keeping a VACUUM INTO copy (hemma.db.before-format-<n>) first when one has a
+                 run() or breaks_older; store_meta.min_reader = the newest breaks_older format applied: an older
+                 program refuses to start on such data (log line names both formats), but reads files that only
+                 gained tables/fields. FIELD_WAS(T, member, type, "old") renames a column with its data (pair it
+                 with a breaks_older migration). Tests: store_test_migrations(list, n).
   when.*         natural-language dates/times (English + Swedish) for quick-add bars. A day that can't be
                  ("31 sep", "29/2/2027") or a day range ending before it starts ("12/10-10/10", "until 5/10")
                  is refused as a whole: when_parse() returns false, gives the words back and says why in
@@ -126,7 +142,12 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  start/stop marks in the file reveal a crash), help for how THIS instance runs (systemd,
                  launchd, Windows, a terminal), /system/log.txt download, a home card while a check is at
                  needs-a-look or worse. app_main halts the modules when it can't listen (the reason reaches
-                 the file). media/health.c and net.c report their checks through the hook.
+                 the file). media/health.c and net.c report their checks through the hook. TIME ZONE (issue
+                 #39, part 1): start() keeps the zone as its UTC offsets in January/July (setting
+                 system.time_zone, "+01:00/+02:00"; utc_offset() in base.c - names aren't portable); a change
+                 -> setting system.tz_changed "<from>|<to>|<day>" -> a needs-a-look check until "Got it"
+                 (system.tz_seen); a zone of "+00:00" (a Pi's default) is a Note with how to set it. Part 2
+                 (all-day items as dates, re-reading old entries) is still open. system_test_zone() in tests.
                  dependencies: tv needs media (it links modules/media/library.c), media needs av (the converter)
   media/upload.c admins add videos from a browser (plan + streamed PUTs, .part files, resume); a folder
                  holding x.mkv + x.web.mp4 sends only the copy (checkbox "also send originals"). Other MKVs
@@ -267,9 +288,11 @@ tools/h264check.c encode | synth | bench: MKV -> H.264 Annex-B + reconstruction 
 tools/convfuzz.c libFuzzer target over av_convert (MKV in memory -> MP4 in memory); -DCONVFUZZ_MAIN = a
                  replay/mutate driver that builds with zig on Windows (build lines at the top). Seeds:
                  `HEMMA_FUZZ_SEEDS=<dir> ./build/test conv_fuzz_seeds` (generated, never committed)
-tests/           test.h (framework), runner.c, harness.* (boot the core without a server)
+tests/           test.h (framework), runner.c, harness.* (boot the core without a server; th_boot_in(dir) for a
+                 data folder the test prepared - test_tmpdir() is a NEW folder each call)
 deploy/          hemma.service (hardened systemd unit; waits for time-sync.target), install-pi.sh (any systemd
-                 Linux, despite the name: enables systemd-time-wait-sync with a 90 s limit, starts the service,
+                 Linux, despite the name: keeps the program it replaces as /opt/hemma/hemma.prev (the way
+                 back, docs/raspberry-pi.md), enables systemd-time-wait-sync with a 90 s limit, starts the service,
                  waits for /healthz, prints addresses + setup code + next steps, or the journal tail and exit 1),
                  local.hemma.plist (macOS launchd agent). The Windows guide runs Hemma as Local Service (S-1-5-19,
                  icacls on C:\Hemma and the media folders), never SYSTEM.
@@ -468,6 +491,10 @@ MODULE(things)   /* self-registers: no shared file to edit */
   in init = /api shows members only their own rows) + `TABLE(...)`,
   `store_register()` in `init`. Each becomes a SQLite table (new fields → new columns
   automatically). Reads are in-memory. Use `db.h` for big/queryable data. Keep ids, not row pointers.
+  A rename: `FIELD_WAS(T, member, type, "old")` + a `breaks_older` migration in core/store.c's MIGRATIONS;
+  changed meanings of data: a migration with a `run()` (see "store" above). A raw `db.h` table that's a cache
+  gets its own format number and is dropped when it changes (media/library.c CACHE_FORMAT, setting
+  media.cache_format): CREATE TABLE IF NOT EXISTS never changes a table that's there.
 - **Widgets**: `widget(c, b, WIDGET_HOME)` - a card for the home dashboard (walls are screens of blocks,
   not widgets, since 0.6.0). Must cope with `c->me == NULL` and with a display account. **Agenda**:
   `agenda(c, from, to, out)` + `agenda_add()` puts timed things into shared calendars (book: bookings,
@@ -670,7 +697,10 @@ blocks from plan/book/board/home, seeded once, /wall forwards), the old wall mod
 plan's events in the shared agenda, address keys for TV players. An outside review then opened issues
 #19-#80 (2026-10-13), worked through in groups, one branch each: 0.6.1 (branch fix/hardening) = #32 slow
 readers, #33 only a TV picks who's watching, #34 typed names out of the log, #78 keys expire + bound to the
-screen's address, #79 browser-log limits per person an hour. Next ideas: calmer home cards (hide empty ones), touch on the wall
+screen's address, #79 browser-log limits per person an hour (PR #81). 0.7.0 (branch fix/database-safety) =
+#37 a damaged database is rescued (not half-loaded in silence), #38 data format + migrations + a downgrade
+guard + FIELD_WAS + the media cache's format + install-pi.sh keeps hemma.prev, #39 part 1 the time zone on
+System and a warning when it changes. Next ideas: calmer home cards (hide empty ones), touch on the wall
 (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,

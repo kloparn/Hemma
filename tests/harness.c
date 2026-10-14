@@ -3,9 +3,11 @@
 
 static Buf page_buf;
 
-void th_boot(void) {
+void th_boot(void) { th_boot_in(test_tmpdir()); }
+
+void th_boot_in(const char *dir) {
     app_set_testing(true);
-    if (!app_boot(test_tmpdir())) test_fail(__FILE__, __LINE__, "app_boot failed");
+    if (!app_boot(dir)) test_fail(__FILE__, __LINE__, "app_boot failed");
 }
 
 void th_halt(void) { app_halt(); }

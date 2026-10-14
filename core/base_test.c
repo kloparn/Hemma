@@ -132,6 +132,14 @@ TEST(dates_normalise_and_roundtrip) {
     CHECK_INT(n.day, 1);
 }
 
+TEST(utc_offset_is_wall_time_minus_unix_time) {
+    /* (whatever zone this computer is in) 2026-01-15 12:00 and 2026-07-15 12:00 as UTC: */
+    int64_t jan = dt_make(2026, 1, 15, 12, 0), jul = dt_make(2026, 7, 15, 12, 0);
+    CHECK_INT(utc_offset(jan), (int)(1768478400 - jan));
+    CHECK_INT(utc_offset(jul), (int)(1784116800 - jul));
+    CHECK(utc_offset(jan) % 900 == 0 && utc_offset(jan) >= -14 * 3600 && utc_offset(jan) <= 14 * 3600);
+}
+
 TEST(week_start_is_monday_midnight) {
     int64_t sat = dt_make(2026, 10, 10, 18, 5);
     DateTime w = dt_local(week_start(sat));

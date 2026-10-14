@@ -195,6 +195,18 @@ sudo sh install-pi.sh ./hemma-pi64
 
 If you built on the Pi (option B in step 3): `cd hemma && git pull && make && sudo make install`.
 
+**Go back to the version before.** The installer keeps the program it replaced as
+`/opt/hemma/hemma.prev`:
+
+```sh
+sudo install -m 755 /opt/hemma/hemma.prev /opt/hemma/hemma && sudo systemctl restart hemma
+```
+
+Your data comes along. Only when a newer version changed it in a way older ones would
+misread does the older one refuse to start, saying so in the log (`journalctl -u hemma`):
+then put the newer one back. Before such a change, Hemma keeps a copy of the database as
+`hemma.db.before-format-<n>` in its data folder.
+
 **Update the system** now and then: `sudo apt update && sudo apt full-upgrade -y`, then
 `sudo reboot` if it asks for one.
 

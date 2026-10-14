@@ -91,6 +91,7 @@ typedef struct {
 } DateTime;
 
 DateTime dt_local(int64_t t);
+int utc_offset(int64_t t); /* seconds east of UTC at t, by this computer's time zone (7200 = UTC+2; 0 = unknown) */
 /* Local wall time -> Unix time. Normalises out-of-range fields (day 32,
  * minute 90, negative days ...) and resolves DST like mktime(). */
 int64_t dt_make(int year, int mon, int day, int hour, int min);

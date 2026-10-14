@@ -3,7 +3,37 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.6.1 (not released yet)
+## 0.7.0 (not released yet)
+
+Safer with your data.
+
+### New
+
+- **A damaged database is rescued** (#37). On a memory card that's usually after a power cut.
+  Hemma used to start with whatever it happened to read up to the damage - half the notes,
+  say - and say nothing. Now it keeps the damaged file aside untouched, copies every row it
+  can still read into a fresh one (skipping only the damaged parts, not everything after
+  them) and carries on. The System page and a notice on admins' pages say what happened,
+  which kinds of things lost rows and where the damaged file is, until an admin presses
+  **Got it**.
+- **The database has a format number** (#38). Changes to how data is kept run once, after a
+  copy of the database is put aside (`hemma.db.before-format-<n>`). Going back to an older
+  Hemma works as long as the newer one only added things; when it changed something the older
+  one would misread, the older one refuses to start and says why, instead of running on it.
+- **The installer keeps the version it replaces** as `/opt/hemma/hemma.prev`: the way back
+  is one command (docs/raspberry-pi.md).
+- **The time zone is on the System page** (#39): what the clock says and which zone it's in.
+  A Pi still on UTC - its own setting - gets a note on how to set yours before people add
+  things, and a change of zone says that bookings and events from before may look shifted.
+
+### Fixes
+
+- Saving that fails because the database is damaged says so, and that a restart rescues it,
+  instead of "is the disk full?".
+- The library cache is dropped and filled again when its layout changes, instead of breaking
+  quietly (#38).
+
+## 0.6.1 (2026-10-14)
 
 Hardening, from an outside review of 0.6.0.
 

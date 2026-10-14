@@ -44,5 +44,6 @@ void system_log_set_limit(int64_t bytes);  /* rotate the file past this size (de
 /* Pretend the LAN addresses are these ("" = none found); NULL = ask the OS again (not under tests). */
 void system_test_addresses(const char *a, const char *b);
 void system_test_free_space(int64_t bytes); /* the data folder's disk has this much free (-1 = ask the disk) */
+void system_test_zone(const char *sig);     /* the time zone, as "+01:00/+02:00" ("" = this computer's) */
 
 #endif
