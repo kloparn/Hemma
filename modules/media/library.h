@@ -50,9 +50,26 @@ typedef struct {
     int64_t newest; /* mtime of the newest episode */
 } MediaSeries;
 
+/* A video the scan left out (issue #28: they used to vanish without a word), or an upload's
+   unfinished ".part" not touched for MEDIA_PART_DAYS (issue #40: they stayed for good, unseen) -
+   both listed on Library settings, at most MEDIA_LEFT_MAX of each (the counts say how many). */
+enum { MEDIA_LEFT_EXTRA = 'e', MEDIA_LEFT_SAMPLE = 's' };
+#define MEDIA_LEFT_MAX 100
+#define MEDIA_PART_DAYS 7
+#define MEDIA_SAMPLE_LONG_S 600 /* a "sample..." this long is a real video (a scene's preview clip runs a minute or two) */
+typedef struct {
+    int root;
+    char rel[400];
+    int64_t size, mtime;
+    char why; /* MEDIA_LEFT_*; parts: 0 */
+} MediaLeft;
+
 typedef struct {
     char roots[MEDIA_MAX_ROOTS][300];
     int nroots;
+    MediaLeft *left, *parts; /* see MediaLeft */
+    int nleft, nleft_all, nparts, nparts_all;
+    int64_t parts_bytes; /* of every unfinished upload found, listed or not */
     MediaFile *files; /* sorted by id */
     int nfiles;
     int *movies, nmovies;     /* indices into files: A-Z */
@@ -140,7 +157,9 @@ typedef struct {
     int pos, dur;  /* seconds */
     bool done;
     int64_t updated;
-    int64_t saved; /* memory only: last write to SQLite */
+    uint64_t place; /* hash64 of the video's path below its library folder: how the history finds the
+                       video again when the folder moves (issue #36; 0 = not known yet) */
+    int64_t saved;  /* memory only: last write to SQLite */
 } MediaWatch;
 extern Table T_media_watch;
 MediaWatch *media_watch_get(int person, uint64_t id);

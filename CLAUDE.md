@@ -671,10 +671,28 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
 - Uploads (admins, /media/upload): written as `<name>.part`, renamed when complete, fsynced;
   resumable; refused up front when the disk lacks room (+1 GB reserve, media/room.c - conversions keep
   it too). On the Pi the service needs write access to the media folders (install-pi.sh takes them as
-  arguments).
+  arguments). An upload's `.part` nobody touched for MEDIA_PART_DAYS (7) is listed by the scan (Scan/
+  MediaIndex .parts, MEDIA_LEFT_MAX 100 shown, counts + bytes for all) on Library settings ("Unfinished
+  uploads", admins): media.parts_remove re-checks each (still there, still untouched, not upload_claims)
+  before deleting - never on its own (issue #40: they stayed for good, unseen).
 - Rescan: admins, plus members an admin ticks on Library settings (setting `media.rescanners` = member ids;
   only the admin-only action `media.rescanners` writes it; display accounts, admins and removed people
   never count). Owner's rule (2026-10-12).
+- A video's id hashes its library folder's path (media_make_id), so the same disk mounted elsewhere gives
+  every video a new id (issue #36). Progress rows keep `place` = hash64 of the path below the library
+  folder (set on every report; filled for older rows by the next scan); after each scan (swap_in ->
+  watch_follow) rows whose video is gone move (media_watch_move) to the ONE video at that place - never to
+  one of two (the same folders on two disks), and not while any library folder is missing (a disk merely
+  unplugged: its copy elsewhere mustn't take the history). Ids, addresses and series ids (from titles)
+  stay as they were.
+- Left out of the library (issue #28): trailers/extras by name or Extras folder (MEDIA_LEFT_EXTRA), and
+  names starting "sample" (MediaName.sample: the one ambiguous rule) that run under MEDIA_SAMPLE_LONG_S
+  (10 min) - the scan probes those; a longer one is a real video, named again with the rule off
+  (media_parse_name_long; cache_load applies the same rule from the cached duration). Listed on Library
+  settings ("Left out", admins; MediaIndex .left).
+- Library disk check (media/health.c, issue #29): room left counts, not a share of the disk - warn under
+  two of that folder's biggest videos, 2 GB at least and 20 GB at most; it says "(Hemma's data is on it
+  too)" when the data folder shares the disk (RootFacts.data_disk: same total, free within 64 MB).
 
 ## Status (2026-10-12)
 
@@ -700,7 +718,9 @@ readers, #33 only a TV picks who's watching, #34 typed names out of the log, #78
 screen's address, #79 browser-log limits per person an hour (PR #81). 0.7.0 (branch fix/database-safety) =
 #37 a damaged database is rescued (not half-loaded in silence), #38 data format + migrations + a downgrade
 guard + FIELD_WAS + the media cache's format + install-pi.sh keeps hemma.prev, #39 part 1 the time zone on
-System and a warning when it changes. Next ideas: calmer home cards (hide empty ones), touch on the wall
+System and a warning when it changes (PR #82). 0.7.1 (branch fix/library-keeps-progress) = #36 watch
+history follows videos to a new library folder, #40 unfinished uploads listed + removable, #28 left-out
+videos listed + long "sample..." films kept, #29 one rule for disk room. Next ideas: calmer home cards (hide empty ones), touch on the wall
 (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,

@@ -17,6 +17,36 @@ static int admin(void) {
     return id;
 }
 
+TEST(media_health_counts_room_left_not_a_share) {
+    /* issue #29: a disk 95% used with 20 GB free was "OK" on the System page and "nearly full" here:
+       the two checks had different rules. Room for new videos counts, and it says when that disk
+       is the one with Hemma's data too. */
+    th_boot();
+    int adam = admin();
+    media_test_free_space(20LL << 30);
+    const char *dir = test_tmpdir();
+    char form[700];
+    snprintf(form, sizeof form, "roots=%s", dir);
+    CHECK(th_act(adam, "media.roots", form).ok);
+    Ctx c;
+    app_ctx(&c, adam, "/system");
+    Health h = {0};
+    media_health(&c, &h);
+    CHECK(item(&h, "Library disk nearly full") == NULL);
+    health_free(&h);
+    media_test_free_space(1LL << 30);
+    media_health(&c, &h);
+    const HealthItem *it = item(&h, "Library disk nearly full");
+    CHECK(it && it->state == HEALTH_WARN);
+    if (it) {
+        CHECK_HAS(it->detail, "(Hemma's data is on it too) has 1.0 GB free: less than 2 GB.");
+    }
+    health_free(&h);
+    media_test_free_space(-1);
+    app_ctx_free(&c);
+    th_halt();
+}
+
 TEST(media_health_checks_the_library_folders) {
     th_boot();
     int adam = admin();
