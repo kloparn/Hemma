@@ -23,6 +23,7 @@ typedef struct {
     bool exists, readable;
     int writable; /* 1 yes, 0 no, -1 not known yet */
     int64_t free, total;
+    bool data_disk; /* the disk Hemma's data folder is on too */
 } RootFacts;
 
 static struct {
@@ -50,6 +51,8 @@ static void refresh(int64_t now, bool probe) {
     RootFacts was[MEDIA_MAX_ROOTS];
     int nwas = HS.n;
     memcpy(was, HS.r, sizeof was);
+    int64_t data_free = -1, data_total = -1;
+    if (!media_disk_space(app_config()->data_dir, &data_free, &data_total)) data_total = -1;
     for (int i = 0; i < n; i++) {
         RootFacts *r = &HS.r[i];
         memset(r, 0, sizeof *r);
@@ -60,6 +63,8 @@ static void refresh(int64_t now, bool probe) {
         if (it) dir_close(it);
         r->free = r->total = -1;
         if (r->exists && !media_disk_space(r->path, &r->free, &r->total)) r->free = r->total = -1;
+        /* (the same disk: the same size, the same free space give or take what was just written) */
+        r->data_disk = r->total > 0 && r->total == data_total && llabs(r->free - data_free) < (64LL << 20);
         r->writable = -1;
         for (int k = 0; k < nwas; k++)
             if (str_eq(was[k].path, r->path)) r->writable = was[k].writable;
@@ -78,6 +83,18 @@ void media_health_tick(int64_t now) {
 }
 
 void media_health_reset(void) { HS.at = HS.probed_at = 0; }
+
+/* The library's biggest video in that folder (0 = none yet). */
+static int64_t biggest_video(const char *root) {
+    const MediaIndex *ix = media_lib();
+    int k = -1;
+    for (int r = 0; r < ix->nroots && k < 0; r++)
+        if (str_eq(ix->roots[r], root)) k = r;
+    int64_t big = 0;
+    for (int i = 0; k >= 0 && i < ix->nfiles; i++)
+        if (ix->files[i].root == k && ix->files[i].type == MF_VIDEO) big = MAX(big, ix->files[i].size);
+    return big;
+}
 
 static bool browser_converter(void) { /* av.wasm + its worker baked into this binary (the build needs zig) */
     bool wasm = false, worker = false;
@@ -129,10 +146,20 @@ void media_health(Ctx *c, Health *h) {
                            NULL);
             }
             if (r->free >= 0) {
-                int used = r->total > r->free ? (int)CLAMP((r->total - r->free) * 100 / r->total, 0, 100) : 0;
-                if (r->free < (2LL << 30) || used >= 95) {
+                /* Room for new videos counts, not a share of the disk (issue #29: 95% used said "nearly
+                   full" with 20 GB free - and 400 GB on an 8 TB disk - while the System page's check of
+                   the same disk said OK): about two of the library's biggest, 2 GB at least, 20 at most. */
+                int64_t big = biggest_video(r->path), want = CLAMP(2 * big, 2LL << 30, 20LL << 30);
+                if (r->free < want) {
+                    char bg[24];
                     media_size_text(r->free, sz, sizeof sz);
-                    snprintf(d, sizeof d, "The disk with %s is nearly full: %s free.", r->path, sz);
+                    media_size_text(big, bg, sizeof bg);
+                    int k = snprintf(d, sizeof d, "The disk with %s%s has %s free", r->path,
+                                     r->data_disk ? " (Hemma's data is on it too)" : "", sz);
+                    if (k > 0 && (size_t)k < sizeof d && 2 * big > (2LL << 30))
+                        snprintf(d + k, sizeof d - (size_t)k, ": less than two of the library's biggest videos (%s).", bg);
+                    else if (k > 0 && (size_t)k < sizeof d)
+                        snprintf(d + k, sizeof d - (size_t)k, ": less than 2 GB.");
                     health_add(h, HEALTH_WARN, "Library disk nearly full", d,
                                "Delete or move some videos - or keep only the most compatible version of converted "
                                "ones (Library settings).",

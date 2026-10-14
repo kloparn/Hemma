@@ -3,7 +3,32 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.7.0 (not released yet)
+## 0.7.1 (not released yet)
+
+The library keeps what it knows.
+
+### Fixes
+
+- **Watch history follows the videos** (#36). A video's place in Hemma came from its library
+  folder's path, so the same disk mounted somewhere else - a new memory card, `/media/usb1`
+  instead of `/mnt/media` - took everyone's Continue watching and watched ticks away. Now
+  the history finds each video again by where it sits inside the library folder. It waits
+  while a library folder is missing (a disk just unplugged), and never guesses between two
+  copies of the same folders.
+- **Unfinished uploads show up** (#40). An upload that was never finished left a file as big
+  as a film behind, for good, and nothing in Hemma showed it. Library settings now lists
+  those nobody has touched for a week, with their size, and **Remove them**.
+- **Nothing is left out without a word** (#28). Trailers, extras and samples stay out of the
+  library, and Library settings now lists them and why. A video whose name starts with
+  "Sample" but runs 10 minutes or more - "Sample Film (2021)" - is a film, not a preview
+  clip, and shows up.
+- **One rule for disk room** (#29). The same disk could be "OK" on the System page and
+  "nearly full" under the library: one counted what's left, the other a share of the disk -
+  95% used said "nearly full" with 20 GB free, and with 400 GB on a big disk. The library's
+  check now counts room for about two of its biggest videos too, and says when it's the
+  disk with Hemma's data.
+
+## 0.7.0 (2026-10-14)
 
 Safer with your data.
 

@@ -22,6 +22,8 @@ typedef struct {
     int season, episode, episode_end; /* episode_end for S01E01E02 / S01E01-E02, else = episode */
     char ep_title[128];               /* text after SxxEyy when it looks like a title, cleaned */
     bool extra;                       /* sample, trailer or bonus material (Extras/, -trailer, sample) */
+    bool sample; /* an extra only because the name starts with "sample": a scene's preview clip - or a
+                    real video called that, when it runs long (issue #28: library.c asks the probe) */
     /* disc rips ("Show/Season 1/Disc - 2/B3_t03.mkv"): an episode known only by its folders */
     bool unnumbered; /* episode 0 until the library numbers it (disc, then title order) */
     int disc;        /* from a "Disc - 2" / "DVD 2" folder; 0 = none */
@@ -34,6 +36,8 @@ void media_parse_name(const char *rel, MediaName *out);
 /* Same, knowing the root folder's own name ("70's show" for a root at ".../70's show"): it names
    the show when the root itself is a show (or season) folder. NULL/"" = unknown. */
 void media_parse_name_in(const char *root_name, const char *rel, MediaName *out);
+/* The same with the "sample..." rule off: for a video so named that runs too long to be a preview. */
+void media_parse_name_long(const char *root_name, const char *rel, MediaName *out);
 /* Folder roles: a season folder ("Season 2", "season 1 70's show", "S01", "Specials" = 0) or a
    disc folder ("Disc - 1", "DVD 2", "D1") returns its number, anything else -1. */
 int media_season_folder(const char *name);

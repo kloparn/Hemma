@@ -9,6 +9,7 @@
 #include "media.h"
 #include "convert.h"
 #include "remove.h"
+#include "room.h"
 #include "upload.h"
 #include "health.h"
 
@@ -1082,6 +1083,79 @@ static void rescanners_form(Buf *b) { /* admins: who else may rescan */
     ui_form_end(b);
 }
 
+/* Videos the scan left out (issue #28: a film named "Sample Film (2021)" vanished without a word). */
+static void left_card(Ctx *c, Buf *b, const MediaIndex *ix) {
+    if (!is_admin(c) || !ix->nleft_all) return;
+    ui_card(b, "Left out", NULL, NULL);
+    H(b, "<p class=\"muted\">%d video%r left out of the library: by %r name or folder, %r look%r like trailers, "
+         "extras or samples (a short preview clip). One that belongs in? Rename it, and rescan.</p>",
+      ix->nleft_all, ix->nleft_all == 1 ? " is" : "s are", ix->nleft_all == 1 ? "its" : "their",
+      ix->nleft_all == 1 ? "it" : "they", ix->nleft_all == 1 ? "s" : "");
+    buf_puts(b, "<details class=\"media-left\"><summary>Which ones</summary><ul class=\"rows\">");
+    for (int i = 0; i < ix->nleft; i++) {
+        const MediaLeft *l = &ix->left[i];
+        H(b, "<li class=\"row\"><div class=\"row-main\"><code class=\"media-code\">%s</code><small class=\"muted\">%s"
+             "</small></div></li>",
+          l->rel, l->why == MEDIA_LEFT_SAMPLE ? "starts with \"sample\" and runs under 10 minutes: a preview clip"
+                                               : "a trailer, extra or sample, by its name or folder");
+    }
+    if (ix->nleft_all > ix->nleft) H(b, "<li class=\"row muted\">and %d more</li>", ix->nleft_all - ix->nleft);
+    buf_puts(b, "</ul></details>");
+    ui_card_end(b);
+}
+
+/* Uploads that never finished (issue #40): their ".part" files stayed for good, as big as a film,
+   and nothing in Hemma showed them. Listed once nobody has touched them for MEDIA_PART_DAYS. */
+static void parts_card(Ctx *c, Buf *b, const MediaIndex *ix) {
+    if (!is_admin(c) || !ix->nparts_all) return;
+    char sz[24];
+    media_size_text(ix->parts_bytes, sz, sizeof sz);
+    ui_card(b, "Unfinished uploads", NULL, NULL);
+    H(b, "<p class=\"muted\">%d upload%r never finished, and nobody has touched %r for over a week: %s on the disk.</p>",
+      ix->nparts_all, ix->nparts_all == 1 ? "" : "s", ix->nparts_all == 1 ? "it" : "them", sz);
+    buf_puts(b, "<details class=\"media-left\"><summary>Which ones</summary><ul class=\"rows\">");
+    for (int i = 0; i < ix->nparts; i++) {
+        const MediaLeft *l = &ix->parts[i];
+        char size[24], day[11];
+        media_size_text(l->size, size, sizeof size);
+        fmt_ymd(l->mtime, day);
+        H(b, "<li class=\"row\"><div class=\"row-main\"><code class=\"media-code\">%s</code><small class=\"muted\">%s, "
+             "last written %s</small></div></li>",
+          l->rel, size, day);
+    }
+    if (ix->nparts_all > ix->nparts) H(b, "<li class=\"row muted\">and %d more</li>", ix->nparts_all - ix->nparts);
+    buf_puts(b, "</ul></details>");
+    ui_form_confirm(b, "media.parts_remove", "inline", "Remove these unfinished uploads? They can't be resumed after.");
+    buf_puts(b, "<button class=\"btn danger\">Remove them</button>");
+    ui_form_end(b);
+    ui_card_end(b);
+}
+
+static void act_parts_remove(Ctx *c, Fields *f) {
+    (void)f;
+    if (!is_admin(c)) {
+        ctx_fail(c, "Only an admin can do that");
+        return;
+    }
+    const MediaIndex *ix = media_lib();
+    int removed = 0;
+    int64_t bytes = 0;
+    for (int i = 0; i < ix->nparts; i++) { /* each one again: still there, still untouched, no upload's */
+        const MediaLeft *l = &ix->parts[i];
+        char path[800];
+        int64_t size = 0, mtime = 0;
+        snprintf(path, sizeof path, "%s/%s", ix->roots[l->root], l->rel);
+        if (!path_stat(path, &size, &mtime, NULL) || c->now - mtime <= MEDIA_PART_DAYS * 86400LL || upload_claims(path))
+            continue;
+        if (file_remove(path)) removed++, bytes += size;
+    }
+    char sz[24];
+    media_size_text(bytes, sz, sizeof sz);
+    if (removed) log_info("media: %s removed %d unfinished upload%s (%s)", c->me->name, removed, removed == 1 ? "" : "s", sz);
+    media_scan_start(); /* (the list comes again from the disk) */
+    ctx_ok(c, "Removed %d unfinished upload%s: %s free again", removed, removed == 1 ? "" : "s", sz);
+}
+
 static void page_settings(Ctx *c, Buf *b) {
     const MediaIndex *ix = media_lib();
     ctx_title(c, "Library settings");
@@ -1138,6 +1212,8 @@ static void page_settings(Ctx *c, Buf *b) {
     if (can_rescan(c)) ui_act(b, "media.rescan", "btn", "Rescan now", NULL, NULL, NULL);
     if (is_admin(c)) rescanners_form(b);
     ui_card_end(b);
+    left_card(c, b, ix);
+    parts_card(c, b, ix);
 
     if (c->me) {
         ui_card(b, "Playback", NULL, NULL);
@@ -1499,7 +1575,7 @@ static const Action actions[] = {
     {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove},
     {"media.forget", act_forget, false, true},
     {"media.drop_originals", act_drop_originals}, {"media.drop_auto", act_drop_auto},
-    {"media.rescanners", act_rescanners},
+    {"media.rescanners", act_rescanners}, {"media.parts_remove", act_parts_remove},
     {0},
 };
 

@@ -736,7 +736,11 @@ static void strip_ext(char *s) {
     *dot = 0;
 }
 
-static bool extra_name(const char *base) {
+static _Thread_local bool t_long_sample; /* media_parse_name_long: the "sample..." rule is off */
+
+/* 0 = not an extra, 1 = by its ending ("-trailer", ".featurette", "sample"), 2 = only because it
+   starts with "sample" - a scene's preview clip, or a real film so called (issue #28). */
+static int extra_name(const char *base) {
     static const char *const SUF[] = {"trailer", "sample",  "featurette", "behindthescenes", "deleted",
                                       "deletedscene", "interview", "scene", "short", "extra", "teaser", NULL};
     char lo[256];
@@ -744,10 +748,10 @@ static bool extra_name(const char *base) {
     size_t n = strlen(lo);
     for (int i = 0; SUF[i]; i++) {
         size_t k = strlen(SUF[i]);
-        if (n == k && !strcmp(lo, SUF[i])) return true;
-        if (n > k && !strcmp(lo + n - k, SUF[i]) && strchr("-._ ", lo[n - k - 1])) return true;
+        if (n == k && !strcmp(lo, SUF[i])) return 1;
+        if (n > k && !strcmp(lo + n - k, SUF[i]) && strchr("-._ ", lo[n - k - 1])) return 1;
     }
-    return str_starts(lo, "sample") && strchr("-._ ", lo[6]) && lo[6];
+    return !t_long_sample && str_starts(lo, "sample") && strchr("-._ ", lo[6]) && lo[6] ? 2 : 0;
 }
 
 /* MakeMKV names its files "title_t00", "B1_t03", "<VOLUME_LABEL>_t07" or "title00": the title
@@ -858,6 +862,12 @@ int media_name_part(const char *rel) {
 
 void media_parse_name(const char *rel, MediaName *out) { media_parse_name_in(NULL, rel, out); }
 
+void media_parse_name_long(const char *root_name, const char *rel, MediaName *out) {
+    t_long_sample = true;
+    media_parse_name_in(root_name, rel, out);
+    t_long_sample = false;
+}
+
 void media_parse_name_in(const char *root_name, const char *rel, MediaName *out) {
     memset(out, 0, sizeof *out);
     out->track = -1;
@@ -891,13 +901,14 @@ void media_parse_name_in(const char *root_name, const char *rel, MediaName *out)
     strip_ext(base);
     int nd = np - 1; /* directories */
 
-    bool series_hint = false, movie_hint = false, home_hint = false, extra = extra_name(base);
+    int why_extra = extra_name(base);
+    bool series_hint = false, movie_hint = false, home_hint = false, extra = why_extra != 0;
     for (int i = 0; i < nd; i++) {
         int g = generic_dir(parts[i]);
         if (g == GEN_SERIES) series_hint = true;
         else if (g == GEN_MOVIES) movie_hint = true;
         else if (g == GEN_HOME) home_hint = true;
-        else if (g == GEN_EXTRAS) extra = true;
+        else if (g == GEN_EXTRAS) extra = true, why_extra = 1; /* (an Extras folder says so for sure) */
     }
     int track = makemkv_title(base);
 
@@ -1014,6 +1025,7 @@ void media_parse_name_in(const char *root_name, const char *rel, MediaName *out)
         if (!out->title[0]) str_copy(out->title, sizeof out->title, "Untitled");
     }
     out->extra = extra;
+    out->sample = extra && why_extra == 2;
     out->disc = disc;
     out->track = track;
     free(T);

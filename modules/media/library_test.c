@@ -586,3 +586,126 @@ TEST(media_progress_debounces_writes_and_finishes_at_92_percent) {
     CHECK_INT(media_watch_get(adam, 0x77)->pos, 0);
     th_halt();
 }
+
+/* ======================================================= issues #36, #28, #40 */
+
+static int admin_named(const char *name) {
+    int id = th_person(name);
+    Person p = *person_get(id);
+    p.role = ROLE_ADMIN;
+    tbl_put(&T_person, &p);
+    return id;
+}
+
+TEST(media_progress_follows_videos_to_a_new_library_folder) {
+    /* issue #36: the same files under another path (a new card, the disk mounted somewhere else)
+       took Continue watching from 1 to 0 - the rows stayed behind with the old ids */
+    th_boot();
+    int adam = th_person("Adam");
+    char a[512], b[512], c[512], d[512], roots[1200];
+    str_copy(a, sizeof a, test_tmpdir());
+    str_copy(b, sizeof b, test_tmpdir());
+    str_copy(c, sizeof c, test_tmpdir());
+    str_copy(d, sizeof d, test_tmpdir());
+    const char *rel = "Movies/Flower (2020)/Flower.mp4";
+    puts_file(a, rel, "m2");
+    puts_file(b, rel, "m2");
+    puts_file(c, rel, "m2");
+    puts_file(d, rel, "m2");
+    setting_set("media.roots", a);
+    media_scan_sync();
+    uint64_t in_a = by_rel(rel)->id;
+    media_watch_report(adam, in_a, 600, 1200, false, now_sec());
+    /* the disk unplugged, the same folders on another one: the history waits for its own disk */
+    snprintf(roots, sizeof roots, "%s\n%s/unplugged", b, a);
+    setting_set("media.roots", roots);
+    media_scan_sync();
+    uint64_t in_b = by_rel(rel)->id;
+    CHECK(in_b != in_a);
+    CHECK(media_watch_get(adam, in_a) != NULL);
+    CHECK(media_watch_get(adam, in_b) == NULL);
+    /* moved for good (the old folder left the list): it follows */
+    setting_set("media.roots", b);
+    media_scan_sync();
+    const MediaWatch *w = media_watch_get(adam, in_b);
+    CHECK(w && w->pos == 600 && w->dur == 1200);
+    CHECK(media_watch_get(adam, in_a) == NULL);
+    /* two places it could go (the same folders on two disks): it can't tell, so it stays put */
+    snprintf(roots, sizeof roots, "%s\n%s", c, d);
+    setting_set("media.roots", roots);
+    media_scan_sync();
+    CHECK(media_watch_get(adam, in_b) != NULL);
+    th_halt();
+}
+
+TEST(media_library_lists_what_it_leaves_out) {
+    /* issue #28: "Sample Film (2021)" never appeared, and nothing anywhere said so */
+    th_boot();
+    int adam = admin_named("Adam"), eva = th_person("Eva");
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    put_mkv(root, "Movies/Sample Film (2021)/Sample Film (2021).mkv", 95); /* a film called that */
+    put_mkv(root, "Movies/Harbour (2020)/Harbour (2020).mkv", 90);
+    put_mkv(root, "Movies/Harbour (2020)/sample-harbour.mkv", 1); /* a scene's preview clip */
+    put_mkv(root, "Movies/Harbour (2020)/Harbour-trailer.mkv", 2);
+    setting_set("media.roots", root);
+    media_scan_sync();
+    const MediaFile *film = by_rel("Movies/Sample Film (2021)/Sample Film (2021).mkv");
+    CHECK(film != NULL);
+    if (film) {
+        CHECK_INT(film->name.kind, MEDIA_MOVIE);
+        CHECK_STR(film->name.title, "Sample Film");
+        CHECK_INT(film->name.year, 2021);
+    }
+    CHECK_INT(media_lib()->nmovies, 2);
+    CHECK_INT(media_lib()->nleft_all, 2);
+    for (int i = 0; i < media_lib()->nleft; i++) {
+        const MediaLeft *l = &media_lib()->left[i];
+        if (str_ends(l->rel, "sample-harbour.mkv")) CHECK_INT(l->why, MEDIA_LEFT_SAMPLE);
+        else CHECK(str_ends(l->rel, "Harbour-trailer.mkv") && l->why == MEDIA_LEFT_EXTRA);
+    }
+    const char *h = th_page(adam, "/media/settings");
+    CHECK_HAS(h, "Left out");
+    CHECK_HAS(h, "sample-harbour.mkv");
+    CHECK_HAS(h, "runs under 10 minutes");
+    CHECK(!strstr(th_page(eva, "/media/settings"), "Left out")); /* (admins look after the library) */
+    /* the next start, from the cache: the same */
+    media_lib_start();
+    CHECK(by_rel("Movies/Sample Film (2021)/Sample Film (2021).mkv") != NULL);
+    CHECK(by_rel("Movies/Harbour (2020)/sample-harbour.mkv") == NULL);
+    th_halt();
+}
+
+TEST(media_library_lists_unfinished_uploads) {
+    /* issue #40: an abandoned upload's .part stayed for good - as big as a film, and unseen */
+    th_boot();
+    int adam = admin_named("Adam"), eva = th_person("Eva");
+    char root[512], part[700], film[700];
+    str_copy(root, sizeof root, test_tmpdir());
+    put_mkv(root, "Movies/A (2020)/A (2020).mkv", 90);
+    puts_file(root, "Movies/B (2021)/B (2021).mkv.part", "half a film");
+    snprintf(part, sizeof part, "%s/Movies/B (2021)/B (2021).mkv.part", root);
+    snprintf(film, sizeof film, "%s/Movies/A (2020)/A (2020).mkv", root);
+    setting_set("media.roots", root);
+    media_scan_sync();
+    CHECK_INT(media_lib()->nparts_all, 0); /* written lately: it may still be resumed */
+    CHECK(!strstr(th_page(adam, "/media/settings"), "Unfinished uploads"));
+    g_fake_now = now_sec() + 8 * 86400; /* a week later, untouched */
+    media_scan_sync();
+    CHECK_INT(media_lib()->nparts_all, 1);
+    CHECK_STR(media_lib()->parts[0].rel, "Movies/B (2021)/B (2021).mkv.part");
+    CHECK(media_lib()->parts_bytes == 11);
+    const char *h = th_page(adam, "/media/settings");
+    CHECK_HAS(h, "Unfinished uploads");
+    CHECK_HAS(h, "B (2021).mkv.part");
+    CHECK_HAS(h, "media.parts_remove");
+    CHECK(!th_act(eva, "media.parts_remove", "").ok);
+    CHECK(path_stat(part, NULL, NULL, NULL));
+    CHECK(th_act(adam, "media.parts_remove", "").ok);
+    CHECK(!path_stat(part, NULL, NULL, NULL));
+    CHECK(path_stat(film, NULL, NULL, NULL)); /* only the unfinished upload */
+    media_scan_sync();
+    CHECK_INT(media_lib()->nparts_all, 0);
+    g_fake_now = 0;
+    th_halt();
+}
