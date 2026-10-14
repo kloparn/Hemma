@@ -244,11 +244,14 @@ TEST(app_http_address_keys_open_one_endpoint_for_one_session) {
     for (int i = 0; i < tbl_count(&T_session); i++)
         if (str_eq(((Session *)tbl_at(&T_session, i))->token, token)) s = tbl_at(&T_session, i);
     CHECK(s != NULL);
-    Ctx kc = {.sess = s};
-    char key[CTX_KEY_LEN], page_key[CTX_KEY_LEN];
+    g_fake_now = now_sec(); /* (one clock for the key and the server: no hour turning in between) */
+    Ctx kc = {.sess = s, .ip = 0x7F000001}; /* made for a screen at this address */
+    char key[CTX_KEY_LEN], page_key[CTX_KEY_LEN], elsewhere[CTX_KEY_LEN];
     ctx_url_key(&kc, "/media/file/0123456789abcdef", key);
     ctx_url_key(&kc, "/people", page_key);
     CHECK(key[0] && !str_eq(key, page_key));
+    Ctx oc = {.sess = s, .ip = 0x0A000005};
+    ctx_url_key(&oc, "/media/file/0123456789abcdef", elsewhere);
 
     /* no cookie, the key: the endpoint answers as Adam (an id not in the library: its own 404) */
     snprintf(req, sizeof req, "GET /media/file/0123456789abcdef?k=%s HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n",
@@ -284,6 +287,21 @@ TEST(app_http_address_keys_open_one_endpoint_for_one_session) {
     request(port, req, &r);
     CHECK(!strstr(body_of(&r), "not in the library"));
 
+    /* issue #78: only from the address of the screen it was made for, and only for two days */
+    snprintf(req, sizeof req, "GET /media/file/0123456789abcdef?k=%s HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n",
+             elsewhere);
+    request(port, req, &r); /* (it comes from 127.0.0.1) */
+    CHECK_HAS(body_of(&r), "action=\"/login\"");
+    snprintf(req, sizeof req, "GET /media/file/0123456789abcdef?k=%s HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n",
+             key);
+    g_fake_now += 47 * 3600; /* paused overnight, and the next evening: still fine */
+    request(port, req, &r);
+    CHECK_HAS(body_of(&r), "not in the library");
+    g_fake_now += 3 * 3600; /* past its 48 hours (to the hour) */
+    request(port, req, &r);
+    CHECK_HAS(body_of(&r), "action=\"/login\"");
+    g_fake_now -= 50 * 3600;
+
     /* signed out: the key dies with the session */
     snprintf(req, sizeof req,
              "POST /logout HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -293,6 +311,7 @@ TEST(app_http_address_keys_open_one_endpoint_for_one_session) {
              key);
     request(port, req, &r);
     CHECK_HAS(body_of(&r), "action=\"/login\"");
+    g_fake_now = 0;
 
     server_stop();
     for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
@@ -650,16 +669,19 @@ TEST(app_live_messages_and_signed_out_screens_are_bounded) {
     th_halt();
 }
 
-/* The log lines a test sees (the server thread logs too: a lock) */
+/* The log lines a test sees (the server thread logs too: a lock) - those holding g_seen_want */
 static Lock g_seen_lock = LOCK_INIT;
+static const char *g_seen_want = "browser of ";
 static int g_browser_lines;
 static char g_browser_last[600];
+static Buf g_seen_all; /* every one of them, a line each */
 static void seen_sink(LogLevel level, int64_t ts, const char *line) {
     (void)level, (void)ts;
-    if (!strstr(line, "browser of ")) return;
+    if (!strstr(line, g_seen_want)) return;
     lock_take(&g_seen_lock);
     g_browser_lines++;
     str_copy(g_browser_last, sizeof g_browser_last, line);
+    buf_printf(&g_seen_all, "%s\n", line);
     lock_give(&g_seen_lock);
 }
 
@@ -688,35 +710,117 @@ TEST(app_a_browser_reports_its_trouble_to_the_log) {
     g_log_level = LOG_WARN; /* (tests run quiet: listen, without printing) */
     g_log_stderr = false;
     g_browser_lines = 0;
+    buf_reset(&g_seen_all);
     Buf a = {0};
     sock_t st = ws_open(port, tv);
     ws_say(st, "{\"t\":\"hello\",\"url\":\"/tv/1\"}");
     CHECK(ws_wait(st, &a, "[\"morph\",", 3000));
-    ws_say(st, "{\"t\":\"log\",\"url\":\"/tv/1\",\"m\":\"video tv-video hasn't started after 25 s\\nFAKE line\"}");
+    const char *stuck = "{\"t\":\"log\",\"url\":\"/tv/1\",\"m\":\"video tv-video hasn't started after 25 s\\nFAKE line\","
+                        "\"ua\":\"FakeTV/6.0\"}";
+    ws_say(st, stuck);
     for (int i = 0; i < 200 && !browser_lines(NULL, 0); i++) plat_sleep_ms(10);
     CHECK_INT(browser_lines(last, sizeof last), 1);
     CHECK_HAS(last, "browser of tv (127.0.0.1) on /tv/1: video tv-video hasn't started after 25 s");
-    CHECK(!strchr(last, '\n')); /* (a browser can't forge log lines) */
-    for (int i = 0; i < 30; i++) ws_say(st, "{\"t\":\"log\",\"url\":\"/\",\"m\":\"again\"}");
+    CHECK_HAS(last, " - FakeTV/6.0"); /* the browser's user agent: with its first line only */
+    CHECK(!strchr(last, '\n'));      /* (a browser can't forge log lines) */
+    /* issue #79: the same line again is only counted */
+    for (int i = 0; i < 5; i++) ws_say(st, stuck);
+    ws_say(st, "{\"t\":\"log\",\"url\":\"/\",\"m\":\"script error: x\",\"ua\":\"FakeTV/6.0\"}");
+    for (int i = 0; i < 200 && browser_lines(NULL, 0) < 2; i++) plat_sleep_ms(10);
+    CHECK_INT(browser_lines(last, sizeof last), 2);
+    CHECK_HAS(last, "script error: x");
+    CHECK(!strstr(last, "FakeTV"));
+    /* ...and a reload or a reconnect doesn't start the count again: 20 lines an hour per person */
+    sock_close(st);
+    st = ws_open(port, tv);
+    ws_say(st, "{\"t\":\"hello\",\"url\":\"/\"}");
+    char msg[120];
+    for (int i = 0; i < 30; i++) {
+        snprintf(msg, sizeof msg, "{\"t\":\"log\",\"url\":\"/\",\"m\":\"line %d\"}", i);
+        ws_say(st, msg);
+    }
     ws_wait(st, &a, NULL, 400);
-    CHECK_INT(browser_lines(last, sizeof last), 20); /* 20 per connection, then quiet */
-    CHECK_HAS(last, "(and no more from it)");
+    CHECK_INT(browser_lines(last, sizeof last), 20);
+    CHECK_HAS(last, "(no more from tv's browsers until ");
+    sock_t again = ws_open(port, tv);
+    ws_say(again, "{\"t\":\"hello\",\"url\":\"/\"}");
+    ws_say(again, "{\"t\":\"log\",\"url\":\"/\",\"m\":\"another\"}");
+    ws_wait(again, &a, NULL, 300);
+    CHECK_INT(browser_lines(NULL, 0), 20);
     /* signed out: nothing */
     sock_t sx = ws_open(port, "");
     ws_say(sx, "{\"t\":\"hello\",\"url\":\"/\"}");
     ws_say(sx, "{\"t\":\"log\",\"url\":\"/\",\"m\":\"stranger\"}");
     ws_wait(sx, &a, NULL, 300);
     CHECK_INT(browser_lines(NULL, 0), 20);
+    /* the hour over: what was left out is said, and lines come again */
+    g_fake_now = now_sec() + 3601;
+    ws_say(again, "{\"t\":\"log\",\"url\":\"/\",\"m\":\"the next hour\"}");
+    for (int i = 0; i < 200 && browser_lines(NULL, 0) < 22; i++) plat_sleep_ms(10);
+    CHECK_INT(browser_lines(last, sizeof last), 22);
+    CHECK_HAS(last, "the next hour");
+    lock_take(&g_seen_lock);
+    CHECK_HAS(buf_cstr(&g_seen_all), "browser of tv: 18 more lines since "); /* 5 repeats, 12 + 1 over */
+    lock_give(&g_seen_lock);
+    g_fake_now = 0;
     log_set_sink(was);
     g_log_level = level;
     g_log_stderr = to_stderr;
     sock_close(st);
+    sock_close(again);
     sock_close(sx);
     server_stop();
     for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
     CHECK(g_done);
     server_shutdown();
     buf_free(&a);
+    th_halt();
+}
+
+TEST(app_failed_sign_ins_never_log_what_was_typed) {
+    /* issue #34: a password typed into the name box (a phone filled the wrong one) went into
+       the log every admin reads. A name that is an account's shows as its username; anything
+       else only as its length. */
+    th_boot();
+    auth_configure("e2e-salt", 1000);
+    account("Adam", "adam", "correct horse", ROLE_ADMIN);
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    LogSink was = log_set_sink(seen_sink);
+    LogLevel level = g_log_level;
+    bool to_stderr = g_log_stderr;
+    g_log_level = LOG_INFO;
+    g_log_stderr = false;
+    g_seen_want = "failed ";
+    g_browser_lines = 0;
+    char cookie[64], last[600];
+    sign_in(port, "username=correct+horse+battery&password=x", cookie, sizeof cookie);
+    CHECK_INT(browser_lines(last, sizeof last), 1);
+    CHECK_HAS(last, "failed sign-in for an unknown name (21 characters) from 127.0.0.1");
+    CHECK(!strstr(last, "horse"));
+    sign_in(port, "username=Adam&password=wrong", cookie, sizeof cookie); /* by name: the username */
+    CHECK_INT(browser_lines(last, sizeof last), 2);
+    CHECK_HAS(last, "failed sign-in for \"adam\" from 127.0.0.1");
+    Buf r = {0};
+    const char *forgot = "username=s3cret%21&code=AAAA-BBBB-CCCC&password=a+new+password&again=a+new+password";
+    char req[512];
+    snprintf(req, sizeof req, "POST /forgot HTTP/1.1\r\nHost: t\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",
+             strlen(forgot), forgot);
+    request(port, req, &r);
+    CHECK_INT(browser_lines(last, sizeof last), 3);
+    CHECK_HAS(last, "failed password recovery for an unknown name (7 characters) from 127.0.0.1");
+    CHECK(!strstr(last, "s3cret"));
+    log_set_sink(was);
+    g_log_level = level;
+    g_log_stderr = to_stderr;
+    g_seen_want = "browser of ";
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
     th_halt();
 }
 

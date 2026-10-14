@@ -336,37 +336,45 @@ void session_end(const char *sid) {
     if (s) tbl_del(&T_session, s->id);
 }
 
-/* Address keys (ctx_url_key): "<session id>-<HMAC(server secret, session token + path), 128 bits>".
-   The token (the cookie's hash) never leaves the server, so a key can't be made without the secret,
-   doesn't fit any other path, and dies with its session (signing out, expiry). Found 2026-10-13: a
+/* Address keys (ctx_url_key): "<session id>-<expires>-<HMAC(server secret, session token + path
+   + expires + the screen's network address), 128 bits>". The token (the cookie's hash) never leaves
+   the server, so a key can't be made without the secret; it fits only that path, only from the
+   address of the screen it was made for (a TV's browser and its video player share one), and
+   only until it expires or its session ends (signing out, a long break). Found 2026-10-13: a
    Samsung TV's video player asked for the file without the page's cookie and got the sign-in page,
-   which it reported as a decode error - every video, every Hemma version. */
-static bool url_key(const Session *s, const char *path, char out[CTX_KEY_LEN]) {
+   which it reported as a decode error - every video, every Hemma version. Issue #78: 0.6.0's keys
+   had no expiry or address, so a copied link played from anywhere while the session lasted. */
+#define KEY_HOURS 48 /* a key lasts this long, to the next whole hour: a film left paused overnight still plays */
+
+static bool url_key(const Session *s, const char *path, uint32_t ip, int64_t expires, char out[CTX_KEY_LEN]) {
     out[0] = '\0';
     if (!s || s->id <= 0 || !s->token[0]) return false;
     Buf msg = {0};
-    buf_printf(&msg, "hemma address key\n%s\n%s", s->token, path);
+    buf_printf(&msg, "hemma address key\n%s\n%s\n%lld\n%u", s->token, path, (long long)expires, (unsigned)ip);
     uint8_t mac[32];
     bool ok = auth_mac(msg.p, msg.len, mac);
     buf_free(&msg);
     if (!ok) return false;
     char hex[33];
     hex_encode(mac, 16, hex);
-    snprintf(out, CTX_KEY_LEN, "%d-%s", s->id, hex);
+    snprintf(out, CTX_KEY_LEN, "%d-%lld-%s", s->id, (long long)expires, hex);
     return true;
 }
 
-/* The session a request's ?k= stands for: only a live one, and only with the key for its path. */
-static Session *session_by_url_key(const HttpReq *r) {
+/* The session a request's ?k= stands for: only a live one, only with the key for its path and the
+   address it comes from, and only before the key expires. */
+static Session *session_by_url_key(const HttpReq *r, uint32_t ip) {
     if (!r->query[0]) return NULL;
     Fields q = {0};
     fields_parse(&q, r->query, strlen(r->query));
     const char *k = fields_str(&q, "k");
-    char *end = NULL;
+    char *end = NULL, *end2 = NULL;
     long id = strtol(k, &end, 10);
-    Session *s = id > 0 && id < INT_MAX && end && *end == '-' ? tbl_get(&T_session, (int)id) : NULL;
+    long long expires = end && *end == '-' ? strtoll(end + 1, &end2, 10) : 0;
+    int64_t now = now_sec();
+    Session *s = id > 0 && id < INT_MAX && expires > now && end2 && *end2 == '-' ? tbl_get(&T_session, (int)id) : NULL;
     char want[CTX_KEY_LEN];
-    bool ok = s && !session_over(s, now_sec()) && url_key(s, r->path, want) && strlen(k) == strlen(want) &&
+    bool ok = s && !session_over(s, now) && url_key(s, r->path, ip, expires, want) && strlen(k) == strlen(want) &&
               ct_equal(k, want, strlen(want));
     fields_free(&q);
     return ok ? s : NULL;
@@ -403,7 +411,6 @@ struct Client {
     bool ready, dirty, push;
     bool late;       /* navigated past its budget: rendered on the next tick */
     int64_t nav_tat; /* monotonic ms: when its navigation budget is whole again (plus the burst) */
-    int logs;        /* lines it has put in the log (the browser's own trouble: see "log" below) */
     struct {
         char k[32];
         char v[256];
@@ -507,7 +514,10 @@ static void client_ctx(Client *cl, Ctx *c) {
 
 const char *ctx_q(const Ctx *c, const char *key) { return fields_str(&c->q, key); }
 long long ctx_qint(const Ctx *c, const char *key, long long dflt) { return fields_int(&c->q, key, dflt); }
-void ctx_url_key(const Ctx *c, const char *path, char out[CTX_KEY_LEN]) { url_key(c->sess, path, out); }
+void ctx_url_key(const Ctx *c, const char *path, char out[CTX_KEY_LEN]) {
+    /* (to the hour: a page's html - and its hash - changes once an hour, not with every render) */
+    url_key(c->sess, path, c->ip, (now_sec() / 3600 + KEY_HOURS + 1) * 3600, out);
+}
 
 void ctx_title(Ctx *c, const char *fmt, ...) {
     va_list ap;
@@ -1060,6 +1070,70 @@ static void client_wants_render(Client *cl) {
     cl->dirty = true;
 }
 
+/* How much of a browser's own trouble goes in the log (issue #79: the cap was per connection,
+   so a reload or a reconnect started it again - a TV that can't play a channel, or any signed-in
+   account in a loop, could push the lines an admin needs out of the log). Per person, an hour
+   at a time: BROWSER_LOGS lines; a line the same as that person's last one is only counted;
+   what was left out is said with the next line after the hour. */
+#define BROWSER_LOGS 20
+#define BROWSER_HOUR 3600
+typedef struct {
+    int person;
+    int64_t since; /* the hour started then */
+    int lines, left_out;
+    uint64_t last; /* hash of the last line logged */
+} BrowserLog;
+static BrowserLog g_blog[32];
+
+static bool browser_log_ok(int person, const char *who, const char *m, char *note, size_t cap) {
+    int64_t now = now_sec();
+    BrowserLog *b = NULL, *oldest = &g_blog[0];
+    for (int i = 0; i < countof(g_blog) && !b; i++) {
+        if (g_blog[i].person == person) b = &g_blog[i];
+        else if (g_blog[i].since < oldest->since) oldest = &g_blog[i];
+    }
+    if (!b) {
+        b = oldest; /* (a person whose hour is long over, or nobody yet) */
+        *b = (BrowserLog){.person = person, .since = now};
+    }
+    if (now - b->since >= BROWSER_HOUR) {
+        if (b->left_out) {
+            char hm[6];
+            fmt_hm(b->since, hm);
+            log_warn("browser of %s: %d more line%s since %s left out (repeats, or over %d an hour)", who, b->left_out,
+                     b->left_out == 1 ? "" : "s", hm, BROWSER_LOGS);
+        }
+        *b = (BrowserLog){.person = person, .since = now};
+    }
+    uint64_t h = hash64_str(m);
+    if (h == b->last || b->lines >= BROWSER_LOGS) {
+        b->left_out++;
+        return false;
+    }
+    b->last = h;
+    if (++b->lines == BROWSER_LOGS) {
+        char hm[6];
+        fmt_hm(b->since + BROWSER_HOUR, hm);
+        snprintf(note, cap, " (no more from %s's browsers until %s)", who, hm);
+    }
+    return true;
+}
+
+/* A browser's user agent goes with its first line only (per session; the last 64 remembered). */
+static int g_ua_said[64], g_ua_next;
+static bool ua_first(int session) {
+    for (int i = 0; i < countof(g_ua_said); i++)
+        if (g_ua_said[i] == session) return false;
+    g_ua_said[g_ua_next++ % countof(g_ua_said)] = session;
+    return true;
+}
+
+static void browser_log_reset(void) {
+    memset(g_blog, 0, sizeof g_blog);
+    memset(g_ua_said, 0, sizeof g_ua_said);
+    g_ua_next = 0;
+}
+
 static void on_ws_message(Conn *conn, const char *msg, size_t n) {
     Client *cl = conn->user;
     if (!cl) return;
@@ -1122,16 +1196,19 @@ static void on_ws_message(Conn *conn, const char *msg, size_t n) {
         if (moved && !cl->late) presence_moved();
     } else if (str_eq(t, "log")) {
         /* The browser's own trouble (wire.js: a script error, a video that won't play): a TV's
-           browser has no console anyone can read, so it goes in the log - the System page. Signed-in
-           screens only, BROWSER_LOGS lines per connection. */
-        enum { BROWSER_LOGS = 20 };
-        char m[420];
+           browser has no console anyone can read, so it goes in the log - the System page.
+           Signed-in screens only, within browser_log_ok()'s limits. */
+        char m[420], ua[200] = "";
         const Session *s = session_by_token(cl->token);
         const Person *p = s ? person_get(s->person) : NULL;
-        if (!p || cl->logs >= BROWSER_LOGS || !json_string(&j, json_get(&j, 0, "m"), m, sizeof m)) return;
-        cl->logs++;
-        log_warn("browser of %s (%s) on %s: %s%s", p->username[0] ? p->username : p->name, conn->peer, url, utf8_scrub(m),
-                 cl->logs == BROWSER_LOGS ? " (and no more from it)" : "");
+        if (!p || !json_string(&j, json_get(&j, 0, "m"), m, sizeof m)) return;
+        json_string(&j, json_get(&j, 0, "ua"), ua, sizeof ua);
+        const char *who = p->username[0] ? p->username : p->name;
+        char note[80] = "";
+        if (!browser_log_ok(p->id, who, m, note, sizeof note)) return;
+        bool first = ua[0] && ua_first(s->id);
+        log_warn("browser of %s (%s) on %s: %s%s%s%s", who, conn->peer, url, utf8_scrub(m), first ? " - " : "",
+                 first ? utf8_scrub(ua) : "", note);
     } else if (str_eq(t, "act") || str_eq(t, "live")) {
         char a[64];
         json_string(&j, json_get(&j, 0, "a"), a, sizeof a);
@@ -1471,7 +1548,7 @@ static void on_http(Conn *conn, HttpReq *r) {
        endpoint answers as that session - a TV's video player that fetches without cookies. Nothing
        else does: an address no endpoint takes goes on as a signed-out request. */
     if (!live && (str_eq(r->method, "GET") || str_eq(r->method, "HEAD"))) {
-        Session *keyed = session_by_url_key(r);
+        Session *keyed = session_by_url_key(r, conn->ip);
         if (keyed) {
             Ctx c;
             ctx_init(&c, keyed, NULL, conn->ip, r->target);
@@ -1675,6 +1752,7 @@ bool app_boot(const char *data_dir) {
     memset(g_test_viewer, 0, sizeof g_test_viewer); /* a fresh boot: no stand-in session picked anyone */
     g_nhome = 0;
     g_tracking = false;
+    browser_log_reset();
     auth_reset_throttle();
     T_session.api_hidden = true;
     T_setting.api_hidden = true;

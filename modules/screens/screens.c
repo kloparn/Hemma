@@ -265,8 +265,34 @@ static bool pick_arg(Ctx *c, const Block *bl, const char *want, char out[64]) {
     return ok;
 }
 
+bool screens_drives_tv(int account) {
+    const char *start = pref(account, PREF_START, "");
+    const Screen *s = str_starts(start, "/screens/") ? screen_get((int)str_int_or(start + 9, 0)) : NULL;
+    return s && s->kind == SCREEN_TV;
+}
+
+/* A display account that no longer drives a TV (unticked, its screen deleted or made a wall
+   tablet's) keeps nobody's watching: its sessions forget the pick. */
+static void forget_viewer(int account) {
+    if (screens_drives_tv(account)) return;
+    for (int i = 0; i < tbl_count(&T_session); i++) {
+        Session *s = tbl_at(&T_session, i);
+        if (s->person != account || !s->viewer) continue;
+        Session rec = *s;
+        rec.viewer = 0;
+        tbl_put(&T_session, &rec);
+    }
+}
+
+static void forget_viewers(void) {
+    for (int i = 0; i < account_count(); i++)
+        if (account_at(i)->role == ROLE_DISPLAY) forget_viewer(account_at(i)->id);
+}
+
 /* "Who's watching?" on a TV: who=<person>, or who=0 to ask again (Switch). People on their own
-   devices always watch as themselves: nothing to pick. */
+   devices always watch as themselves: nothing to pick. Only a display account that drives a TV
+   picks (issue #33: any display account - the hallway tablet too - could pick anyone, then read,
+   rewrite or clear their Continue watching, for as long as its year-long sign-in lasted). */
 static void act_viewer(Ctx *c, Fields *f) {
     int who = (int)fields_int(f, "who", 0);
     if (who && !person_real(who)) {
@@ -274,6 +300,10 @@ static void act_viewer(Ctx *c, Fields *f) {
         return;
     }
     if (c->me->role != ROLE_DISPLAY || !c->sess) return;
+    if (who && !screens_drives_tv(c->me->id)) {
+        ctx_fail(c, "Only a TV picks who's watching: an admin ticks it under Screens, Edit, Shows on");
+        return;
+    }
     ctx_set_viewer(c, who);
     if (who) seat_set(c->me->id, c->sess->token, c->now);
     else seat_drop(c->me->id, c->sess->token);
@@ -320,6 +350,7 @@ static void act_delete(Ctx *c, Fields *f) {
     for (int i = 0; i < account_count(); i++) /* displays that opened it: their usual home page again */
         if (str_eq(pref(account_at(i)->id, PREF_START, ""), url)) pref_set(account_at(i)->id, PREF_START, "");
     tbl_del(&T_screen, id);
+    forget_viewers();
     ctx_ok(c, "%s is gone", name);
     ctx_redirect(c, "/screens");
 }
@@ -409,6 +440,7 @@ static void act_shows(Ctx *c, Fields *f) {
         if (on) pref_set(id, PREF_START, url);
         else if (str_eq(pref(id, PREF_START, ""), url)) pref_set(id, PREF_START, "");
     }
+    forget_viewers();
     ctx_ok(c, "Saved");
 }
 
@@ -434,6 +466,7 @@ static void init(void) {
 
 static void start(void) {
     g_nseats = 0;
+    forget_viewers(); /* (picks made before only TVs could pick) */
     seats_watch(now_sec());
     /* once each: a household that removed them keeps none */
     if (!setting_int("screens.seeded", 0)) {

@@ -288,8 +288,10 @@ or removed. (To force a change, use `HEMMA_ADMIN_RESET` as described above.)
   stops working within a month.
 - **Video addresses carry a key** (`?k=...` at the end). Some TVs' video players fetch the
   video without the browser's sign-in, so the address proves it instead. A key works for
-  that one video (or subtitle), only for the device it was shown on, and stops working
-  when that device signs out or its sign-in runs out. It never opens a page.
+  that one video (or subtitle), only from the network address of the device it was shown
+  on, for about two days, and stops working sooner when that device signs out or its
+  sign-in runs out. It never opens a page. Someone else on that same address (a device
+  that takes it over) could use a copied key until then.
 - **"Welcome back, Eva" when you aren't Eva?** The sign-in page guesses who you are from
   the device's address on the network. Tap **Not Eva? Sign in as someone else**.
 - **Nobody can sign in, and the log says "HEMMA_AUTH_SALT isn't the secret this
