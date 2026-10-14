@@ -804,9 +804,15 @@ static bool row_onnow(Ctx *c, Buf *b, int kind, const char *arg) {
         if (s.gap && !channel_now(ch, s.next, &nx, &f)) continue;
         char path[16];
         snprintf(path, sizeof path, "/tv/%d", ch->number);
-        buf_puts(&row, "<a class=\"tile wide\" href=\"");
-        media_tv_href(&row, path, kind, back);
-        H(&row, "\"><span class=\"tile-art tv-tile\" style=\"--h:%d\">", ch->hue);
+        bool wall = kind == SCREEN_WALL; /* a wall only shows (issue #80): no Live TV starting on the tablet */
+        if (wall) {
+            buf_puts(&row, "<div class=\"tile wide\">");
+        } else {
+            buf_puts(&row, "<a class=\"tile wide\" href=\"");
+            media_tv_href(&row, path, kind, back);
+            buf_puts(&row, "\">");
+        }
+        H(&row, "<span class=\"tile-art tv-tile\" style=\"--h:%d\">", ch->hue);
         uint64_t img = media_picture(f);
         if (img) {
             buf_puts(&row, "<img src=\"");
@@ -832,7 +838,7 @@ static bool row_onnow(Ctx *c, Buf *b, int kind, const char *arg) {
             if (f && (f->name.kind == MEDIA_EPISODE || f->name.year)) buf_puts(&row, " · ");
             left(&row, s.end - c->now);
         }
-        buf_puts(&row, "</span></a>");
+        buf_puts(&row, wall ? "</span></div>" : "</span></a>");
         shown++;
     }
     if (shown) {

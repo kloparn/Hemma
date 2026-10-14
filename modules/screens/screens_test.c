@@ -524,15 +524,20 @@ TEST(screens_shows_on_picks_what_a_display_opens) {
     snprintf(form, sizeof form, "who=%d", eva);
     CHECK(th_act(tv1, "screens.viewer", form).ok);
     CHECK_HAS(th_page(tv1, ub), ">Exit</a>"); /* someone else's screen: a way back */
-    /* unticked: the usual home page again */
+    /* unticked: the household's wall (issue #53: not "Good morning, Kitchen tablet") */
     snprintf(form, sizeof form, "id=%d", a);
     CHECK(th_act(adam, "screens.shows", form).ok);
     CHECK_STR(pref(tv1, PREF_START, ""), "");
     CHECK_STR(pref(tv2, PREF_START, ""), ub);
-    /* a deleted screen lets go of its displays */
+    CHECK_HAS(th_page(tv1, "/"), "screens-wall");
+    /* a deleted screen lets go of its displays: they too go to the wall */
     snprintf(form, sizeof form, "id=%d", b);
     CHECK(th_act(adam, "screens.delete", form).ok);
     CHECK_STR(pref(tv2, PREF_START, ""), "");
+    CHECK_HAS(th_page(tv2, "/"), "screens-wall");
+    /* a household without a wall: the home page */
+    snprintf(form, sizeof form, "id=%d", screens_first(SCREEN_WALL));
+    CHECK(th_act(adam, "screens.delete", form).ok);
     CHECK(!strstr(th_page(tv2, "/"), "data-mod=\"screens\""));
     halt();
 }

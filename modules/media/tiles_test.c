@@ -185,6 +185,16 @@ TEST(media_rows_draw_tiles_or_stay_out) {
              (unsigned long long)garden->id);
     CHECK_HAS(buf_cstr(&b), want);
     CHECK_HAS(buf_cstr(&b), "<img src=\"/media/img/"); /* Garden Show has a picture */
+    /* on a wall: the same tiles, nothing that opens (issue #80: a tap started the TV player) */
+    CHECK(row("media.recent", adam, "/screens/3", SCREEN_WALL, "", &b));
+    CHECK_HAS(buf_cstr(&b), "3 new episodes");
+    CHECK_HAS(buf_cstr(&b), "<div class=\"tile\">");
+    CHECK(!strstr(buf_cstr(&b), "href="));
+    /* and the home page's card groups them too (issue #59: one card per episode) - for someone
+       with nothing on the go (Adam has: his card is Continue watching) */
+    const char *home = th_page(th_person("Bo"), "/");
+    CHECK_HAS(home, "Garden Show<small>3 new episodes</small>");
+    CHECK(!strstr(home, "Garden Show<small>S01E01"));
 
     CHECK(row("media.series", adam, "/screens/2", SCREEN_TV, "", &b));
     CHECK_INT(count(buf_cstr(&b), "<a class=\"tile\""), 2);

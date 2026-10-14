@@ -216,6 +216,12 @@ small { font-size: 12.5px; }
 .chip.on { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
 .chip.hued { border-color: transparent; }
 
+/* "+N more" that wire.js [data-fit] adds to a card it had to shorten; what it took out stays out
+   (a row's own display: flex would beat the hidden attribute) */
+.fit-more { margin: 8px 0 0; font-size: 13px; font-weight: 650; color: var(--muted); }
+[data-fit-cut] { display: none !important; }
+[data-fit] * { animation: none !important; } /* (re-fitting hides and shows rows: no fading in every minute) */
+
 /* tick: round "done" button: <button class="tick on"><svg check/></button> */
 .tick {
   display: grid; place-items: center; flex: none; width: 26px; height: 26px; padding: 0; border-radius: 50%;

@@ -17,7 +17,7 @@
 #include "server.h"
 #include "store.h"
 
-#define HEMMA_VERSION "0.7.2" /* raised for every release (SECURITY.md, CHANGELOG.md) */
+#define HEMMA_VERSION "0.8.0" /* raised for every release (SECURITY.md, CHANGELOG.md) */
 /* With the commit the binary was built from: "0.6.0 (8242ca8f1a2b)", "-dirty" with uncommitted
    changes (build.ps1 and the Makefile pass -DHEMMA_COMMIT=...); just the version outside git. */
 #define HEMMA_STR_(x) #x
@@ -109,6 +109,7 @@ void ctx_url(const Ctx *c, Buf *out, ...);
    stored session (signed out; the test harness's pages). */
 #define CTX_KEY_LEN 64
 void ctx_url_key(const Ctx *c, const char *path, char out[CTX_KEY_LEN]);
+bool app_action_display(const char *name); /* a display account may run it (Action.display): ui_form asks */
 
 /* Sessions (core/auth.c signs people in; the household module manages them). */
 bool session_create(int person, bool remember, const char *user_agent, char sid_out[33]);
@@ -124,6 +125,9 @@ void ctx_set_live(Ctx *c, const char *key, const char *val);
 int ctx_viewer(const Ctx *c);
 void ctx_set_viewer(Ctx *c, int person);
 #define PREF_START "start" /* display accounts: the page their "/" shows, e.g. "/screens/2" */
+/* ... and a display account without one: the household's wall (issue #53: a hall tablet landed on
+   "Good morning, Hallway tablet"). modules/screens keeps it - its first wall's address, or "". */
+#define SETTING_DISPLAY_START "display.start"
 
 /* ------------------------------------------------------------ modules */
 

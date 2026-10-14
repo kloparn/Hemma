@@ -179,7 +179,7 @@ int plan_shop_items(Buf *b, int max) {
         shown++;
     }
     buf_puts(b, "</ul>");
-    if (open > max) H(b, "<p class=\"muted plan-more\">+%d more</p>", open - max);
+    if (open > max) H(b, "<p class=\"muted plan-more\" data-fit-more=\"%d\">+%d more</p>", open - max, open - max);
     return open;
 }
 

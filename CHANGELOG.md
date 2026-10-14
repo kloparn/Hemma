@@ -3,7 +3,31 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.7.2 (not released yet)
+## 0.8.0 (not released yet)
+
+The wall, finished.
+
+### Changes
+
+- **The wall fits its screen** (#77). Cards below the edge of a tablet were simply never seen.
+  Now the wall shortens its longest cards first ("+3 more"), leaves out whole cards only when
+  nothing else helps - the last ones in your order - and gives room back where it can. The
+  corner says which cards didn't fit, so you can reorder or remove them under Screens, Edit.
+  Checked at 1024×768, 1280×800, a portrait tablet and a 1080p TV; a phone still scrolls.
+- **A display account opens the wall** (#53) unless it's set to show a screen of its own -
+  not "Good morning, Hallway tablet".
+- **Nothing to tap that only says "view-only"** (#54). A display account's pages leave out
+  the quick-add boxes, ticks, × buttons and edit links it can't use.
+
+### Fixes
+
+- **The wall only shows** (#80): bookings, Recently added and On now no longer open things on
+  the tablet, to-dos get a dot instead of a tick circle, a booking ending another day says
+  when ("until Tomorrow 02:00"), and Edit and Exit are easier to find.
+- **"+N more"** under Bookings when more are coming than the card shows (#53).
+- **Recently added on Home** shows a series' new episodes as one card, as Watch does (#59).
+
+## 0.7.2 (2026-10-14)
 
 ### Fixes
 
@@ -11,7 +35,7 @@ commit it was built from).
   every programme are gone - in the window and full screen. The brief static between
   channels and the channel number stay.
 
-## 0.7.1 (not released yet)
+## 0.7.1 (2026-10-14)
 
 The library keeps what it knows.
 
