@@ -86,9 +86,16 @@ What this means in practice:
 - **Type `http://` in front of the address.** Many TVs and some phones try `https://`
   first and then say "invalid response", "can't connect" or "page not found". Hemma
   notices these attempts and logs a hint (*"tried https:// - Hemma speaks plain http"*).
-- **Browsers that prefer `https://`** (for example Chrome's *Always use secure
-  connections*) may show a "not secure" warning page first. On your own home server
-  that's expected; choose to continue.
+- **Chrome's warning before `http://` sites.** Since version 154 (October 2026), Chrome's
+  *Always use secure connections* is on by default and asks before loading a *public*
+  website over `http://`. Addresses on your own network don't count: the IP address
+  (`http://192.168.1.50`), a plain name (`http://hemma`) and `.local` names open without
+  a question. Chrome does ask, once, if someone switched it to warn about *all* insecure
+  sites, and it may for a router-given name with a real internet ending such as
+  `hemma.fritz.box`. On your own home server that's expected: choose **Continue to site**.
+  Chrome doesn't ask again for a site you visit regularly.
+- **Other browsers that prefer `https://`** may show a "not secure" page first too. The
+  same goes: it's your own server, so continue.
 - **Never put Hemma on the open internet.** For access from outside, see
   [below](#reaching-hemma-from-outside-the-safe-way).
 

@@ -15,59 +15,28 @@ create anywhere else, and nothing leaves your home network.
 Every screen updates live: when someone books the sauna, every open phone, laptop and
 the tablet in the hallway shows it straight away.
 
-## Why Hemma?
+<p align="center">
+  <img src="docs/img/home.webp" alt="Hemma's Home page on a phone: who's home, today's bookings and to-dos" width="270">
+  &nbsp;
+  <img src="docs/img/book.webp" alt="Booking the car by typing 'car tonight 8-10 cinema': Hemma shows Today 20:00-22:00, free, before you press Enter" width="270">
+</p>
+<p align="center"><em>Home and Book on a phone. Type "car tonight 8-10 cinema" and Hemma shows the
+booking (and whether the car is free) before you press Enter.</em></p>
 
-- **One small program, nothing else to install.** Hemma is written almost entirely in C,
-  close to the hardware ([why C?](#why-c)). It is a single file of about 2.3 MB with its own
-  built-in database (SQLite). There's no Node, Python, Java or Docker, and no web server to set up.
-- **Runs happily on a $15 computer.** Because it is so light, a Raspberry Pi (Zero 2, 3, 4
-  or 5), an old laptop or a small home server is plenty. Some measurements:
-  - On a Raspberry Pi 3B+ in daily use it needs about **2.4 MB of memory**.
-  - When idle it wakes up only about **0.2 times a second**.
-  - **Eight people streaming at once** (8 Mbit/s each) used about **10% of one core** on a
-    simulated Pi 3, and memory peaked at 8.6 MB. On a real Pi 3B+, eight such streams ran
-    with zero errors.
-  - Uploading a 3.6 GB season of a series ran at full disk speed using 9 MB of memory.
-- **Works on old and cheap screens.** The server builds each page and sends only small
-  updates. The browser just shows them, so an old smart-TV browser or a cheap phone is
-  fine.
-- **Private by design.** Hemma only runs inside your home network. It has no cloud, no
-  outside accounts, no ads and no tracking. Your data is one database file on your own
-  computer.
+<p align="center">
+  <img src="docs/img/tv.webp" alt="Hemma on a TV: Continue watching and On now rows with film posters" width="820">
+</p>
+<p align="center"><em>On the TV: big rows for the remote. Whoever picked themselves under
+"Who's watching?" gets their own Continue watching; On now is Live TV.</em></p>
 
-## Why C?
+<p align="center">
+  <img src="docs/img/wall.webp" alt="Hemma on a wall tablet: a big clock, what's on now and next, who's home, and cards for today, bookings, the coming days, notes, the shopping list and Live TV" width="820">
+</p>
+<p align="center"><em>The tablet on the wall: the time, what's on now and next, who's home, and
+the household's cards.</em></p>
 
-A home server is a small computer that stays on for years, often in a cupboard, with nobody
-looking after it. Hemma is written in C, both the server and the code that draws its pages,
-because C suits that job better than anything else:
-
-- **Nothing sits between Hemma and the hardware.** There's no interpreter, no virtual machine
-  and no garbage collector. A Node.js or Python app needs its runtime and tens of megabytes of
-  memory before it does any work. Hemma uses **about 2.4 MB** on a Raspberry Pi, so even a
-  Pi Zero 2 (512 MB) has room to spare.
-- **One file that just runs.** C compiles to a single program for each kind of computer:
-  Raspberry Pi, Linux, Windows and Mac. Installing Hemma means copying one file. Nothing to
-  `npm install` or `pip install`, and no runtime update that can break it next year.
-- **Almost no outside code.** The only library Hemma doesn't write itself is SQLite, which is
-  also C. A big package tree (hundreds of packages from strangers) is one of the most common
-  ways software gets broken or hacked. Hemma doesn't have one.
-- **Fast where it counts.** Hemma converts videos itself: DVD rips become MP4s that every
-  phone and TV can play. Its video decoders and encoders are written in C for Hemma, and a
-  22-minute DVD episode converts in under five minutes on one PC core.
-- **The same code runs in your browser.** C compiles to WebAssembly, so when you upload a
-  video, *your computer* runs Hemma's converter and only the finished, smaller copy travels
-  to the Pi. One codebase runs on the Pi, the PC and inside the browser.
-- **Built to last.** C programs from decades ago still compile today, and there's a C compiler
-  for practically every chip. A household server shouldn't need rewriting when a framework
-  goes out of fashion.
-- **Cheap to run.** When nobody is using it, Hemma wakes up about **0.2 times a second**.
-  The Pi stays cool and quiet and draws only a few watts.
-
-C asks for care in return: one careless line can crash the program or open a security hole.
-Hemma pays that back with **over 400 automated tests** (about 1.6 million checks), debug
-builds that stop at the first sign of undefined behaviour, the whole suite run again under
-AddressSanitizer and UBSan on every push, a fuzzer that feeds the video converter damaged
-files, HTML that is escaped by default, and several full code reviews so far.
+<sub>The household is made up, and the films are the Blender Foundation's open movies (CC BY):
+see [the credits](docs/img/CREDITS.md).</sub>
 
 ## What's inside
 
@@ -83,6 +52,50 @@ files, HTML that is escaped by default, and several full code reviews so far.
 | **Wall** | An always-on overview for a tablet on the wall (a Screen too): a big clock, what's on now and next, who's home, then cards for today, bookings, the coming days, the shopping list, notes, Live TV and what's new - an admin picks them. Cards with nothing to show stay away. Signed in with a read-only *display* account |
 | **Household** | People, sign-ins and roles, and your home's name |
 | **System** | For admins: is everything working (in plain words), a getting-started list that ticks itself off, the server's log live, and what to do when something's wrong |
+
+**About posters.** Hemma never looks anything up on the internet, so a new film or series
+shows as a coloured card with its title, like *Spring* below. To give it a poster, put
+`poster.jpg` in a series folder or `Film Name (Year).jpg` next to a film, or (as an
+admin) press **Picture** on its page and pick one from your computer.
+
+<p align="center">
+  <img src="docs/img/movies.webp" alt="Watch's Movies page: six films with posters and one, Spring, shown as a coloured card with its title" width="820">
+</p>
+
+## Is Hemma for you?
+
+- **Pick Hemma** for one light page for the whole household - bookings, chores, a shared
+  board, your own films, a TV view and a wall tablet - on a small computer at home, with no
+  cloud and no accounts anywhere else.
+- **Pick Jellyfin or Plex** for posters and descriptions fetched for you, apps on every
+  TV, or watching away from home. Hemma never looks anything up online and stays on your
+  home network.
+- **Pick Home Assistant** to control lights, heating and sensors. Hemma doesn't do home
+  automation.
+- **Pick Nextcloud** for files, photos and contacts.
+
+They don't get in each other's way: Hemma happily runs next to any of them.
+
+## Why Hemma?
+
+- **One small program, nothing else to install.** Hemma is written almost entirely in C,
+  close to the hardware ([why C?](docs/development.md#why-c)). It is a single file of about
+  2.5 MB with its own built-in database (SQLite). There's no Node, Python, Java or Docker,
+  and no web server to set up.
+- **Runs happily on a $15 computer.** Because it is so light, a Raspberry Pi (Zero 2, 3, 4
+  or 5), an old laptop or a small home server is plenty. Some measurements:
+  - On a Raspberry Pi 3B+ in daily use it needs about **2.4 MB of memory**.
+  - When idle it wakes up only about **0.2 times a second**.
+  - **Eight people streaming at once** (8 Mbit/s each) used about **10% of one core** on a
+    simulated Pi 3, and memory peaked at 8.6 MB. On a real Pi 3B+, eight such streams ran
+    with zero errors.
+  - Uploading a 3.6 GB season of a series ran at full disk speed using 9 MB of memory.
+- **Works on old and cheap screens.** The server builds each page and sends only small
+  updates. The browser just shows them, so an old smart-TV browser or a cheap phone is
+  fine.
+- **Private by design.** Hemma only runs inside your home network. It has no cloud, no
+  outside accounts, no ads and no tracking. Your data is one database file on your own
+  computer.
 
 ## What you need
 
@@ -101,7 +114,8 @@ The usual setup is a Raspberry Pi in a cupboard, plugged into the router:
 
 1. **Prepare the Pi.** Put Raspberry Pi OS Lite on a memory card with Raspberry Pi Imager,
    naming the Pi `hemma` and turning on SSH.
-2. **Get Hemma onto it.** Either build it on the Pi (`make`) or build it on a PC and copy
+2. **Get Hemma onto it.** Either build it on the Pi (`git clone
+   https://github.com/kloparn/Hemma.git hemma`, then `make`) or build it on a PC and copy
    the file over.
 3. **Install it.** `sudo sh install-pi.sh ./hemma-pi64` sets Hemma up as a service, and
    `sudo systemctl enable --now hemma` starts it. From then on it starts by itself. The
@@ -185,7 +199,7 @@ download when you ask for help. When something's wrong, see
 Type the full address **with `http://` in front** and use the server's number (IP
 address), for example `http://192.168.1.50`. Add `:8080` if you didn't install it on
 port 80. Many TVs and some phones try `https://` first, and Hemma doesn't speak it (see
-below).
+below). Admins find the address to type on the **Screens** page.
 
 **My phone can't find `hemma`.** Plain names like `hemma` usually only work on Windows
 PCs. On phones, use **`hemma.local`** or the IP address. Some TVs can't do `.local`
@@ -201,6 +215,13 @@ Wi-Fi as being "in the house", and give visitors the guest network. If you want 
 Hemma from outside, use a VPN instead (see the
 [home network guide](docs/home-network.md#reaching-hemma-from-outside-the-safe-way)).
 Never open a port on your router for it.
+
+**Will Chrome warn me about `http://`?** Not by default. Since version 154, Chrome warns
+before loading *public* websites over `http://`, but not addresses on your own network:
+`http://192.168.1.50`, `http://hemma` and `http://hemma.local` open as before. Only if
+someone switched Chrome to warn about *all* insecure sites does it ask, once, before the
+first visit (**Continue to site**). More in the
+[home network guide](docs/home-network.md#why-plain-http).
 
 **It works on the server itself but not from other devices.** Check that Hemma isn't
 started with `--host 127.0.0.1`, that the computer's firewall lets it in (see the guide
@@ -238,17 +259,16 @@ Hemma is plain C11 with no dependencies beyond the bundled SQLite. It's built wi
 self-contained module under `modules/`, and the pages are drawn on the server. App logic
 never runs in the browser: it runs one small, generic script (`web/wire.js`), and uploads
 use a worker that runs Hemma's C video converter compiled to WebAssembly. There are over
-350 tests, run with
-`./build.ps1 test` or `make test`.
+500 tests, run with `./build.ps1 test` or `make test`. Curious why it's written in C? See
+[Why C?](docs/development.md#why-c).
 
-Start with [docs/development.md](docs/development.md). The full working contract (the
-architecture, how to write a module, conventions) is in [CLAUDE.md](CLAUDE.md).
-
-## Support the project
-
-> **TODO (owner):** how people can support Hemma (donation links, sponsorship, …).
+Start with [docs/development.md](docs/development.md): building, tests, the layout and how
+to report bugs or send changes. The full working contract (the architecture, how to write
+a module, conventions) is in [CLAUDE.md](CLAUDE.md).
 
 ## License
 
-> **License: not chosen yet. TODO (owner).** Until a license is added, no license is
-> granted.
+Hemma is licensed under the [Apache License 2.0](LICENSE). SQLite, bundled in
+`third_party/sqlite`, is in the public domain. The films and posters in the screenshots
+are the Blender Foundation's open movies under Creative Commons licenses:
+[credits](docs/img/CREDITS.md).

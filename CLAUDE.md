@@ -326,8 +326,20 @@ deploy/          hemma.service (hardened systemd unit; waits for time-sync.targe
                  local.hemma.plist (macOS launchd agent). The Windows guide runs Hemma as Local Service (S-1-5-19,
                  icacls on C:\Hemma and the media folders), never SYSTEM.
 docs/            user guides: raspberry-pi linux windows macos home-network ssh accounts troubleshooting development
-                 (README.md links them). Public docs: generic examples only (192.168.1.50, hemma.local,
-                 /srv/media) - never this household's names, addresses, paths or passwords
+                 (README.md links them; "Why C?" and Contributing live in development.md). Public docs: generic
+                 examples only (192.168.1.50, hemma.local, /srv/media) - never this household's names,
+                 addresses, paths or passwords
+docs/img/        the README's screenshots (WebP q88: phones 390x844@2, desktop/wall 1280x800, TV 1280x720) +
+                 CREDITS.md. Never real household data or media: a made-up household ("Björkbacken": Anna
+                 admin, Jonas, Maja, Leo, a "Living room TV" and a "Hallway tablet" display account) on a
+                 throwaway demo built WITHOUT the net module (HEMMA_SKIP_MODULES=net: the Network page would
+                 show the LAN's real devices), data on a scratch folder, filled through POST /a/<action>
+                 (Origin + cookie; live actions such as media.progress run that way too), and only open
+                 films: the Blender Foundation's open movies (Commons 480p VP9 transcodes + CC BY posters,
+                 one film left without a poster to show the drawn card). Shoot members' pages (an admin's
+                 home shows the "Address" check when the demo listens on 127.0.0.1). A `--demo` (issue #31)
+                 would make this repeatable.
+LICENSE          Apache 2.0 (owner's choice, 2026-10-14); SQLite is public domain
 build*/ data/ .env   generated / runtime / secrets (gitignored)
 ```
 
@@ -766,7 +778,7 @@ screen's address, #79 browser-log limits per person an hour (PR #81). 0.7.0 (bra
 guard + FIELD_WAS + the media cache's format + install-pi.sh keeps hemma.prev, #39 part 1 the time zone on
 System and a warning when it changes (PR #82). 0.7.1 (branch fix/library-keeps-progress) = #36 watch
 history follows videos to a new library folder, #40 unfinished uploads listed + removable, #28 left-out
-videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr). Next ideas: calmer home cards (hide empty ones), touch on the wall
+videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites. Next ideas: calmer home cards (hide empty ones), touch on the wall
 (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,
@@ -820,7 +832,8 @@ optional automatic after converting; 53 of 53 real pairs matched), subtitles att
 didn't before), the copy's first read shows on the progress bar.
 Then: an x on "Continue watching" cards (/media shelf + the home card; media.c going_card, action media.forget)
 drops that person's progress in the video - others' stays; display accounts get no x.
-Open for the owner: license, donation links, project URL (README/docs placeholders).
+Settled by the owner (2026-10-14): license Apache 2.0 (LICENSE), no "Support the project" section for now,
+the project lives at https://github.com/kloparn/Hemma (the guides clone it).
 Next ideas: builder-style UI helpers / less raw HTML (owner asked), MKV→MP4 remux on the fly
 for Safari/iPhone, "Open in VLC" links, router integration, DLNA, recurring calendar events,
 API tokens for scripts, "tune in" on the TV's browser via QR code, HEVC/DTS in the converter.

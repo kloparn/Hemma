@@ -11,6 +11,40 @@ the C video converter compiled to WebAssembly. Features are self-contained modul
 module API, conventions, gotchas and the current status. Read it before changing code.
 This page is the short version for getting started.
 
+## Why C?
+
+A home server is a small computer that stays on for years, often in a cupboard, with nobody
+looking after it. Hemma is written in C, both the server and the code that draws its pages,
+because C suits that job better than anything else:
+
+- **Nothing sits between Hemma and the hardware.** There's no interpreter, no virtual machine
+  and no garbage collector. A Node.js or Python app needs its runtime and tens of megabytes of
+  memory before it does any work. Hemma uses **about 2.4 MB** on a Raspberry Pi, so even a
+  Pi Zero 2 (512 MB) has room to spare.
+- **One file that just runs.** C compiles to a single program for each kind of computer:
+  Raspberry Pi, Linux, Windows and Mac. Installing Hemma means copying one file. Nothing to
+  `npm install` or `pip install`, and no runtime update that can break it next year.
+- **Almost no outside code.** The only library Hemma doesn't write itself is SQLite, which is
+  also C. A big package tree (hundreds of packages from strangers) is one of the most common
+  ways software gets broken or hacked. Hemma doesn't have one.
+- **Fast where it counts.** Hemma converts videos itself: DVD rips become MP4s that every
+  phone and TV can play. Its video decoders and encoders are written in C for Hemma, and a
+  22-minute DVD episode converts in under five minutes on one PC core.
+- **The same code runs in your browser.** C compiles to WebAssembly, so when you upload a
+  video, *your computer* runs Hemma's converter and only the finished, smaller copy travels
+  to the Pi. One codebase runs on the Pi, the PC and inside the browser.
+- **Built to last.** C programs from decades ago still compile today, and there's a C compiler
+  for practically every chip. A household server shouldn't need rewriting when a framework
+  goes out of fashion.
+- **Cheap to run.** When nobody is using it, Hemma wakes up about **0.2 times a second**.
+  The Pi stays cool and quiet and draws only a few watts.
+
+C asks for care in return: one careless line can crash the program or open a security hole.
+Hemma pays that back with **over 500 automated tests** (about 1.6 million checks), debug
+builds that stop at the first sign of undefined behaviour, the whole suite run again under
+AddressSanitizer and UBSan on every push, a fuzzer that feeds the video converter damaged
+files, HTML that is escaped by default, and several full code reviews so far.
+
 ## Building
 
 | | Windows (`zig cc`) | Linux, macOS, Raspberry Pi (`make`) |
@@ -61,7 +95,7 @@ everything else.
 Tests sit next to the code as `*_test.c` and register themselves (`tests/test.h`). The
 runner links all of them. `tests/harness.h` boots the whole core without a network
 server, so module tests can sign people in, run actions and check the rendered pages.
-There are over 400 tests, including end-to-end tests over real sockets. Keep the suite green.
+There are over 500 tests, including end-to-end tests over real sockets. Keep the suite green.
 GitHub CI runs them on Linux and macOS, again under AddressSanitizer + UBSan, and fuzzes the
 video converter for 90 seconds (`tools/convfuzz.c`: a libFuzzer target; build it with
 `-DCONVFUZZ_MAIN` for a replay/mutate driver that works with zig on Windows too).
@@ -101,10 +135,21 @@ tables and CSS all come from there. The contract and an example are in
 
 ## Contributing
 
-> **TODO (owner):** how to report bugs, propose changes and send patches once the
-> project is published (issues, pull requests, code of conduct).
+Hemma lives on GitHub: [kloparn/Hemma](https://github.com/kloparn/Hemma).
 
-Ground rules that will stay the same:
+- **Found a bug, or have an idea?** Open an
+  [issue](https://github.com/kloparn/Hemma/issues). For a bug, say what you did, what you
+  expected and what happened instead, and the version (`hemma --version`, or the System
+  page). The log from the System page (**Download the log**) helps a lot.
+- **Found a security problem?** Please don't open a public issue: [SECURITY.md](../SECURITY.md)
+  says how to report it privately.
+- **Sending a change?** Open a pull request. Every pull request raises the version
+  (`HEMMA_VERSION` in `core/app.h`: the last number for fixes, the middle one for something
+  new or changed) and adds its own section to [CHANGELOG.md](../CHANGELOG.md). The CI run
+  must be green. Contributions are under the project's license, Apache 2.0
+  ([LICENSE](../LICENSE)).
+
+Ground rules:
 
 - Everything is C. No JavaScript frameworks, npm or CDNs; app logic never goes in JS.
 - Pages work without JavaScript too (plain links and forms).

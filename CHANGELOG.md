@@ -3,7 +3,36 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.9.0 (not released yet)
+## 0.9.1 (not released yet)
+
+Ready for newcomers: the README and the guides. Nothing in the program changed.
+
+### Changes
+
+- **Hemma has a license: Apache 2.0** (#26). Anyone may use, change and share it. Until
+  now no license was granted at all.
+- **Screenshots** in the README (#22): Home and Book on a phone, the TV, the wall tablet and
+  Watch's posters, from a made-up household. The films are the Blender Foundation's open
+  movies (CC BY), credited in `docs/img/CREDITS.md`.
+- **The README reads in a newcomer's order** (#24): what Hemma is, the screenshots, what's
+  inside, then installing. "Why C?" moved to `docs/development.md`.
+- **"Is Hemma for you?"** (#25): when to pick Jellyfin or Plex, Home Assistant or Nextcloud
+  instead, honest both ways.
+- **About posters** (#23): Hemma never looks anything up online, so new videos show as
+  coloured cards. The README says how to add a poster.
+
+### Fixes
+
+- **The install guides say where to get Hemma** (#20): `git clone
+  https://github.com/kloparn/Hemma.git`, or Download ZIP. Every "TODO (owner)" note is
+  gone: `docs/development.md` says how to report bugs and send changes, and the empty
+  "Support the project" section went.
+- **Chrome's warning before http sites** (#75): the README and the home network guide say
+  who sees it. Chrome 154 and later warn only for public sites, so Hemma's IP address,
+  `hemma` and `hemma.local` open as before.
+- **troubleshooting.md** shows the start-up block without a version that goes stale (#30).
+
+## 0.9.0 (2026-10-14)
 
 The TV, on a remote.
 
