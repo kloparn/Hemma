@@ -168,9 +168,12 @@ icacls "D:\Movies" /grant "*S-1-5-19:(OI)(CI)RX" /T   # ...or RX: only watch
 A task started at boot can't see *mapped* network drives (like `Z:`), so keep movies on a
 local or USB disk.
 
-**Backups:** the database is `C:\Hemma\data\hemma.db`. Stop Hemma, copy the `data`
-folder somewhere safe, start it again. Keep `hemma.env` (the salt) separate and safe.
-The [Pi guide](raspberry-pi.md#backups) explains why.
+**Backups:** Hemma backs up its database (`C:\Hemma\data\hemma.db`) every night by
+itself, keeps the last 7 days, and can go back to one: **System → Backups**. They go to a
+hidden `.hemma-backups` folder in your first library folder on another disk, else
+`C:\Hemma\data\backups`. **Download** there gives a copy with the password secret, to
+keep elsewhere. The [Pi guide](raspberry-pi.md#backups) has the details, and how to put a
+backup back on another computer (`hemma --restore`).
 
 ## 6. Keep the PC awake
 

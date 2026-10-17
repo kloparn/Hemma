@@ -2,6 +2,7 @@
 #include "db.h"
 #include "plat.h"
 #include "store.h"
+#include "tar.h"
 
 typedef struct {
     int id;
@@ -637,4 +638,184 @@ TEST(store_names_a_rename_without_its_breaking_migration) {
     CHECK_STR(store_renames_unsafe(), "item.title");
     store_test_migrations(NULL, 0);
     store_close();
+}
+
+/* ======================================================= backups (issue #35) */
+
+static bool find_copy(const char *dir, const char *prefix, char *out, size_t cap) {
+    DirIter *it = dir_open(dir);
+    DirEntry e;
+    bool found = false;
+    while (it && dir_next(it, &e))
+        if (str_starts(e.name, prefix) && !str_ends(e.name, "-wal")) {
+            snprintf(out, cap, "%s/%s", dir, e.name);
+            found = true;
+        }
+    dir_close(it);
+    return found;
+}
+
+TEST(store_backup_is_a_checked_copy_taken_while_it_runs) {
+    const char *dir = test_tmpdir();
+    Buf f = {0};
+    filled(dir, 300, 2, &f);
+    Table t = TABLE("note", Note, note_fields), p = TABLE("person", Who, who_fields);
+    store_register(&t);
+    store_register(&p);
+    CHECK(store_open(dir));
+    char to[700], part[720], why[300];
+    long long rows = 0, again = 0;
+    snprintf(to, sizeof to, "%s/copy.db", dir);
+    CHECK(store_backup(to, &rows, why, sizeof why));
+    CHECK_INT((int)rows, 302);
+    Note n = {0};
+    tbl_put(&t, &n); /* (after the copy: not in it) */
+    CHECK(store_check_copy(to, &again, why, sizeof why));
+    CHECK_INT((int)again, 302);
+    snprintf(part, sizeof part, "%s.part", to);
+    CHECK(!path_stat(part, NULL, NULL, NULL));
+    /* a folder that isn't there: false, and nothing left behind */
+    snprintf(to, sizeof to, "%s/no/such/folder/copy.db", dir);
+    CHECK(!store_backup(to, &rows, why, sizeof why));
+    CHECK_HAS(why, "the copy failed");
+    snprintf(part, sizeof part, "%s.part", to);
+    CHECK(!path_stat(part, NULL, NULL, NULL));
+    store_close();
+    buf_free(&f);
+}
+
+TEST(store_check_copy_says_what_can_not_be_put_back) {
+    const char *dir = test_tmpdir();
+    char p[700], why[300];
+    long long rows = 0;
+    snprintf(p, sizeof p, "%s/junk.db", dir);
+    CHECK(file_write_atomic(p, "not a database at all, sorry", 28));
+    CHECK(!store_check_copy(p, &rows, why, sizeof why));
+    CHECK_HAS(why, "it's damaged");
+    snprintf(p, sizeof p, "%s/nothing.db", dir);
+    CHECK(!store_check_copy(p, &rows, why, sizeof why));
+    CHECK(!path_stat(p, NULL, NULL, NULL)); /* (a check never makes the file) */
+    /* a database, but not Hemma's */
+    snprintf(p, sizeof p, "%s/other.db", dir);
+    sqlite3 *d = NULL;
+    CHECK(sqlite3_open(p, &d) == SQLITE_OK);
+    CHECK(sqlite3_exec(d, "CREATE TABLE x (id INTEGER PRIMARY KEY, a TEXT)", NULL, NULL, NULL) == SQLITE_OK);
+    sqlite3_close(d);
+    CHECK(!store_check_copy(p, &rows, why, sizeof why));
+    CHECK_STR(why, "it isn't Hemma's data");
+    /* Hemma's, from a newer Hemma that changed the data in a way this one would misread */
+    const char *dir2 = test_tmpdir();
+    Buf f = {0};
+    filled(dir2, 10, 1, &f);
+    snprintf(p, sizeof p, "%s/hemma.db", dir2);
+    CHECK(sqlite3_open(p, &d) == SQLITE_OK);
+    char sql[200];
+    snprintf(sql, sizeof sql, "UPDATE store_meta SET v = %d WHERE k = 'min_reader'", store_format() + 1);
+    CHECK(sqlite3_exec(d, sql, NULL, NULL, NULL) == SQLITE_OK && sqlite3_changes(d) == 1);
+    sqlite3_close(d);
+    CHECK(!store_check_copy(p, &rows, why, sizeof why));
+    CHECK_HAS(why, "a newer Hemma made it");
+    buf_free(&f);
+}
+
+TEST(store_puts_a_staged_backup_back_at_the_start) {
+    const char *dir = test_tmpdir();
+    Buf f = {0};
+    filled(dir, 300, 2, &f);
+    Table t = TABLE("note", Note, note_fields), p = TABLE("person", Who, who_fields);
+    store_register(&t);
+    store_register(&p);
+    CHECK(store_open(dir));
+    char bk[700], why[300], secret[64], label[64], kept[700];
+    long long rows = 0;
+    snprintf(bk, sizeof bk, "%s/hemma-2026-10-16-0330.db", dir);
+    CHECK(store_backup(bk, &rows, why, sizeof why));
+    for (int i = 0; i < 50; i++) {
+        Note n = {0};
+        tbl_put(&t, &n);
+    }
+    store_close();
+    CHECK(store_stage_restore(dir, bk, "hemma-2026-10-16-0330.db", secret, sizeof secret, why, sizeof why));
+    CHECK_STR(secret, ""); /* (a plain backup carries none) */
+    CHECK(store_restore_waiting(dir, label, sizeof label));
+    CHECK_STR(label, "hemma-2026-10-16-0330.db");
+
+    Table t2 = TABLE("note", Note, note_fields), p2 = TABLE("person", Who, who_fields);
+    store_register(&t2);
+    store_register(&p2);
+    CHECK(store_open(dir));
+    CHECK_INT(tbl_count(&t2), 300);
+    CHECK_HAS(store_restore_report(), ": the backup hemma-2026-10-16-0330.db was put back (302 rows). What was there "
+                                      "before is kept as hemma.db.before-restore-");
+    CHECK(!store_restore_waiting(dir, label, sizeof label));
+    CHECK(find_copy(dir, "hemma.db.before-restore-", kept, sizeof kept));
+    CHECK(store_check_copy(kept, &rows, why, sizeof why));
+    CHECK_INT((int)rows, 352); /* what was there, all of it */
+    store_close();
+    /* the next start is an ordinary one */
+    Table t3 = TABLE("note", Note, note_fields), p3 = TABLE("person", Who, who_fields);
+    store_register(&t3);
+    store_register(&p3);
+    CHECK(store_open(dir));
+    CHECK_STR(store_restore_report(), "");
+    CHECK_INT(tbl_count(&t3), 300);
+    store_close();
+    buf_free(&f);
+}
+
+TEST(store_restores_a_download_and_refuses_what_does_not_check_out) {
+    const char *dir = test_tmpdir();
+    Buf f = {0};
+    filled(dir, 20, 1, &f);
+    /* a download: the database and the secret, in a tar - put back on a new install */
+    static const char txt[] = "SECRET - keep this file like a password.\n\nHEMMA_AUTH_SALT=0123abcd\n\nMore words.\n";
+    Buf tar = {0};
+    tar_add(&tar, "hemma.db", f.p, f.len, 1760000000, 0600);
+    tar_add(&tar, "hemma-secret.txt", txt, sizeof txt - 1, 1760000000, 0600);
+    tar_end(&tar);
+    char file[700], why[300], secret[64], left[700], label[64];
+    snprintf(file, sizeof file, "%s/hemma-2026-10-16-0330-with-secret.tar", dir);
+    CHECK(file_write_atomic(file, tar.p, tar.len));
+    const char *fresh = test_tmpdir();
+    CHECK(store_stage_restore(fresh, file, "hemma-2026-10-16-0330-with-secret.tar", secret, sizeof secret, why,
+                              sizeof why));
+    CHECK_STR(secret, "0123abcd");
+    Table t = TABLE("note", Note, note_fields), p = TABLE("person", Who, who_fields);
+    store_register(&t);
+    store_register(&p);
+    CHECK(store_open(fresh));
+    CHECK_INT(tbl_count(&t), 20);
+    CHECK_HAS(store_restore_report(), "was put back (21 rows).");
+    CHECK(!strstr(store_restore_report(), "before")); /* (nothing was there to keep) */
+    store_close();
+
+    /* a staged file that doesn't check out: set aside, the data stays as it was */
+    char staged[700];
+    snprintf(staged, sizeof staged, "%s/hemma.db.restore", fresh);
+    CHECK(file_write_atomic(staged, "rubbish rubbish rubbish", 23));
+    Table t2 = TABLE("note", Note, note_fields), p2 = TABLE("person", Who, who_fields);
+    store_register(&t2);
+    store_register(&p2);
+    CHECK(store_open(fresh));
+    CHECK_INT(tbl_count(&t2), 20);
+    CHECK_HAS(store_restore_report(), "the backup hemma.db.restore was NOT put back - it's damaged");
+    CHECK(!store_restore_waiting(fresh, label, sizeof label));
+    snprintf(left, sizeof left, "%s/hemma.db.restore-refused", fresh);
+    CHECK(path_stat(left, NULL, NULL, NULL));
+    store_close();
+
+    /* refused before it's staged: a tar without a database, a damaged file */
+    Buf other = {0};
+    tar_add(&other, "notes.txt", "hi", 2, 0, 0600);
+    tar_end(&other);
+    CHECK(file_write_atomic(file, other.p, other.len));
+    CHECK(!store_stage_restore(fresh, file, "x", secret, sizeof secret, why, sizeof why));
+    CHECK_HAS(why, "holds no hemma.db");
+    CHECK(file_write_atomic(file, "rubbish", 7));
+    CHECK(!store_stage_restore(fresh, file, "x", secret, sizeof secret, why, sizeof why));
+    CHECK_HAS(why, "that backup can't be used: it's damaged");
+    CHECK(!store_restore_waiting(fresh, label, sizeof label));
+    buf_free(&other);
+    buf_free(&tar);
+    buf_free(&f);
 }

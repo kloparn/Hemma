@@ -38,6 +38,40 @@ const char *system_log_path(void);                   /* "<data>/hemma.log" ("" b
 /* For the download: the rotated file and the current one (or the ring, when there's no file). */
 void system_log_text(Buf *out);
 
+/* ---- backups (backup.c, issue #35) ----
+   Every night (and with "Back up now") a checked copy of the database goes into the backup folder:
+   SET_BACKUP_DIR, else a hidden .hemma-backups folder in the first library folder on another disk
+   than the data (setting media.roots, read as text - no link to the media module), else
+   <data>/backups. Named hemma-YYYY-MM-DD-HHMM.db; the newest of each of the last BACKUP_DAYS days
+   stay. The work happens on a thread (a USB disk may have to spin up); the page shows what the
+   last job found. Restore = store_stage_restore + a restart (a service manager starts Hemma again;
+   from a terminal, the admin does). The download is a .tar: the backup + hemma-secret.txt. */
+#define BACKUP_DAYS 7
+#define SET_BACKUP_DIR "system.backup_dir"   /* the folder an admin chose ("" = the default) */
+#define SET_BACKUP_LAST "system.backup_last" /* the newest good one: "<unix>|<name>|<rows>|<bytes>" */
+#define SET_BACKUP_FAIL "system.backup_fail" /* the last attempt, when it failed: "<unix>|<why>" */
+void system_backup_start(void);           /* from start(): list the folder (in the background) */
+void system_backup_stop(void);
+void system_backup_tick(int64_t now_ms);  /* the nightly backup; a finished job's results */
+void system_backup_checks(Health *h);     /* the Backups check (and a restore waiting/done) */
+void system_backup_page(Ctx *c, Buf *b);  /* /system/backups */
+bool system_backup_http(Ctx *c, Conn *conn, HttpReq *r); /* GET /system/backups/<name>.tar */
+void system_backup_act_now(Ctx *c, Fields *f);
+void system_backup_act_restore(Ctx *c, Fields *f);
+void system_backup_act_cancel(Ctx *c, Fields *f);
+void system_backup_act_dir(Ctx *c, Fields *f);
+void system_backup_act_restored_seen(Ctx *c, Fields *f);
+/* When the nightly backup is due: none yet (a few minutes after the start), over 26 h old, or over
+   20 h old at 03:xx local time. */
+bool system_backup_due(int64_t now, int64_t last, int64_t started);
+/* The download: the backup at `path` as hemma.db + the password secret line, in a tar. */
+bool system_backup_bundle(const char *path, const char *salt, int64_t mtime, Buf *out);
+
+/* ---- shared with backup.c (system.c) ---- */
+void system_when(int64_t t, int64_t now, char *out, size_t cap); /* "14:30" today, else "Mon 12 Oct 14:30" */
+bool system_restarts_itself(void); /* a service manager starts Hemma again when it stops (systemd, launchd) */
+const char *system_data_path(void);
+
 /* ---- tests ---- */
 void system_log_reset(void);               /* empty ring, nothing waiting for the file */
 void system_log_set_limit(int64_t bytes);  /* rotate the file past this size (default ~1 MB) */

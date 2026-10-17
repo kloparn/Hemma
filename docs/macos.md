@@ -160,9 +160,10 @@ A sleeping Mac can't answer phones.
 
 - **Movies:** in Hemma, open **Watch → Library settings** and enter the folders, one per
   line, for example `/Users/you/Movies` or `/Volumes/MyDisk/Media`.
-- **Backups:** the database is `~/Hemma/data/hemma.db`. Stop Hemma, copy the `data`
-  folder (Time Machine does this too), start it again. Keep `hemma.env` (the salt)
-  separate and safe. The [Pi guide](raspberry-pi.md#backups) explains why.
+- **Backups:** Hemma backs up its database (`~/Hemma/data/hemma.db`) every night by
+  itself, keeps the last 7 days, and can go back to one: **System → Backups**. Time Machine
+  copies the `data` folder too. **Download** there gives a copy with the password secret,
+  to keep elsewhere. The [Pi guide](raspberry-pi.md#backups) has the details.
 
 ## Good to know
 

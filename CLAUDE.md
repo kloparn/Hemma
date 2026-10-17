@@ -85,6 +85,17 @@ core/            framework with a stable API for modules
                  "- Hemma stopped" (the System module isn't running yet) and returns HEMMA_EXIT_DATA (78;
                  hemma.service RestartPreventExitStatus=78: no restart loop). Tests: store_test.c's filled()/
                  page_of() damage real files; core/app_data_test.c.
+                 BACKUPS (issue #35): store_backup(to) = VACUUM INTO over its OWN read-only connection (any
+                 thread; WAL lets the household carry on), fsynced (VACUUM INTO doesn't), checked, to.part ->
+                 to. store_check_copy() = quick_check + a person table (Hemma's tables = those with an INTEGER
+                 PRIMARY KEY id, so no registration needed) + min_reader <= store_format(). PUTTING ONE BACK:
+                 store_stage_restore(data, file, label, ...) checks a .db or a download's .tar (core/tar: hemma.db
+                 + hemma-secret.txt, whose HEMMA_AUTH_SALT comes back for the CLI) and leaves it as
+                 <data>/hemma.db.restore (+ .restore.from = the label); store_open's restore_staged() puts it in
+                 place first thing (checked again, and writable - else hemma.db.restore-refused), keeping the
+                 old data as hemma.db.before-restore-<day>-<hhmm> (RESTORE_KEEP 3, prune_copies) ->
+                 store_restore_report() -> app_boot's SETTING_RESTORED -> System "Backup put back" until Got it.
+                 hemma --restore FILE (main.c restore_cli) stages it the same way; run it as Hemma's user.
                  DATA FORMAT (issue #38): PRAGMA user_version = the newest StoreMigration in store.c's MIGRATIONS
                  (format 1 = the baseline); a start runs those past the file's format (after ensure_schema, in the
                  open transaction), keeping a VACUUM INTO copy (hemma.db.before-format-<n>) first when one has a
@@ -128,7 +139,9 @@ core/            framework with a stable API for modules
                  library (after ISO 18004 / Nayuki's reference). qr_test.c holds fingerprints of codes the
                  independent reader jsQR decoded back (137 cases, every version/level/mask, checked in Node
                  from a wasm32-wasi build - Windows Defender quarantines tiny unsigned test exes here)
-  main.c         command line (--gen-salt, --env, --web ...)
+  tar.*          the little of tar (ustar) the backup download and hemma --restore need: tar_add/tar_end,
+                 tar_looks, tar_find (in memory; checksums checked; GNU tar reads ours)
+  main.c         command line (--gen-salt, --env, --web, --reset-password, --restore ...)
 modules/<id>/    one folder per feature; folder name == module id (home book plan media tv board net people
                  screens system)
   screens/       the TV view and walls: screens an admin builds from the Blocks modules offer.
@@ -199,6 +212,21 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  -> setting system.tz_changed "<from>|<to>|<day>" -> a needs-a-look check until "Got it"
                  (system.tz_seen); a zone of "+00:00" (a Pi's default) is a Note with how to set it. Part 2
                  (all-day items as dates, re-reading old entries) is still open. system_test_zone() in tests.
+                 BACKUPS (backup.c, issue #35; owner, 2026-10-17: the secret ONLY in the download, the media
+                 disk by default, 7 daily): tab /system/backups. Nightly (system_backup_due: none yet = 3 min
+                 after the start, >26 h old, or >20 h old at 03:xx; a failure retries after 1 h) into
+                 SET_BACKUP_DIR, else <first library folder on ANOTHER disk>/.hemma-backups (setting media.roots
+                 read as text; disks compared as media/room.c does; the library scan skips dot folders), else
+                 <data>/backups. Names hemma-YYYY-MM-DD-HHMM.db (the only files it ever deletes); the newest of
+                 each of the last BACKUP_DAYS (7) days stay. One job at a time on a thread (JOB_LIST/BACKUP/STAGE
+                 - a USB disk may spin up), results taken on the tick (g_done); under tests a job runs at once.
+                 Settings system.backup_last "<unix>|<name>|<rows>|<bytes>", system.backup_fail "<unix>|<why>".
+                 "Go back to this" stages it (store_stage_restore) and, under systemd/launchd
+                 (system_restarts_itself), app_quit(HEMMA_EXIT_RESTART = 75) 2 s later (Restart=on-failure /
+                 KeepAlive start it again); else "restart Hemma" + "Don't put it back". Download GET
+                 /system/backups/<name>.tar (admins, a thread via conn_detach, 2 at a time): the backup +
+                 hemma-secret.txt. Checks: Backups (OK / BAD failed / WARN >2 days / INFO same disk), "Going
+                 back to a backup" while one waits, "Backup put back" (SETTING_RESTORED).
                  dependencies: tv needs media (it links modules/media/library.c), media needs av (the converter)
   media/upload.c admins add videos from a browser (plan + streamed PUTs, .part files, resume); a folder
                  holding x.mkv + x.web.mp4 sends only the copy (checkbox "also send originals"). Other MKVs
@@ -835,7 +863,7 @@ screen's address, #79 browser-log limits per person an hour (PR #81). 0.7.0 (bra
 guard + FIELD_WAS + the media cache's format + install-pi.sh keeps hemma.prev, #39 part 1 the time zone on
 System and a warning when it changes (PR #82). 0.7.1 (branch fix/library-keeps-progress) = #36 watch
 history follows videos to a new library folder, #40 unfinished uploads listed + removable, #28 left-out
-videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px (PR #105). 0.9.3 (pushed to main) = the player remembers the volume and mute per device. 0.9.4 (branch fix/database-recovery) = #87 a rescue that gets next to nothing back refuses (no new household over the data) + no welcome page after a rescue + the damaged page, #88 SQLite 3.54.1 + its recovery extension (orphans placed back), counts against the census in household words (Table.what), damaged copies pruned, #92 refusals in versions + into hemma.log + exit 78 (RestartPreventExitStatus), going back = a swap, the installer copies the database, FIELD_WAS needs its breaks_older migration (test). Next ideas: calmer home cards (hide empty ones), touch on the wall
+videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px (PR #105). 0.9.3 (pushed to main) = the player remembers the volume and mute per device. 0.9.4 (branch fix/database-recovery) = #87 a rescue that gets next to nothing back refuses (no new household over the data) + no welcome page after a rescue + the damaged page, #88 SQLite 3.54.1 + its recovery extension (orphans placed back), counts against the census in household words (Table.what), damaged copies pruned, #92 refusals in versions + into hemma.log + exit 78 (RestartPreventExitStatus), going back = a swap, the installer copies the database, FIELD_WAS needs its breaks_older migration (test). 0.10.0 (branch feat/backups) = #35 nightly checked backups (7 days, on the media disk by default), System → Backups (Back up now, Download with the secret, Go back to this + restart), hemma --restore, core/tar, docs for a new memory card. Next ideas: calmer home cards (hide empty ones), touch on the wall
 (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,

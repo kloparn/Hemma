@@ -62,6 +62,7 @@ Table T_activity = TABLE("activity", Activity, activity_fields);
 /* ================================================================ config */
 
 static AppConfig g_cfg;
+static atomic_int g_exit_code; /* app_quit(): what app_main returns */
 static char g_asset_ver[17];
 static bool g_testing;
 static char g_extra_hosts[512]; /* HEMMA_HOSTS: more names this server answers to */
@@ -1806,6 +1807,7 @@ bool app_boot(const char *data_dir) {
     store_set_program(HEMMA_VERSION); /* (kept with the data: a refusal names the Hemma that last used it) */
     if (!store_open(data_dir)) return false;
     if (store_rescue_report()[0]) setting_set(SETTING_RESCUED, store_rescue_report()); /* (System: until seen) */
+    if (store_restore_report()[0]) setting_set(SETTING_RESTORED, store_restore_report());
     if (!g_testing) {
         char why[300];
         int made = auth_ensure_secret(g_cfg.env_file, why, sizeof why);
@@ -1933,5 +1935,10 @@ int app_main(const AppConfig *cfg) {
     log_info("shutting down");
     server_shutdown();
     app_halt();
-    return 0;
+    return atomic_load(&g_exit_code);
+}
+
+void app_quit(int code) {
+    atomic_store(&g_exit_code, code);
+    server_stop();
 }

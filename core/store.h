@@ -88,6 +88,27 @@ const char *store_refusal(void);
 void store_set_program(const char *version); /* this Hemma's version: kept with the data, named in refusals */
 const char *store_renames_unsafe(void);      /* a FIELD_WAS without its breaks_older migration ("table.field") */
 
+/* ---- backups (issue #35) ----
+   store_backup: a consistent copy of the open database at `to` (VACUUM INTO over its own read-only
+   connection, so ANY thread may call it while the household carries on), synced to the disk and
+   checked; written as `to`.part first, so a failed one leaves nothing. rows = rows of Hemma's
+   tables in it. store_check_copy: may this file be put back? (PRAGMA quick_check, Hemma's tables,
+   not a newer Hemma's data format; no tables need to be registered.) */
+bool store_backup(const char *to, long long *rows, char *why, size_t cap);
+bool store_check_copy(const char *path, long long *rows, char *why, size_t cap);
+/* A backup to go back to - a .db, or a download's .tar (the database + hemma-secret.txt) - checked and
+   placed as <data>/hemma.db.restore; the next store_open puts it in place, keeping what was there
+   as hemma.db.before-restore-<day>-<hhmm> (the newest 3 stay). label = what people call it. A
+   .tar's HEMMA_AUTH_SALT comes back in secret ("" = none in it). Any thread; no open store needed. */
+bool store_stage_restore(const char *data_dir, const char *file, const char *label, char *secret, size_t secret_cap,
+                         char *why, size_t cap);
+bool store_restore_waiting(const char *data_dir, char *label, size_t cap); /* one is staged (its label) */
+void store_unstage_restore(const char *data_dir);                           /* ... not any more */
+/* What the last store_open did about a staged backup, for people ("" = nothing), e.g. "2026-10-17
+   09:30: the backup hemma-2026-10-16-0330.db was put back (812 rows). What was there before is kept
+   as hemma.db.before-restore-2026-10-17-0930." */
+const char *store_restore_report(void);
+
 /* The data format (PRAGMA user_version): numbered migrations, oldest first. A start runs the ones
    past the file's format (a copy of the file is kept first, hemma.db.before-format-<n>, when one
    changes data); `breaks_older` = a program from before it would misread the data (a rename, a

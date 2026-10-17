@@ -3,7 +3,36 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.9.4 (not released yet)
+## 0.10.0 (not released yet)
+
+Hemma backs itself up every night, checks the copies, and can go back to one (#35).
+
+### New
+
+- **Nightly backups.** Around 03:00 Hemma copies its database, checks the copy (SQLite's
+  integrity check, and that it's Hemma's data), and keeps the newest of the last 7 days. The
+  first one is made a few minutes after a start; a computer that was off at night gets one
+  soon after it's on again. They go to a hidden `.hemma-backups` folder in your first
+  library folder on another disk than the database (with a USB disk, they survive a dead
+  memory card), else to `<data>/backups`. An admin can choose another folder.
+- **System → Backups**: the backups with their date and size, **Back up now**, **Download**
+  and **Go back to this**. Going back checks the backup, keeps what's there now as
+  `hemma.db.before-restore-<date>` (the newest three stay) and restarts Hemma with it. A
+  Pi's service starts it again by itself; started by hand, Hemma says to restart it.
+- **Download** gives one `.tar` file: the database and `hemma-secret.txt` with the password
+  secret (`HEMMA_AUTH_SALT`) every password is made with, marked as secret. The nightly
+  backups leave the secret out.
+- **`hemma --restore FILE`** puts a backup (`.db`) or a download (`.tar`) back, for example
+  on a new memory card. It checks the file first and says if the settings file needs the
+  old secret. Hemma puts it in place at its next start.
+- **System → Checks** says when the last backup was made, and warns when one failed, is
+  more than two days old, or sits on the same disk as the data. It also says when a backup
+  is waiting to be put back, and when one was.
+- The Pi guide's "Backups" covers putting Hemma back on a new memory card: the secret, the
+  same media folders, the library disk at the same path. It also covers `/api` for getting
+  your data into other programs.
+
+## 0.9.4 (2026-10-17)
 
 A damaged database gives back more, and never starts Hemma as a new household.
 
