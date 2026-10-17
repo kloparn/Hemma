@@ -3,7 +3,16 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.9.2 (not released yet)
+## 0.9.3 (not released yet)
+
+### Fixes
+
+- **The player remembers your volume.** It went back to full with every new video, the next
+  episode, a channel or a reload. Each device now keeps the volume you set, and whether you muted,
+  for every video it plays. A browser that won't start a channel with sound still starts it muted,
+  but that isn't remembered as your choice.
+
+## 0.9.2 (2026-10-17)
 
 Follow-ups for the screens, the TV and the wall.
 

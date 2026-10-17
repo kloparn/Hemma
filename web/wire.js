@@ -814,6 +814,7 @@
       const p = m.play();
       if (p && p.catch) p.catch(() => {
         if (m.muted || !m.isConnected) return;
+        m._forcedMute = true; /* (the browser's doing, not the viewer's: not remembered - see sound) */
         m.muted = true; // no sound without a press first
         m.play().catch(() => {});
       });
@@ -831,11 +832,26 @@
   // Wired once; when a morph brings the same element a new video (data-static="v": the next
   // episode, the next programme) it starts over with that one's data-resume - and the element
   // stays, so a full screen does too. The listeners read the data-* attributes as they are then.
+  // The sound - volume and muted - is the viewer's on this device: remembered (localStorage) and given
+  // to every video, so a new page, the next episode or a reload no longer starts at full volume (it
+  // reset every time). Any change counts (the player's bar, M, the browser's own controls) except
+  // the muting a browser forces when it won't start a channel with sound.
+  const SOUND = 'hemma.sound';
+  const soundSave = (m) => { try { localStorage.setItem(SOUND, JSON.stringify({ v: m.volume, m: m.muted })); } catch (_) {} };
+  function soundApply(m) {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(SOUND) || 'null'); } catch (_) {}
+    if (!s || typeof s.v !== 'number' || !(s.v >= 0 && s.v <= 1)) return;
+    m.volume = s.v;
+    if (!m.hasAttribute('muted')) m.muted = !!s.m;
+  }
+
   function media(m) {
     const src = (m.getAttribute('data-static') || '') + ' ' + (m.getAttribute('src') || ''); // (a channel airs a file again)
     if (m._src === src) return;
     const again = m._src !== undefined;
     m._src = src;
+    soundApply(m);
     m._at = parseFloat(m.dataset.resume || '0');
     m._t0 = performance.now();
     m._last = 0;
@@ -853,6 +869,7 @@
       'durationchange', 'progress', 'ended']) {
       m.addEventListener(t, () => {
         if (t === 'playing') { m._played = true; clearTimeout(m._dog); }
+        if (t === 'volumechange') { if (m._forcedMute) m._forcedMute = false; else soundSave(m); }
         if (t === 'play' && !m._played) watch(m);
         const pl = plOf(m);
         if (!pl) return;
