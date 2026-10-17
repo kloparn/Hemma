@@ -3,7 +3,45 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.9.3 (not released yet)
+## 0.9.4 (not released yet)
+
+A damaged database gives back more, and never starts Hemma as a new household.
+
+### Fixes
+
+- **A damaged database never starts Hemma as a new household** (#87). Damage at the start of the
+  file used to rescue nothing: Hemma then showed "Welcome to Hemma" over an empty database while
+  the household's data sat in the damaged copy. Now, when a rescue gets next to nothing back (no
+  rows, none of the household's accounts, or under a tenth of what was there), Hemma changes
+  nothing and doesn't start, and says why. After any rescue the welcome page stays closed until
+  an admin has read about it. If no admin account came back, everyone gets a page saying what
+  happened and where the way back is, and members who sign in see it too.
+- **The rescue keeps much more** (#87, #88). It now uses SQLite's own recovery (what
+  `sqlite3 .recover` does), page by page. Damage on a page that points to other pages no longer
+  loses the rows under it: a 3,000-note test that kept 0 now keeps all 3,000. A broken file
+  header or a file cut short is rescued too. Rows that can't be put back where they belong are
+  kept in a `lost_and_found` table, not thrown away.
+- **The rescue says what was kept, in the household's words** (#88): "2,944 of 3,000 rows were
+  kept - notes on the board: 2,944 of 3,000". Hemma notes how many rows each kind of thing has
+  (`hemma.db.counts` in the data folder) to compare with.
+- **Damaged copies don't pile up** (#88). A copy that fails half-way (a full disk) is deleted,
+  and only the newest three `hemma.db.damaged-…` copies are kept.
+- **A start refused over the data is easy to see** (#92). The reason is in `hemma.log` too, and
+  it names versions: "This data was last used by Hemma 1.2 … Install Hemma 1.2 or newer again,
+  or put back the copy made before the change: hemma.db.before-format-3". Hemma then exits with
+  its own code (78), and the Pi's service no longer restarts it every 2 seconds.
+- **Going back to the version before is a swap** (#92): `hemma` ↔ `hemma.prev`, so the newer
+  one stays there to come back to. The guides also say how to put back the database from before
+  ([raspberry-pi.md](docs/raspberry-pi.md#going-back)). A new section, "A damaged database" in
+  [troubleshooting.md](docs/troubleshooting.md#a-damaged-database), covers getting more back.
+- **The installer copies the database** (#92) before the new program first opens it:
+  `hemma.db.before-install-<when>`, the newest three kept.
+- **A renamed field can't empty a column for older programs** (#92): a test fails when a
+  `FIELD_WAS` has no `breaks_older` migration at or after its data format (now part of
+  `FIELD_WAS`).
+- SQLite 3.54.1 (was 3.54.0), with its recovery extension.
+
+## 0.9.3 (2026-10-17)
 
 ### Fixes
 

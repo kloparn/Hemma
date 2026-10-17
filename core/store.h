@@ -30,13 +30,16 @@ typedef struct {
     size_t offset, size;
     bool secret;     /* stored, but never leaves the server (e.g. password hashes) */
     const char *was; /* the column's old name (FIELD_WAS): renamed at the next start, data kept */
+    int was_format;  /* ... the data format that renamed it (it needs a breaks_older migration from there) */
 } FieldDef;
 
 #define FIELD(T, member, type) {#member, type, offsetof(T, member), sizeof(((T *)0)->member), false, NULL}
 #define FIELD_SECRET(T, member, type) {#member, type, offsetof(T, member), sizeof(((T *)0)->member), true, NULL}
-/* A renamed field: FIELD_WAS(Note, body, F_STR, "text") moves the "text" column's data to "body".
-   Older programs would read the old column (empty now): add a migration that breaks_older too. */
-#define FIELD_WAS(T, member, type, old) {#member, type, offsetof(T, member), sizeof(((T *)0)->member), false, old}
+/* A renamed field: FIELD_WAS(Note, body, F_STR, "text", 2) moves the "text" column's data to "body" in data
+   format 2. Older programs would read the old column (empty now): format 2 (or later) must be a migration
+   that breaks_older - store_renames_unsafe() checks it, and store_test.c fails without one (issue #92). */
+#define FIELD_WAS(T, member, type, old, format)                                                                       \
+    {#member, type, offsetof(T, member), sizeof(((T *)0)->member), false, old, format}
 
 typedef struct Table {
     const char *name; /* table name: [a-z0-9_] */
@@ -47,6 +50,8 @@ typedef struct Table {
     bool api_hidden;  /* never exposed by /api (secrets such as session ids) */
     const char *api_owner; /* an F_INT person-id field: /api shows each member only their own rows
                               (admins see every row) - e.g. preferences, watch history */
+    const char *what; /* what its rows are, in the household's words ("notes on the board"): a rescue says
+                         what it kept in them. Set it in the module's init; NULL = the table's name */
     /* runtime */
     char *rows;
     int n, cap, next_id;
@@ -57,20 +62,31 @@ typedef struct Table {
 
 void store_register(Table *t); /* from module init hooks, before store_open */
 /* Opens dir/hemma.db, creates/extends tables, loads rows. A damaged file (PRAGMA quick_check, or a
-   table that can't be read to its end) is copied aside untouched as hemma.db.damaged-<when>, and
-   every row that can still be read goes into a fresh hemma.db (store_rescue_report says what
-   happened). False for a database it can't open, and for one a newer Hemma changed in a way this
-   one would misread (see the data format below). */
+   table that can't be read to its end) is copied aside untouched as hemma.db.damaged-<when> (the
+   newest 3 stay), and SQLite's recovery (third_party/sqlite/recover.c) reads every row it still can
+   into a fresh hemma.db (store_rescue_report says what was kept). When that gets next to nothing
+   back - no rows, none of the accounts, under a tenth of the census - nothing is changed and it
+   refuses (issue #87: Hemma started as a brand-new household). After every healthy open it notes
+   each table's rows beside the database (hemma.db.counts), what a rescue compares against.
+   False for a database it can't open, a refused rescue, and data a newer Hemma changed in a way
+   this one would misread (see the data format below): store_refused() tells those last two apart. */
 bool store_open(const char *dir);
 void store_close(void);
-void store_maintain(void); /* periodic: checkpoint the WAL, let SQLite optimise */
+void store_maintain(void); /* periodic: checkpoint the WAL, let SQLite optimise, note the rows */
 bool store_failed(void);   /* a write failed (disk full?) since start */
 bool store_damaged(void);  /* ... and SQLite said the file is damaged: a restart rescues what it can read */
 /* What the last store_open did about a damaged database, for people ("" = nothing), e.g.
-   "2026-10-14 10:02: the database was damaged (parts of it can't be read). The damaged file is kept
-   as hemma.db.damaged-2026-10-14-1002. 2872 rows were rescued into a fresh one; rows were lost in:
-   note." (SQLite's own words are in the log.) */
+   "2026-10-14 10:02: Hemma's data was damaged (parts of it couldn't be read). Nothing was deleted: the
+   damaged file is kept as hemma.db.damaged-2026-10-14-1002. 2,944 of 3,000 rows were kept - notes on
+   the board: 2,944 of 3,000." (SQLite's own words are in the log.) */
 const char *store_rescue_report(void);
+/* store_open left the data alone on purpose - a rescue that got next to nothing back, or data from a
+   newer Hemma - and store_refusal() says why, for people (it ends up in the log file too); restarting
+   won't change it (the program exits with its own code, HEMMA_EXIT_DATA). */
+bool store_refused(void);
+const char *store_refusal(void);
+void store_set_program(const char *version); /* this Hemma's version: kept with the data, named in refusals */
+const char *store_renames_unsafe(void);      /* a FIELD_WAS without its breaks_older migration ("table.field") */
 
 /* The data format (PRAGMA user_version): numbered migrations, oldest first. A start runs the ones
    past the file's format (a copy of the file is kept first, hemma.db.before-format-<n>, when one

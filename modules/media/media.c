@@ -1594,6 +1594,7 @@ static const Action actions[] = {
 
 static void init(void) {
     T_media_watch.api_owner = "person"; /* /api: watch history is for its person (and admins) */
+    T_media_watch.what = "watch history";
     store_register(&T_media_watch);
 }
 

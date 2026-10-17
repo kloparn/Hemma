@@ -211,42 +211,78 @@ static int64_t damaged_copy(const char *dir) {
     return size;
 }
 
-TEST(store_rescues_what_a_damaged_database_still_holds) {
-    /* issue #37: one damaged page in 3,000 notes, and Hemma started with 1,622 of them - the loader
-       took the damage for the end of the table - with nothing but "malformed" in the log */
-    const char *dir = test_tmpdir();
-    Table t = TABLE("note", Note, note_fields);
+/* A data folder with `notes` notes (and `people` people, when > 0), closed cleanly - so the census
+   (hemma.db.counts) knows them - and its file read into f. */
+typedef struct {
+    int id;
+    char name[24];
+} Who;
+static const FieldDef who_fields[] = {FIELD(Who, id, F_INT), FIELD(Who, name, F_STR)};
+
+static void filled(const char *dir, int notes, int people, Buf *f) {
+    Table t = TABLE("note", Note, note_fields), p = TABLE("person", Who, who_fields);
     store_register(&t);
+    if (people) store_register(&p);
     CHECK(store_open(dir));
     db_begin();
-    for (int i = 1; i <= 3000; i++) {
+    for (int i = 1; i <= notes; i++) {
         Note n = {0};
         snprintf(n.text, sizeof n.text, "note-%05d-on-the-fridge", i);
         tbl_put(&t, &n);
     }
+    for (int i = 1; i <= people; i++) {
+        Who w = {0};
+        snprintf(w.name, sizeof w.name, "person-%d-of-the-house", i);
+        tbl_put(&p, &w);
+    }
     db_commit();
-    store_close(); /* (the last connection: the WAL goes into the file) */
-    /* the page holding note 1500 turns to rubbish, as an SD card does after a power cut */
+    store_close(); /* (the last connection: the WAL goes into the file; the census is written) */
     char path[600];
     snprintf(path, sizeof path, "%s/hemma.db", dir);
+    buf_reset(f);
+    CHECK(file_read_all(path, f, 64u << 20));
+}
+
+static void put_file(const char *dir, const Buf *f, size_t len) {
+    char path[600];
+    snprintf(path, sizeof path, "%s/hemma.db", dir);
+    CHECK(file_write_atomic(path, f->p, len));
+}
+
+/* The page that holds `text` (the file's first one that does): false = none does. */
+static bool page_of(const Buf *f, const char *text, size_t *pg) {
+    size_t n = strlen(text), at = 0;
+    while (at + n <= f->len && memcmp(f->p + at, text, n) != 0) at++;
+    *pg = at / 4096 * 4096;
+    return at + n <= f->len;
+}
+
+TEST(store_rescues_what_a_damaged_database_still_holds) {
+    /* issue #37: one damaged page in 3,000 notes, and Hemma started with 1,622 of them - the loader
+       took the damage for the end of the table - with nothing but "malformed" in the log */
+    const char *dir = test_tmpdir();
     Buf f = {0};
-    CHECK(file_read_all(path, &f, 64u << 20));
-    size_t at = 0;
-    while (at + 11 <= f.len && memcmp(f.p + at, "note-01500-", 11) != 0) at++;
-    CHECK(at + 11 <= f.len);
-    memset(f.p + at / 4096 * 4096, 0xA5, 4096);
-    CHECK(file_write_atomic(path, f.p, f.len));
+    filled(dir, 3000, 0, &f);
+    /* the page holding note 1500 turns to rubbish, as an SD card does after a power cut */
+    size_t pg = 0;
+    CHECK(page_of(&f, "note-01500-", &pg));
+    memset(f.p + pg, 0xA5, 4096);
+    put_file(dir, &f, f.len);
 
     Table t2 = TABLE("note", Note, note_fields);
     store_register(&t2);
     CHECK(store_open(dir));
-    CHECK_HAS(store_rescue_report(), "the database was damaged");
-    CHECK_HAS(store_rescue_report(), "rows were lost in: note");
-    CHECK_HAS(store_rescue_report(), "The damaged file is kept as hemma.db.damaged-");
     int n = tbl_count(&t2);
     CHECK(n >= 2860 && n < 3000);          /* one page of notes lost (about 130 fit on one) ... */
     CHECK(tbl_get(&t2, 1500) == NULL);
     CHECK(tbl_get(&t2, 3000) != NULL);     /* ... and everything after it kept */
+    /* in the household's words, against the census (issue #88): not a table name and no count */
+    CHECK_HAS(store_rescue_report(), "Hemma's data was damaged (parts of it couldn't be read). Nothing was deleted: "
+                                     "the damaged file is kept as hemma.db.damaged-");
+    char want[80];
+    snprintf(want, sizeof want, "%d,%03d of 3,000 rows were kept - note: %d,%03d of 3,000.", n / 1000, n % 1000,
+             n / 1000, n % 1000);
+    CHECK_HAS(store_rescue_report(), want);
     CHECK_INT(damaged_copy(dir), (int)f.len); /* the damaged file, kept as it was */
     Note x = {0};
     tbl_put(&t2, &x);
@@ -263,24 +299,202 @@ TEST(store_rescues_what_a_damaged_database_still_holds) {
     buf_free(&f);
 }
 
-TEST(store_starts_afresh_from_a_file_that_is_no_database) {
+/* Issue #88: damage on the page that points to the notes' pages lost every one of them - a SELECT
+   stops at the first broken page of the tree; SQLite's recovery reads the pages under it anyway. */
+TEST(store_rescue_keeps_rows_under_a_damaged_tree_page) {
     const char *dir = test_tmpdir();
+    Buf f = {0};
+    filled(dir, 3000, 0, &f);
+    size_t interior = 0;
+    for (size_t pg = 4096; pg + 4096 <= f.len && !interior; pg += 4096)
+        if ((unsigned char)f.p[pg] == 0x05) interior = pg; /* (an interior page of a table's tree) */
+    CHECK(interior > 0);
+    memset(f.p + interior, 0xA5, 4096);
+    put_file(dir, &f, f.len);
+    Table t = TABLE("note", Note, note_fields);
+    store_register(&t);
+    CHECK(store_open(dir));
+    CHECK_INT(tbl_count(&t), 3000);
+    CHECK_HAS(store_rescue_report(), "All 3,000 rows were kept.");
+    store_close();
+    buf_free(&f);
+}
+
+/* Raw tables' rows (a cache Hemma rebuilds) under damaged tree pages: they stay in lost_and_found and
+   never go into the household's tables. A cache shaped unlike any of ours is only logged; one shaped
+   like the notes might have been notes, so the report counts it - but it's never put among them. */
+static void raw_table(const char *name, const char *columns, const char *insert, int n, long long *root) {
+    char sql[300];
+    snprintf(sql, sizeof sql, "CREATE TABLE %s (%s)", name, columns);
+    CHECK(db_exec(sql));
+    sqlite3_stmt *st = NULL;
+    CHECK(sqlite3_prepare_v2(db(), insert, -1, &st, NULL) == SQLITE_OK);
+    for (int i = 1; i <= n; i++) {
+        sqlite3_reset(st);
+        sqlite3_bind_int(st, 1, i);
+        CHECK(sqlite3_step(st) == SQLITE_DONE);
+    }
+    sqlite3_finalize(st);
+    *root = 0;
+    CHECK(sqlite3_prepare_v2(db(), "SELECT rootpage FROM sqlite_master WHERE name = ?1", -1, &st, NULL) == SQLITE_OK);
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    if (sqlite3_step(st) == SQLITE_ROW) *root = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+}
+
+TEST(store_rescue_keeps_a_caches_rows_out_of_the_households) {
+    const char *dir = test_tmpdir();
+    Table t = TABLE("note", Note, note_fields);
+    store_register(&t);
+    CHECK(store_open(dir));
+    db_begin();
+    for (int i = 1; i <= 300; i++) {
+        Note n = {0};
+        snprintf(n.text, sizeof n.text, "note-%05d-on-the-fridge", i);
+        tbl_put(&t, &n);
+    }
+    long long roots[2];
+    raw_table("cache", "id INTEGER PRIMARY KEY, path TEXT NOT NULL, size INTEGER NOT NULL",
+              "INSERT INTO cache (path, size) VALUES (printf('cached/%05d/some/file.mkv', ?1), ?1 * 1000)", 2000, &roots[0]);
+    raw_table("twin", "id INTEGER PRIMARY KEY, text TEXT NOT NULL",
+              "INSERT INTO twin (text) VALUES (printf('twin-%05d-looks-like-a-note', ?1))", 2000, &roots[1]);
+    db_commit();
+    store_close();
     char path[600];
+    snprintf(path, sizeof path, "%s/hemma.db", dir);
+    Buf f = {0};
+    CHECK(file_read_all(path, &f, 64u << 20));
+    for (int i = 0; i < 2; i++) {
+        size_t at = (size_t)(roots[i] - 1) * 4096;
+        CHECK(roots[i] > 1 && at + 4096 <= f.len && (unsigned char)f.p[at] == 0x05); /* (an interior page) */
+        memset(f.p + at, 0xA5, 4096);
+    }
+    put_file(dir, &f, f.len);
+
+    Table t2 = TABLE("note", Note, note_fields);
+    store_register(&t2);
+    CHECK(store_open(dir));
+    CHECK_INT(tbl_count(&t2), 300); /* (none of the twin's rows among the notes) */
+    const char *r = store_rescue_report(), *more = strstr(r, "All 300 rows were kept. ");
+    CHECK(more != NULL);
+    long long unsure = 0;
+    for (const char *p = more ? more + 24 : ""; (*p >= '0' && *p <= '9') || *p == ','; p++)
+        if (*p != ',') unsure = unsure * 10 + (*p - '0');
+    CHECK(unsure > 1000 && unsure <= 2000); /* the twin's rows that could have been notes - not the cache's */
+    CHECK_HAS(r, " more couldn't be put back in their place: they're in the table lost_and_found.");
+    sqlite3_stmt *st = NULL;
+    CHECK(sqlite3_prepare_v2(db(), "SELECT count(*) FROM lost_and_found", -1, &st, NULL) == SQLITE_OK);
+    CHECK(sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int64(st, 0) > 3500); /* (both kept, not thrown away) */
+    sqlite3_finalize(st);
+    store_close();
+    buf_free(&f);
+}
+
+/* Issue #87: a broken header (the first 16 bytes) - SQLite says "not a database" before reading a
+   table - and a file cut short: the recovery gets the rows back. */
+TEST(store_rescue_reads_past_a_broken_header_and_a_short_file) {
+    const char *dir = test_tmpdir();
+    Buf f = {0};
+    filled(dir, 300, 2, &f);
+    memcpy(f.p, "garbage garbage!", 16);
+    put_file(dir, &f, f.len);
+    Table t = TABLE("note", Note, note_fields), p = TABLE("person", Who, who_fields);
+    store_register(&t);
+    store_register(&p);
+    CHECK(store_open(dir));
+    CHECK_INT(tbl_count(&t), 300);
+    CHECK_INT(tbl_count(&p), 2);
+    CHECK_HAS(store_rescue_report(), "it isn't a database file any more");
+    store_close();
+
+    const char *dir2 = test_tmpdir();
+    filled(dir2, 3000, 2, &f);
+    put_file(dir2, &f, f.len / 4096 * 3 / 4 * 4096); /* (three quarters of it) */
+    Table t2 = TABLE("note", Note, note_fields), p2 = TABLE("person", Who, who_fields);
+    store_register(&t2);
+    store_register(&p2);
+    CHECK(store_open(dir2));
+    CHECK(tbl_count(&t2) > 1000 && tbl_count(&t2) < 3000);
+    CHECK_HAS(store_rescue_report(), " of 3,002 rows were kept - note: ");
+    store_close();
+    buf_free(&f);
+}
+
+/* Issue #87: Hemma started as a brand-new household over the real data ("Welcome to Hemma") when
+   the rescue got nothing back. Now it changes nothing and won't start: the file stays as it was. */
+TEST(store_refuses_a_rescue_that_gets_next_to_nothing_back) {
+    const char *dir = test_tmpdir();
+    char path[600], left[700];
     snprintf(path, sizeof path, "%s/hemma.db", dir);
     Buf junk = {0};
     for (int i = 0; i < 200; i++) buf_puts(&junk, "not a database at all. ");
     CHECK(file_write_atomic(path, junk.p, junk.len));
     Table t = TABLE("note", Note, note_fields);
     store_register(&t);
-    CHECK(store_open(dir));
-    CHECK_HAS(store_rescue_report(), "0 rows were rescued");
-    CHECK_HAS(store_rescue_report(), "rows were lost in: note");
-    CHECK_INT(damaged_copy(dir), (int)junk.len);
-    Note x = {0};
-    tbl_put(&t, &x);
-    CHECK(x.id > 0 && !store_failed());
+    CHECK(!store_open(dir));
+    CHECK(store_refused());
+    CHECK_HAS(store_refusal(), "a rescue got nothing back (0 rows). Hemma won't start on it and changed nothing");
+    CHECK_INT(damaged_copy(dir), -1); /* (the file itself is untouched: no copies of it piling up) */
+    Buf now = {0};
+    CHECK(file_read_all(path, &now, 1 << 20));
+    CHECK(now.len == junk.len && memcmp(now.p, junk.p, junk.len) == 0);
+    snprintf(left, sizeof left, "%s.rescue", path);
+    CHECK(!path_stat(left, NULL, NULL, NULL));
     store_close();
+
+    /* the household's accounts gone, the notes there: still no start - nobody could sign in, and the
+       first-run page would invite setting up again */
+    const char *dir2 = test_tmpdir();
+    Buf f = {0};
+    filled(dir2, 500, 3, &f);
+    size_t pg = 0;
+    CHECK(page_of(&f, "person-1-of-the-house", &pg));
+    memset(f.p + pg, 0xA5, 4096);
+    put_file(dir2, &f, f.len);
+    Table t2 = TABLE("note", Note, note_fields), p2 = TABLE("person", Who, who_fields);
+    store_register(&t2);
+    store_register(&p2);
+    CHECK(!store_open(dir2));
+    CHECK(store_refused());
+    CHECK_HAS(store_refusal(), "none of the household's accounts back (500 of 503 rows)");
+    store_close();
+    buf_free(&f);
+    buf_free(&now);
     buf_free(&junk);
+}
+
+/* Issue #88: a damaged copy per start would fill the disk (Restart=on-failure): the newest 3 stay. */
+TEST(store_keeps_the_newest_three_damaged_copies) {
+    const char *dir = test_tmpdir();
+    Buf f = {0};
+    filled(dir, 300, 0, &f);
+    static const char *const old[] = {"hemma.db.damaged-2026-01-01-0100", "hemma.db.damaged-2026-01-02-0100",
+                                      "hemma.db.damaged-2026-01-03-0100", "hemma.db.damaged-2026-01-04-0100"};
+    char p[700];
+    for (int i = 0; i < countof(old); i++) {
+        snprintf(p, sizeof p, "%s/%s", dir, old[i]);
+        CHECK(file_write_atomic(p, "x", 1));
+    }
+    snprintf(p, sizeof p, "%s/%s-wal", dir, old[0]);
+    CHECK(file_write_atomic(p, "x", 1));
+    size_t pg = 0;
+    CHECK(page_of(&f, "note-00150-", &pg));
+    memset(f.p + pg, 0xA5, 4096);
+    put_file(dir, &f, f.len);
+    Table t = TABLE("note", Note, note_fields);
+    store_register(&t);
+    CHECK(store_open(dir));
+    store_close();
+    int left = 0;
+    for (int i = 0; i < countof(old); i++) {
+        snprintf(p, sizeof p, "%s/%s", dir, old[i]);
+        left += path_stat(p, NULL, NULL, NULL);
+    }
+    CHECK_INT(left, 2); /* the two oldest went, the new one and the two newest old ones stay */
+    snprintf(p, sizeof p, "%s/%s-wal", dir, old[0]);
+    CHECK(!path_stat(p, NULL, NULL, NULL));
+    CHECK(damaged_copy(dir) > 1);
+    buf_free(&f);
 }
 
 /* ======================================================= data format (issue #38) */
@@ -324,23 +538,35 @@ TEST(store_refuses_newer_data_it_would_misread) {
     static const StoreMigration breaks[] = {
         {1, false, "base", NULL}, {2, false, "a new table", NULL}, {3, true, "a rename", NULL}};
     store_test_migrations(breaks, 3);
+    store_set_program("1.2");
     Table t4 = TABLE("thing", Thing, thing_fields);
     store_register(&t4);
     CHECK(store_open(dir));
+    CHECK(!store_refused());
     store_close();
     store_test_migrations(NULL, 0);
+    store_set_program("1.0");
     Table t5 = TABLE("thing", Thing, thing_fields);
     store_register(&t5);
     CHECK(!store_open(dir));
+    /* issue #92: said in versions people have, with the way back (the copy made before format 3) */
+    CHECK(store_refused());
+    char want[300];
+    snprintf(want, sizeof want, "This data was last used by Hemma 1.2 (data format 3), and this Hemma 1.0 reads only up to "
+             "format %d - it would misread it, so it won't start. Install Hemma 1.2 or newer again, or put back the "
+             "copy made before the change: hemma.db.before-format-3.", store_format());
+    CHECK_STR(store_refusal(), want);
     store_close();
     /* the newer program again: fine */
     store_test_migrations(breaks, 3);
     Table t6 = TABLE("thing", Thing, thing_fields);
     store_register(&t6);
     CHECK(store_open(dir));
+    CHECK(!store_refused());
     CHECK_INT(tbl_count(&t6), 1);
     store_close();
     store_test_migrations(NULL, 0);
+    store_set_program(NULL);
 }
 
 typedef struct {
@@ -352,7 +578,7 @@ typedef struct {
     char title[16];
 } Item2;
 static const FieldDef item1_fields[] = {FIELD(Item1, id, F_INT), FIELD(Item1, name, F_STR)};
-static const FieldDef item2_fields[] = {FIELD(Item2, id, F_INT), FIELD_WAS(Item2, title, F_STR, "name")};
+static const FieldDef item2_fields[] = {FIELD(Item2, id, F_INT), FIELD_WAS(Item2, title, F_STR, "name", 2)};
 static int g_migrated;
 static bool shout(void) {
     g_migrated++;
@@ -388,4 +614,22 @@ TEST(store_migrations_run_once_after_a_copy_and_renames_keep_data) {
     CHECK_STR(((Item2 *)tbl_get(&t3, 1))->title, "BOX");
     store_close();
     store_test_migrations(NULL, 0);
+}
+
+/* Issue #92: a rename needs a breaks_older migration at its format or later - without one, an older
+   program re-adds the old column, empty, and shows those rows blank. */
+TEST(store_names_a_rename_without_its_breaking_migration) {
+    Table t = TABLE("item", Item2, item2_fields);
+    store_register(&t);
+    static const StoreMigration quiet[] = {{1, false, "base", NULL}, {2, false, "title for name", NULL}};
+    store_test_migrations(quiet, 2);
+    CHECK_STR(store_renames_unsafe(), "item.title");
+    static const StoreMigration loud[] = {{1, false, "base", NULL}, {2, true, "title for name", NULL}};
+    store_test_migrations(loud, 2);
+    CHECK(store_renames_unsafe() == NULL);
+    static const StoreMigration early[] = {{1, true, "base", NULL}, {2, false, "title for name", NULL}};
+    store_test_migrations(early, 2); /* (a breaking change before the rename doesn't cover it) */
+    CHECK_STR(store_renames_unsafe(), "item.title");
+    store_test_migrations(NULL, 0);
+    store_close();
 }

@@ -468,14 +468,26 @@ TEST(system_says_when_the_database_was_rescued) {
     char dir[512], path[600];
     str_copy(dir, sizeof dir, test_tmpdir());
     snprintf(path, sizeof path, "%s/hemma.db", dir);
-    Buf junk = {0};
-    for (int i = 0; i < 100; i++) buf_puts(&junk, "an SD card after a power cut. ");
-    CHECK(file_write_atomic(path, junk.p, junk.len));
     th_boot_in(dir);
     int adam = all_well(), eva = th_person("Eva");
+    for (int i = 0; i < 300; i++)
+        activity_add(adam, "📌", "", "news-line-%03d: something happened at home, told at some length so that "
+                                     "the lines fill a good number of the database's pages", i);
+    th_halt(); /* (a clean stop: Hemma notes how many rows there are) */
+    /* the page holding line 150 turns to rubbish, as an SD card does after a power cut */
+    Buf f = {0};
+    CHECK(file_read_all(path, &f, 64u << 20));
+    size_t at = 0, n = strlen("news-line-150:");
+    while (at + n <= f.len && memcmp(f.p + at, "news-line-150:", n) != 0) at++;
+    CHECK(at + n <= f.len);
+    memset(f.p + at / 4096 * 4096, 0xA5, 4096);
+    CHECK(file_write_atomic(path, f.p, f.len));
+    th_boot_in(dir);
+    auth_configure("system-test-salt", 1000);
     const char *h = th_page(adam, "/system");
     CHECK_HAS(h, "<b>Database rescued</b>");
-    CHECK_HAS(h, "The damaged file is kept as hemma.db.damaged-");
+    CHECK_HAS(h, "Nothing was deleted: the damaged file is kept as hemma.db.damaged-");
+    CHECK_HAS(h, " rows were kept - news on Home: "); /* (issue #88: in the household's words) */
     CHECK_HAS(h, "system.rescued_seen");
     CHECK_HAS(th_page(adam, "/"), "Hemma rescued what it could still read");
     CHECK(!strstr(th_page(eva, "/"), "rescued what it could")); /* members: nothing they can do about it */
@@ -484,7 +496,7 @@ TEST(system_says_when_the_database_was_rescued) {
     CHECK(!strstr(th_page(adam, "/system"), "Database rescued"));
     CHECK(!strstr(th_page(adam, "/"), "rescued what it could"));
     th_halt();
-    buf_free(&junk);
+    buf_free(&f);
 }
 
 TEST(system_watches_the_time_zone) {

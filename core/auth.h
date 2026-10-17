@@ -94,7 +94,11 @@ int auth_set_password(int person, const char *password, const Session *keep);
 bool auth_temporary(int person);
 
 /* ---- first run ---- */
-bool auth_setup_open(void); /* the welcome page is offered (no admin yet, never had one) */
+/* The welcome page is offered: no admin yet, never had one - and the data wasn't rescued from a damaged
+   file (SETTING_RESCUED, until an admin has read about it; issue #87: it invited setting Hemma up again
+   over the household's data). */
+bool auth_setup_open(void);
+bool auth_admin_can_sign_in(void); /* some admin account has a username and password */
 /* The one-time code the welcome page asks for ("7KQ4-M2XP"), made on first use: HEMMA_SETUP_CODE
    from the settings file when set (the Pi installer writes it), else Hemma's own, kept until the
    admin exists. "" once setup is over. Shown in the log at start; never on a page. */

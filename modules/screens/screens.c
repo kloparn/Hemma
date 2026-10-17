@@ -498,7 +498,9 @@ void screens_test_addresses(const char *a, const char *b) {
 /* ================================================================ module */
 
 static void init(void) {
+    T_screen.what = "screens";
     store_register(&T_screen);
+    T_screen_row.what = "screen rows";
     store_register(&T_screen_row);
 }
 

@@ -17,7 +17,7 @@
 #include "server.h"
 #include "store.h"
 
-#define HEMMA_VERSION "0.9.3" /* raised for every release (SECURITY.md, CHANGELOG.md) */
+#define HEMMA_VERSION "0.9.4" /* raised for every release (SECURITY.md, CHANGELOG.md) */
 /* With the commit the binary was built from: "0.6.0 (8242ca8f1a2b)", "-dirty" with uncommitted
    changes (build.ps1 and the Makefile pass -DHEMMA_COMMIT=...); just the version outside git. */
 #define HEMMA_STR_(x) #x
@@ -350,6 +350,10 @@ typedef struct {
     const char *env_file; /* the settings file (--env, default ".env"): a new install's secret goes there */
 } AppConfig;
 int app_main(const AppConfig *cfg);
+/* app_main's exit code for a start refused over the data (store_refused: a newer Hemma's format, a
+   rescue that got next to nothing back) - starting again won't change it, so deploy/hemma.service
+   doesn't restart on it (RestartPreventExitStatus=78; 78 = EX_CONFIG in sysexits.h). */
+#define HEMMA_EXIT_DATA 78
 /* How this instance was started (any field may be NULL/0 under tests); data_dir is always the
    folder app_boot opened. */
 const AppConfig *app_config(void);

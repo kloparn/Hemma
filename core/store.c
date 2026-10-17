@@ -4,10 +4,12 @@
 #include "db.h"
 #include "json.h"
 #include "plat.h"
+#include "../third_party/sqlite/sqlite3recover.h"
 
 #include <limits.h>
 
 #define MAX_TABLES 64
+#define DAMAGED_KEEP 3 /* damaged copies kept in the data folder: the newest few */
 
 typedef struct {
     sqlite3_stmt *insert, *upsert, *del;
@@ -18,7 +20,11 @@ static int ntables;
 static sqlite3 *g_db;
 static bool g_failed;
 static int g_last_err;     /* SQLite's code for the last write that failed */
-static char g_rescue[600]; /* store_rescue_report() */
+static char g_rescue[700]; /* store_rescue_report() */
+static bool g_refused;     /* store_refused(): the data was left alone, on purpose */
+static char g_refusal[800]; /* store_refusal() */
+static char g_dir[600];    /* the data folder store_open was given */
+static const char *g_program = ""; /* store_set_program(): this Hemma's version */
 static int g_tx_depth;
 /* Prepared statements by SQL text. Never evicted: the set of distinct SQL
    strings is fixed by the code, and evicting one an outer loop is still
@@ -430,15 +436,61 @@ static bool meta_set(const char *k, long long v) {
     return ok;
 }
 
-/* Before anything is changed: false = a newer Hemma's data this one would misread. */
+/* "program" in store_meta: the version of the newest Hemma that opened this data (a refusal names it). */
+static void meta_text(const char *k, char *out, size_t cap) {
+    out[0] = '\0';
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "SELECT v FROM store_meta WHERE k = ?1", -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, k, -1, SQLITE_STATIC);
+        if (sqlite3_step(st) == SQLITE_ROW && sqlite3_column_type(st, 0) == SQLITE_BLOB)
+            snprintf(out, cap, "%.*s", sqlite3_column_bytes(st, 0), (const char *)sqlite3_column_blob(st, 0));
+    }
+    sqlite3_finalize(st);
+}
+
+static bool meta_set_text(const char *k, const char *v) {
+    sqlite3_stmt *st = NULL;
+    bool ok = db_exec("CREATE TABLE IF NOT EXISTS store_meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL)") &&
+              sqlite3_prepare_v2(g_db, "INSERT INTO store_meta (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2",
+                                 -1, &st, NULL) == SQLITE_OK;
+    if (ok) {
+        sqlite3_bind_text(st, 1, k, -1, SQLITE_STATIC);
+        /* (a blob: v is an INTEGER column, where text such as "1.2" would turn into a number) */
+        sqlite3_bind_blob(st, 2, v, (int)strlen(v), SQLITE_STATIC);
+        ok = sqlite3_step(st) == SQLITE_DONE;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* Before anything is changed: false = a newer Hemma's data this one would misread. Issue #92: the
+   refusal says it in versions people have - which Hemma last used the data, which one this is - and
+   names the copy made before the change; store_refusal() keeps it for the data folder's log. */
 static bool format_ok(const char *path, int *have, bool *risky) {
     *have = (int)sql_int(g_db, "PRAGMA user_version");
     int mine = store_format(), floor = (int)sql_int(g_db, "SELECT v FROM store_meta WHERE k = 'min_reader'");
     if (*have > mine && floor > mine) {
-        log_error("store: %s was changed by a newer Hemma (data format %d, read right only from format %d on); this "
-                  "Hemma knows format %d and would misread it. Put the newer program back, or restore a backup "
-                  "made before it.",
-                  path, *have, floor, mine);
+        char by[40], back[720];
+        meta_text("program", by, sizeof by);
+        snprintf(back, sizeof back, "%s.before-format-%d", path, *have);
+        bool copy = path_stat(back, NULL, NULL, NULL);
+        const char *base = strrchr(back, '/');
+        snprintf(g_refusal, sizeof g_refusal,
+                 "This data was last used by %s%s (data format %d), and this Hemma%s%s reads only up to format %d - "
+                 "it would misread it, so it won't start. Install %s%s again%s%s.",
+                 by[0] ? "Hemma " : "a newer Hemma", by, *have, g_program[0] ? " " : "", g_program, mine,
+                 by[0] ? "Hemma " : "the newer Hemma", by[0] ? by : "", copy ? ", or put back the copy made before "
+                                                                              "the change: " : "",
+                 copy ? (base ? base + 1 : back) : "");
+        if (by[0]) { /* "Install Hemma 1.2 or newer again" */
+            char *at = strstr(g_refusal, " again");
+            if (at && (size_t)(at - g_refusal) + 16 < sizeof g_refusal) {
+                memmove(at + 9, at, strlen(at) + 1);
+                memcpy(at, " or newer", 9);
+            }
+        }
+        log_error("store: %s: %s", path, g_refusal);
+        g_refused = true;
         return false;
     }
     if (*have > mine)
@@ -501,33 +553,6 @@ static int check_file(char *why, size_t cap) {
     return verdict;
 }
 
-static bool copy_file(const char *from, const char *to) {
-    if (!path_stat(from, NULL, NULL, NULL)) return true; /* (nothing there: no WAL, say) */
-    FILE *in = file_open(from, "rb"), *out = in ? file_open(to, "wb") : NULL;
-    bool ok = in && out;
-    char buf[32 * 1024];
-    size_t n;
-    while (ok && (n = fread(buf, 1, sizeof buf, in)) > 0) ok = fwrite(buf, 1, n, out) == n;
-    ok = ok && !ferror(in) && file_sync(out);
-    if (out && fclose(out) != 0) ok = false;
-    if (in) fclose(in);
-    return ok;
-}
-
-/* Does the damaged file's table have that column? 1 yes, 0 no, -1 it can't tell (damage). */
-static int src_has(sqlite3 *src, const char *table, const char *col) {
-    sqlite3_stmt *st = NULL;
-    int r = -1;
-    if (sqlite3_prepare_v2(src, "SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2", -1, &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, table, -1, SQLITE_STATIC);
-        sqlite3_bind_text(st, 2, col, -1, SQLITE_STATIC);
-        int rc = sqlite3_step(st);
-        r = rc == SQLITE_ROW ? 1 : rc == SQLITE_DONE ? 0 : -1;
-    }
-    sqlite3_finalize(st);
-    return r;
-}
-
 static void unprepare(Table *t) {
     Stmts *s = t->impl;
     if (!s) return;
@@ -538,111 +563,326 @@ static void unprepare(Table *t) {
     t->impl = NULL;
 }
 
-/* The first row after id `after` (st: "... WHERE id > ?1 ORDER BY id LIMIT 1"): ROW, DONE or an error. */
-static int probe(sqlite3_stmt *st, long long after) {
-    sqlite3_reset(st);
-    sqlite3_bind_int64(st, 1, after);
-    return sqlite3_step(st);
+static bool copy_file(const char *from, const char *to) {
+    if (!path_stat(from, NULL, NULL, NULL)) return true; /* (nothing there: no WAL, say) */
+    FILE *in = file_open(from, "rb"), *out = in ? file_open(to, "wb") : NULL;
+    bool ok = in && out;
+    char buf[32 * 1024];
+    size_t n;
+    while (ok && (n = fread(buf, 1, sizeof buf, in)) > 0) ok = fwrite(buf, 1, n, out) == n;
+    ok = ok && !ferror(in) && file_sync(out);
+    if (out && fclose(out) != 0) ok = false;
+    if (in) fclose(in);
+    if (!ok) file_remove(to); /* (half a copy is no copy: issue #88 - a full disk left them on every start) */
+    return ok;
 }
 
-/* Reading on from *from failed (a damaged page): the first point past the damage that reads again
-   - 1, 2, 4, ... ids on, then back by halves - so only the damaged page's rows are lost. False:
-   nothing after it reads. */
-static bool skip_damage(sqlite3_stmt *st, long long *from) {
-    long long bad = *from, good = -1;
-    for (long long step = 1; bad + step <= INT_MAX; step *= 2) {
-        int rc = probe(st, bad + step);
-        if (rc == SQLITE_ROW || rc == SQLITE_DONE) {
-            good = bad + step;
-            break;
+/* ---- the census: how many rows each table had at the last healthy start ----
+   Kept beside the database (hemma.db.counts), not in it: a rescue says what it kept against it
+   ("notes on the board: 2,944 of 3,000") and sees when it got next to nothing back (issues #87, #88). */
+
+static void census_path(char *out, size_t cap) { snprintf(out, cap, "%s/hemma.db.counts", g_dir); }
+
+static void census_write(void) {
+    if (!g_dir[0]) return;
+    char path[640];
+    census_path(path, sizeof path);
+    Buf b = {0};
+    for (int i = 0; i < ntables; i++)
+        if (!tables[i]->memory_only) buf_printf(&b, "%s %d\n", tables[i]->name, tables[i]->n);
+    file_write_atomic(path, b.p ? b.p : "", b.len);
+    buf_free(&b);
+}
+
+/* The census's rows for a table, -1 = not known (no census yet, or the table is new). */
+static long long census_of(const Buf *census, const char *table) {
+    size_t n = strlen(table);
+    for (const char *p = census->p ? census->p : ""; *p;) {
+        const char *end = strchr(p, '\n');
+        if (!end) end = p + strlen(p);
+        if ((size_t)(end - p) > n + 1 && memcmp(p, table, n) == 0 && p[n] == ' ') return strtoll(p + n + 1, NULL, 10);
+        p = *end ? end + 1 : end;
+    }
+    return -1;
+}
+
+/* "2,944" */
+static void count_text(long long v, char *out, size_t cap) {
+    char raw[32];
+    snprintf(raw, sizeof raw, "%lld", v < 0 ? 0 : v);
+    size_t len = strlen(raw), o = 0;
+    for (size_t i = 0; i < len && o + 2 < cap; i++) {
+        if (i && (len - i) % 3 == 0) out[o++] = ',';
+        out[o++] = raw[i];
+    }
+    out[o] = '\0';
+}
+
+/* ---- damaged copies: the newest DAMAGED_KEEP stay ---- */
+
+typedef struct {
+    char name[200];
+} Kept;
+
+static int kept_cmp(const void *a, const void *b) { return strcmp(((const Kept *)a)->name, ((const Kept *)b)->name); }
+
+static void prune_damaged(void) {
+    DirIter *it = dir_open(g_dir);
+    DirEntry e;
+    Kept *list = NULL;
+    int n = 0, cap = 0;
+    while (it && dir_next(it, &e)) {
+        if (!str_starts(e.name, "hemma.db.damaged-") || str_ends(e.name, "-wal") || strlen(e.name) >= sizeof list->name)
+            continue;
+        if (n == cap) list = xrealloc(list, (size_t)(cap = cap ? cap * 2 : 8) * sizeof *list);
+        str_copy(list[n++].name, sizeof list->name, e.name);
+    }
+    dir_close(it);
+    if (n > DAMAGED_KEEP) {
+        qsort(list, (size_t)n, sizeof *list, kept_cmp); /* (names carry the day and time: oldest first) */
+        for (int i = 0; i < n - DAMAGED_KEEP; i++) {
+            char path[900];
+            snprintf(path, sizeof path, "%s/%s", g_dir, list[i].name);
+            file_remove(path);
+            snprintf(path, sizeof path, "%s/%s-wal", g_dir, list[i].name);
+            file_remove(path);
+            log_info("store: removed an older damaged copy, %s (the newest %d stay)", list[i].name, DAMAGED_KEEP);
         }
-        bad += step;
     }
-    if (good < 0) return false;
-    while (good - bad > 1) {
-        long long mid = bad + (good - bad) / 2;
-        int rc = probe(st, mid);
-        if (rc == SQLITE_ROW || rc == SQLITE_DONE) good = mid;
-        else bad = mid;
-    }
-    *from = good;
-    return true;
+    free(list);
 }
 
-/* Every row of t the damaged file still gives, into the fresh database (g_db), in id order. A
-   read that fails - a damaged page - skips past it (skip_damage): the rows on the damaged page are
-   lost, the ones after it aren't. */
-static void rescue_table(sqlite3 *src, Table *t, long long *rows, bool *lost) {
-    int present = src_has(src, t->name, "id");
-    if (present <= 0) {
-        *lost |= present < 0; /* (a table that didn't exist yet loses nothing) */
-        return;
+/* ---- the rescue ---- */
+
+typedef enum { RESCUED, RESCUE_REFUSED, RESCUE_FAILED } Rescue;
+
+/* What `what` a table holds, for people: its label (Table.what) or its name. */
+static const char *table_words(const Table *t) { return t->what && t->what[0] ? t->what : t->name; }
+
+static long long count_rows(sqlite3 *d, const char *table) {
+    char *sql = sqlite3_mprintf("SELECT count(*) FROM \"%w\"", table);
+    long long n = sql ? sql_int(d, sql) : 0;
+    sqlite3_free(sql);
+    return n;
+}
+
+/* SQLite's own recovery (third_party/sqlite/recover.c, what the shell's .recover does): it reads the
+   damaged file page by page - a broken header, a file cut short, damage high in a table's tree - and
+   writes every row it can still place into a fresh database at `to`. A plain SELECT stops at the
+   first broken page of a table's tree and loses everything under it (issue #88: 0 of 3,000 notes
+   where .recover got all of them back). */
+static bool recover_into(sqlite3 *src, const char *to, char *err, size_t cap) {
+    char side[720];
+    file_remove(to);
+    snprintf(side, sizeof side, "%s-journal", to);
+    file_remove(side);
+    sqlite3_recover *p = sqlite3_recover_init(src, "main", to);
+    if (!p) {
+        str_copy(err, cap, "out of memory");
+        return false;
     }
-    Buf sql = {0};
-    buf_puts(&sql, "SELECT \"id\"");
-    for (int i = 1; i < t->nfields; i++) {
-        const FieldDef *f = &t->fields[i];
-        if (src_has(src, t->name, f->name) > 0) buf_printf(&sql, ",\"%s\"", f->name);
-        else if (f->was && src_has(src, t->name, f->was) > 0) buf_printf(&sql, ",\"%s\"", f->was);
-        else buf_puts(&sql, f->type == F_STR || f->type == F_U64 ? ",''" : ",0");
-    }
-    buf_printf(&sql, " FROM \"%s\" WHERE \"id\" > ?1 ORDER BY \"id\" LIMIT 1", t->name);
+    sqlite3_recover_config(p, SQLITE_RECOVER_LOST_AND_FOUND, (void *)"lost_and_found"); /* (place_orphans) */
+    sqlite3_recover_run(p);
+    if (sqlite3_recover_errcode(p) != SQLITE_OK) str_copy(err, cap, sqlite3_recover_errmsg(p));
+    return sqlite3_recover_finish(p) == SQLITE_OK;
+}
+
+/* The table's columns in `d`, in order: 'T' text, 'I' integer (Hemma declares nothing else); 0 = no
+   such table there. */
+static int column_kinds(sqlite3 *d, const char *table, char *out, int cap) {
     sqlite3_stmt *st = NULL;
-    Stmts *s = t->impl;
-    if (sqlite3_prepare_v2(src, buf_cstr(&sql), -1, &st, NULL) != SQLITE_OK || !s) {
-        *lost = true;
-        sqlite3_finalize(st);
-        buf_free(&sql);
-        return;
+    int n = 0;
+    if (sqlite3_prepare_v2(d, "SELECT type FROM pragma_table_info(?1) ORDER BY cid", -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, table, -1, SQLITE_STATIC);
+        while (sqlite3_step(st) == SQLITE_ROW && n < cap) {
+            const char *ty = (const char *)sqlite3_column_text(st, 0);
+            out[n++] = ty && strstr(ty, "TEXT") ? 'T' : 'I';
+        }
     }
-    char *rec = xmalloc(t->rec_size);
-    long long last = 0;
-    for (;;) {
-        int rc = probe(st, last);
-        if (rc == SQLITE_DONE) break;
-        if (rc != SQLITE_ROW) { /* a damaged stretch: over it */
-            *lost = true;
-            if (!skip_damage(st, &last)) break;
+    sqlite3_finalize(st);
+    return n;
+}
+
+typedef struct {
+    Table *t; /* NULL: a table of the file that isn't one of ours (a cache) - never placed into */
+    char kinds[128];
+    int nk;
+    sqlite3_stmt *taken; /* SELECT 1 ... WHERE rowid = ?1 */
+    sqlite3_stmt *ins;   /* the INSERT for rows of ins_nfield fields */
+    int ins_nfield;
+} Home;
+
+static bool home_open(sqlite3 *d, Home *h, Table *t, const char *name) {
+    memset(h, 0, sizeof *h);
+    h->t = t;
+    h->nk = column_kinds(d, name, h->kinds, (int)sizeof h->kinds);
+    char *sql = h->nk > 0 ? sqlite3_mprintf("SELECT 1 FROM \"%w\" WHERE rowid = ?1", name) : NULL;
+    bool ok = sql && sqlite3_prepare_v2(d, sql, -1, &h->taken, NULL) == SQLITE_OK;
+    sqlite3_free(sql);
+    return ok;
+}
+
+/* Does every row of the page (rows: SELECT * FROM lost_and_found WHERE pgno = ...) fit h's table? */
+static bool page_fits(sqlite3_stmt *rows, int ncols, Home *h) {
+    bool ok = true, any = false;
+    sqlite3_reset(rows);
+    while (ok && sqlite3_step(rows) == SQLITE_ROW) {
+        any = true;
+        int nfield = sqlite3_column_int(rows, 2);
+        ok = nfield >= 1 && nfield <= h->nk && 4 + nfield <= ncols && sqlite3_column_type(rows, 4) == SQLITE_NULL;
+        for (int j = 1; ok && j < nfield; j++) {
+            int ty = sqlite3_column_type(rows, 4 + j);
+            ok = h->kinds[j] == 'T' ? ty == SQLITE_TEXT : ty == SQLITE_INTEGER;
+        }
+        if (ok) { /* (an id that's taken: another table's row, or a copy) */
+            sqlite3_reset(h->taken);
+            sqlite3_bind_int64(h->taken, 1, sqlite3_column_int64(rows, 3));
+            ok = sqlite3_step(h->taken) != SQLITE_ROW;
+        }
+    }
+    return ok && any;
+}
+
+static long long put_page(sqlite3 *d, sqlite3_stmt *rows, Home *h) {
+    long long placed = 0;
+    sqlite3_reset(rows);
+    while (sqlite3_step(rows) == SQLITE_ROW) {
+        int nfield = sqlite3_column_int(rows, 2);
+        if (!h->ins || h->ins_nfield != nfield) {
+            sqlite3_finalize(h->ins);
+            h->ins = NULL;
+            Buf sql = {0};
+            buf_printf(&sql, "INSERT INTO \"%s\" SELECT ?1", h->t->name); /* (the id, then the row's own values) */
+            for (int j = 1; j < nfield; j++) buf_printf(&sql, ", ?%d", j + 1);
+            for (int j = nfield; j < h->nk; j++) buf_puts(&sql, h->kinds[j] == 'T' ? ", ''" : ", 0"); /* (columns added later) */
+            if (sqlite3_prepare_v2(d, buf_cstr(&sql), -1, &h->ins, NULL) == SQLITE_OK) h->ins_nfield = nfield;
+            buf_free(&sql);
+            if (!h->ins) continue;
+        }
+        sqlite3_reset(h->ins);
+        sqlite3_bind_int64(h->ins, 1, sqlite3_column_int64(rows, 3));
+        for (int j = 1; j < nfield; j++) sqlite3_bind_value(h->ins, j + 1, sqlite3_column_value(rows, 4 + j));
+        if (sqlite3_step(h->ins) == SQLITE_DONE) placed++;
+    }
+    return placed;
+}
+
+/* Rows SQLite's recovery couldn't place in a table go to `lost_and_found` (rootpgno, pgno, nfield,
+   id, c0, c1 ...): their tree's page above them was the damaged one. Every row on one page belongs
+   to one table, so a page goes back where its rows fit exactly one table - the first column empty
+   (the id lives in the rowid), the rest text or integer where the table has text or integer, no id
+   that's taken - and that table is one of ours. The file's other tables with an integer id (none
+   today: media_file's id is text) count as places a page may fit too, so a cache's page never
+   lands in the household's data. Pages that fit none or more than one stay in lost_and_found (in
+   the rescued file, not thrown away). Returns the rows placed; *left = the rows still there,
+   *unsure = those of them on pages that fit one of ours and something else: the household's rows
+   Hemma couldn't tell apart. The rest (a cache's, most likely - Hemma rebuilds those) is only logged. */
+static long long place_orphans(sqlite3 *d, long long *left, long long *unsure) {
+    *left = *unsure = 0;
+    char probe[8];
+    if (column_kinds(d, "lost_and_found", probe, (int)sizeof probe) < 4) return 0; /* (nothing was lost) */
+    int cap = ntables + 8, nh = 0;
+    Home *homes = xmalloc((size_t)cap * sizeof *homes);
+    for (int i = 0; i < ntables; i++)
+        if (!tables[i]->memory_only && home_open(d, &homes[nh], tables[i], tables[i]->name)) nh++;
+    sqlite3_stmt *others = NULL;
+    sqlite3_prepare_v2(d,
+                       "SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) c WHERE m.type = 'table' AND "
+                       "m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND m.name <> 'lost_and_found' AND m.sql NOT LIKE "
+                       "'%WITHOUT ROWID%' AND c.cid = 0 AND c.pk = 1 AND upper(c.type) = 'INTEGER'",
+                       -1, &others, NULL);
+    while (others && sqlite3_step(others) == SQLITE_ROW) {
+        const char *name = (const char *)sqlite3_column_text(others, 0);
+        if (!name || store_table(name)) continue;
+        if (nh == cap) homes = xrealloc(homes, (size_t)(cap *= 2) * sizeof *homes);
+        if (home_open(d, &homes[nh], NULL, name)) nh++;
+    }
+    sqlite3_finalize(others);
+    long long placed = 0, *pgs = NULL;
+    int npg = 0, cappg = 0;
+    sqlite3_stmt *pages = NULL; /* (all of them first: placing a page deletes its rows) */
+    sqlite3_prepare_v2(d, "SELECT DISTINCT pgno FROM lost_and_found ORDER BY pgno", -1, &pages, NULL);
+    while (pages && sqlite3_step(pages) == SQLITE_ROW) {
+        if (npg == cappg) pgs = xrealloc(pgs, (size_t)(cappg = cappg ? cappg * 2 : 16) * sizeof *pgs);
+        pgs[npg++] = sqlite3_column_int64(pages, 0);
+    }
+    sqlite3_finalize(pages);
+    sqlite3_stmt *rows = NULL, *del = NULL, *count = NULL;
+    sqlite3_prepare_v2(d, "SELECT * FROM lost_and_found WHERE pgno = ?1", -1, &rows, NULL);
+    sqlite3_prepare_v2(d, "DELETE FROM lost_and_found WHERE pgno = ?1", -1, &del, NULL);
+    sqlite3_prepare_v2(d, "SELECT count(*) FROM lost_and_found WHERE pgno = ?1", -1, &count, NULL);
+    sqlite3_exec(d, "BEGIN", NULL, NULL, NULL);
+    for (int pi = 0; rows && del && pi < npg; pi++) {
+        sqlite3_reset(rows);
+        sqlite3_bind_int64(rows, 1, pgs[pi]);
+        int ncols = sqlite3_column_count(rows); /* rootpgno, pgno, nfield, id, then c0 ... */
+        Home *home = NULL;
+        int fits = 0, ours = 0;
+        for (int i = 0; i < nh; i++)
+            if (page_fits(rows, ncols, &homes[i])) home = &homes[i], fits++, ours += homes[i].t != NULL;
+        if (fits != 1 || !ours) {
+            if (ours && count) {
+                sqlite3_reset(count);
+                sqlite3_bind_int64(count, 1, pgs[pi]);
+                if (sqlite3_step(count) == SQLITE_ROW) *unsure += sqlite3_column_int64(count, 0);
+            }
             continue;
         }
-        long long id = sqlite3_column_int64(st, 0);
-        if (id <= last || id > INT_MAX) break; /* (a damaged index can't send it round in circles) */
-        memset(rec, 0, t->rec_size);
-        int iid = (int)id;
-        memcpy(rec, &iid, sizeof iid);
-        for (int i = 1; i < t->nfields; i++) read_column(&t->fields[i], st, i, rec);
-        terminate_strings(t, rec);
-        sqlite3_reset(s->upsert);
-        sqlite3_bind_int(s->upsert, 1, iid);
-        bind_fields(s->upsert, t, rec, 2);
-        if (sqlite3_step(s->upsert) == SQLITE_DONE) (*rows)++;
-        sqlite3_reset(s->upsert);
-        last = id;
+        placed += put_page(d, rows, home);
+        sqlite3_reset(rows);
+        sqlite3_reset(del);
+        sqlite3_bind_int64(del, 1, pgs[pi]);
+        sqlite3_step(del);
     }
-    free(rec);
-    sqlite3_finalize(st);
-    buf_free(&sql);
-    /* ids are never handed out twice: the old sequence, or - unreadable, with rows lost - room above */
-    sqlite3_stmt *q = NULL;
-    long long seq = -1;
-    if (sqlite3_prepare_v2(src, "SELECT seq FROM sqlite_sequence WHERE name = ?1", -1, &q, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(q, 1, t->name, -1, SQLITE_STATIC);
-        if (sqlite3_step(q) == SQLITE_ROW) seq = sqlite3_column_int64(q, 0);
+    sqlite3_exec(d, "COMMIT", NULL, NULL, NULL);
+    sqlite3_finalize(rows);
+    sqlite3_finalize(del);
+    sqlite3_finalize(count);
+    for (int i = 0; i < nh; i++) {
+        sqlite3_finalize(homes[i].taken);
+        sqlite3_finalize(homes[i].ins);
     }
-    sqlite3_finalize(q);
-    if (seq < 0 && *lost) seq = last + 1000;
-    if (seq > last && seq < INT_MAX) {
-        char up[200];
-        snprintf(up, sizeof up, "DELETE FROM sqlite_sequence WHERE name = '%s'; INSERT INTO sqlite_sequence (name, seq) "
-                 "VALUES ('%s', %lld);", t->name, t->name, seq); /* (table names are [a-z0-9_]) */
-        db_exec(up);
+    free(homes);
+    free(pgs);
+    *left = sql_int(d, "SELECT count(*) FROM lost_and_found");
+    if (*left == 0) sqlite3_exec(d, "DROP TABLE lost_and_found", NULL, NULL, NULL);
+    return placed;
+}
+
+/* ids are never handed out twice: each table's sequence goes past the old one (when it can still be
+   read) and past every id kept - with rows lost and no old sequence, 1,000 past. */
+static void keep_sequences(sqlite3 *src, sqlite3 *dst, bool lost) {
+    for (int i = 0; i < ntables; i++) {
+        Table *t = tables[i];
+        if (t->memory_only) continue;
+        char *sql = sqlite3_mprintf("SELECT max(\"id\") FROM \"%w\"", t->name);
+        long long top = sql ? sql_int(dst, sql) : 0, seq = -1;
+        sqlite3_free(sql);
+        sqlite3_stmt *q = NULL;
+        if (sqlite3_prepare_v2(src, "SELECT seq FROM sqlite_sequence WHERE name = ?1", -1, &q, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(q, 1, t->name, -1, SQLITE_STATIC);
+            if (sqlite3_step(q) == SQLITE_ROW) seq = sqlite3_column_int64(q, 0);
+        }
+        sqlite3_finalize(q);
+        if (seq < top) seq = top + (lost ? 1000 : 0);
+        if (seq <= 0 || seq >= INT_MAX) continue;
+        sql = sqlite3_mprintf("DELETE FROM sqlite_sequence WHERE name = %Q;"
+                              "INSERT INTO sqlite_sequence (name, seq) VALUES (%Q, %lld);",
+                              t->name, t->name, seq);
+        if (sql) sqlite3_exec(dst, sql, NULL, NULL, NULL);
+        sqlite3_free(sql);
     }
 }
 
-/* The damaged file is copied aside untouched (hemma.db.damaged-<when>, its WAL too); every row
-   that can still be read goes into a fresh file that takes its place. g_db is the damaged one. */
-static bool rescue(const char *path, const char *why) {
-    char day[11], hm[6], kept[700], tmp[700], side[720];
+/* The damaged file is copied aside untouched (hemma.db.damaged-<when>, its WAL too), and SQLite's
+   recovery reads what it can into a fresh file. Then the verdict (issue #87): next to nothing back -
+   no rows at all, none of the household's accounts, or under a tenth of what the census says there
+   was - is no rescue: Hemma would start as a brand-new household over the real data (the welcome
+   page, "set it up again"). The file stays exactly as it was and Hemma won't start (RESCUE_REFUSED,
+   store_refusal says why). Otherwise the fresh file takes its place and store_rescue_report says,
+   in the household's words, what was kept. g_db is the damaged one. */
+static Rescue rescue(const char *path, const char *why) {
+    char day[11], hm[6], kept[700], kept_wal[720], tmp[700], side[720];
     int64_t now = now_sec();
     fmt_ymd(now, day);
     fmt_hm(now, hm);
@@ -650,52 +890,85 @@ static bool rescue(const char *path, const char *why) {
     for (int k = 2; k < 100 && path_stat(kept, NULL, NULL, NULL); k++)
         snprintf(kept, sizeof kept, "%s.damaged-%s-%c%c%c%c-%d", path, day, hm[0], hm[1], hm[3], hm[4], k);
     snprintf(side, sizeof side, "%s-wal", path);
-    char kept_wal[720];
     snprintf(kept_wal, sizeof kept_wal, "%s-wal", kept);
     if (!copy_file(path, kept) || !copy_file(side, kept_wal)) {
+        file_remove(kept);
+        file_remove(kept_wal);
         log_error("store: couldn't keep a copy of the damaged %s as %s - not touching it (is the disk full?)", path, kept);
-        return false;
+        return RESCUE_FAILED;
     }
+    prune_damaged();
     snprintf(tmp, sizeof tmp, "%s.rescue", path);
-    file_remove(tmp);
-    snprintf(side, sizeof side, "%s-journal", tmp);
-    file_remove(side);
-    sqlite3 *src = g_db, *dst = NULL;
-    if (sqlite3_open_v2(tmp, &dst, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK) {
-        log_error("store: couldn't make %s: %s", tmp, dst ? sqlite3_errmsg(dst) : "out of memory");
+    char err[200] = "";
+    if (!recover_into(g_db, tmp, err, sizeof err))
+        log_warn("store: the recovery stopped early (%s) - going on with what it got", err[0] ? err : "?");
+    sqlite3 *dst = NULL;
+    if (sqlite3_open_v2(tmp, &dst, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+        log_error("store: couldn't open what the recovery wrote (%s): %s", tmp, dst ? sqlite3_errmsg(dst) : "?");
         sqlite3_close(dst);
-        return false;
+        file_remove(tmp);
+        return RESCUE_FAILED;
     }
-    g_db = dst;
-    db_exec("PRAGMA journal_mode=DELETE"); /* (one file: it simply takes hemma.db's place) */
-    char line[48];
-    snprintf(line, sizeof line, "PRAGMA user_version = %d", (int)sql_int(src, "PRAGMA user_version"));
-    db_exec(line); /* the data's format comes along: migrations past it still run, the others don't again */
-    long long rows = 0, floor = sql_int(src, "SELECT v FROM store_meta WHERE k = 'min_reader'");
-    if (floor) meta_set("min_reader", floor);
-    Buf lost = {0}; /* "note, booking, pref and 4 more tables" */
+    long long left = 0, orphans = 0, placed = place_orphans(dst, &left, &orphans);
+    if (placed || left)
+        log_info("store: %lld rows the recovery couldn't place went back to their tables; left in lost_and_found: %lld "
+                 "that fit more than one and %lld that fit none (a cache's, most likely)",
+                 placed, orphans, left - orphans);
+    /* what came back, table by table, against the census */
+    char cpath[640];
+    census_path(cpath, sizeof cpath);
+    Buf census = {0};
+    bool have_census = file_read_all(cpath, &census, 1 << 20);
+    long long kept_rows = 0, was_rows = 0, people = -1, was_people = -1;
+    Buf lost = {0}; /* "notes on the board: 2,944 of 3,000, bookings: 12 of 40 and 2 more" */
     int nlost = 0;
-    bool ok = true;
-    db_begin();
-    for (int i = 0; i < ntables && ok; i++) {
+    bool unknown = !have_census;
+    for (int i = 0; i < ntables; i++) {
         Table *t = tables[i];
         if (t->memory_only) continue;
-        bool l = false;
-        ok = ensure_schema(t) && prepare_stmts(t);
-        if (ok) rescue_table(src, t, &rows, &l);
-        if (l && ++nlost <= 3) buf_printf(&lost, "%s%s", lost.len ? ", " : "", t->name);
-        unprepare(t);
+        long long n = count_rows(dst, t->name), was = have_census ? census_of(&census, t->name) : -1;
+        kept_rows += n;
+        if (was >= 0) was_rows += was;
+        else unknown = true;
+        if (str_eq(t->name, "person")) people = n, was_people = was;
+        if (was > n && ++nlost <= 3) {
+            char a[24], b2[24];
+            count_text(n, a, sizeof a);
+            count_text(was, b2, sizeof b2);
+            buf_printf(&lost, "%s%s: %s of %s", lost.len ? ", " : "", table_words(t), a, b2);
+        }
     }
-    if (nlost > 3) buf_printf(&lost, " and %d more table%s", nlost - 3, nlost - 3 == 1 ? "" : "s");
-    db_commit();
-    sqlite3_close(dst);
-    g_db = src;
-    if (!ok) {
+    if (nlost > 3) buf_printf(&lost, " and %d more", nlost - 3);
+    buf_free(&census);
+    char k[24], w[24];
+    count_text(kept_rows, k, sizeof k);
+    count_text(was_rows, w, sizeof w);
+    const char *nothing = NULL;
+    if (kept_rows == 0) nothing = "nothing";
+    else if (people == 0 && was_people != 0) nothing = "none of the household's accounts";
+    else if (have_census && was_rows >= 20 && kept_rows * 10 < was_rows) nothing = "next to nothing";
+    if (nothing) {
+        sqlite3_close(dst);
         file_remove(tmp);
+        file_remove(kept); /* (the file itself stays as it was: the copy would only be one more of it) */
+        file_remove(kept_wal);
+        snprintf(g_refusal, sizeof g_refusal,
+                 "Hemma's data in %s is damaged (%s), and a rescue got %s back (%s%s%s rows). Hemma won't start on "
+                 "it and changed nothing - starting as a new household would build over your data. Get it back "
+                 "from a backup, or try SQLite's own .recover on a copy (docs/troubleshooting.md, \"A damaged "
+                 "database\"); to really start over, move hemma.db away first.",
+                 path, strstr(why, "not a database") ? "it isn't a database file any more" : "parts of it can't be read",
+                 nothing, k, have_census && was_rows ? " of " : "", have_census && was_rows ? w : "");
+        g_refused = true;
         buf_free(&lost);
-        return false;
+        return RESCUE_REFUSED;
     }
-    sqlite3_close(src);
+    keep_sequences(g_db, dst, nlost > 0 || unknown);
+    char line[48];
+    snprintf(line, sizeof line, "PRAGMA user_version = %d", (int)sql_int(g_db, "PRAGMA user_version"));
+    if (sql_int(dst, "PRAGMA user_version") == 0) sqlite3_exec(dst, line, NULL, NULL, NULL);
+    sqlite3_close(dst);
+    sqlite3_close(g_db);
     g_db = NULL;
     file_remove(path);
     snprintf(side, sizeof side, "%s-wal", path);
@@ -705,17 +978,27 @@ static bool rescue(const char *path, const char *why) {
     if (!file_replace(tmp, path)) {
         log_error("store: couldn't put the rescued database in place: it's %s - rename it to %s", tmp, path);
         buf_free(&lost);
-        return false;
+        return RESCUE_FAILED;
     }
     const char *base = strrchr(kept, '/'); /* (SQLite's own words go to the log; people get these) */
-    snprintf(g_rescue, sizeof g_rescue,
-             "%s %s: the database was damaged (%s). The damaged file is kept as %s. %lld row%s rescued into a fresh "
-             "one; %s%s.",
-             day, hm, strstr(why, "not a database") ? "it isn't a database file any more" : "parts of it can't be read",
-             base ? base + 1 : kept, rows, rows == 1 ? " was" : "s were",
-             lost.len ? "rows were lost in: " : "every table could be read to its end", buf_cstr(&lost));
+    int n = snprintf(g_rescue, sizeof g_rescue,
+                     "%s %s: Hemma's data was damaged (%s). Nothing was deleted: the damaged file is kept as %s. ", day, hm,
+                     strstr(why, "not a database") ? "it isn't a database file any more" : "parts of it couldn't be read",
+                     base ? base + 1 : kept);
+    if (n > 0 && (size_t)n < sizeof g_rescue) {
+        if (unknown) snprintf(g_rescue + n, sizeof g_rescue - (size_t)n, "%s rows were kept%s%s.", k,
+                              lost.len ? "; fewer than before in " : "", buf_cstr(&lost));
+        else if (lost.len) snprintf(g_rescue + n, sizeof g_rescue - (size_t)n, "%s of %s rows were kept - %s.", k, w, buf_cstr(&lost));
+        else snprintf(g_rescue + n, sizeof g_rescue - (size_t)n, "All %s rows were kept.", k);
+    }
+    size_t used = strlen(g_rescue);
+    if (orphans > 0 && used < sizeof g_rescue) {
+        char o[24];
+        count_text(orphans, o, sizeof o);
+        snprintf(g_rescue + used, sizeof g_rescue - used, " %s more couldn't be put back in their place: they're in the table lost_and_found.", o);
+    }
     buf_free(&lost);
-    return true;
+    return RESCUED;
 }
 
 /* =========================================================== open / close */
@@ -772,9 +1055,11 @@ static int open_tables(const char *path) {
         result = load(t);
         rows += t->n;
     }
+    if (result > 0 && have <= store_format() && g_program[0]) meta_set_text("program", g_program); /* (the newest one) */
     if (result > 0) {
         db_commit();
         log_info("store: %lld rows from %s (SQLite %s)", rows, path, sqlite3_libversion());
+        census_write();
     } else {
         g_tx_depth = 0; /* (nothing half-changed stays behind) */
         db_exec("ROLLBACK");
@@ -789,7 +1074,9 @@ bool store_open(const char *dir) {
     }
     char path[600];
     snprintf(path, sizeof path, "%s/hemma.db", dir);
-    g_rescue[0] = '\0';
+    str_copy(g_dir, sizeof g_dir, dir);
+    g_rescue[0] = g_refusal[0] = '\0';
+    g_refused = false;
     for (int attempt = 0;; attempt++) {
         if (!open_file(path)) return false;
         char why[200];
@@ -816,7 +1103,9 @@ bool store_open(const char *dir) {
             return false;
         }
         log_error("store: %s is damaged (%s): rescuing every row that can still be read", path, why);
-        if (!rescue(path, why)) {
+        Rescue r = rescue(path, why);
+        if (r != RESCUED) {
+            if (r == RESCUE_REFUSED) log_error("store: %s", g_refusal);
             close_file();
             return false;
         }
@@ -824,12 +1113,39 @@ bool store_open(const char *dir) {
     }
 }
 
+bool store_refused(void) { return g_refused; }
+const char *store_refusal(void) { return g_refusal; }
+void store_set_program(const char *version) { g_program = version ? version : ""; }
+
+/* Issue #92: a rename (FIELD_WAS) with no breaks_older migration at or after its format leaves an
+   older program re-adding the old column, empty - its rows look blank there. NULL = every rename is
+   covered; else "table.field". */
+const char *store_renames_unsafe(void) {
+    static char bad[96];
+    for (int i = 0; i < ntables; i++) {
+        const Table *t = tables[i];
+        for (int f = 0; f < t->nfields; f++) {
+            const FieldDef *d = &t->fields[f];
+            if (!d->was) continue;
+            bool covered = false;
+            for (int m = 0; m < g_nmigs && !covered; m++) covered = g_migs[m].breaks_older && g_migs[m].format >= d->was_format;
+            if (d->was_format <= 0 || !covered) {
+                snprintf(bad, sizeof bad, "%s.%s", t->name, d->name);
+                return bad;
+            }
+        }
+    }
+    return NULL;
+}
+
 void store_maintain(void) {
     reset_cached();
     db_exec("PRAGMA optimize; PRAGMA wal_checkpoint(TRUNCATE);");
+    if (g_db) census_write(); /* (what's in memory is what the household has) */
 }
 
 void store_close(void) {
+    if (g_db && !g_failed) census_write(); /* (a clean stop: the counts a rescue would compare with) */
     unload_tables();
     ntables = 0;
     for (int i = 0; i < g_nprep; i++) {

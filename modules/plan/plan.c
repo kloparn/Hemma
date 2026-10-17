@@ -307,9 +307,13 @@ int plan_open_items(void) {
 /* ================================================================ module */
 
 static void init(void) {
+    T_task.what = "to-dos";
     store_register(&T_task);
+    T_item.what = "shopping list items";
     store_register(&T_item);
+    T_bought.what = "shopping history";
     store_register(&T_bought);
+    T_event.what = "calendar events";
     store_register(&T_event);
 }
 

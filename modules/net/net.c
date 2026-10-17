@@ -1276,7 +1276,10 @@ static void health(Ctx *c, Health *h) {
     }
 }
 
-static void init(void) { store_register(&T_device); }
+static void init(void) {
+    T_device.what = "network devices";
+    store_register(&T_device);
+}
 
 static void start(void) {
     memset(&S, 0, sizeof S);
