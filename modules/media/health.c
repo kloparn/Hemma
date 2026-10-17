@@ -146,26 +146,22 @@ void media_health(Ctx *c, Health *h) {
                            NULL);
             }
             if (r->free >= 0) {
-                /* Room for new videos counts, not a share of the disk (issue #29: 95% used said "nearly
-                   full" with 20 GB free - and 400 GB on an 8 TB disk - while the System page's check of
-                   the same disk said OK): about two of the library's biggest, 2 GB at least, 20 at most. */
-                int64_t big = biggest_video(r->path), want = CLAMP(2 * big, 2LL << 30, 20LL << 30);
-                if (r->free < want) {
-                    char bg[24];
-                    media_size_text(r->free, sz, sizeof sz);
-                    media_size_text(big, bg, sizeof bg);
-                    int k = snprintf(d, sizeof d, "The disk with %s%s has %s free", r->path,
-                                     r->data_disk ? " (Hemma's data is on it too)" : "", sz);
-                    if (k > 0 && (size_t)k < sizeof d && 2 * big > (2LL << 30))
-                        snprintf(d + k, sizeof d - (size_t)k, ": less than two of the library's biggest videos (%s).", bg);
-                    else if (k > 0 && (size_t)k < sizeof d)
-                        snprintf(d + k, sizeof d - (size_t)k, ": less than 2 GB.");
-                    health_add(h, HEALTH_WARN, "Library disk nearly full", d,
-                               "Delete or move some videos - or keep only the most compatible version of converted "
-                               "ones (Library settings).",
-                               "/media/settings");
-                    trouble++;
-                }
+                /* Room for new videos counts, not a share of the disk (issue #29): what uploading or
+                   converting a video as big as the library's biggest takes - itself and the reserve
+                   (room.c holds jobs to the same), 2 GB at least, 20 at most. The System page makes
+                   one row per disk of it (issue #95: this check and its own "Disk space" said "nearly
+                   full" and "OK" about the same disk). */
+                int64_t big = biggest_video(r->path), want = CLAMP(big + MEDIA_RESERVE, 2LL << 30, 20LL << 30);
+                char why[200], bg[24];
+                media_size_text(big, bg, sizeof bg);
+                if (big > 0) snprintf(why, sizeof why, "to upload or convert a video as big as its biggest (%s)", bg);
+                else snprintf(why, sizeof why, "for new videos");
+                HealthDisk disk = {.what = "the library", .path = r->path, .free = r->free, .total = r->total,
+                                   .data_disk = r->data_disk, .want = want, .why = why,
+                                   .todo = "Delete or move some videos - or keep only the most compatible version of "
+                                           "converted ones (Library settings).",
+                                   .link = "/media/settings"};
+                health_disk(h, &disk);
                 if (least < 0 || r->free < least) least = r->free;
             }
         }
@@ -182,6 +178,22 @@ void media_health(Ctx *c, Health *h) {
             }
             health_add(h, HEALTH_OK, "Films and series", d, NULL, "/media/settings");
         }
+    }
+
+    /* watch history that found no video after the last scan (issue #93: it stayed behind without a word) */
+    char labels[3][100];
+    bool away = false;
+    int lost = media_history_lost(labels, countof(labels), &away);
+    if (lost && !away) {
+        int k = snprintf(d, sizeof d, "The history of %d video%s couldn't be matched to one in the library", lost,
+                         lost == 1 ? "" : "s");
+        for (int i = 0, shown = 0; i < lost && i < countof(labels) && k > 0 && (size_t)k < sizeof d; i++) {
+            if (!labels[i][0]) continue;
+            k += snprintf(d + k, sizeof d - (size_t)k, "%s%s", shown++ ? ", " : ": ", labels[i]);
+        }
+        if (k > 0 && (size_t)k < sizeof d) snprintf(d + k, sizeof d - (size_t)k, "%s.", lost > countof(labels) ? "..." : "");
+        health_add(h, HEALTH_INFO, "Watch history", d,
+                   "Deleted or replaced on purpose? Library settings can forget it.", "/media/settings");
     }
 
     /* making videos play everywhere */

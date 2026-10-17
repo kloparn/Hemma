@@ -168,7 +168,7 @@ typedef struct {
 } Scan;
 
 static void note_left(MediaLeft **list, int *n, int *all, int root, const char *rel, int64_t size, int64_t mtime,
-                      char why) {
+                      char why, int64_t duration_ms) {
     (*all)++;
     if (*n >= MEDIA_LEFT_MAX) return;
     if (!*list) *list = xcalloc(MEDIA_LEFT_MAX, sizeof **list);
@@ -177,6 +177,7 @@ static void note_left(MediaLeft **list, int *n, int *all, int root, const char *
     str_copy(l->rel, sizeof l->rel, rel);
     l->size = size;
     l->mtime = mtime;
+    l->duration_ms = duration_ms;
     l->why = why;
 }
 
@@ -213,8 +214,45 @@ static void parse_name(const char *root_nm, const char *rel, MediaName *out, boo
     parse(root_nm, plain, out);
 }
 
-/* A "sample..." that runs this long (the probe says) is a real video, not a scene's preview clip. */
-static bool long_sample(const MediaFile *f) { return f->probe.duration_ms >= MEDIA_SAMPLE_LONG_S * 1000LL; }
+/* Left out by the last scan for its name and length, and unchanged since: what the probe said then. */
+static const MediaLeft *old_left(const Scan *sc, int root, const char *rel, int64_t size, int64_t mtime) {
+    const MediaIndex *o = sc->old;
+    for (int i = 0; o && i < o->nleft; i++) {
+        const MediaLeft *l = &o->left[i];
+        if (l->duration_ms > 0 && l->size == size && l->mtime == mtime && str_eq(l->rel, rel) &&
+            l->root < o->nroots && str_eq(o->roots[l->root], sc->roots[root]))
+            return l;
+    }
+    return NULL;
+}
+
+/* An extra only by its name ("Sample Film", "The.Sample", "Film-featurette") that runs long is a real
+   video - and so is one whose length the probe can't read (TS, WMV, MPEG-PS: issue #94 - it used to
+   be left out as "short"). Extras by their folder never are. */
+static bool named_but_real(const MediaFile *f) {
+    if (!f->name.sample && !f->name.named) return false;
+    int64_t limit = (f->name.sample ? MEDIA_SAMPLE_LONG_S : MEDIA_EXTRA_LONG_S) * 1000LL;
+    return f->probe.duration_ms <= 0 || f->probe.duration_ms >= limit;
+}
+
+/* A video's content without reading all of it: its size, and its first and last 64 KB (issue #93:
+   renamed, or moved within the library, it's still the same file). 0 = can't be read. */
+static uint64_t fingerprint(const char *path, int64_t size) {
+    enum { CHUNK = 64 << 10 };
+    FILE *f = file_open(path, "rb");
+    if (!f) return 0;
+    char *buf = xmalloc(2 * CHUNK);
+    size_t a = fread(buf, 1, CHUNK, f), b = 0;
+    if (size > 2 * CHUNK) {
+        if (file_seek(f, size - CHUNK)) b = fread(buf + a, 1, CHUNK, f);
+    } else if (size > CHUNK) {
+        b = fread(buf + a, 1, CHUNK, f);
+    }
+    fclose(f);
+    uint64_t h = a ? hash64(buf, a + b) ^ ((uint64_t)size * 0x9E3779B97F4A7C15ULL) : 0;
+    free(buf);
+    return h;
+}
 
 static void add_file(Scan *sc, int root, const char *rel, char type, int64_t size, int64_t mtime) {
     if (sc->n == sc->cap) {
@@ -231,25 +269,35 @@ static void add_file(Scan *sc, int root, const char *rel, char type, int64_t siz
     f->id = media_make_id(sc->roots[root], rel);
     if (type == MF_VIDEO) {
         parse_name(root_name(sc->roots[root]), rel, &f->name, false);
-        if (f->name.extra && !f->name.sample) { /* trailers, bonus material: left out, and listed (issue #28) */
-            note_left(&sc->left, &sc->nleft, &sc->nleft_all, root, rel, size, mtime, MEDIA_LEFT_EXTRA);
+        if (f->name.extra && !f->name.sample && !f->name.named) { /* an Extras folder's: left out, and listed (issue #28) */
+            note_left(&sc->left, &sc->nleft, &sc->nleft_all, root, rel, size, mtime, MEDIA_LEFT_EXTRA, 0);
             return;
         }
         const MediaFile *o = sc->old ? index_find(sc->old, f->id) : NULL;
+        const MediaLeft *l = !o && (f->name.sample || f->name.named) ? old_left(sc, root, rel, size, mtime) : NULL;
         if (o && o->type == MF_VIDEO && o->size == size && o->mtime == mtime) {
             f->probe = o->probe;
+        } else if (l) {
+            f->probe.duration_ms = l->duration_ms; /* (left out last time, unchanged: as short as it was) */
         } else {
             char path[1024];
             join_path(sc->roots[root], rel, path, sizeof path);
             media_probe_file(path, &f->probe);
             sc->probed++;
         }
-        if (f->name.sample) { /* "Sample Film (2021)": a scene's preview clip is short, a film isn't */
-            if (!long_sample(f)) {
-                note_left(&sc->left, &sc->nleft, &sc->nleft_all, root, rel, size, mtime, MEDIA_LEFT_SAMPLE);
+        if (f->name.sample || f->name.named) { /* "Sample Film (2021)", "Film-trailer": an extra is short, a film isn't */
+            if (!named_but_real(f)) {
+                note_left(&sc->left, &sc->nleft, &sc->nleft_all, root, rel, size, mtime,
+                          f->name.sample ? MEDIA_LEFT_SAMPLE : MEDIA_LEFT_NAMED, f->probe.duration_ms);
                 return;
             }
             parse_name(root_name(sc->roots[root]), rel, &f->name, true);
+        }
+        if (o && o->type == MF_VIDEO && o->size == size && o->mtime == mtime) f->fp = o->fp;
+        if (!f->fp) { /* (new or changed - or kept from before fingerprints: read once) */
+            char path[1024];
+            join_path(sc->roots[root], rel, path, sizeof path);
+            f->fp = fingerprint(path, size);
         }
     }
     sc->n++;
@@ -276,9 +324,9 @@ static void walk(Scan *sc, int root, const char *abs, const char *rel_dir, int d
             convert_drop_leftover(sub);
             continue;
         }
-        if (str_iends(e.name, ".part")) { /* an upload's: listed once nobody has touched it for a week */
+        if (str_iends(e.name, MEDIA_PART_SUFFIX)) { /* an upload's: listed once nobody has touched it for a week */
             if (sc->now - e.mtime > MEDIA_PART_DAYS * 86400LL) {
-                note_left(&sc->parts, &sc->nparts, &sc->nparts_all, root, rel, e.size, e.mtime, 0);
+                note_left(&sc->parts, &sc->nparts, &sc->nparts_all, root, rel, e.size, e.mtime, 0, 0);
                 sc->parts_bytes += e.size;
             }
             continue;
@@ -901,7 +949,7 @@ static const char *SCHEMA =
     " ep_title TEXT NOT NULL DEFAULT '', container TEXT NOT NULL DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0,"
     " width INTEGER NOT NULL DEFAULT 0, height INTEGER NOT NULL DEFAULT 0, vcodec TEXT NOT NULL DEFAULT '',"
     " acodec TEXT NOT NULL DEFAULT '', channels INTEGER NOT NULL DEFAULT 0, playable INTEGER NOT NULL DEFAULT 0,"
-    " why TEXT NOT NULL DEFAULT '') WITHOUT ROWID";
+    " why TEXT NOT NULL DEFAULT '', fp INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID";
 
 static void col_text(sqlite3_stmt *st, int col, char *out, size_t cap) {
     const char *s = (const char *)sqlite3_column_text(st, col);
@@ -916,7 +964,7 @@ static void cache_load(void) {
     /* Names are parsed again from the path (2-3 µs each) rather than read back: the cache then never
        disagrees with a fresh scan, and parser improvements apply at once. Probes are the costly part. */
     sqlite3_stmt *st = db_prep("SELECT id, root, type, rel, size, mtime, container, duration_ms, width, height, "
-                               "vcodec, acodec, channels, playable, why FROM media_file");
+                               "vcodec, acodec, channels, playable, why, fp FROM media_file");
     while (st && sqlite3_step(st) == SQLITE_ROW) {
         char root[300], type[4];
         col_text(st, 1, root, sizeof root);
@@ -948,10 +996,11 @@ static void cache_load(void) {
         f->probe.audio_channels = sqlite3_column_int(st, 12);
         f->probe.playable = (Playable)sqlite3_column_int(st, 13);
         col_text(st, 14, f->probe.why, sizeof f->probe.why);
+        f->fp = (uint64_t)sqlite3_column_int64(st, 15);
         if (f->type == MF_VIDEO) { /* (the same rules as a scan: add_file) */
             parse_name(root_name(ix->roots[r]), f->rel, &f->name, false);
-            if (f->name.extra && !(f->name.sample && long_sample(f))) continue; /* hidden since it was stored */
-            if (f->name.sample) parse_name(root_name(ix->roots[r]), f->rel, &f->name, true);
+            if (f->name.extra && !named_but_real(f)) continue; /* hidden since it was stored */
+            if (f->name.sample || f->name.named) parse_name(root_name(ix->roots[r]), f->rel, &f->name, true);
         }
         ix->nfiles++;
     }
@@ -969,7 +1018,7 @@ static bool same_file(const MediaFile *a, const MediaFile *b) {
            str_eq(a->probe.container, b->probe.container) && str_eq(a->probe.vcodec, b->probe.vcodec) &&
            str_eq(a->probe.acodec, b->probe.acodec) && str_eq(a->probe.why, b->probe.why) &&
            a->probe.width == b->probe.width && a->probe.height == b->probe.height &&
-           a->probe.audio_channels == b->probe.audio_channels;
+           a->probe.audio_channels == b->probe.audio_channels && a->fp == b->fp;
 }
 
 /* Write only what changed between two indexes: a quiet library costs no disk writes. */
@@ -983,7 +1032,7 @@ static void cache_store(const MediaIndex *old, const MediaIndex *nw) {
         if (o && old->nroots > o->root && str_eq(old->roots[o->root], nw->roots[f->root]) && same_file(o, f)) continue;
         up = db_prep("INSERT OR REPLACE INTO media_file (id, root, type, rel, size, mtime, kind, title, year, season, "
                      "episode, episode_end, ep_title, container, duration_ms, width, height, vcodec, acodec, channels, "
-                     "playable, why) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                     "playable, why, fp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         if (!up) break;
         char hex[17], type[2] = {f->type, 0};
         media_id_hex(f->id, hex);
@@ -1009,6 +1058,7 @@ static void cache_store(const MediaIndex *old, const MediaIndex *nw) {
         sqlite3_bind_int(up, 20, f->probe.audio_channels);
         sqlite3_bind_int(up, 21, (int)f->probe.playable);
         sqlite3_bind_text(up, 22, f->probe.why, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(up, 23, (int64_t)f->fp);
         if (sqlite3_step(up) == SQLITE_DONE) written++;
     }
     for (int i = 0; i < old->nfiles; i++) {
@@ -1035,14 +1085,14 @@ static void cache_store(const MediaIndex *old, const MediaIndex *nw) {
 
 /* ========================================================= scan control */
 
-static void watch_follow(const MediaIndex *ix);
+static void watch_follow(const MediaIndex *ix, const MediaIndex *old);
 
 static void swap_in(MediaIndex *nw) {
     MediaIndex *old = g_ix;
     cache_store(old ? old : &g_empty, nw);
     g_ix = nw;
+    watch_follow(nw, old);
     index_free(old);
-    watch_follow(nw);
     app_changed();
 }
 
@@ -1071,7 +1121,10 @@ static bool adopt_pending(int64_t now) {
     if (!nw) return false;
     nw->scanned_at = now_sec();
     nw->scan_ms = (int)(now - g_scan_t0);
-    log_info("media: scanned %d files in %d ms (%d probed)", nw->nfiles, nw->scan_ms, nw->probed);
+    if (nw->nleft_all)
+        log_info("media: scanned %d files in %d ms (%d probed), %d left out (see Library settings)", nw->nfiles,
+                 nw->scan_ms, nw->probed, nw->nleft_all);
+    else log_info("media: scanned %d files in %d ms (%d probed)", nw->nfiles, nw->scan_ms, nw->probed);
     swap_in(nw);
     return true;
 }
@@ -1132,6 +1185,7 @@ void media_scan_pretend(bool running) { atomic_store(&g_scanning, running); }
 bool media_rescan_queued(void) { return g_rescan_again; }
 
 static void watch_map_reset(void);
+static void watch_fill_from_cache(void);
 
 void media_lib_start(void) {
     watch_map_reset();
@@ -1146,7 +1200,14 @@ void media_lib_start(void) {
     }
     if (current && setting_int("media.cache_format", 0) != CACHE_FORMAT) setting_set_int("media.cache_format", CACHE_FORMAT);
     db_exec(SCHEMA);
+    /* (issue #93: a column added in place - no new format, so nothing is probed again; the next scan
+       reads each video's fingerprint once) */
+    sqlite3_stmt *col = db_prep("SELECT count(*) FROM pragma_table_info('media_file') WHERE name = 'fp'");
+    bool has_fp = !col || (sqlite3_step(col) == SQLITE_ROW && sqlite3_column_int(col, 0) > 0);
+    if (col) sqlite3_reset(col); /* (a statement left mid-way would hold the table: no DROP next time) */
+    if (!has_fp) db_exec("ALTER TABLE media_file ADD COLUMN fp INTEGER NOT NULL DEFAULT 0");
     cache_load();
+    watch_fill_from_cache();
     g_next_scan = now_ms() + RESCAN_EVERY_MS;
     media_scan_start();
 }
@@ -1257,7 +1318,8 @@ int media_art_prune(const char *dir, const char *stem, const char *keep) {
 static const FieldDef watch_fields[] = {
     FIELD(MediaWatch, id, F_INT),  FIELD(MediaWatch, person, F_INT), FIELD(MediaWatch, item, F_STR),
     FIELD(MediaWatch, pos, F_INT), FIELD(MediaWatch, dur, F_INT),    FIELD(MediaWatch, done, F_BOOL),
-    FIELD(MediaWatch, updated, F_I64), FIELD(MediaWatch, place, F_U64),
+    FIELD(MediaWatch, updated, F_I64), FIELD(MediaWatch, place, F_U64), FIELD(MediaWatch, fp, F_U64),
+    FIELD(MediaWatch, ident, F_U64), FIELD(MediaWatch, label, F_STR),
 };
 Table T_media_watch = TABLE("media_watch", MediaWatch, watch_fields);
 
@@ -1266,6 +1328,7 @@ Table T_media_watch = TABLE("media_watch", MediaWatch, watch_fields);
  * map is rebuilt whenever the row count changes. */
 static int *g_wmap;
 static int g_wcap, g_wcount = -1;
+static bool g_away; /* the last scan found a library folder missing or empty (watch_follow) */
 
 static uint32_t wslot(int person, uint64_t id) {
     uint64_t h = (id ^ ((uint64_t)(uint32_t)person * 0x9E3779B97F4A7C15ULL)) * 0xFF51AFD7ED558CCDULL;
@@ -1301,10 +1364,36 @@ MediaWatch *media_watch_get(int person, uint64_t id) {
     return NULL;
 }
 
-/* Where a video sits below its library folder, as MediaWatch.place has it (0 = not in the library). */
-static uint64_t place_of(uint64_t id) {
-    const MediaFile *f = media_file(id);
-    return f ? hash64_str(f->rel) : 0;
+uint64_t media_ident(const MediaName *n) {
+    char t[160], key[240];
+    fold_copy(t, sizeof t, n->title);
+    str_trim(t);
+    if (!t[0] || str_eq(t, "untitled")) return 0;
+    if (n->kind == MEDIA_EPISODE) {
+        if (n->episode <= 0) return 0; /* (a disc rip not numbered yet) */
+        snprintf(key, sizeof key, "e|%s|%d|%d|%d", t, n->season, n->episode, n->episode_end);
+    } else {
+        snprintf(key, sizeof key, "%c|%s|%d|%d|%d", n->kind == MEDIA_MOVIE ? 'm' : 'o', t, n->year, n->disc, n->track);
+    }
+    return hash64_str(key);
+}
+
+void media_label(const MediaName *n, char *out, size_t cap) {
+    if (n->kind == MEDIA_EPISODE && n->episode > 0 && n->episode_end > n->episode)
+        snprintf(out, cap, "%s S%02dE%02d-E%02d", n->title, n->season, n->episode, n->episode_end);
+    else if (n->kind == MEDIA_EPISODE && n->episode > 0) snprintf(out, cap, "%s S%02dE%02d", n->title, n->season, n->episode);
+    else if (n->year) snprintf(out, cap, "%s (%d)", n->title, n->year);
+    else snprintf(out, cap, "%s", n->title);
+}
+
+/* What a progress row keeps of its video, to find it again: where it sits below the library
+   folder, its content and what it is by name (issues #36, #93). */
+static void identify(MediaWatch *rec, const MediaFile *f) {
+    rec->place = hash64_str(f->rel);
+    if (f->fp) rec->fp = f->fp;
+    uint64_t ident = media_ident(&f->name);
+    if (ident) rec->ident = ident;
+    media_label(&f->name, rec->label, sizeof rec->label);
 }
 
 bool media_watch_report(int person, uint64_t id, int pos, int dur, bool ended, int64_t now) {
@@ -1313,8 +1402,8 @@ bool media_watch_report(int person, uint64_t id, int pos, int dur, bool ended, i
     bool was_done = rec.done;
     rec.person = person;
     media_id_hex(id, rec.item);
-    uint64_t place = place_of(id);
-    if (place) rec.place = place;
+    const MediaFile *f = media_file(id);
+    if (f) identify(&rec, f);
     rec.pos = CLAMP(pos, 0, 7 * 86400);
     if (dur > 0) rec.dur = CLAMP(dur, 0, 7 * 86400);
     if (ended || (rec.dur > 0 && rec.pos >= rec.dur * 92 / 100)) rec.done = true;
@@ -1333,8 +1422,8 @@ void media_watch_set_done(int person, uint64_t id, bool done, int64_t now) {
     MediaWatch rec = w ? *w : (MediaWatch){0};
     rec.person = person;
     media_id_hex(id, rec.item);
-    uint64_t place = place_of(id);
-    if (place) rec.place = place;
+    const MediaFile *f = media_file(id);
+    if (f) identify(&rec, f);
     rec.done = done;
     if (!done) rec.pos = 0; /* "unwatch" starts over */
     rec.updated = now;
@@ -1360,72 +1449,197 @@ void media_watch_move(uint64_t from, uint64_t to) {
             tbl_del(&T_media_watch, rec.id);
         } else {
             str_copy(rec.item, sizeof rec.item, ht);
+            const MediaFile *f = media_file(to);
+            if (f) identify(&rec, f);
             tbl_put(&T_media_watch, &rec);
         }
         g_wcount = -1; /* the (person, id) map: build it again */
     }
 }
 
-typedef struct {
-    uint64_t place, id;
-} Place;
+/* Issue #93: history from before places (0.7.1), and an upgrade together with a library folder that
+   moved: the cache still knows the path, name and content of each id it had - in any folder, also
+   one no longer set up (the next scan's cache_store forgets those) - so each row gets them before
+   the first scan looks for its video. */
+static void watch_fill_from_cache(void) {
+    int n = tbl_count(&T_media_watch), filled = 0;
+    for (int i = 0; i < n; i++) {
+        MediaWatch rec = *(const MediaWatch *)tbl_at(&T_media_watch, i);
+        if (rec.place && rec.ident && rec.label[0]) continue;
+        sqlite3_stmt *st = db_prep("SELECT root, rel, fp FROM media_file WHERE id = ?");
+        if (!st) break;
+        sqlite3_bind_text(st, 1, rec.item, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(st) != SQLITE_ROW) continue;
+        char root[300], rel[400];
+        col_text(st, 0, root, sizeof root);
+        col_text(st, 1, rel, sizeof rel);
+        uint64_t fp = (uint64_t)sqlite3_column_int64(st, 2);
+        sqlite3_reset(st);
+        MediaName nm;
+        parse_name(root_name(root), rel, &nm, false);
+        MediaWatch was = rec;
+        if (!rec.place) rec.place = hash64_str(rel);
+        if (!rec.fp) rec.fp = fp;
+        if (!rec.ident) rec.ident = media_ident(&nm);
+        if (!rec.label[0]) media_label(&nm, rec.label, sizeof rec.label);
+        if (memcmp(&was, &rec, sizeof rec) != 0) {
+            tbl_put(&T_media_watch, &rec);
+            filled++;
+        }
+    }
+    if (filled) log_info("media: %d watch-history row%s learned where %s video was from the library cache", filled,
+                         filled == 1 ? "" : "s", filled == 1 ? "its" : "their");
+}
 
-static int place_cmp(const void *a, const void *b) {
-    uint64_t x = ((const Place *)a)->place, y = ((const Place *)b)->place;
+typedef struct {
+    uint64_t key, id;
+} Key;
+
+static int key_cmp(const void *a, const void *b) {
+    uint64_t x = ((const Key *)a)->key, y = ((const Key *)b)->key;
     return x < y ? -1 : x > y;
 }
 
-/* Issue #36: a video's id comes from its library folder's path, so the same disk mounted somewhere
-   else (a new card, /media/usb1 instead of /mnt/media) gave every video a new id, and the whole
-   household's Continue watching and watched ticks stayed behind with the old ones, unseen. Each
-   progress row keeps where its video sits below the library folder (place): after a scan, rows
-   whose video is gone move to the one video at that place now - never to one of two (the same
-   folders on two disks), and not while a library folder is missing (a disk merely unplugged; its
-   copy on another disk mustn't take the history). Rows of videos still there get their place
-   filled in (rows from before places). Event loop only (swap_in). */
-static void watch_follow(const MediaIndex *ix) {
+/* The one video with that key (0: none, or two - can't tell which). */
+static uint64_t only_one(const Key *k, int n, uint64_t key) {
+    if (!key) return 0;
+    Key want = {key, 0};
+    const Key *hit = bsearch(&want, k, (size_t)n, sizeof *k, key_cmp);
+    if (!hit) return 0;
+    while (hit > k && hit[-1].key == key) hit--;
+    return hit + 1 < k + n && hit[1].key == key ? 0 : hit->id;
+}
+
+static int files_in(const MediaIndex *ix, const char *root) {
+    int r = -1, n = 0;
+    for (int i = 0; ix && i < ix->nroots && r < 0; i++)
+        if (str_eq(ix->roots[i], root)) r = i;
+    for (int i = 0; r >= 0 && i < ix->nfiles; i++) n += ix->files[i].root == r;
+    return n;
+}
+
+/* Issues #36, #93: a video's id comes from its library folder's path and its own, so a disk mounted
+   somewhere else, a renamed file or a reorganised folder gives it a new one - and the household's
+   Continue watching and watched ticks stayed with the old. After a scan, history whose video is
+   gone moves to the ONE video now at the same place below a library folder; else the one with the
+   same content (size, first and last 64 KB); else the one that is the same film or episode by name -
+   never to one of two (the same folders on two disks: can't tell). Nothing moves while a library
+   folder is away: missing, or empty where the last scan found files (an unplugged disk leaves its
+   mount point) - its copy on another disk mustn't take the history. Rows of videos still there get
+   their place, content and name filled in. Event loop only (swap_in). */
+static void watch_follow(const MediaIndex *ix, const MediaIndex *old) {
+    g_away = false;
+    for (int r = 0; r < ix->nroots; r++) {
+        bool there = path_is_dir(ix->roots[r]);
+        if (there && old && !files_in(ix, ix->roots[r]) && files_in(old, ix->roots[r])) there = false;
+        if (!there) g_away = true;
+    }
     int nw = tbl_count(&T_media_watch);
     if (!nw || !ix->nfiles) return;
-    bool all_there = true;
-    for (int r = 0; r < ix->nroots; r++) all_there &= path_is_dir(ix->roots[r]);
-    Place *p = xmalloc((size_t)ix->nfiles * sizeof *p);
-    int np = 0;
-    for (int i = 0; i < ix->nfiles; i++)
-        if (ix->files[i].type == MF_VIDEO) p[np++] = (Place){hash64_str(ix->files[i].rel), ix->files[i].id};
-    qsort(p, (size_t)np, sizeof *p, place_cmp);
+    Key *place = xmalloc((size_t)ix->nfiles * sizeof *place), *fp = xmalloc((size_t)ix->nfiles * sizeof *fp),
+        *name = xmalloc((size_t)ix->nfiles * sizeof *name);
+    int nv = 0;
+    for (int i = 0; i < ix->nfiles; i++) {
+        const MediaFile *f = &ix->files[i];
+        if (f->type != MF_VIDEO) continue;
+        place[nv] = (Key){hash64_str(f->rel), f->id};
+        fp[nv] = (Key){f->fp, f->id};
+        name[nv] = (Key){media_ident(&f->name), f->id};
+        nv++;
+    }
+    qsort(place, (size_t)nv, sizeof *place, key_cmp);
+    qsort(fp, (size_t)nv, sizeof *fp, key_cmp);
+    qsort(name, (size_t)nv, sizeof *name, key_cmp);
     uint64_t(*moves)[2] = xmalloc((size_t)nw * sizeof *moves);
-    int nm = 0;
+    int nm = 0, how[3] = {0, 0, 0};
     for (int i = 0; i < nw; i++) {
         MediaWatch *w = tbl_at(&T_media_watch, i);
         uint64_t id = 0;
         if (!media_parse_id(w->item, &id)) continue;
         const MediaFile *f = index_find(ix, id);
         if (f) {
-            uint64_t place = hash64_str(f->rel);
-            if (w->place != place) {
-                MediaWatch rec = *w;
-                rec.place = place;
+            MediaWatch rec = *w;
+            identify(&rec, f);
+            if (rec.place != w->place || rec.fp != w->fp || rec.ident != w->ident || !str_eq(rec.label, w->label))
                 tbl_put(&T_media_watch, &rec);
-            }
             continue;
         }
-        if (!w->place || !all_there) continue;
-        Place key = {w->place, 0}, *hit = bsearch(&key, p, (size_t)np, sizeof *p, place_cmp);
-        if (!hit) continue;
-        while (hit > p && hit[-1].place == w->place) hit--;
-        if (hit + 1 < p + np && hit[1].place == w->place) continue; /* two videos there: can't tell */
+        if (g_away) continue;
         bool known = false;
         for (int k = 0; k < nm && !known; k++) known = moves[k][0] == id;
-        if (!known) {
-            moves[nm][0] = id;
-            moves[nm][1] = hit->id;
-            nm++;
-        }
+        if (known) continue;
+        uint64_t to = only_one(place, nv, w->place);
+        int by = 0;
+        if (!to) to = only_one(fp, nv, w->fp), by = 1;
+        if (!to) to = only_one(name, nv, w->ident), by = 2;
+        if (!to) continue;
+        moves[nm][0] = id;
+        moves[nm][1] = to;
+        nm++;
+        how[by]++;
     }
     for (int k = 0; k < nm; k++) media_watch_move(moves[k][0], moves[k][1]);
     if (nm)
-        log_info("media: the watch history of %d video%s followed %s to %s new library folder", nm, nm == 1 ? "" : "s",
-                 nm == 1 ? "it" : "them", nm == 1 ? "its" : "their");
+        log_info("media: the watch history of %d video%s followed %s (%d by place, %d by content, %d by name)", nm,
+                 nm == 1 ? "" : "s", nm == 1 ? "it" : "them", how[0], how[1], how[2]);
     free(moves);
-    free(p);
+    free(place);
+    free(fp);
+    free(name);
+}
+
+static int u64_cmp(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* The ids of the videos whose history has no video in the library (sorted, each once). */
+static int lost_ids(uint64_t **out) {
+    const MediaIndex *ix = media_lib();
+    int n = tbl_count(&T_media_watch), k = 0;
+    uint64_t *ids = xmalloc((size_t)(n ? n : 1) * sizeof *ids);
+    for (int i = 0; i < n; i++) {
+        const MediaWatch *w = tbl_at(&T_media_watch, i);
+        uint64_t id = 0;
+        if (media_parse_id(w->item, &id) && !index_find(ix, id)) ids[k++] = id;
+    }
+    qsort(ids, (size_t)k, sizeof *ids, u64_cmp);
+    int u = 0;
+    for (int i = 0; i < k; i++)
+        if (!u || ids[u - 1] != ids[i]) ids[u++] = ids[i];
+    *out = ids;
+    return u;
+}
+
+int media_history_lost(char labels[][100], int max, bool *away) {
+    *away = g_away;
+    if (!media_lib()->scanned_at) return 0; /* (the cache's index, before this start's scan: can't say yet) */
+    uint64_t *ids;
+    int n = lost_ids(&ids);
+    for (int i = 0; i < n && i < max; i++) {
+        labels[i][0] = '\0';
+        char hex[17];
+        media_id_hex(ids[i], hex);
+        for (int r = 0; r < tbl_count(&T_media_watch) && !labels[i][0]; r++) {
+            const MediaWatch *w = tbl_at(&T_media_watch, r);
+            if (str_eq(w->item, hex)) str_copy(labels[i], 100, w->label);
+        }
+    }
+    free(ids);
+    return n;
+}
+
+int media_history_forget(void) {
+    if (g_away || !media_lib()->scanned_at) return 0;
+    uint64_t *ids;
+    int n = lost_ids(&ids);
+    for (int i = tbl_count(&T_media_watch) - 1; i >= 0; i--) {
+        const MediaWatch *w = tbl_at(&T_media_watch, i);
+        uint64_t id = 0;
+        if (media_parse_id(w->item, &id) && bsearch(&id, ids, (size_t)n, sizeof *ids, u64_cmp))
+            tbl_del(&T_media_watch, w->id);
+    }
+    g_wcount = -1;
+    free(ids);
+    return n;
 }

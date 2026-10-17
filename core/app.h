@@ -17,7 +17,7 @@
 #include "server.h"
 #include "store.h"
 
-#define HEMMA_VERSION "0.10.0" /* raised for every release (SECURITY.md, CHANGELOG.md) */
+#define HEMMA_VERSION "0.10.1" /* raised for every release (SECURITY.md, CHANGELOG.md) */
 /* With the commit the binary was built from: "0.6.0 (8242ca8f1a2b)", "-dirty" with uncommitted
    changes (build.ps1 and the Makefile pass -DHEMMA_COMMIT=...); just the version outside git. */
 #define HEMMA_STR_(x) #x
@@ -205,11 +205,32 @@ typedef struct {
     char todo[240];     /* what to do about it, one line ("" = nothing) */
     char link[160];     /* where to do it ("" = nowhere) */
 } HealthItem;
+/* A disk a module keeps things on (issue #95: two checks with two rules said "OK" and "nearly full"
+   about the same disk). The System page makes ONE "Disk space" row per disk - the data folder's
+   included - naming what's on it, held to the biggest wish. Cached numbers, like any health hook. */
+typedef struct {
+    const char *what;          /* "the library" */
+    const char *path;          /* the folder on that disk */
+    int64_t free, total;       /* bytes */
+    bool data_disk;            /* Hemma's data folder is on it too (the module compared them) */
+    int64_t want;              /* free space it wants (0 = none) ... */
+    const char *why;           /* ... for this: "to convert or upload a video as big as its biggest (6.0 GB)" */
+    const char *todo, *link;   /* what to do when there's less */
+} HealthDisk;
+typedef struct {
+    char what[80], path[300], why[200], todo[240], link[160];
+    int64_t free, total, want;
+    bool data_disk;
+    const char *module; /* set by health_collect() */
+} HealthDiskRow;
 typedef struct {
     HealthItem *items;
     int n, cap;
+    HealthDiskRow *disks; /* health_disk(): the System page turns them into its "Disk space" rows */
+    int ndisks, capdisks;
 } Health;
 void health_add(Health *h, int state, const char *title, const char *detail, const char *todo, const char *link);
+void health_disk(Health *h, const HealthDisk *d);
 void health_step(Health *h, bool done, const char *title, const char *detail, const char *link);
 void health_collect(Ctx *c, Health *out); /* every module's health hook, in navigation order */
 int health_worst(const Health *h);        /* the worst check (steps don't count); HEALTH_OK when none */

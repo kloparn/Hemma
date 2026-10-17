@@ -228,13 +228,13 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  hemma-secret.txt. Checks: Backups (OK / BAD failed / WARN >2 days / INFO same disk), "Going
                  back to a backup" while one waits, "Backup put back" (SETTING_RESTORED).
                  dependencies: tv needs media (it links modules/media/library.c), media needs av (the converter)
-  media/upload.c admins add videos from a browser (plan + streamed PUTs, .part files, resume); a folder
+  media/upload.c admins add videos from a browser (plan + streamed PUTs, .hemma-part files, resume); a folder
                  holding x.mkv + x.web.mp4 sends only the copy (checkbox "also send originals"). Other MKVs
                  (box "make videos play everywhere on this device first", on by default) are converted BY THE
                  UPLOADING BROWSER (todo {i,f}; web/conv.js runs av.wasm in Workers) and only x.web.mp4 is
                  sent: POST <batch>/<i>?pm= (progress) / ?size= (copy ready -> PUT) / ?original=1&why= (the
                  converter refused it: the original goes under its own name). The box (and data-convert/
-                 data-wasm on the form) only appears when av.wasm is built in. Resume trusts a ".part" only
+                 data-wasm on the form) only appears when av.wasm is built in. Resume trusts a ".hemma-part" only
                  if it's no longer than the file and not a picture (resume_point); one file is in one
                  upload at a time (claimed); Stop stops the upload whose card it's on. ONE UPLOAD AT A
                  TIME (owner's rule): while one is running (workers, or its browser active in the last
@@ -287,10 +287,11 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  total size, free within 64 MB). media_room(), media_room_text(), media_test_free_space().
                  Uploads never take a file the server's converter is making (convert_making): skipped at the
                  plan; a quiet upload whose copy the converter took meanwhile gets PUT ok without writing
-                 (UpFile.on_server; GET says at=size; its .part deleted) and ?size= -> {"skip":true}. Every PUT
+                 (UpFile.on_server; GET says at=size; its half-sent file deleted) and ?size= -> {"skip":true}. Every PUT
                  checks the rest of its file fits (else 507 + stop). upload_claims = files being written +
-                 queued files of a live upload (running, or planned in the last 30 s). A x.web.mp4.part older
-                 than the server's start is never resumed (an older build's converter wrote that name).
+                 queued files of a live upload (running, or planned in the last 30 s) - by the VIDEO's name: strip
+                 MEDIA_PART_SUFFIX first (issue #89: it never matched). A copy's half-sent file older than the
+                 server's start is never resumed (the browser converts it again, maybe elsewhere).
   net/           the device list is capped (NET_MAX_DEVICES 1024): when full, the longest-unseen devices the
                  household didn't set up (name/owner/kind/note/WoL) make room, those someone opens Hemma from
                  last; never the router (only the ONE device at the router's address now: find_router),
@@ -616,8 +617,10 @@ MODULE(things)   /* self-registers: no shared file to edit */
   storage meter refreshes its cache from `tick` every 30 s).
 - **Health**: `health(c, h)` reports checks for the admin System page with `health_add(h, HEALTH_OK|
   INFO|WARN|BAD, title, detail, todo, link)` and getting-started steps with `health_step(h, done, title,
-  detail, link)`. Called for admins only (also on the home page): cached facts only. `system` never links
-  other modules - only this hook.
+  detail, link)`. A disk the module keeps things on: `health_disk(h, &(HealthDisk){what, path, free,
+  total, data_disk, want, why, todo, link})` - never a disk row of its own: System makes one per disk.
+  Called for admins only (also on the home page): cached facts only. `system` never links other
+  modules - only this hook.
 - **Admin-only module**: `.flags = MOD_ADMIN` hides it from non-admins everywhere (nav, /more, pages,
   http hooks, side(), widgets, agenda items, the /api action list); its actions still check `is_admin`.
 - **Blocks for screens** (the TV view, wall tablets - modules/screens arranges them): `.blocks` =
@@ -811,31 +814,50 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
   PC core, ~96× under pisim model 3). Target for "convert once": MP4 with H.264 + AAC-LC (the
   one audio codec every browser, iPhone, TV and Chromecast plays). MPEG-2 decode: ~1,100 fps on one PC core, ~59 fps
   under pisim model 3 (2× real time, 3 MB) — live decode fits a Pi 3, live H.264 *encode* doesn't.
-- Uploads (admins, /media/upload): written as `<name>.part`, renamed when complete, fsynced;
-  resumable; refused up front when the disk lacks room (+1 GB reserve, media/room.c - conversions keep
-  it too). On the Pi the service needs write access to the media folders (install-pi.sh takes them as
-  arguments). An upload's `.part` nobody touched for MEDIA_PART_DAYS (7) is listed by the scan (Scan/
+- Uploads (admins, /media/upload): written as `<name>.hemma-part` (MEDIA_PART_SUFFIX - Hemma's own:
+  issue #89, a torrent's `.part` was listed and deleted), renamed when complete, fsynced; resumable;
+  refused up front when the disk lacks room (+1 GB reserve, media/room.c - conversions keep it too). On
+  the Pi the service needs write access to the media folders (install-pi.sh takes them as arguments).
+  An upload's half-sent file nobody touched for MEDIA_PART_DAYS (7) is listed by the scan (Scan/
   MediaIndex .parts, MEDIA_LEFT_MAX 100 shown, counts + bytes for all) on Library settings ("Unfinished
-  uploads", admins): media.parts_remove re-checks each (still there, still untouched, not upload_claims)
-  before deleting - never on its own (issue #40: they stayed for good, unseen).
+  uploads", admins): media.parts_remove re-checks each (still there, still untouched, not upload_claims
+  of the video's name) before deleting - never on its own (issue #40); more than 100: the toast says the
+  rest show after the scan. Plain `.part` files (older versions' too) are never listed.
 - Rescan: admins, plus members an admin ticks on Library settings (setting `media.rescanners` = member ids;
   only the admin-only action `media.rescanners` writes it; display accounts, admins and removed people
   never count). Owner's rule (2026-10-12).
-- A video's id hashes its library folder's path (media_make_id), so the same disk mounted elsewhere gives
-  every video a new id (issue #36). Progress rows keep `place` = hash64 of the path below the library
-  folder (set on every report; filled for older rows by the next scan); after each scan (swap_in ->
-  watch_follow) rows whose video is gone move (media_watch_move) to the ONE video at that place - never to
-  one of two (the same folders on two disks), and not while any library folder is missing (a disk merely
-  unplugged: its copy elsewhere mustn't take the history). Ids, addresses and series ids (from titles)
-  stay as they were.
-- Left out of the library (issue #28): trailers/extras by name or Extras folder (MEDIA_LEFT_EXTRA), and
-  names starting "sample" (MediaName.sample: the one ambiguous rule) that run under MEDIA_SAMPLE_LONG_S
-  (10 min) - the scan probes those; a longer one is a real video, named again with the rule off
-  (media_parse_name_long; cache_load applies the same rule from the cached duration). Listed on Library
-  settings ("Left out", admins; MediaIndex .left).
-- Library disk check (media/health.c, issue #29): room left counts, not a share of the disk - warn under
-  two of that folder's biggest videos, 2 GB at least and 20 GB at most; it says "(Hemma's data is on it
-  too)" when the data folder shares the disk (RootFacts.data_disk: same total, free within 64 MB).
+- A video's id hashes its library folder's path (media_make_id), so the same disk mounted elsewhere, a
+  rename or a reorganised folder gives it a new id (issues #36, #93). Progress rows keep (identify(), on
+  every report and for rows whose video is there at each scan) `place` = hash64 of the path below the
+  library folder, `fp` = MediaFile.fp (size + first and last 64 KB hashed: fingerprint() in the scan,
+  read once per new/changed file, cached in media_file.fp - a column added in place by ALTER, no new
+  cache format), `ident` = media_ident() (film: title + year + disc + track; episode: show + season +
+  episode range; folded) and `label` (media_label: "Film (2021)", "Show S01E04"). After each scan
+  (swap_in -> watch_follow(new, old)) rows whose video is gone move (media_watch_move) to the ONE video
+  with the same place, else content, else ident (only_one: never one of two), and nothing moves while a
+  library folder is AWAY: missing, or empty where the old index had files (an unplugged disk's mount
+  point; g_away). At start media_lib_start -> watch_fill_from_cache() fills rows lacking place/ident/label
+  from media_file by id, in ANY root (the next scan's cache_store forgets unconfigured roots' rows).
+  What still finds no video: media_history_lost() -> Library settings "Watch history without its video"
+  (media.history_forget, admins, not while away) + media's health INFO "Watch history". Ids, addresses
+  and series ids (from titles) stay as they were.
+- Left out of the library (issues #28, #94): an Extras/Trailers/Featurettes folder's videos
+  (MEDIA_LEFT_EXTRA, no length asked); names ENDING in trailer/sample/featurette/... after "-", ".", "_" or
+  " - " (MediaName.named; a plain space doesn't count: "The Interview"), or the whole name, under
+  MEDIA_EXTRA_LONG_S (40 min, MEDIA_LEFT_NAMED); names STARTING "sample" under MEDIA_SAMPLE_LONG_S (10 min,
+  MediaName.sample, MEDIA_LEFT_SAMPLE). The scan probes the named ones; long, or a length the probe can't
+  read (TS, WMV, MPEG-PS), = a real video, named again with the name rules off (media_parse_name_long;
+  named_but_real(); cache_load applies the same from the cached duration; MediaLeft.duration_ms saves the
+  next scan a probe - left-outs aren't in the SQLite cache, so once per start). A name with an episode code
+  is never an extra by its name. "sample" is no release tag ("The Sample" keeps its title). Listed on
+  Library settings ("Left out", a reason each; MediaIndex .left); the scan's log line counts them.
+- Disk room (issues #29, #95): media/health.c reports each library folder's disk with health_disk()
+  (no row of its own): wants CLAMP(biggest video + MEDIA_RESERVE, 2 GB, 20 GB) "to upload or convert a
+  video as big as its biggest (X)"; data_disk when the data folder shares it (RootFacts.data_disk: same
+  total, free within 64 MB). The System page (disk_rows) makes ONE "Disk space" row per disk: the data's
+  (DATA_WANT 2 GB, DATA_BAD 300 MB) merged with modules' data_disk ones, others grouped by size + free;
+  "<free> free on the disk with Hemma's data and the library (N% used). The library wants X free ...",
+  sizes with one decimal under 100 GB (room_words) so the two numbers can't round alike.
 
 ## Status (2026-10-12)
 
@@ -863,7 +885,7 @@ screen's address, #79 browser-log limits per person an hour (PR #81). 0.7.0 (bra
 guard + FIELD_WAS + the media cache's format + install-pi.sh keeps hemma.prev, #39 part 1 the time zone on
 System and a warning when it changes (PR #82). 0.7.1 (branch fix/library-keeps-progress) = #36 watch
 history follows videos to a new library folder, #40 unfinished uploads listed + removable, #28 left-out
-videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px (PR #105). 0.9.3 (pushed to main) = the player remembers the volume and mute per device. 0.9.4 (branch fix/database-recovery) = #87 a rescue that gets next to nothing back refuses (no new household over the data) + no welcome page after a rescue + the damaged page, #88 SQLite 3.54.1 + its recovery extension (orphans placed back), counts against the census in household words (Table.what), damaged copies pruned, #92 refusals in versions + into hemma.log + exit 78 (RestartPreventExitStatus), going back = a swap, the installer copies the database, FIELD_WAS needs its breaks_older migration (test). 0.10.0 (branch feat/backups) = #35 nightly checked backups (7 days, on the media disk by default), System → Backups (Back up now, Download with the secret, Go back to this + restart), hemma --restore, core/tar, docs for a new memory card. Next ideas: calmer home cards (hide empty ones), touch on the wall
+videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px (PR #105). 0.9.3 (pushed to main) = the player remembers the volume and mute per device. 0.9.4 (branch fix/database-recovery) = #87 a rescue that gets next to nothing back refuses (no new household over the data) + no welcome page after a rescue + the damaged page, #88 SQLite 3.54.1 + its recovery extension (orphans placed back), counts against the census in household words (Table.what), damaged copies pruned, #92 refusals in versions + into hemma.log + exit 78 (RestartPreventExitStatus), going back = a swap, the installer copies the database, FIELD_WAS needs its breaks_older migration (test). 0.10.0 (branch feat/backups) = #35 nightly checked backups (7 days, on the media disk by default), System → Backups (Back up now, Download with the secret, Go back to this + restart), hemma --restore, core/tar, docs for a new memory card (PR #107). 0.10.1 (branch library-follow-ups) = #89 uploads write .hemma-part (torrents' .part left alone) + upload_claims by the video's name, #94 extras only after a separating mark + by length (40 min) + unknown length kept + episode codes never extras, #95 one "Disk space" row per disk (health_disk) + the library wants its biggest video + the reserve, #93 history follows by place, content (fp) or name (ident), away = an emptied library folder, filled from the cache at start, lost history listed + forgettable. Next ideas: calmer home cards (hide empty ones), touch on the wall
 (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,

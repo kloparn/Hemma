@@ -1088,7 +1088,8 @@ static void left_card(Ctx *c, Buf *b, const MediaIndex *ix) {
     if (!is_admin(c) || !ix->nleft_all) return;
     ui_card(b, "Left out", NULL, NULL);
     H(b, "<p class=\"muted\">%d video%r left out of the library: by %r name or folder, %r look%r like trailers, "
-         "extras or samples (a short preview clip). One that belongs in? Rename it, and rescan.</p>",
+         "extras or samples (a short preview clip). A video named like one stays in when it runs long, or when Hemma "
+         "can't tell how long it runs. One that belongs in? Rename it, and rescan.</p>",
       ix->nleft_all, ix->nleft_all == 1 ? " is" : "s are", ix->nleft_all == 1 ? "its" : "their",
       ix->nleft_all == 1 ? "it" : "they", ix->nleft_all == 1 ? "s" : "");
     buf_puts(b, "<details class=\"media-left\"><summary>Which ones</summary><ul class=\"rows\">");
@@ -1096,8 +1097,10 @@ static void left_card(Ctx *c, Buf *b, const MediaIndex *ix) {
         const MediaLeft *l = &ix->left[i];
         H(b, "<li class=\"row\"><div class=\"row-main\"><code class=\"media-code\">%s</code><small class=\"muted\">%s"
              "</small></div></li>",
-          l->rel, l->why == MEDIA_LEFT_SAMPLE ? "starts with \"sample\" and runs under 10 minutes: a preview clip"
-                                               : "a trailer, extra or sample, by its name or folder");
+          l->rel,
+          l->why == MEDIA_LEFT_SAMPLE  ? "starts with \"sample\" and runs under 10 minutes: a preview clip"
+          : l->why == MEDIA_LEFT_NAMED ? "named like a trailer or extra (\"-trailer\", \".sample\") and runs under 40 minutes"
+                                       : "in a folder for extras (Extras, Trailers, Featurettes...)");
     }
     if (ix->nleft_all > ix->nleft) H(b, "<li class=\"row muted\">and %d more</li>", ix->nleft_all - ix->nleft);
     buf_puts(b, "</ul></details>");
@@ -1140,12 +1143,16 @@ static void act_parts_remove(Ctx *c, Fields *f) {
     const MediaIndex *ix = media_lib();
     int removed = 0;
     int64_t bytes = 0;
+    int more = ix->nparts_all - ix->nparts;
     for (int i = 0; i < ix->nparts; i++) { /* each one again: still there, still untouched, no upload's */
         const MediaLeft *l = &ix->parts[i];
-        char path[800];
+        char path[800], video[800];
         int64_t size = 0, mtime = 0;
         snprintf(path, sizeof path, "%s/%s", ix->roots[l->root], l->rel);
-        if (!path_stat(path, &size, &mtime, NULL) || c->now - mtime <= MEDIA_PART_DAYS * 86400LL || upload_claims(path))
+        if (!str_iends(path, MEDIA_PART_SUFFIX)) continue; /* (only Hemma's own: issue #89) */
+        /* upload_claims knows the video by its own name, not its half-sent file's (issue #89: it never matched) */
+        snprintf(video, sizeof video, "%.*s", (int)(strlen(path) - (sizeof MEDIA_PART_SUFFIX - 1)), path);
+        if (!path_stat(path, &size, &mtime, NULL) || c->now - mtime <= MEDIA_PART_DAYS * 86400LL || upload_claims(video))
             continue;
         if (file_remove(path)) removed++, bytes += size;
     }
@@ -1153,7 +1160,51 @@ static void act_parts_remove(Ctx *c, Fields *f) {
     media_size_text(bytes, sz, sizeof sz);
     if (removed) log_info("media: %s removed %d unfinished upload%s (%s)", c->me->name, removed, removed == 1 ? "" : "s", sz);
     media_scan_start(); /* (the list comes again from the disk) */
-    ctx_ok(c, "Removed %d unfinished upload%s: %s free again", removed, removed == 1 ? "" : "s", sz);
+    if (more > 0)
+        ctx_ok(c, "Removed %d unfinished upload%s (%s) - %d more show here after the scan", removed,
+               removed == 1 ? "" : "s", sz, more);
+    else ctx_ok(c, "Removed %d unfinished upload%s: %s free again", removed, removed == 1 ? "" : "s", sz);
+}
+
+/* Watch history that found no video after the last scan (issue #93: it used to stay behind without a
+   word) - matched by place, content and name already; what's left is a video deleted, or renamed and
+   changed at once. */
+static void history_card(Ctx *c, Buf *b) {
+    if (!is_admin(c)) return;
+    char labels[8][100];
+    bool away = false;
+    int n = media_history_lost(labels, countof(labels), &away);
+    if (!n) return;
+    ui_card(b, "Watch history without its video", NULL, NULL);
+    H(b, "<p class=\"muted\">The household watched %d video%r that %r in the library any more, and %r couldn't be "
+         "found under another name or folder.%r</p>",
+      n, n == 1 ? "" : "s", n == 1 ? "isn't" : "aren't", n == 1 ? "it" : "they",
+      away ? " A library folder is missing or empty right now: they may come back with its disk." : "");
+    buf_puts(b, "<ul class=\"rows\">");
+    int named = 0;
+    for (int i = 0; i < n && i < countof(labels); i++)
+        if (labels[i][0]) H(b, "<li class=\"row\"><div class=\"row-main\">%s</div></li>", labels[i]), named++;
+    if (n > named) H(b, "<li class=\"row muted\">and %d more</li>", n - named);
+    buf_puts(b, "</ul>");
+    if (!away) {
+        ui_form_confirm(b, "media.history_forget", "inline",
+                        "Forget this watch history? Continue watching and watched ticks for these videos go.");
+        buf_puts(b, "<button class=\"btn\">Forget it</button>");
+        ui_form_end(b);
+    }
+    ui_card_end(b);
+}
+
+static void act_history_forget(Ctx *c, Fields *f) {
+    (void)f;
+    if (!is_admin(c)) {
+        ctx_fail(c, "Only an admin can do that");
+        return;
+    }
+    int n = media_history_forget();
+    if (n) log_info("media: %s forgot the watch history of %d video%s no longer in the library", c->me->name, n,
+                    n == 1 ? "" : "s");
+    ctx_ok(c, "Forgot the history of %d video%s", n, n == 1 ? "" : "s");
 }
 
 static void page_settings(Ctx *c, Buf *b) {
@@ -1214,6 +1265,7 @@ static void page_settings(Ctx *c, Buf *b) {
     ui_card_end(b);
     left_card(c, b, ix);
     parts_card(c, b, ix);
+    history_card(c, b);
 
     if (c->me) {
         ui_card(b, "Playback", NULL, NULL);
@@ -1587,6 +1639,7 @@ static const Action actions[] = {
     {"media.forget", act_forget, false, true},
     {"media.drop_originals", act_drop_originals}, {"media.drop_auto", act_drop_auto},
     {"media.rescanners", act_rescanners}, {"media.parts_remove", act_parts_remove},
+    {"media.history_forget", act_history_forget},
     {0},
 };
 

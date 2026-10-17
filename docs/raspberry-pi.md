@@ -246,8 +246,8 @@ in on a new install.
 **On a new memory card** (or another computer):
 
 1. Install Hemma as in step 4, with the same media folders. Mount the library disk at the
-   same path as before (`/mnt/media`, section 7): watch history finds the videos by their
-   place in the library folder.
+   same path as before (`/mnt/media`, section 7). Watch history finds its videos surest that
+   way; it also finds a video that moved or was renamed, by its content or its name.
 2. Copy the download (or a nightly `hemma-….db` from the USB disk) to the Pi, and put it
    back:
 
