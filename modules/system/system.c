@@ -5,8 +5,9 @@
  *                 module's health hook (core/app.h) - plus a getting-started list that ticks
  *                 itself from real data until it's hidden
  * /system/log     the server's own log, live (log.c): filter, search, download, detailed logging
+ * /system/backups the nightly backups: back up now, download, go back to one (backup.c)
  * /system/help    where to look when something's wrong, on this machine, and what to send
- * /system/log.txt the log as a file (the http hook)
+ * /system/log.txt the log as a file (the http hook); /system/backups/<name>.tar a backup to keep
  * The home dashboard gets a small card only while a check needs a look.
  *
  * Admins only (MOD_ADMIN): log lines carry addresses and usernames. Other modules never link
@@ -72,6 +73,9 @@ static const char *data_path(void) {
     return p && *p ? p : "data";
 }
 
+void system_when(int64_t t, int64_t now, char *out, size_t cap) { when_text(t, now, out, cap); }
+const char *system_data_path(void) { return data_path(); }
+
 static bool relative(const char *p) { return !(p[0] == '/' || p[0] == '\\' || (p[0] && p[1] == ':')); }
 
 /* How Hemma runs here, from what the process was started with (not how it was built): systemd
@@ -86,6 +90,11 @@ static RunKind run_kind(void) {
     v = plat_getenv("OS");
     if (v && str_eq(v, "Windows_NT")) return RUN_WINDOWS;
     return RUN_TERMINAL;
+}
+
+bool system_restarts_itself(void) {
+    RunKind k = run_kind();
+    return k == RUN_SYSTEMD || k == RUN_LAUNCHD;
 }
 
 static void refresh_addresses(int64_t now) {
@@ -183,9 +192,11 @@ static void own_checks(Ctx *c, Health *h) {
     const char *rescued = setting(SETTING_RESCUED, "");
     if (rescued[0])
         health_add(h, HEALTH_BAD, "Database rescued", rescued,
-                   "If you have a backup from before, restoring it brings the lost rows back (docs/troubleshooting.md). "
-                   "Otherwise carry on: everything that could be read is here.",
-                   NULL);
+                   "Going back to a backup from before (Backups) brings the lost rows back - and loses what was added "
+                   "since. Otherwise carry on: everything that could be read is here.",
+                   "/system/backups");
+
+    system_backup_checks(h); /* (backup.c) */
 
     /* saving */
     if (store_damaged()) {
@@ -316,7 +327,7 @@ static void checks_card(Buf *b, const Health *h) {
 
 typedef struct {
     bool done, salt;
-    char title[80], detail[400], link[160];
+    char title[80], detail[600], link[160];
 } Step;
 
 static void step(Step *s, int *n, int max, bool done, const char *title, const char *detail, const char *link) {
@@ -334,7 +345,7 @@ static void step(Step *s, int *n, int max, bool done, const char *title, const c
    except the secret's copy, which only you can know about ("Done"). */
 static int build_steps(Ctx *c, Step *s, int max, const Health *h) {
     int n = 0;
-    char d[400];
+    char d[600];
     step(s, &n, max, setting("household.name", NULL) != NULL, "Name your home",
          "The name at the top of every page - \"The Svenssons\", \"Villa Kulla\"...", "/people");
     step(s, &n, max, person_count() > 1, "Add the household",
@@ -352,7 +363,8 @@ static int build_steps(Ctx *c, Step *s, int max, const Health *h) {
          "/people#people-codes-h");
     snprintf(d, sizeof d, "Every password depends on the HEMMA_AUTH_SALT line in the settings file (%s%s). Keep a copy "
                           "of that line somewhere safe, apart from Hemma's data - a password manager, or a note in a "
-                          "drawer. A backup of the database can't sign anyone in without it.%s",
+                          "drawer. The nightly backups can't sign anyone in on a new install without it (a Download "
+                          "from Backups has it in).%s",
              env_path(), relative(env_path()) ? ", in the folder Hemma was started from" : "",
              run_kind() == RUN_SYSTEMD ? " On the server: sudo grep HEMMA_AUTH_SALT /etc/hemma/hemma.env" : "");
     int before = n;
@@ -392,10 +404,10 @@ static void steps_card(Ctx *c, Buf *b, const Health *h) {
 /* ----------------------------------------------------------------- pages */
 
 static void tabs(Buf *b, const char *on) {
-    static const char *const href[] = {"/system", "/system/log", "/system/help"};
-    static const char *const label[] = {"Checks", "Log", "Help"};
+    static const char *const href[] = {"/system", "/system/log", "/system/backups", "/system/help"};
+    static const char *const label[] = {"Checks", "Log", "Backups", "Help"};
     buf_puts(b, "<nav class=\"seg system-tabs\" aria-label=\"System\">");
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 4; i++)
         H(b, "<a href=\"%s\"%r>%s</a>", href[i], str_eq(on, label[i]) ? " class=\"on\" aria-current=\"page\"" : "",
           label[i]);
     buf_puts(b, "</nav>");
@@ -605,16 +617,26 @@ static void page(Ctx *c, Buf *b) {
         return;
     }
     bool is_log = str_eq(c->path, "/system/log"), help = str_eq(c->path, "/system/help");
-    if (!is_log && !help && !str_eq(c->path, "/system") && !str_eq(c->path, "/system/")) {
+    bool backups = str_eq(c->path, "/system/backups");
+    if (!is_log && !help && !backups && !str_eq(c->path, "/system") && !str_eq(c->path, "/system/")) {
         ctx_title(c, "Not found");
         ui_empty(b, "🧭", "Nothing here", "That page doesn't exist (anymore).");
         return;
     }
-    ctx_title(c, is_log ? "Log" : help ? "Help" : "System");
-    ui_head(b, "System", is_log ? "What Hemma is doing, live" : help ? "When something isn't right" : "Is everything working?");
+    ctx_title(c, is_log ? "Log" : help ? "Help" : backups ? "Backups" : "System");
+    ui_head(b, "System",
+            is_log    ? "What Hemma is doing, live"
+            : help    ? "When something isn't right"
+            : backups ? "Copies of everything Hemma knows"
+                      : "Is everything working?");
     ui_head_end(b);
-    tabs(b, is_log ? "Log" : help ? "Help" : "Checks");
+    tabs(b, is_log ? "Log" : help ? "Help" : backups ? "Backups" : "Checks");
     if (is_log) page_log(c, b);
+    else if (backups) {
+        buf_puts(b, "<div class=\"system-bk\">");
+        system_backup_page(c, b);
+        buf_puts(b, "</div>");
+    }
     else if (help) {
         buf_puts(b, "<div class=\"system-help\">");
         page_help(c, b);
@@ -725,13 +747,17 @@ static void act_start_show(Ctx *c, Fields *f) {
 static const Action actions[] = {
     {"system.search", act_search, true},  {"system.verbose", act_verbose},     {"system.salt_saved", act_salt_saved},
     {"system.start_hide", act_start_hide}, {"system.start_show", act_start_show}, {"system.rescued_seen", act_rescued_seen},
-    {"system.tz_seen", act_tz_seen}, {0},
+    {"system.tz_seen", act_tz_seen},
+    {"system.backup_now", system_backup_act_now}, {"system.backup_restore", system_backup_act_restore},
+    {"system.backup_cancel", system_backup_act_cancel}, {"system.backup_dir", system_backup_act_dir},
+    {"system.restored_seen", system_backup_act_restored_seen}, {0},
 };
 
 /* ------------------------------------------------------------- endpoints */
 
 /* /system/log.txt: the log file(s) as a download. Admins only (MOD_ADMIN, and checked again). */
 static bool http(Ctx *c, Conn *conn, HttpReq *r) {
+    if (system_backup_http(c, conn, r)) return true;
     if (r->streaming || !str_eq(r->path, "/system/log.txt") || !is_admin(c)) return false;
     if (!str_eq(r->method, "GET") && !str_eq(r->method, "HEAD")) {
         conn_reply(conn, 405, "text/plain", "GET only\n", 9, "Allow: GET, HEAD\r\n");
@@ -815,6 +841,7 @@ static void start(void) {
         g_level_known = true;
     }
     system_log_start(data_path());
+    system_backup_start();
     g_disk_at = g_addr_at = g_phone_at = g_shown_at = 0;
     g_free = g_total = -1;
     g_shown_seq = system_log_seq();
@@ -826,10 +853,14 @@ static void start(void) {
     }
 }
 
-static void stop(void) { system_log_stop(); }
+static void stop(void) {
+    system_backup_stop();
+    system_log_stop();
+}
 
 static void tick(int64_t now) {
     system_log_tick(now, false);
+    system_backup_tick(now);
     /* new lines: screens on the System pages see them - at most every 1.5 s, so a flood of log
        lines can't keep re-rendering screens */
     uint32_t seq = system_log_seq();

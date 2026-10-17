@@ -235,7 +235,9 @@ everywhere**). Hemma then makes a copy that every browser can play.
 **I forgot my password.** See [Accounts](docs/accounts.md).
 
 **Where is my data?** It's in one database file, `hemma.db`, inside the data folder
-(`/var/lib/hemma` on a Pi set up with the installer). The platform guides explain backups.
+(`/var/lib/hemma` on a Pi set up with the installer). Hemma backs it up every night by
+itself and can go back to a backup: **System → Backups** (more in the
+[Pi guide](docs/raspberry-pi.md#backups)).
 
 ## Settings
 

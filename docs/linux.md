@@ -93,8 +93,8 @@ sudo nano /etc/hemma/hemma.env      # settings (see .env.example)
 In Hemma, admins open **System**: checks in plain words and the log, live (Hemma also keeps
 it in `/var/lib/hemma/hemma.log`). When something's wrong: [troubleshooting.md](troubleshooting.md).
 
-The database is `/var/lib/hemma/hemma.db`. Backups work as described in
-[raspberry-pi.md](raspberry-pi.md#backups).
+The database is `/var/lib/hemma/hemma.db`. Hemma backs it up every night by itself
+(**System → Backups**), as described in [raspberry-pi.md](raspberry-pi.md#backups).
 
 ### Things that differ between machines
 

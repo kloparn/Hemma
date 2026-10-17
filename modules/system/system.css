@@ -1,4 +1,4 @@
-/* modules/system — the System page (checks, getting started, the log, help) and its home card.
+/* modules/system — the System page (checks, getting started, the log, backups, help) and its home card.
    Every class starts with system-; shared ones (.card .row .badge .chip .notice ...) come from web/app.css. */
 
 .system-tabs { margin-bottom: 14px; }
@@ -76,3 +76,16 @@ a.system-st { font-weight: 650; color: var(--text); }
 .system-widget-bad { border-color: var(--danger); }
 .system-wl { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .system-wl span { color: var(--muted); }
+
+/* backups */
+.system-bk p { margin: 0 0 10px; }
+.system-bk p:last-child { margin-bottom: 0; }
+.system-bk code { overflow-wrap: anywhere; }
+.system-bk-note { margin-bottom: 14px; }
+.system-bk-note p { margin: 0 0 8px; }
+.system-bk-now { margin: 4px 0 12px; }
+.system-bk-list .row { align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.system-bk-list small { display: block; overflow-wrap: anywhere; }
+.system-bk-a { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.system-bk-a form { margin: 0; }
+.system-bk-dir { margin: 0; }

@@ -171,8 +171,9 @@ checks it at every start. When it's damaged:
 
 A memory card that damaged one file may damage more: think about a new one.
 
-**Getting more back.** A backup from before is best: stop Hemma, put the backup in place as
-`hemma.db`, start it again. That brings the lost rows back, and loses what was added since.
+**Getting more back.** A backup from before is best: **System → Backups → Go back to this**
+on the last good night (or `hemma --restore`, see [raspberry-pi.md](raspberry-pi.md#backups)).
+That brings the lost rows back, and loses what was added since.
 
 Without a backup, SQLite's own tool sometimes gets more back. Try it on a copy (on a Pi;
 use your own copy's name):

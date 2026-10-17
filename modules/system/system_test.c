@@ -4,6 +4,7 @@
 #include "../../core/auth.h"
 #include "../../core/plat.h"
 #include "../../core/server.h"
+#include "../../core/tar.h"
 #include "system.h"
 
 static LogLevel g_was_level;
@@ -555,5 +556,189 @@ TEST(system_help_says_where_this_hemma_keeps_things) {
     CHECK_HAS(html, "Download the log");
     CHECK_HAS(html, "Hemma " HEMMA_VERSION);
     CHECK_HAS(html, "http://192.168.1.50:8080/healthz");
+    th_halt();
+}
+
+/* --------------------------------------------------------- backups (issue #35) */
+
+static bool file_there(const char *dir, const char *name) {
+    char p[800];
+    snprintf(p, sizeof p, "%s/%s", dir, name);
+    return path_stat(p, NULL, NULL, NULL);
+}
+
+/* The backup in folder bk made today (its name), "" = none. */
+static void todays(const char *bk, char out[40]) {
+    char day[11];
+    fmt_ymd(now_sec(), day);
+    out[0] = '\0';
+    DirIter *it = dir_open(bk);
+    DirEntry e;
+    while (it && dir_next(it, &e))
+        if (str_starts(e.name, "hemma-") && strncmp(e.name + 6, day, 10) == 0 && str_ends(e.name, ".db"))
+            snprintf(out, 40, "%s", e.name);
+    dir_close(it);
+}
+
+TEST(system_backs_up_and_keeps_seven_days) {
+    char dir[512], bk[600], p[700], name[40];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    snprintf(bk, sizeof bk, "%s/backups", dir);
+    th_boot_in(dir);
+    int adam = all_well(), eva = th_person("Eva");
+    /* a library folder on the same disk as the data: not where backups go */
+    setting_set("media.roots", test_tmpdir());
+    /* older backups (made up: only their names count), nine days and a second one on the last day */
+    CHECK(dir_make(bk));
+    for (int d = 1; d <= 9; d++) {
+        snprintf(p, sizeof p, "%s/hemma-2026-09-%02d-0330.db", bk, d);
+        CHECK(file_write_atomic(p, "x", 1));
+    }
+    snprintf(p, sizeof p, "%s/hemma-2026-09-09-0100.db", bk);
+    CHECK(file_write_atomic(p, "x", 1));
+    snprintf(p, sizeof p, "%s/hemma-2026-09-09-0330.db.part", bk);
+    CHECK(file_write_atomic(p, "x", 1));
+    snprintf(p, sizeof p, "%s/my-own-notes.db", bk);
+    CHECK(file_write_atomic(p, "x", 1));
+
+    CHECK(!th_act(eva, "system.backup_now", "").ok); /* (admins only) */
+    CHECK(th_act(adam, "system.backup_now", "").ok);
+    todays(bk, name);
+    CHECK(name[0]);
+    /* today + the six newest days before it stay; the newest of each day */
+    for (int d = 4; d <= 9; d++) {
+        snprintf(p, sizeof p, "hemma-2026-09-%02d-0330.db", d);
+        CHECK(file_there(bk, p));
+    }
+    CHECK(!file_there(bk, "hemma-2026-09-03-0330.db"));
+    CHECK(!file_there(bk, "hemma-2026-09-01-0330.db"));
+    CHECK(!file_there(bk, "hemma-2026-09-09-0100.db"));
+    CHECK(!file_there(bk, "hemma-2026-09-09-0330.db.part"));
+    CHECK(file_there(bk, "my-own-notes.db")); /* (never anything Hemma didn't name) */
+
+    const char *h = th_page(adam, "/system/backups");
+    CHECK_HAS(h, "Backed up and checked: hemma-");
+    CHECK_HAS(h, "href=\"/system/backups/hemma-2026-09-09-0330.tar\"");
+    CHECK_HAS(h, "data-a=\"system.backup_restore\"");
+    CHECK_HAS(h, "/backups</code>");
+    h = th_page(adam, "/system");
+    CHECK_HAS(h, "<b>Backups</b>");
+    CHECK_HAS(h, "(checked, ");
+    CHECK_HAS(h, ", 7 kept in ");
+    CHECK(!strstr(th_page(eva, "/system/backups"), "system.backup_now")); /* members: no System page */
+    th_halt();
+}
+
+TEST(system_goes_back_to_a_backup) {
+    char dir[512], bk[600], name[40], form[80];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    snprintf(bk, sizeof bk, "%s/backups", dir);
+    th_boot_in(dir);
+    int adam = all_well();
+    CHECK(th_act(adam, "system.backup_now", "").ok);
+    todays(bk, name);
+    CHECK(name[0]);
+    th_person("Leo"); /* (after the backup) */
+    snprintf(form, sizeof form, "name=%s", name);
+    CHECK(!th_act(adam, "system.backup_restore", "name=hemma-2026-01-01-0000.db").ok); /* not in the list */
+    CHECK(th_act(adam, "system.backup_restore", form).ok);
+    const char *h = th_page(adam, "/system/backups");
+    CHECK_HAS(h, "waits to be put back.</b> Restart Hemma");
+    CHECK_HAS(h, "system.backup_cancel");
+    CHECK_HAS(th_page(adam, "/system"), "<b>Going back to a backup</b>");
+    CHECK(th_act(adam, "system.backup_cancel", "").ok);
+    CHECK(!strstr(th_page(adam, "/system/backups"), "waits to be put back"));
+    /* again - and this time Hemma starts again: the backup is back, without Leo */
+    CHECK(th_act(adam, "system.backup_restore", form).ok);
+    th_halt();
+    th_boot_in(dir);
+    auth_configure("system-test-salt", 1000);
+    bool leo = false;
+    for (int i = 0; i < person_count(); i++) leo |= str_eq(person_at(i)->name, "Leo");
+    CHECK(!leo);
+    h = th_page(adam, "/system");
+    CHECK_HAS(h, "<b>Backup put back</b>");
+    CHECK_HAS(h, "was put back (");
+    CHECK_HAS(th_page(adam, "/system/backups"), "system.restored_seen");
+    CHECK(th_act(adam, "system.restored_seen", "").ok);
+    CHECK(!strstr(th_page(adam, "/system"), "Backup put back"));
+    th_halt();
+}
+
+TEST(system_backup_that_does_not_check_out_is_not_put_back) {
+    char dir[512], bk[600], p[700];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    snprintf(bk, sizeof bk, "%s/backups", dir);
+    th_boot_in(dir);
+    int adam = all_well();
+    CHECK(th_act(adam, "system.backup_now", "").ok);
+    snprintf(p, sizeof p, "%s/hemma-2026-09-01-0330.db", bk);
+    CHECK(file_write_atomic(p, "x", 1));
+    CHECK(th_act(adam, "system.backup_now", "").ok); /* (lists it) */
+    CHECK(th_act(adam, "system.backup_restore", "name=hemma-2026-09-01-0330.db").ok);
+    const char *h = th_page(adam, "/system/backups");
+    CHECK_HAS(h, "Not put back: that backup can&#39;t be used");
+    CHECK(!strstr(h, "waits to be put back"));
+    th_halt();
+}
+
+TEST(system_backup_download_carries_the_secret) {
+    char dir[512], bk[600], name[40], path[700], tarp[700];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    snprintf(bk, sizeof bk, "%s/backups", dir);
+    th_boot_in(dir);
+    int adam = all_well();
+    CHECK(th_act(adam, "system.backup_now", "").ok);
+    todays(bk, name);
+    snprintf(path, sizeof path, "%s/%s", bk, name);
+    Buf out = {0}, db = {0};
+    CHECK(system_backup_bundle(path, "s3cret-salt", 1760000000, &out));
+    const void *p;
+    size_t n;
+    CHECK(file_read_all(path, &db, 64u << 20));
+    CHECK(tar_find(out.p, out.len, "hemma.db", &p, &n) && n == db.len && memcmp(p, db.p, n) == 0);
+    CHECK(tar_find(out.p, out.len, "hemma-secret.txt", &p, &n));
+    Buf txt = {0};
+    buf_put(&txt, p, n);
+    CHECK_HAS(txt.p, "SECRET - keep this file like a password.");
+    CHECK_HAS(txt.p, "\nHEMMA_AUTH_SALT=s3cret-salt\n");
+    /* ... and hemma --restore reads the secret back on a new install */
+    snprintf(tarp, sizeof tarp, "%s/download.tar", dir);
+    CHECK(file_write_atomic(tarp, out.p, out.len));
+    char secret[64], why[300];
+    CHECK(store_stage_restore(test_tmpdir(), tarp, "download.tar", secret, sizeof secret, why, sizeof why));
+    CHECK_STR(secret, "s3cret-salt");
+    buf_free(&txt);
+    buf_free(&db);
+    buf_free(&out);
+    th_halt();
+}
+
+TEST(system_backup_due_at_night_or_when_late) {
+    int64_t night = dt_make(2026, 10, 17, 3, 30), noon = dt_make(2026, 10, 17, 12, 0);
+    CHECK(!system_backup_due(noon, 0, noon - 60));          /* just started: not yet */
+    CHECK(system_backup_due(noon, 0, noon - 200));          /* none yet: a few minutes after the start */
+    CHECK(!system_backup_due(noon, noon - 21 * 3600, 0));   /* 21 h old at noon: wait for the night */
+    CHECK(system_backup_due(night, night - 21 * 3600, 0));  /* ... at 03:xx */
+    CHECK(!system_backup_due(night, night - 3600, 0));      /* made an hour ago */
+    CHECK(system_backup_due(noon, noon - 27 * 3600, 0));    /* a night missed (the computer was off) */
+}
+
+TEST(system_backup_folder_can_be_chosen) {
+    char dir[512], mine[600], name[40];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    snprintf(mine, sizeof mine, "%s/elsewhere", test_tmpdir());
+    th_boot_in(dir);
+    int adam = all_well();
+    CHECK(!th_act(adam, "system.backup_dir", "dir=relative%2Fpath").ok); /* (the whole path, or Hemma chooses) */
+    CHECK(th_act(adam, "system.backup_dir", "dir=%2Fsrv%2Fhemma-backups%2F").ok);
+    CHECK_STR(setting(SET_BACKUP_DIR, ""), "/srv/hemma-backups"); /* (no trailing slash) */
+    CHECK(th_act(adam, "system.backup_dir", "dir=").ok);
+    CHECK_STR(setting(SET_BACKUP_DIR, "x"), "");
+    /* the next backup goes to the folder chosen (here the test's own, which may be a relative path) */
+    setting_set(SET_BACKUP_DIR, mine);
+    CHECK(th_act(adam, "system.backup_now", "").ok);
+    todays(mine, name);
+    CHECK(name[0]);
     th_halt();
 }

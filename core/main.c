@@ -6,6 +6,7 @@
 #include "auth.h"
 #include "env.h"
 #include "plat.h"
+#include "store.h"
 
 static void usage(void) {
     fprintf(stderr,
@@ -24,10 +25,41 @@ static void usage(void) {
             "                 last resort for a forgotten password: print a temporary one for USER and\n"
             "                 exit. Give it the server's --data and --env and run it as the user Hemma\n"
             "                 runs as; a running Hemma applies it within seconds (docs/accounts.md)\n"
+            "  --restore FILE put a backup back - a .db from the backup folder, or a .tar downloaded from\n"
+            "                 the System page. It's checked, then waits in the data folder: Hemma puts it\n"
+            "                 in place at its next start (what was there is kept). Give it the server's\n"
+            "                 --data and --env and run it as the user Hemma runs as (docs/raspberry-pi.md)\n"
             "  --verbose | --quiet | --version\n\n"
             "While it runs, Hemma logs here and to hemma.log in its data folder. Admins find checks\n"
             "(\"is everything working?\") and the live log on its System page. Scripts: GET /healthz.\n",
             HEMMA_VERSION_FULL);
+}
+
+/* hemma --restore FILE (issue #35): checked, then staged for the next start (store_stage_restore). */
+static int restore_cli(const char *file, const char *data_dir, const char *env_file) {
+    const char *base = file;
+    for (const char *p = file; *p; p++)
+        if (*p == '/' || *p == '\\') base = p + 1;
+    char secret[200], why[400];
+    if (!store_stage_restore(data_dir, file, base, secret, sizeof secret, why, sizeof why)) {
+        fprintf(stderr, "Not restored: %s\n", why);
+        return 1;
+    }
+    printf("Ready: %s was checked and waits in %s - Hemma puts it in place at its next start\n"
+           "(keeping what's there now as hemma.db.before-restore-...).\n",
+           base, data_dir);
+    const char *now = env("HEMMA_AUTH_SALT", "");
+    if (secret[0] && !str_eq(secret, now))
+        printf("\nIts passwords were made with another password secret. Before starting Hemma, replace the\n"
+               "HEMMA_AUTH_SALT line in %s with this one (from hemma-secret.txt in the download):\n\n"
+               "    HEMMA_AUTH_SALT=%s\n",
+               env_file, secret);
+    else if (!secret[0])
+        printf("\nPasswords only work with the password secret they were made with: if this is a new install,\n"
+               "put the old HEMMA_AUTH_SALT line back in %s first (docs/raspberry-pi.md, \"Backups\").\n",
+               env_file);
+    printf("\nThen (re)start Hemma - on a Pi: sudo systemctl restart hemma\n");
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -63,7 +95,7 @@ int main(int argc, char **argv) {
         .web_dir = NULL,
         .env_file = env_file,
     };
-    const char *reset_user = NULL;
+    const char *reset_user = NULL, *restore_file = NULL;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         const char *next = i + 1 < argc ? argv[i + 1] : NULL;
@@ -72,6 +104,7 @@ int main(int argc, char **argv) {
         else if (str_eq(a, "--data") && next) cfg.data_dir = argv[++i];
         else if (str_eq(a, "--web") && next) cfg.web_dir = argv[++i];
         else if (str_eq(a, "--reset-password") && next) reset_user = argv[++i];
+        else if (str_eq(a, "--restore") && next) restore_file = argv[++i];
         else if (str_eq(a, "--env") && next) i++; /* handled above */
         else if (str_eq(a, "--verbose")) g_log_level = LOG_DEBUG;
         else if (str_eq(a, "--quiet")) g_log_level = LOG_WARN;
@@ -93,5 +126,6 @@ int main(int argc, char **argv) {
         buf_free(&out);
         return rc;
     }
+    if (restore_file) return restore_cli(restore_file, cfg.data_dir, env_file);
     return app_main(&cfg);
 }

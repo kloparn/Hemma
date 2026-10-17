@@ -4,12 +4,14 @@
 #include "db.h"
 #include "json.h"
 #include "plat.h"
+#include "tar.h"
 #include "../third_party/sqlite/sqlite3recover.h"
 
 #include <limits.h>
 
 #define MAX_TABLES 64
 #define DAMAGED_KEEP 3 /* damaged copies kept in the data folder: the newest few */
+#define RESTORE_KEEP 3 /* ... and copies of the data from before a restore */
 
 typedef struct {
     sqlite3_stmt *insert, *upsert, *del;
@@ -23,6 +25,7 @@ static int g_last_err;     /* SQLite's code for the last write that failed */
 static char g_rescue[700]; /* store_rescue_report() */
 static bool g_refused;     /* store_refused(): the data was left alone, on purpose */
 static char g_refusal[800]; /* store_refusal() */
+static char g_restored[700]; /* store_restore_report() */
 static char g_dir[600];    /* the data folder store_open was given */
 static const char *g_program = ""; /* store_set_program(): this Hemma's version */
 static int g_tx_depth;
@@ -618,7 +621,7 @@ static void count_text(long long v, char *out, size_t cap) {
     out[o] = '\0';
 }
 
-/* ---- damaged copies: the newest DAMAGED_KEEP stay ---- */
+/* ---- copies kept beside the database (damaged ones, the data before a restore): the newest few stay ---- */
 
 typedef struct {
     char name[200];
@@ -626,27 +629,27 @@ typedef struct {
 
 static int kept_cmp(const void *a, const void *b) { return strcmp(((const Kept *)a)->name, ((const Kept *)b)->name); }
 
-static void prune_damaged(void) {
+static void prune_copies(const char *prefix, int keep) {
     DirIter *it = dir_open(g_dir);
     DirEntry e;
     Kept *list = NULL;
     int n = 0, cap = 0;
     while (it && dir_next(it, &e)) {
-        if (!str_starts(e.name, "hemma.db.damaged-") || str_ends(e.name, "-wal") || strlen(e.name) >= sizeof list->name)
+        if (!str_starts(e.name, prefix) || str_ends(e.name, "-wal") || strlen(e.name) >= sizeof list->name)
             continue;
         if (n == cap) list = xrealloc(list, (size_t)(cap = cap ? cap * 2 : 8) * sizeof *list);
         str_copy(list[n++].name, sizeof list->name, e.name);
     }
     dir_close(it);
-    if (n > DAMAGED_KEEP) {
+    if (n > keep) {
         qsort(list, (size_t)n, sizeof *list, kept_cmp); /* (names carry the day and time: oldest first) */
-        for (int i = 0; i < n - DAMAGED_KEEP; i++) {
+        for (int i = 0; i < n - keep; i++) {
             char path[900];
             snprintf(path, sizeof path, "%s/%s", g_dir, list[i].name);
             file_remove(path);
             snprintf(path, sizeof path, "%s/%s-wal", g_dir, list[i].name);
             file_remove(path);
-            log_info("store: removed an older damaged copy, %s (the newest %d stay)", list[i].name, DAMAGED_KEEP);
+            log_info("store: removed an older copy, %s (the newest %d stay)", list[i].name, keep);
         }
     }
     free(list);
@@ -897,7 +900,7 @@ static Rescue rescue(const char *path, const char *why) {
         log_error("store: couldn't keep a copy of the damaged %s as %s - not touching it (is the disk full?)", path, kept);
         return RESCUE_FAILED;
     }
-    prune_damaged();
+    prune_copies("hemma.db.damaged-", DAMAGED_KEEP);
     snprintf(tmp, sizeof tmp, "%s.rescue", path);
     char err[200] = "";
     if (!recover_into(g_db, tmp, err, sizeof err))
@@ -1001,6 +1004,257 @@ static Rescue rescue(const char *path, const char *why) {
     return RESCUED;
 }
 
+/* ====================================================== backups (issue #35) */
+
+/* Rows of Hemma's own tables in d - those with an integer id, as every store table has - and the
+   people among them (-1: no person table). Works without the tables registered: hemma --restore
+   checks a backup before any module is loaded. */
+static long long hemma_rows(sqlite3 *d, long long *people) {
+    long long n = 0;
+    *people = -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(d,
+                           "SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) c WHERE m.type = 'table' AND "
+                           "m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND m.name <> 'lost_and_found' AND c.name = 'id' "
+                           "AND c.pk = 1 AND upper(c.type) = 'INTEGER'",
+                           -1, &st, NULL) != SQLITE_OK)
+        return 0;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const char *t = (const char *)sqlite3_column_text(st, 0);
+        if (!t) continue;
+        long long k = count_rows(d, t);
+        n += k;
+        if (str_eq(t, "person")) *people = k;
+    }
+    sqlite3_finalize(st);
+    return n;
+}
+
+bool store_check_copy(const char *path, long long *rows, char *why, size_t cap) {
+    *rows = 0;
+    if (cap) why[0] = '\0';
+    sqlite3 *d = NULL;
+    bool ok = path_stat(path, NULL, NULL, NULL) && sqlite3_open_v2(path, &d, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK;
+    if (!ok) str_copy(why, cap, d ? sqlite3_errmsg(d) : "it isn't there");
+    if (ok) {
+        sqlite3_busy_timeout(d, 3000);
+        char first[200] = "";
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(d, "PRAGMA quick_check", -1, &st, NULL) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW &&
+            sqlite3_column_text(st, 0))
+            str_copy(first, sizeof first, (const char *)sqlite3_column_text(st, 0));
+        else str_copy(first, sizeof first, sqlite3_errmsg(d));
+        sqlite3_finalize(st);
+        if (!str_eq(first, "ok")) {
+            ok = false;
+            snprintf(why, cap, "it's damaged (%s)", first);
+        }
+    }
+    long long people = -1;
+    if (ok) {
+        *rows = hemma_rows(d, &people);
+        if (people < 0) {
+            ok = false;
+            str_copy(why, cap, "it isn't Hemma's data");
+        }
+    }
+    if (ok) { /* (a file only a newer Hemma reads: it would refuse to start on it) */
+        int floor = (int)sql_int(d, "SELECT v FROM store_meta WHERE k = 'min_reader'");
+        if (floor > store_format()) {
+            ok = false;
+            snprintf(why, cap, "a newer Hemma made it (data format %d - this one reads up to %d)", floor, store_format());
+        }
+    }
+    sqlite3_close(d);
+    return ok;
+}
+
+bool store_backup(const char *to, long long *rows, char *why, size_t cap) {
+    *rows = 0;
+    char src[640], part[720];
+    snprintf(src, sizeof src, "%s/hemma.db", g_dir);
+    snprintf(part, sizeof part, "%s.part", to);
+    if (!g_dir[0] || !path_stat(src, NULL, NULL, NULL)) {
+        str_copy(why, cap, "there's no database open");
+        return false;
+    }
+    file_remove(part);
+    /* its own connection: any thread, and the household's changes go on meanwhile (WAL) */
+    sqlite3 *d = NULL;
+    bool ok = sqlite3_open_v2(src, &d, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK;
+    if (ok) {
+        sqlite3_busy_timeout(d, 10000);
+        char *sql = sqlite3_mprintf("VACUUM INTO %Q", part);
+        ok = sql && sqlite3_exec(d, sql, NULL, NULL, NULL) == SQLITE_OK;
+        sqlite3_free(sql);
+    }
+    if (!ok) snprintf(why, cap, "the copy failed: %s", d ? sqlite3_errmsg(d) : "out of memory");
+    sqlite3_close(d);
+    if (ok) { /* (VACUUM INTO doesn't make sure what it wrote reached the disk) */
+        FILE *f = file_open(part, "r+b");
+        ok = f && file_sync(f);
+        if (f) fclose(f);
+        if (!ok) str_copy(why, cap, "the copy couldn't be written to the disk");
+    }
+    char check[200];
+    if (ok && !store_check_copy(part, rows, check, sizeof check)) {
+        ok = false;
+        snprintf(why, cap, "the copy doesn't check out: %s", check);
+    }
+    if (ok && !file_replace(part, to)) {
+        ok = false;
+        str_copy(why, cap, "the finished copy couldn't be given its name");
+    }
+    if (!ok) file_remove(part);
+    return ok;
+}
+
+static void staged_paths(const char *data_dir, char staged[640], char from[660]) {
+    snprintf(staged, 640, "%s/hemma.db.restore", data_dir);
+    snprintf(from, 660, "%s/hemma.db.restore.from", data_dir);
+}
+
+bool store_stage_restore(const char *data_dir, const char *file, const char *label, char *secret, size_t secret_cap,
+                         char *why, size_t cap) {
+    char staged[640], from[660], part[700];
+    staged_paths(data_dir, staged, from);
+    snprintf(part, sizeof part, "%s.part", staged);
+    if (secret_cap) secret[0] = '\0';
+    int64_t size = 0;
+    bool dir = false;
+    if (!path_stat(file, &size, NULL, &dir) || dir) {
+        snprintf(why, cap, "there's no file at %s", file);
+        return false;
+    }
+    if (!dir_make(data_dir)) {
+        snprintf(why, cap, "can't make the data folder %s", data_dir);
+        return false;
+    }
+    /* a download (.tar: the database and the password secret) or a plain backup (.db) */
+    char head[512];
+    size_t got = 0;
+    FILE *f = file_open(file, "rb");
+    if (f) {
+        got = fread(head, 1, sizeof head, f);
+        fclose(f);
+    }
+    bool ok;
+    if (got == sizeof head && tar_looks(head, got)) {
+        Buf t = {0};
+        const void *p = NULL;
+        size_t n = 0;
+        ok = file_read_all(file, &t, (size_t)1 << 30) && tar_find(t.p, t.len, "hemma.db", &p, &n);
+        if (!ok) snprintf(why, cap, "%s holds no hemma.db", file);
+        if (ok && !(ok = file_write_atomic(part, p, n))) snprintf(why, cap, "can't write %s (is the disk full?)", part);
+        const void *s = NULL;
+        size_t sn = 0;
+        if (ok && secret_cap && tar_find(t.p, t.len, "hemma-secret.txt", &s, &sn)) {
+            const char *txt = s;
+            for (size_t i = 0; i + 16 <= sn; i++) { /* (the HEMMA_AUTH_SALT= line) */
+                if ((i && txt[i - 1] != '\n') || memcmp(txt + i, "HEMMA_AUTH_SALT=", 16) != 0) continue;
+                size_t k = i + 16;
+                while (k < sn && txt[k] != '\n' && txt[k] != '\r') k++;
+                snprintf(secret, secret_cap, "%.*s", (int)(k - i - 16), txt + i + 16);
+                break;
+            }
+        }
+        buf_free(&t);
+    } else {
+        ok = copy_file(file, part);
+        if (!ok) snprintf(why, cap, "can't copy %s into %s (is the disk full?)", file, data_dir);
+    }
+    long long rows = 0;
+    char check[200];
+    if (ok && !store_check_copy(part, &rows, check, sizeof check)) {
+        ok = false;
+        snprintf(why, cap, "that backup can't be used: %s", check);
+    }
+    if (ok && !(ok = file_replace(part, staged))) snprintf(why, cap, "can't put it in place as %s", staged);
+    if (ok) file_write_atomic(from, label, strlen(label));
+    if (!ok) file_remove(part);
+    return ok;
+}
+
+bool store_restore_waiting(const char *data_dir, char *label, size_t cap) {
+    char staged[640], from[660];
+    staged_paths(data_dir, staged, from);
+    if (cap) label[0] = '\0';
+    if (!path_stat(staged, NULL, NULL, NULL)) return false;
+    Buf b = {0};
+    if (file_read_all(from, &b, 4096) && b.len) str_copy(label, cap, buf_cstr(&b));
+    buf_free(&b);
+    return true;
+}
+
+void store_unstage_restore(const char *data_dir) {
+    char staged[640], from[660];
+    staged_paths(data_dir, staged, from);
+    file_remove(staged);
+    file_remove(from);
+}
+
+/* At the start, before the database opens: a backup waiting as hemma.db.restore takes its place,
+   checked once more; what was there is kept as hemma.db.before-restore-<day>-<hhmm> (the newest
+   RESTORE_KEEP stay). One that doesn't check out is set aside (hemma.db.restore-refused) and the
+   data stays as it was. store_restore_report() says which. */
+static void restore_staged(const char *path) {
+    char staged[640], from[660], kept[700], kept_wal[720], side[720], why[200] = "", label[200] = "";
+    staged_paths(g_dir, staged, from);
+    if (!store_restore_waiting(g_dir, label, sizeof label)) return;
+    if (!label[0]) str_copy(label, sizeof label, "hemma.db.restore");
+    char day[11], hm[6];
+    int64_t now = now_sec();
+    fmt_ymd(now, day);
+    fmt_hm(now, hm);
+    long long rows = 0;
+    FILE *w = file_open(staged, "r+b"); /* (hemma --restore run as another user, root say: Hemma couldn't save to it) */
+    if (w) fclose(w);
+    else str_copy(why, sizeof why, "Hemma may not write to it - run hemma --restore as the user Hemma runs as");
+    if (!w || !store_check_copy(staged, &rows, why, sizeof why)) {
+        snprintf(kept, sizeof kept, "%s.restore-refused", path);
+        file_replace(staged, kept);
+        file_remove(from);
+        snprintf(g_restored, sizeof g_restored,
+                 "%s %s: the backup %s was NOT put back - %s. Hemma carried on with the data it had (the backup is "
+                 "kept as hemma.db.restore-refused).",
+                 day, hm, label, why);
+        log_error("store: %s", g_restored);
+        return;
+    }
+    bool had = path_stat(path, NULL, NULL, NULL);
+    snprintf(kept, sizeof kept, "%s.before-restore-%s-%c%c%c%c", path, day, hm[0], hm[1], hm[3], hm[4]);
+    for (int k = 2; k < 100 && path_stat(kept, NULL, NULL, NULL); k++)
+        snprintf(kept, sizeof kept, "%s.before-restore-%s-%c%c%c%c-%d", path, day, hm[0], hm[1], hm[3], hm[4], k);
+    snprintf(side, sizeof side, "%s-wal", path);
+    snprintf(kept_wal, sizeof kept_wal, "%s-wal", kept);
+    if (had && (!copy_file(path, kept) || !copy_file(side, kept_wal))) {
+        file_remove(kept);
+        file_remove(kept_wal);
+        log_error("store: couldn't keep a copy of the data before restoring %s - not restoring it (is the disk "
+                  "full?); it waits as %s",
+                  label, staged);
+        return;
+    }
+    file_remove(side);
+    snprintf(side, sizeof side, "%s-shm", path);
+    file_remove(side);
+    if (!file_replace(staged, path)) {
+        log_error("store: couldn't put the backup %s in place (%s) - Hemma carries on with the data it had", label, staged);
+        return;
+    }
+    file_remove(from);
+    prune_copies("hemma.db.before-restore-", RESTORE_KEEP);
+    char n[24];
+    count_text(rows, n, sizeof n);
+    const char *base = strrchr(kept, '/');
+    snprintf(g_restored, sizeof g_restored,
+             "%s %s: the backup %s was put back (%s rows).%s%.200s%s", day, hm, label, n,
+             had ? " What was there before is kept as " : "", had ? (base ? base + 1 : kept) : "", had ? "." : "");
+    log_warn("store: %s", g_restored);
+}
+
+const char *store_restore_report(void) { return g_restored; }
+
 /* =========================================================== open / close */
 
 static bool open_file(const char *path) {
@@ -1075,8 +1329,9 @@ bool store_open(const char *dir) {
     char path[600];
     snprintf(path, sizeof path, "%s/hemma.db", dir);
     str_copy(g_dir, sizeof g_dir, dir);
-    g_rescue[0] = g_refusal[0] = '\0';
+    g_rescue[0] = g_refusal[0] = g_restored[0] = '\0';
     g_refused = false;
+    restore_staged(path); /* (a backup an admin chose to go back to: issue #35) */
     for (int attempt = 0;; attempt++) {
         if (!open_file(path)) return false;
         char why[200];

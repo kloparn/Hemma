@@ -17,7 +17,7 @@
 #include "server.h"
 #include "store.h"
 
-#define HEMMA_VERSION "0.9.4" /* raised for every release (SECURITY.md, CHANGELOG.md) */
+#define HEMMA_VERSION "0.10.0" /* raised for every release (SECURITY.md, CHANGELOG.md) */
 /* With the commit the binary was built from: "0.6.0 (8242ca8f1a2b)", "-dirty" with uncommitted
    changes (build.ps1 and the Makefile pass -DHEMMA_COMMIT=...); just the version outside git. */
 #define HEMMA_STR_(x) #x
@@ -306,6 +306,8 @@ void setting_set_int(const char *key, long long v);
 /* store_open rescued a damaged database (store_rescue_report): the report, kept until an admin
    presses "Got it" on the System page (system.rescued_seen) - a notice on admins' pages till then. */
 #define SETTING_RESCUED "store.rescued"
+/* ... and when it put back a backup an admin chose (store_restore_report), until "Got it" (system.restored_seen) */
+#define SETTING_RESTORED "store.restored"
 /* per-person preferences (theme, favourite resource, wall layout, ...) */
 const char *pref(int person, const char *key, const char *dflt);
 void pref_set(int person, const char *key, const char *val);
@@ -354,6 +356,11 @@ int app_main(const AppConfig *cfg);
    rescue that got next to nothing back) - starting again won't change it, so deploy/hemma.service
    doesn't restart on it (RestartPreventExitStatus=78; 78 = EX_CONFIG in sysexits.h). */
 #define HEMMA_EXIT_DATA 78
+/* ... and for "start me again" (a backup to put back waits: store_stage_restore): systemd
+   (Restart=on-failure) and launchd (KeepAlive) do, within seconds. 75 = EX_TEMPFAIL. */
+#define HEMMA_EXIT_RESTART 75
+/* Ends the event loop: app_main then stops the modules and returns `code` (thread safe). */
+void app_quit(int code);
 /* How this instance was started (any field may be NULL/0 under tests); data_dir is always the
    folder app_boot opened. */
 const AppConfig *app_config(void);

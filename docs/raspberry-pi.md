@@ -210,9 +210,61 @@ vcgencmd get_throttled    # 0x0 = all good; anything else = power supply or heat
 
 ### Backups
 
-Everything Hemma knows (people, bookings, plans, notes, who watched what) is in one file:
-`/var/lib/hemma/hemma.db`. To copy it safely while Hemma runs, use SQLite's own backup
-command:
+Everything Hemma knows (people, bookings, plans, notes, who watched what) is in one file,
+`/var/lib/hemma/hemma.db`, on the memory card: the part of a Pi most likely to fail. So
+Hemma backs it up by itself:
+
+- **Every night** (around 03:00) it copies the database, checks the copy and keeps the
+  newest of the last 7 days. The first one is made a few minutes after Hemma starts; a
+  computer that was off at night gets one soon after it's on again.
+- **Where:** in a hidden `.hemma-backups` folder in your first library folder on another
+  disk than the database. With the USB disk from section 7, that's
+  `/mnt/media/library/.hemma-backups`: the backups survive a dead memory card. Without
+  another disk they go to `/var/lib/hemma/backups`, which protects against damage and
+  mistakes, but not against the card dying. **System → Backups** shows where they are,
+  and can send them to another folder (one Hemma may write to, such as a media folder you
+  gave `install-pi.sh`).
+- **System → Checks** says when the last backup was made, and warns when one failed or
+  the newest is more than two days old.
+
+**Going back to a backup.** Open **System → Backups** and press **Go back to this** next to
+the backup you want. Everything changed since it was made is gone. Hemma checks the
+backup, keeps what's there now as `hemma.db.before-restore-<date>`, and restarts with the
+backup, which takes a few seconds. Afterwards, **System → Checks** says "Backup put back".
+
+**A copy to keep elsewhere.** **Download** on System → Backups gives one `.tar` file with
+two things in it:
+
+- the database;
+- `hemma-secret.txt`, the password secret (`HEMMA_AUTH_SALT`) that every password and
+  recovery code is made with.
+
+Keep the download like a password: in a password manager, or on an encrypted USB stick.
+The nightly backups leave the secret out, so a nightly backup on its own can't sign anyone
+in on a new install.
+
+**On a new memory card** (or another computer):
+
+1. Install Hemma as in step 4, with the same media folders. Mount the library disk at the
+   same path as before (`/mnt/media`, section 7): watch history finds the videos by their
+   place in the library folder.
+2. Copy the download (or a nightly `hemma-….db` from the USB disk) to the Pi, and put it
+   back:
+
+   ```sh
+   sudo install -o hemma -g hemma -m 600 hemma-2026-10-16-0330-with-secret.tar /var/lib/hemma/
+   sudo -u hemma /opt/hemma/hemma --restore /var/lib/hemma/hemma-2026-10-16-0330-with-secret.tar \
+       --data /var/lib/hemma --env /etc/hemma/hemma.env
+   ```
+
+   It checks the file, and says if the settings file needs the old secret. If it does,
+   run `sudo nano /etc/hemma/hemma.env` and replace the `HEMMA_AUTH_SALT` line with the
+   one it shows. A nightly backup has no secret in it: put back the line you kept. If it's
+   lost, give the admin a new password with `--reset-password`
+   ([accounts.md](accounts.md)), then give everyone else new ones.
+3. Restart Hemma: `sudo systemctl restart hemma`.
+
+**By hand.** SQLite's own backup command copies the database safely while Hemma runs:
 
 ```sh
 sudo apt install -y sqlite3
@@ -220,40 +272,15 @@ sudo sqlite3 /var/lib/hemma/hemma.db ".backup '/home/you/hemma-backup.db'"
 sudo chown you: /home/you/hemma-backup.db
 ```
 
-Or stop Hemma for a moment and copy the file. When Hemma stops, it folds everything into
-`hemma.db`:
+`hemma --restore` puts such a copy back too, as in step 2 above.
 
-```sh
-sudo systemctl stop hemma
-sudo cp /var/lib/hemma/hemma.db /home/you/hemma-backup.db
-sudo systemctl start hemma
-sudo chown you: /home/you/hemma-backup.db
-```
+**Your data in other programs.** When you're signed in,
+`http://hemma.local/api` lists Hemma's tables and `http://hemma.local/api/booking` (or
+`plan_event`, `board_note`, …) gives one as JSON, with times in Unix seconds. It's handy
+for your own scripts. Members see their own preferences and watch history; admins see
+everything.
 
-Then copy it to another computer. Run this **on that computer**, not on the Pi:
-
-```sh
-scp you@hemma.local:hemma-backup.db .
-```
-
-**The secret salt.** Passwords in the database only work together with the
-`HEMMA_AUTH_SALT` line in `/etc/hemma/hemma.env`. Keep a copy of that line somewhere
-safe and *separate* from the database backups, for example in a password manager.
-Without it, a restored database can't sign anyone in. Kept apart, a stolen backup is
-much harder to attack.
-
-**Restoring:** stop Hemma, put the backup in place, and remove the old WAL files so
-they aren't applied to the restored database:
-
-```sh
-sudo systemctl stop hemma
-sudo cp /home/you/hemma-backup.db /var/lib/hemma/hemma.db
-sudo rm -f /var/lib/hemma/hemma.db-wal /var/lib/hemma/hemma.db-shm
-sudo chown hemma:hemma /var/lib/hemma/hemma.db
-sudo systemctl start hemma
-```
-
-Movies aren't in the database; back those up the way you back up any big files.
+Movies aren't in the database: back those up the way you back up any big files.
 
 ### Going back
 
