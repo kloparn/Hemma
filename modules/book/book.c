@@ -561,7 +561,9 @@ static void act_res_archive(Ctx *c, Fields *f) {
 }
 
 static void init(void) {
+    T_resource.what = "things to book";
     store_register(&T_resource);
+    T_booking.what = "bookings";
     store_register(&T_booking);
 }
 

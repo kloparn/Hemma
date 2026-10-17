@@ -898,7 +898,10 @@ static void tick(int64_t now_ms) {
 
 /* =================================================================== module */
 
-static void init(void) { store_register(&T_tv_channel); }
+static void init(void) {
+    T_tv_channel.what = "TV channels";
+    store_register(&T_tv_channel);
+}
 
 static void start(void) {
     tv_plans_reset();

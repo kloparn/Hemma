@@ -539,7 +539,10 @@ static void act_delete(Ctx *c, Fields *f) {
 
 /* ------------------------------------------------------------------ module */
 
-static void init(void) { store_register(&T_note); }
+static void init(void) {
+    T_note.what = "notes on the board";
+    store_register(&T_note);
+}
 
 static void start(void) {
     int64_t cutoff = now_sec() - (int64_t)KEEP_EXPIRED_DAYS * DAY;

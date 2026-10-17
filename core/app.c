@@ -860,6 +860,11 @@ static void render_app(Ctx *c, Buf *out) {
         else if (setting(SETTING_RESCUED, "")[0] && is_admin(c) && !str_starts(c->path, "/system"))
             buf_puts(&page, "<p class=\"notice bad\" role=\"alert\">The database was damaged, and Hemma rescued what it "
                             "could still read. <a href=\"/system\">See what happened</a></p>");
+        else if (setting(SETTING_RESCUED, "")[0] && c->me && c->me->role != ROLE_DISPLAY && !auth_admin_can_sign_in())
+            /* issue #87: no admin came back to read the System page - so everyone hears it */
+            buf_puts(&page, "<p class=\"notice bad\" role=\"alert\">The database was damaged, and Hemma rescued what it "
+                            "could still read - but no admin account came back. Whoever runs the Hemma server can bring "
+                            "one back (<b>Locked out</b> in docs/accounts.md).</p>");
         m->page(c, &page);
     } else {
         ctx_title(c, "Not found");
@@ -1784,15 +1789,21 @@ bool app_boot(const char *data_dir) {
     T_session.api_hidden = true;
     T_setting.api_hidden = true;
     T_pref.api_owner = "person";
+    T_person.what = "people";
     store_register(&T_person);
+    T_session.what = "sign-ins";
     store_register(&T_session);
+    T_setting.what = "settings";
     store_register(&T_setting);
+    T_pref.what = "personal settings";
     store_register(&T_pref);
+    T_activity.what = "news on Home";
     store_register(&T_activity);
     auth_init();
     sort_mods();
     for (int i = 0; i < nmods; i++)
         if (mods[i]->init) mods[i]->init();
+    store_set_program(HEMMA_VERSION); /* (kept with the data: a refusal names the Hemma that last used it) */
     if (!store_open(data_dir)) return false;
     if (store_rescue_report()[0]) setting_set(SETTING_RESCUED, store_rescue_report()); /* (System: until seen) */
     if (!g_testing) {
@@ -1870,9 +1881,29 @@ static void startup_banner(const char *where) {
     log_info("%s", rule);
 }
 
+/* Issue #92: a start refused over the data (store_refused) ends before the System module writes its
+   log file, and a service has no window: the reason goes into <data>/hemma.log here, between the
+   marks the System page reads (a start with its stop: no crash). */
+static void refusal_to_log_file(const char *dir) {
+    char path[700], text[900], stamp[24];
+    snprintf(path, sizeof path, "%s/hemma.log", dir);
+    FILE *f = file_open(path, "ab");
+    if (!f) return;
+    DateTime d = dt_local(now_sec());
+    snprintf(stamp, sizeof stamp, "%04d-%02d-%02d %02d:%02d:%02d", d.year % 10000, d.mon % 100, d.day % 100, d.hour % 100,
+             d.min % 100, d.sec % 100);
+    log_clean(store_refusal(), text, sizeof text);
+    fprintf(f, "%s - Hemma %s started\n%s E %s\n%s - Hemma stopped\n", stamp, HEMMA_VERSION_FULL, stamp, text, stamp);
+    fclose(f);
+}
+
 int app_main(const AppConfig *cfg) {
     g_cfg = *cfg;
-    if (!app_boot(cfg->data_dir)) return 1;
+    if (!app_boot(cfg->data_dir)) {
+        if (!store_refused()) return 1;
+        refusal_to_log_file(g_cfg.data_dir);
+        return HEMMA_EXIT_DATA; /* (systemd doesn't restart it: RestartPreventExitStatus) */
+    }
     compute_asset_version();
     if (!server_listen(cfg->host, cfg->port)) {
         app_halt(); /* modules stop: the log file gets why (a port in use) - a service has no window */

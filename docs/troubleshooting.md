@@ -102,7 +102,10 @@ understand `hemma.local`: give them the number.
 **Hemma doesn't start.**
 Its last log lines say why. The usual reasons: another program already uses the port
 (`sudo ss -ltnp | grep ':80 '` shows which), a mistake in the settings file
-(`/etc/hemma/hemma.env` on a Pi), or the data folder can't be written.
+(`/etc/hemma/hemma.env` on a Pi), or the data folder can't be written. When it's the
+data itself - a newer Hemma's, or damaged past rescuing (both below) - the reason is in
+`hemma.log` too, and a Pi's service doesn't start it again and again (exit code 78):
+after fixing it, `sudo systemctl restart hemma`.
 
 **Nobody can sign in.**
 If the Checks (or the log at start) say the password secret isn't the one the passwords
@@ -124,22 +127,80 @@ DVD rips, MKV files and Dolby sound don't play everywhere. **Watch → Library s
 makes a copy of each that does.
 
 **"Database rescued" on the System page.**
-At the start, Hemma found its database damaged - on a memory card that's usually after a
-power cut, or a card wearing out. It copied the damaged file aside untouched
-(`hemma.db.damaged-<date>` in the data folder) and carried on with every row it could still
-read. The check says which kinds of things lost rows. If you have a backup from before, stop
-Hemma, put the backup in place as `hemma.db`, and start it again: that brings the lost rows
-back (and loses what was added since). Otherwise carry on. Either way, a card that damaged
-one file may damage more: think about a new one. Press **Got it** once you've read it.
+At the start, Hemma found its database damaged and rescued what it could still read; the
+check says how much of each kind of thing was kept. See [A damaged database](#a-damaged-database)
+below. Press **Got it** once you've read it.
 
-**"Hemma was changed by a newer Hemma" in the log, and it won't start.**
+**"Hemma's data ... is damaged, and a rescue got nothing back" in the log, and it won't start.**
+The rescue got next to nothing back, so Hemma left everything as it was rather than start
+as a new household. See [A damaged database](#a-damaged-database).
+
+**"This data was last used by Hemma 1.2 ..." in the log, and it won't start.**
 You went back to an older version, and the newer one had changed the data in a way the older
-one would misread. Put the newer version back (`/opt/hemma/hemma.prev` is the one the
-installer replaced).
+one would misread. Either go forward again - swap the programs back
+([raspberry-pi.md](raspberry-pi.md#going-back), the same commands as going back) - or keep
+the older one and put back the copy of the database the message names
+(`hemma.db.before-format-<n>`, made just before the change; the installer's
+`hemma.db.before-install-<when>` works too). What was added since that copy is lost.
 
 **A library folder is missing.**
 The disk isn't plugged in or mounted. Plug it in (on a Pi, check `/etc/fstab` so it's
 mounted at every start), then rescan in **Watch → Library settings**.
+
+## A damaged database
+
+Everything Hemma knows is in one file, `hemma.db` in its data folder (`/var/lib/hemma` on a
+Pi). A power cut while it's being written, or a memory card wearing out, can damage it. Hemma
+checks it at every start. When it's damaged:
+
+- It first copies it aside, untouched: `hemma.db.damaged-<date>-<time>` (the newest three
+  copies stay).
+- It reads every row it still can into a fresh `hemma.db`, with SQLite's own recovery (what
+  `sqlite3 ... .recover` does), and carries on. The System page says **Database rescued**,
+  with how many of each kind of thing were kept: Hemma notes how many there are in
+  `hemma.db.counts` while it runs, to compare with.
+- Rows it found but couldn't tell where they belong go into a table called
+  `lost_and_found` in the new file. Nothing is thrown away.
+- Until an admin presses **Got it**, the first-run welcome page stays closed. If no admin
+  account came back, everyone sees a page saying so; bring one back as in **Locked out** in
+  [accounts.md](accounts.md).
+- If the rescue gets next to nothing back - no rows at all, none of the household's accounts,
+  or under a tenth of what was there - Hemma doesn't start: starting as a new household would
+  invite you to set it up again over your data. It changes nothing and says why in the log
+  and in `hemma.log`.
+
+A memory card that damaged one file may damage more: think about a new one.
+
+**Getting more back.** A backup from before is best: stop Hemma, put the backup in place as
+`hemma.db`, start it again. That brings the lost rows back, and loses what was added since.
+
+Without a backup, SQLite's own tool sometimes gets more back. Try it on a copy (on a Pi;
+use your own copy's name):
+
+```sh
+sudo apt install -y sqlite3
+sudo systemctl stop hemma
+cd /var/lib/hemma
+sudo cp hemma.db.damaged-2026-10-17-0930 /tmp/damaged.db
+# and its -wal file, if there is one: sudo cp hemma.db.damaged-2026-10-17-0930-wal /tmp/damaged.db-wal
+sudo sqlite3 /tmp/damaged.db .recover | sudo sqlite3 /tmp/recovered.db
+sudo sqlite3 /tmp/recovered.db "SELECT count(*) FROM person"
+```
+
+If that got more back than Hemma did, use it:
+
+```sh
+sudo mv hemma.db hemma.db.rescued
+sudo install -o hemma -g hemma -m 600 /tmp/recovered.db hemma.db
+sudo systemctl start hemma
+```
+
+**Passwords** are made with the secret in the settings file (`HEMMA_AUTH_SALT`): a
+database only lets people sign in with the secret it was made with. Keep the settings file
+as it is.
+
+**To really start over**, move `hemma.db` away (don't delete it - you may want it back) and
+start Hemma: the welcome page creates a new admin.
 
 ## Asking for help
 

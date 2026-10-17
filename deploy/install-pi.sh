@@ -134,6 +134,20 @@ else
 fi
 answers() { [ -n "$FETCH" ] && $FETCH "http://$PROBE:$PORT/healthz" 2>/dev/null | grep -q '^ok'; }
 
+# The database as it was, before the new program first opens it (a new data format can mean an older
+# Hemma refuses it): hemma.db.before-install-<when>, the newest 3 kept. Stopped first, so it's whole.
+DATA=/var/lib/hemma
+if [ -f "$DATA/hemma.db" ]; then
+    systemctl stop hemma >/dev/null 2>&1 || true
+    STAMP=$(date '+%Y-%m-%d-%H%M%S')
+    cp -p "$DATA/hemma.db" "$DATA/hemma.db.before-install-$STAMP"
+    [ ! -f "$DATA/hemma.db-wal" ] || cp -p "$DATA/hemma.db-wal" "$DATA/hemma.db.before-install-$STAMP-wal"
+    ls -1 "$DATA"/hemma.db.before-install-* 2>/dev/null | grep -v -- '-wal$' | sort -r | tail -n +4 |
+        while read -r OLD; do rm -f "$OLD" "$OLD-wal"; done
+    echo
+    echo "Kept a copy of the database as $DATA/hemma.db.before-install-$STAMP"
+fi
+
 STARTED_AT=$(date '+%Y-%m-%d %H:%M:%S')
 systemctl enable hemma >/dev/null 2>&1 || true
 systemctl restart hemma || true
@@ -165,6 +179,8 @@ if [ "$UP" -ne 1 ]; then
     echo "  - another program already uses port $PORT     (see: sudo ss -ltnp | grep ':$PORT ')"
     echo "  - a mistake in the settings file               (sudo nano $ENVF)"
     echo "  - a media folder that isn't there (not mounted?) - the lines above say"
+    echo "  - data it won't start on (a newer Hemma's, or damaged): the lines above say why, and"
+    echo "    Hemma doesn't retry. Going back: docs/raspberry-pi.md, \"Going back\""
     echo "Fix it, then: sudo systemctl restart hemma   (or run this installer again)."
     echo "More help: docs/troubleshooting.md"
     exit 1
@@ -221,7 +237,9 @@ echo "  journalctl -u hemma -f          follow the log (Ctrl+C stops watching)"
 echo "  sudo systemctl restart hemma    restart it, e.g. after changing the settings"
 echo "  sudo nano $ENVF   the settings"
 echo "  Update: copy the new program over, then run this installer again with it."
-echo "  Data: /var/lib/hemma (the database hemma.db and Hemma's own log hemma.log)"
+echo "  Going back: sudo sh -c 'cd /opt/hemma && [ -f hemma.prev ] && mv hemma hemma.x && mv hemma.prev hemma && mv hemma.x hemma.prev'"
+echo "              then sudo systemctl restart hemma  (more: docs/raspberry-pi.md, \"Going back\")"
+echo "  Data: /var/lib/hemma (the database hemma.db, copies hemma.db.before-*, Hemma's own log hemma.log)"
 echo "  Locked out? sudo -u hemma /opt/hemma/hemma --env $ENVF --data /var/lib/hemma --reset-password NAME"
 echo "  Something wrong? docs/troubleshooting.md"
 if grep -q '^HEMMA_ADMIN_PASSWORD=..*' "$ENVF"; then

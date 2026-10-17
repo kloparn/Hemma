@@ -232,7 +232,13 @@ static bool admin_can_sign_in(void) {
     return false;
 }
 
-bool auth_setup_open(void) { return auth_ready() && !setting_int(SET_BOOTSTRAPPED, 0) && !admin_can_sign_in(); }
+bool auth_admin_can_sign_in(void) { return admin_can_sign_in(); }
+
+static bool rescued(void) { return setting(SETTING_RESCUED, "")[0] != 0; }
+
+bool auth_setup_open(void) {
+    return auth_ready() && !setting_int(SET_BOOTSTRAPPED, 0) && !admin_can_sign_in() && !rescued();
+}
 
 typedef enum { MADE_NEW, MADE_ATTACHED, MADE_UPDATED } Made;
 
@@ -934,6 +940,7 @@ static void apply_resets(void) {
 
 void auth_init(void) {
     T_recovery.api_hidden = true;
+    T_recovery.what = "recovery codes";
     store_register(&T_recovery);
     fresh_reset();
 }
@@ -1122,6 +1129,20 @@ static void locked_page(Ctx *c, Buf *b) {
                 "account docs (<code>docs/accounts.md</code>).</p>");
 }
 
+/* Issue #87: a rescue that brought no admin back used to show "Welcome to Hemma" (set it up again, over
+   the household's data) or "Nobody can sign in" with no word of the damage - and the rescue notice was
+   for admins only. This page is for everyone: what happened, and where the way back is. */
+static void damaged_page(Ctx *c, Buf *b, bool others_can_sign_in) {
+    ctx_title(c, "Hemma's data was damaged");
+    buf_puts(b, "<h1>Hemma's data was damaged</h1><p class=\"sub\">Nothing has been deleted.</p>");
+    H(b, "<p class=\"notice bad\">%s</p>", setting(SETTING_RESCUED, ""));
+    buf_puts(b, "<p>No admin account could be read back, so nobody can look after Hemma right now. Whoever runs the "
+                "Hemma server can get more back from the damaged copy - see <b>A damaged database</b> in Hemma's "
+                "troubleshooting guide (<code>docs/troubleshooting.md</code>) - and bring an admin back: <b>Locked "
+                "out</b> in the account docs (<code>docs/accounts.md</code>).</p>");
+    if (others_can_sign_in) buf_puts(b, "<p class=\"small center mt\"><a href=\"/login\">Sign in</a></p>");
+}
+
 static const char *setup_error(const char *e) {
     static const struct {
         const char *key, *text;
@@ -1219,6 +1240,9 @@ static void signin_page(Ctx *c, Buf *b) {
     if (welcome_back) H(b, "<h1>Welcome back, %s</h1>", guess->name);
     else buf_puts(b, "<h1>Sign in</h1>");
     H(b, "<p class=\"sub\">to %s</p>", app_name());
+    if (rescued()) /* (issue #87: the details are on the System page, for admins) */
+        buf_puts(b, "<p class=\"notice\">Hemma's data was damaged, and it rescued what it could still read: some "
+                    "things may be missing.</p>");
     /* the guess is this address's last person: on a shared or reassigned device that's someone
        else (issue #3), so signing in as another person is one tap away */
     if (welcome_back)
@@ -1252,6 +1276,7 @@ void auth_page(Ctx *c, Buf *b) {
     buf_puts(b, "</div>");
     bool can = anyone_can_sign_in();
     if (!auth_ready()) no_salt_page(c, b);
+    else if (rescued() && !admin_can_sign_in() && !(can && str_starts(c->path, "/login"))) damaged_page(c, b, can);
     else if (auth_setup_open() && !(can && str_starts(c->path, "/login"))) setup_page(c, b, can);
     else if (!can) locked_page(c, b);
     else if (str_eq(c->path, "/forgot")) forgot_page(c, b);

@@ -54,7 +54,8 @@ $WinLibs = @("-lws2_32", "-liphlpapi", "-lbcrypt")
 $SqliteFlags = @("-Os", "-w", "-DSQLITE_DQS=0", "-DSQLITE_THREADSAFE=1", "-DSQLITE_DEFAULT_MEMSTATUS=0",
     "-DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1", "-DSQLITE_LIKE_DOESNT_MATCH_BLOBS", "-DSQLITE_MAX_EXPR_DEPTH=0",
     "-DSQLITE_OMIT_DEPRECATED", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_OMIT_SHARED_CACHE", "-DSQLITE_USE_ALLOCA",
-    "-DSQLITE_ENABLE_FTS5", "-DSQLITE_ENABLE_MATH_FUNCTIONS", "-DSQLITE_OMIT_JSON", "-ffunction-sections", "-fdata-sections")
+    "-DSQLITE_ENABLE_FTS5", "-DSQLITE_ENABLE_MATH_FUNCTIONS", "-DSQLITE_OMIT_JSON", "-DSQLITE_ENABLE_DBPAGE_VTAB",
+    "-ffunction-sections", "-fdata-sections")
 $Targets = @{
     win   = @{ Out = "$B/hemma.exe"; Target = @(); Windows = $true }
     pi    = @{ Out = "$B/hemma-pi64"; Target = @("-target", "aarch64-linux-musl"); Windows = $false }
@@ -149,26 +150,34 @@ function Build-Wasm {
     return $out
 }
 
+# SQLite and its recovery extension (third_party/sqlite/recover.c): one object each, built again when
+# its source or the flags change
 function Build-Sqlite([string]$Name, [string[]]$Target) {
-    $obj = "build/obj/$Name/sqlite3.o"
-    $stamp = "$obj.flags" # the flags it was built with: new ones mean building it again
-    $flags = ($Target + $SqliteFlags) -join " "
-    $same = (Test-Path $stamp) -and ([IO.File]::ReadAllText((Join-Path $PSScriptRoot $stamp)) -eq $flags)
-    if (-not (Test-Path $obj) -or -not $same -or
-        (Get-Item third_party/sqlite/sqlite3.c).LastWriteTime -gt (Get-Item $obj).LastWriteTime) {
-        New-Item -ItemType Directory -Force "build/obj/$Name" | Out-Null
-        Write-Host "compiling SQLite for $Name (one-time, ~1 min)..." -ForegroundColor DarkGray
-        Invoke-Zig (@("cc", "-c") + $Target + $SqliteFlags + @("third_party/sqlite/sqlite3.c", "-o", $obj))
-        [IO.File]::WriteAllText((Join-Path $PSScriptRoot $stamp), $flags)
+    $objs = @()
+    foreach ($src in @("sqlite3", "recover")) {
+        $obj = "build/obj/$Name/$src.o"
+        $stamp = "$obj.flags" # the flags it was built with: new ones mean building it again
+        $flags = ($Target + $SqliteFlags) -join " "
+        $same = (Test-Path $stamp) -and ([IO.File]::ReadAllText((Join-Path $PSScriptRoot $stamp)) -eq $flags)
+        $deps = if ($src -eq "sqlite3") { @("third_party/sqlite/sqlite3.c") } else {
+            @("third_party/sqlite/recover.c", "third_party/sqlite/dbdata.c", "third_party/sqlite/sqlite3recover.c") }
+        $newer = $deps | Where-Object { (Test-Path $obj) -and (Get-Item $_).LastWriteTime -gt (Get-Item $obj).LastWriteTime }
+        if (-not (Test-Path $obj) -or -not $same -or $newer) {
+            New-Item -ItemType Directory -Force "build/obj/$Name" | Out-Null
+            Write-Host "compiling SQLite ($src) for $Name (one-time, ~1 min)..." -ForegroundColor DarkGray
+            Invoke-Zig (@("cc", "-c") + $Target + $SqliteFlags + @("third_party/sqlite/$src.c", "-o", $obj))
+            [IO.File]::WriteAllText((Join-Path $PSScriptRoot $stamp), $flags)
+        }
+        $objs += $obj
     }
-    return $obj
+    return $objs
 }
 
 function Build-Target([string]$Name, [string[]]$Mode) {
     $t = $Targets[$Name]
     Build-Assets
     $sqlite = Build-Sqlite $Name $t.Target
-    $a = @("cc") + $t.Target + $Flags + $Mode + (Get-Sources $false) + @($sqlite, "-o", $t.Out)
+    $a = @("cc") + $t.Target + $Flags + $Mode + (Get-Sources $false) + $sqlite + @("-o", $t.Out)
     if ($Mode -contains "-DNDEBUG") { $a += $(if ($Name -like "mac-*") { "-Wl,-dead_strip" } else { "-Wl,--gc-sections" }) }
     if ($t.Windows) { $a += $WinLibs }
     Invoke-Zig $a
@@ -179,7 +188,7 @@ function Build-Target([string]$Name, [string[]]$Mode) {
 function Build-Tests {
     Build-Assets
     $sqlite = Build-Sqlite "win" @()
-    Invoke-Zig (@("cc") + $Flags + $Debug + @("-Itests") + (Get-Sources $true) + @($sqlite, "-o", "$B/test.exe") + $WinLibs)
+    Invoke-Zig (@("cc") + $Flags + $Debug + @("-Itests") + (Get-Sources $true) + $sqlite + @("-o", "$B/test.exe") + $WinLibs)
 }
 
 switch ($Cmd) {

@@ -30,8 +30,9 @@ LDLIBS   += -lpthread -lm
 SQLITE_FLAGS = -Os -w -DSQLITE_DQS=0 -DSQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_MEMSTATUS=0 \
   -DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS -DSQLITE_MAX_EXPR_DEPTH=0 \
   -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_OMIT_SHARED_CACHE -DSQLITE_USE_ALLOCA \
-  -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_OMIT_JSON \
+  -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_OMIT_JSON -DSQLITE_ENABLE_DBPAGE_VTAB \
   -ffunction-sections -fdata-sections
+SQLITE_OBJ = build/obj/sqlite3.o build/obj/recover.o
 
 SKIP        ?=
 SKIPPED     := $(SKIP) $(if $(filter av,$(SKIP)),media) $(if $(filter av media,$(SKIP)),tv)
@@ -84,11 +85,16 @@ build/assets.c: build/embed build/app.css $(WEB) $(WASM)
 build/obj/sqlite3.o: third_party/sqlite/sqlite3.c build/.dir
 	$(CC) -c $(SQLITE_FLAGS) -o $@ third_party/sqlite/sqlite3.c
 
-build/hemma: $(SRC) $(HEADERS) build/assets.c build/obj/sqlite3.o
-	$(CC) $(CPPFLAGS) $(WARN) $(LEAN) $(CFLAGS) -o $@ $(SRC) build/assets.c build/obj/sqlite3.o $(LEAN_LD) $(LDFLAGS) $(LDLIBS)
+# SQLite's recovery extension (third_party/sqlite/recover.c = dbdata.c + sqlite3recover.c)
+build/obj/recover.o: third_party/sqlite/recover.c third_party/sqlite/dbdata.c third_party/sqlite/sqlite3recover.c \
+  third_party/sqlite/sqlite3recover.h build/.dir
+	$(CC) -c $(SQLITE_FLAGS) -o $@ third_party/sqlite/recover.c
 
-build/test: $(TEST_SRC) $(HEADERS) build/assets.c build/obj/sqlite3.o
-	$(CC) $(CPPFLAGS) $(WARN) $(CFLAGS) -Itests -o $@ $(TEST_SRC) build/assets.c build/obj/sqlite3.o $(LDFLAGS) $(LDLIBS)
+build/hemma: $(SRC) $(HEADERS) build/assets.c $(SQLITE_OBJ)
+	$(CC) $(CPPFLAGS) $(WARN) $(LEAN) $(CFLAGS) -o $@ $(SRC) build/assets.c $(SQLITE_OBJ) $(LEAN_LD) $(LDFLAGS) $(LDLIBS)
+
+build/test: $(TEST_SRC) $(HEADERS) build/assets.c $(SQLITE_OBJ)
+	$(CC) $(CPPFLAGS) $(WARN) $(CFLAGS) -Itests -o $@ $(TEST_SRC) build/assets.c $(SQLITE_OBJ) $(LDFLAGS) $(LDLIBS)
 
 test: build/test
 	build/test

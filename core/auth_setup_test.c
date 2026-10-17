@@ -69,6 +69,41 @@ TEST(auth_setup_page_only_while_there_is_no_admin) {
     th_halt();
 }
 
+/* Issue #87: a rescue that got no admin back showed "Welcome to Hemma" - set it up again, over the
+   household's data - or "Nobody can sign in", and the rescue notice was for admins only. */
+TEST(auth_no_welcome_page_after_a_rescue) {
+    th_boot();
+    auth_configure("pepper", 1000);
+    CHECK(auth_setup_open());
+    setting_set(SETTING_RESCUED, "2026-10-17 09:30: Hemma's data was damaged (parts of it couldn't be read). Nothing "
+                                 "was deleted: the damaged file is kept as hemma.db.damaged-2026-10-17-0930.");
+    CHECK(!auth_setup_open());
+    const char *h = th_page(0, "/");
+    CHECK_HAS(h, "<h1>Hemma's data was damaged</h1>");
+    CHECK_HAS(h, "kept as hemma.db.damaged-2026-10-17-0930");
+    CHECK_HAS(h, "docs/troubleshooting.md");
+    CHECK(!strstr(h, "Welcome to Hemma"));
+    CHECK(!strstr(h, "action=\"/setup\""));
+    CHECK(!strstr(h, "href=\"/login\">Sign in</a>")); /* (nobody can) */
+    CHECK(!strstr(th_page(0, "/setup"), "action=\"/setup\""));
+    /* members came back: they find the sign-in page, which says things may be missing ... */
+    int eva = with_login("Eva", "eva", "eva password", ROLE_MEMBER);
+    CHECK_HAS(th_page(0, "/book"), "href=\"/login\">Sign in</a>");
+    h = th_page(0, "/login");
+    CHECK_HAS(h, "action=\"/login\"");
+    CHECK_HAS(h, "some things may be missing");
+    /* ... and, signed in, hear that no admin came back */
+    CHECK_HAS(th_page(eva, "/board"), "no admin account came back");
+    /* an admin again (Locked out): sign-in as usual, the details for admins */
+    int adam = with_login("Adam", "adam", "correct horse", ROLE_ADMIN);
+    h = th_page(0, "/");
+    CHECK_HAS(h, "action=\"/login\"");
+    CHECK_HAS(h, "some things may be missing");
+    CHECK(!strstr(th_page(eva, "/board"), "no admin account came back"));
+    CHECK_HAS(th_page(adam, "/board"), "See what happened");
+    th_halt();
+}
+
 static void clear_admin_env(void) {
     plat_setenv("HEMMA_ADMIN_USER", "", true);
     plat_setenv("HEMMA_ADMIN_PASSWORD", "", true);

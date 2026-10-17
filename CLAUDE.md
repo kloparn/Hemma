@@ -55,20 +55,48 @@ core/            framework with a stable API for modules
   store.*, db.h  typed tables kept in RAM, persisted in SQLite; db.h = raw SQL (+FTS5). store_open checks the
                  file first (PRAGMA quick_check) and reads every table to its end (load() checks the last step):
                  a DAMAGED file (issue #37; owner, 2026-10-14: "rescue and carry on") is copied aside untouched
-                 (hemma.db.damaged-<day>-<hhmm>, its -wal too) and every row that can still be read goes into a
-                 fresh file (rescue_table: id order; a failing read skips the damaged page - 1, 2, 4 ... ids on,
-                 then back by halves - so only that page's rows are lost; the old sqlite_sequence, or +1000 when
-                 unreadable, so lost ids never come back); store_rescue_report() -> app_boot keeps it as setting
-                 SETTING_RESCUED ("store.rescued") -> System "Database rescued" check + an admin notice on every
-                 page until "Got it" (system.rescued_seen). A busy/unreadable file is no damage: it fails to open.
-                 store_damaged() = a write failed with SQLITE_CORRUPT (System says restart, not "disk full?").
+                 (hemma.db.damaged-<day>-<hhmm>[-k], its -wal too; a copy that fails half-way is deleted; the
+                 newest DAMAGED_KEEP = 3 stay) and SQLite's recovery extension (sqlite3_recover, third_party/
+                 sqlite/recover.c: page by page, like the shell's .recover - a broken header, a short file, a
+                 damaged interior page; issues #87 #88) writes every row it can read into hemma.db.rescue.
+                 Orphans (rows whose tree page above was the broken one) land in lost_and_found(rootpgno, pgno,
+                 nfield, id, c0...): place_orphans() puts each PAGE back into the one table its rows fit (c0
+                 NULL = the id alias, text/integer per column, ids not taken) when that's one of ours - the
+                 file's other integer-id tables count as places it may fit too (a cache's page never lands in
+                 the household's data); the rest stay in lost_and_found. The report counts only rows on pages
+                 that fit one of ours AND something else; a page fitting none of ours (media_file: a text id,
+                 WITHOUT ROWID) is only logged ("a cache's, most likely").
+                 Ids: keep_sequences (the old sqlite_sequence, or +1000 past the top when rows were lost or the
+                 count is unknown). THE CENSUS: <data>/hemma.db.counts ("table rows" lines) written at every
+                 healthy open, store_maintain and a clean store_close - what a rescue compares with. REFUSED
+                 (issue #87: a rescue of nothing started Hemma as a new household, the welcome page over the
+                 data): no rows, person rows 0 while the census had people (or no census), or a census >= 20
+                 and under a tenth kept -> the file is left as it was (the copy and .rescue removed),
+                 store_refused() + store_refusal() (a sentence for people). Else hemma.db.rescue replaces it and
+                 store_rescue_report() says it in the household's words ("2,944 of 3,000 rows were kept - notes
+                 on the board: 2,944 of 3,000", Table.what labels; "N more ... in the table lost_and_found")
+                 -> app_boot keeps it as setting SETTING_RESCUED ("store.rescued") -> System "Database rescued"
+                 check + an admin notice on every page until "Got it" (system.rescued_seen); while it's set the
+                 welcome page stays closed, and with no admin who can sign in auth shows damaged_page to
+                 signed-out visits (members: a Sign in link) and members get a notice on every page. A
+                 busy/unreadable file is no damage: it fails to open. store_damaged() = a write failed with
+                 SQLITE_CORRUPT (System says restart, not "disk full?"). A refused start (here or the format
+                 guard) -> app_main appends the refusal to <data>/hemma.log between "- Hemma X started" and
+                 "- Hemma stopped" (the System module isn't running yet) and returns HEMMA_EXIT_DATA (78;
+                 hemma.service RestartPreventExitStatus=78: no restart loop). Tests: store_test.c's filled()/
+                 page_of() damage real files; core/app_data_test.c.
                  DATA FORMAT (issue #38): PRAGMA user_version = the newest StoreMigration in store.c's MIGRATIONS
                  (format 1 = the baseline); a start runs those past the file's format (after ensure_schema, in the
                  open transaction), keeping a VACUUM INTO copy (hemma.db.before-format-<n>) first when one has a
                  run() or breaks_older; store_meta.min_reader = the newest breaks_older format applied: an older
-                 program refuses to start on such data (log line names both formats), but reads files that only
-                 gained tables/fields. FIELD_WAS(T, member, type, "old") renames a column with its data (pair it
-                 with a breaks_older migration). Tests: store_test_migrations(list, n).
+                 program refuses to start on such data, but reads files that only gained tables/fields. The
+                 refusal names versions (issue #92): store_meta "program" = the newest Hemma that opened the data
+                 (store_set_program(HEMMA_VERSION) in app_boot; stored as a BLOB - v is an INTEGER column, "1.2"
+                 would turn into a number): "This data was last used by Hemma 1.2 (data format 3), and this Hemma
+                 1.0 reads only up to format 1 ... Install Hemma 1.2 or newer again, or put back the copy made
+                 before the change: hemma.db.before-format-3". FIELD_WAS(T, member, type, "old", format) renames a
+                 column with its data in that format; store_renames_unsafe() names one without a breaks_older
+                 migration at or after it (app_data_test fails on it). Tests: store_test_migrations(list, n).
   when.*         natural-language dates/times (English + Swedish) for quick-add bars. A day that can't be
                  ("31 sep", "29/2/2027") or a day range ending before it starts ("12/10-10/10", "until 5/10")
                  is refused as a whole: when_parse() returns false, gives the words back and says why in
@@ -303,7 +331,9 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  days count as missing (MAX_TS). DeintIn carries width/height; deint_push refuses any other.
 web/             app.css (core styles + shared vocabulary), wire.js, conv.js (the upload converter's Worker:
                  feeds av.wasm a File, gathers the copy), icon.svg, manifest
-third_party/sqlite/  SQLite 3.54.0 amalgamation (see its README for provenance + hash)
+third_party/sqlite/  SQLite 3.54.1 amalgamation + its recovery extension (ext/recover: dbdata.c, sqlite3recover.c/.h;
+                 recover.c includes both as one object; sqlite3.c needs SQLITE_ENABLE_DBPAGE_VTAB) - see its
+                 README for provenance + hashes
 tools/embed.c    bakes web assets (+ every module's CSS, bundled) into the binary
 tools/pisim.c    Windows dev aid: runs a program inside Raspberry Pi-like limits (see below)
 tools/avdump.c   dev aid for modules/av: info | frames --at S --n K --png DIR | bench | fuzz
@@ -324,9 +354,12 @@ tools/convfuzz.c libFuzzer target over av_convert (MKV in memory -> MP4 in memor
                  `HEMMA_FUZZ_SEEDS=<dir> ./build/test conv_fuzz_seeds` (generated, never committed)
 tests/           test.h (framework), runner.c, harness.* (boot the core without a server; th_boot_in(dir) for a
                  data folder the test prepared - test_tmpdir() is a NEW folder each call)
-deploy/          hemma.service (hardened systemd unit; waits for time-sync.target), install-pi.sh (any systemd
-                 Linux, despite the name: keeps the program it replaces as /opt/hemma/hemma.prev (the way
-                 back, docs/raspberry-pi.md), enables systemd-time-wait-sync with a 90 s limit, starts the service,
+deploy/          hemma.service (hardened systemd unit; waits for time-sync.target; RestartPreventExitStatus=78 =
+                 HEMMA_EXIT_DATA), install-pi.sh (any systemd Linux, despite the name: keeps the program it
+                 replaces as /opt/hemma/hemma.prev (going back = a SWAP hemma <-> hemma.prev, issue #92:
+                 docs/raspberry-pi.md "Going back"), stops the service and copies hemma.db (+ -wal) to
+                 hemma.db.before-install-<YYYY-MM-DD-HHMMSS> before the new program opens it (newest 3 kept),
+                 enables systemd-time-wait-sync with a 90 s limit, starts the service,
                  waits for /healthz, prints addresses + setup code + next steps, or the journal tail and exit 1),
                  local.hemma.plist (macOS launchd agent). The Windows guide runs Hemma as Local Service (S-1-5-19,
                  icacls on C:\Hemma and the media folders), never SYSTEM.
@@ -450,7 +483,8 @@ it: the build embeds a `.gz` twin of each text file and av.wasm (~120 KB -> ~30 
   Never stored in the data folder or the database. The Pi installer still writes it into
   /etc/hemma/hemma.env (root:hemma 0640: Hemma can read it, not change it).
 - First admin: the **welcome page** (core/auth.c `setup_page`, POST `/setup`) is shown to every signed-out
-  visit while `auth_setup_open()`: salt set, setting `auth.bootstrapped` unset AND no admin who can sign in.
+  visit while `auth_setup_open()`: salt set, setting `auth.bootstrapped` unset AND no admin who can sign in
+  AND no unread rescue (SETTING_RESCUED; issue #87 - see "store" for the damaged page instead).
   It needs the one-time **setup code** first (`auth_setup_code()`: HEMMA_SETUP_CODE or setting auth.setup_code,
   logged at start, never shown on a page; wrong ones -> `/setup?e=setup`, throttled; cleared on success).
   The POST re-checks (single-threaded loop: racing submissions can't both win), same-origin, throttled per
@@ -537,7 +571,10 @@ MODULE(things)   /* self-registers: no shared file to edit */
   in init = /api shows members only their own rows) + `TABLE(...)`,
   `store_register()` in `init`. Each becomes a SQLite table (new fields → new columns
   automatically). Reads are in-memory. Use `db.h` for big/queryable data. Keep ids, not row pointers.
-  A rename: `FIELD_WAS(T, member, type, "old")` + a `breaks_older` migration in core/store.c's MIGRATIONS;
+  Set `T.what` in init too: what its rows are in the household's words ("notes on the board") - a rescue
+  reports in them, and core/app_data_test.c fails on a table without one.
+  A rename: `FIELD_WAS(T, member, type, "old", format)` + a `breaks_older` migration at that format or later in
+  core/store.c's MIGRATIONS (app_data_test checks);
   changed meanings of data: a migration with a `run()` (see "store" above). A raw `db.h` table that's a cache
   gets its own format number and is dropped when it changes (media/library.c CACHE_FORMAT, setting
   media.cache_format): CREATE TABLE IF NOT EXISTS never changes a table that's there.
@@ -798,7 +835,7 @@ screen's address, #79 browser-log limits per person an hour (PR #81). 0.7.0 (bra
 guard + FIELD_WAS + the media cache's format + install-pi.sh keeps hemma.prev, #39 part 1 the time zone on
 System and a warning when it changes (PR #82). 0.7.1 (branch fix/library-keeps-progress) = #36 watch
 history follows videos to a new library folder, #40 unfinished uploads listed + removable, #28 left-out
-videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px (PR #105). 0.9.3 (branch fix/player-volume) = the player remembers the volume and mute per device. Next ideas: calmer home cards (hide empty ones), touch on the wall
+videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px (PR #105). 0.9.3 (pushed to main) = the player remembers the volume and mute per device. 0.9.4 (branch fix/database-recovery) = #87 a rescue that gets next to nothing back refuses (no new household over the data) + no welcome page after a rescue + the damaged page, #88 SQLite 3.54.1 + its recovery extension (orphans placed back), counts against the census in household words (Table.what), damaged copies pruned, #92 refusals in versions + into hemma.log + exit 78 (RestartPreventExitStatus), going back = a swap, the installer copies the database, FIELD_WAS needs its breaks_older migration (test). Next ideas: calmer home cards (hide empty ones), touch on the wall
 (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,

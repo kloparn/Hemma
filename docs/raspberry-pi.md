@@ -193,17 +193,7 @@ sudo sh install-pi.sh ./hemma-pi64
 
 If you built on the Pi (option B in step 3): `cd hemma && git pull && make && sudo make install`.
 
-**Go back to the version before.** The installer keeps the program it replaced as
-`/opt/hemma/hemma.prev`:
-
-```sh
-sudo install -m 755 /opt/hemma/hemma.prev /opt/hemma/hemma && sudo systemctl restart hemma
-```
-
-Your data comes along. Only when a newer version changed it in a way older ones would
-misread does the older one refuse to start, saying so in the log (`journalctl -u hemma`):
-then put the newer one back. Before such a change, Hemma keeps a copy of the database as
-`hemma.db.before-format-<n>` in its data folder.
+**Go back to the version before**: see [Going back](#going-back), below.
 
 **Update the system** now and then: `sudo apt update && sudo apt full-upgrade -y`, then
 `sudo reboot` if it asks for one.
@@ -264,6 +254,38 @@ sudo systemctl start hemma
 ```
 
 Movies aren't in the database; back those up the way you back up any big files.
+
+### Going back
+
+**Go back to the version before.** The installer keeps the program it replaced as
+`/opt/hemma/hemma.prev`. Swap the two, so the newer one is still there to come back to
+(the same commands again swap them back):
+
+```sh
+cd /opt/hemma && sudo mv hemma hemma.x && sudo mv hemma.prev hemma && sudo mv hemma.x hemma.prev
+sudo systemctl restart hemma
+```
+
+Your data comes along. Only when the newer version changed it in a way older ones would
+misread does the older one refuse to start. The log (`journalctl -u hemma`, and
+`/var/lib/hemma/hemma.log`) then says which Hemma last used the data, and the service waits
+instead of retrying. Then either swap back to the newer one, or keep the older one and put
+back the database as it was before. Hemma copies it before such a change
+(`hemma.db.before-format-<n>`), and the installer before every update
+(`hemma.db.before-install-<when>`, the newest three stay). What was added since that copy is
+lost:
+
+```sh
+sudo systemctl stop hemma
+cd /var/lib/hemma
+ls hemma.db.before-*                       # pick one; the example uses an installer copy
+sudo mv hemma.db hemma.db.newer
+[ ! -f hemma.db-wal ] || sudo mv hemma.db-wal hemma.db.newer-wal   # (its unsaved part, if any)
+sudo cp -p hemma.db.before-install-2026-10-17-101500 hemma.db
+sudo systemctl start hemma
+```
+
+(If the copy has a `-wal` file next to it, copy that too, as `hemma.db-wal`.)
 
 ## 7. A USB disk for movies
 

@@ -19,6 +19,9 @@ WorkingDirectory=/var/lib/hemma
 ExecStart=/opt/hemma/hemma --data /var/lib/hemma --env /etc/hemma/hemma.env
 Restart=on-failure
 RestartSec=2
+# 78 = Hemma won't start on this data (a newer Hemma's, or damaged past rescuing): starting again
+# every 2 s changes nothing. Why is in the journal and in /var/lib/hemma/hemma.log.
+RestartPreventExitStatus=78
 
 # Port 80 without running as root
 AmbientCapabilities=CAP_NET_BIND_SERVICE
