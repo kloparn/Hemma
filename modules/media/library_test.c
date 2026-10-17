@@ -27,13 +27,15 @@ static bool fixture(const char *name, const char *root, const char *rel) {
     return ok;
 }
 
+static void put_mkv(const char *root, const char *rel, double minutes);
+
 /* A drive like the household's: movies, a series with seasons and extras,
  * home videos, subtitles, posters and the usual junk. */
 static const char *make_library(char *root, size_t cap) {
     str_copy(root, cap, test_tmpdir());
     puts_file(root, "Movies/Inception (2010)/Inception.2010.1080p.BluRay.x264.mkv", "not really a movie");
     puts_file(root, "Movies/Inception (2010)/poster.jpg", "jpg");
-    puts_file(root, "Movies/Inception (2010)/Inception-trailer.mp4", "trailer");
+    put_mkv(root, "Movies/Inception (2010)/Inception-trailer.mkv", 2); /* (named like one, and short: issue #94) */
     if (!fixture("flower.mp4", root, "Movies/Flower (2020)/Flower.mp4")) puts_file(root, "Movies/Flower (2020)/Flower.mp4", "x");
     puts_file(root, "Movies/Flower (2020)/Flower.sv.srt", SRT);
     puts_file(root, "Movies/Flower (2020)/Flower.en.srt", SRT);
@@ -231,7 +233,7 @@ TEST(media_library_indexes_a_real_world_tree) {
     CHECK_INT(ix->nrecent, 6);
     CHECK(ix->scanned_at > 0);
     /* hidden things never show up */
-    CHECK(by_rel("Movies/Inception (2010)/Inception-trailer.mp4") == NULL);
+    CHECK(by_rel("Movies/Inception (2010)/Inception-trailer.mkv") == NULL);
     CHECK(by_rel("Series/Garden Show/Extras/Behind the scenes.mp4") == NULL);
     CHECK(by_rel("$RECYCLE.BIN/deleted.mp4") == NULL);
     CHECK(by_rel(".hidden/secret.mp4") == NULL);
@@ -497,7 +499,7 @@ TEST(media_library_cache_survives_restart_and_reprobes_only_changes) {
     make_library(root, sizeof root);
     setting_set("media.roots", root);
     media_scan_sync();
-    CHECK(media_lib()->probed == 6); /* every video was read once */
+    CHECK(media_lib()->probed == 7); /* every video was read once (the trailer too: is it short?) */
     const MediaFile *flower = by_rel("Movies/Flower (2020)/Flower.mp4");
     int64_t dur = flower->probe.duration_ms;
     app_halt();
@@ -512,7 +514,10 @@ TEST(media_library_cache_survives_restart_and_reprobes_only_changes) {
     /* change one file: only that one is probed again */
     puts_file(root, "Series/Garden Show/Season 2/Garden.Show.S02E01.mkv", "a longer, changed episode");
     media_scan_sync();
-    CHECK_INT(media_lib()->probed, 1);
+    CHECK_INT(media_lib()->probed, 2); /* (and the short trailer: what's left out isn't cached - once per start) */
+    puts_file(root, "Series/Garden Show/Season 2/Garden.Show.S02E01.mkv", "changed again, and again longer");
+    media_scan_sync();
+    CHECK_INT(media_lib()->probed, 1); /* (the trailer's length is known now) */
     /* delete one: it leaves the index and the cache */
     char gone[1024];
     snprintf(gone, sizeof gone, "%s/Home Videos/Midsommar 2024/IMG_1234.mov", root);
@@ -638,6 +643,142 @@ TEST(media_progress_follows_videos_to_a_new_library_folder) {
     th_halt();
 }
 
+/* Issue #93: a renamed file, a reorganised folder, a film replaced by a new copy - each lost its
+   watch history. It follows by content (the same file), else by name (the same film or episode). */
+TEST(media_progress_follows_renamed_and_reorganised_videos) {
+    th_boot();
+    int adam = admin_named("Adam");
+    char root[512], a[800], b[800];
+    str_copy(root, sizeof root, test_tmpdir());
+    puts_file(root, "media/Harbour Lights (2021).mp4", "harbour lights, the film");
+    puts_file(root, "media/Test Show S01E04.mp4", "episode four of the test show");
+    puts_file(root, "media/Garden (2019).mp4", "the garden film, as it was");
+    setting_set("media.roots", root);
+    media_scan_sync();
+    uint64_t film = by_rel("media/Harbour Lights (2021).mp4")->id, ep = by_rel("media/Test Show S01E04.mp4")->id,
+             garden = by_rel("media/Garden (2019).mp4")->id;
+    int64_t now = now_sec();
+    media_watch_report(adam, film, 600, 6000, false, now);
+    media_watch_report(adam, ep, 100, 1300, false, now);
+    media_watch_report(adam, garden, 50, 5000, false, now);
+    CHECK_STR(media_watch_get(adam, film)->label, "Harbour Lights (2021)");
+    CHECK_STR(media_watch_get(adam, ep)->label, "Test Show S01E04");
+    /* renamed: the same content */
+    snprintf(a, sizeof a, "%s/media/Harbour Lights (2021).mp4", root);
+    snprintf(b, sizeof b, "%s/media/Harbour Lights (2021) 1080p.mp4", root);
+    CHECK(file_replace(a, b));
+    /* reorganised: one folder split into Movies and Series */
+    snprintf(a, sizeof a, "%s/media/Test Show S01E04.mp4", root);
+    snprintf(b, sizeof b, "%s/media/Series/Test Show/Season 1", root);
+    CHECK(dir_make(b));
+    snprintf(b, sizeof b, "%s/media/Series/Test Show/Season 1/Test Show S01E04.mp4", root);
+    CHECK(file_replace(a, b));
+    /* replaced by a new copy of the same film: other bytes, the same film by name */
+    snprintf(a, sizeof a, "%s/media/Garden (2019).mp4", root);
+    CHECK(file_remove(a));
+    puts_file(root, "media/Movies/Garden (2019) REMASTERED.mp4", "the garden film, remastered and longer");
+    media_scan_sync();
+    const MediaWatch *w = media_watch_get(adam, by_rel("media/Harbour Lights (2021) 1080p.mp4")->id);
+    CHECK(w && w->pos == 600);
+    w = media_watch_get(adam, by_rel("media/Series/Test Show/Season 1/Test Show S01E04.mp4")->id);
+    CHECK(w && w->pos == 100);
+    w = media_watch_get(adam, by_rel("media/Movies/Garden (2019) REMASTERED.mp4")->id);
+    CHECK(w && w->pos == 50);
+    char labels[4][100];
+    bool away = true;
+    CHECK_INT(media_history_lost(labels, 4, &away), 0);
+    CHECK(!away);
+
+    /* gone, and two that could be it by name: it can't tell, so it says so - and can forget it */
+    int64_t later = now + 60;
+    uint64_t g2 = by_rel("media/Movies/Garden (2019) REMASTERED.mp4")->id;
+    media_watch_report(adam, g2, 70, 5000, false, later);
+    snprintf(a, sizeof a, "%s/media/Movies/Garden (2019) REMASTERED.mp4", root);
+    CHECK(file_remove(a));
+    puts_file(root, "media/Movies/Garden (2019) 720p.mp4", "one garden");
+    puts_file(root, "media/Movies/Garden (2019) 1080p.mp4", "another garden");
+    media_scan_sync();
+    CHECK(media_watch_get(adam, g2) != NULL); /* stays put */
+    CHECK_INT(media_history_lost(labels, 4, &away), 1);
+    CHECK_STR(labels[0], "Garden (2019)");
+    CHECK_HAS(th_page(adam, "/media/settings"), "Watch history without its video");
+    if (module_find("system")) CHECK_HAS(th_page(adam, "/system"), "couldn&#39;t be matched to one in the library: Garden (2019).");
+    CHECK(th_act(adam, "media.history_forget", "").ok);
+    CHECK(media_watch_get(adam, g2) == NULL);
+    CHECK_INT(media_history_lost(labels, 4, &away), 0);
+    th_halt();
+}
+
+/* Issue #93: an unplugged disk leaves its empty mount point - "there", so history moved to the copy
+   on another disk, and stayed there when the disk came back. An empty folder where the last scan
+   found files is away: nothing moves. */
+TEST(media_progress_waits_for_an_unplugged_disk) {
+    th_boot();
+    int adam = th_person("Adam");
+    char d2[512], d3[512], roots[1200], p[800];
+    str_copy(d2, sizeof d2, test_tmpdir());
+    str_copy(d3, sizeof d3, test_tmpdir());
+    const char *rel = "Movies/Flower (2020)/Flower.mp4";
+    puts_file(d2, rel, "the flower film");
+    puts_file(d3, rel, "the flower film");
+    snprintf(roots, sizeof roots, "%s\n%s", d2, d3);
+    setting_set("media.roots", d2);
+    media_scan_sync();
+    uint64_t in2 = by_rel(rel)->id;
+    media_watch_report(adam, in2, 300, 1200, false, now_sec());
+    setting_set("media.roots", roots);
+    media_scan_sync();
+    /* unplugged: the mount point stays, empty */
+    snprintf(p, sizeof p, "%s/%s", d2, rel);
+    CHECK(file_remove(p));
+    snprintf(p, sizeof p, "%s/Movies/Flower (2020)", d2);
+    CHECK(dir_remove(p));
+    snprintf(p, sizeof p, "%s/Movies", d2);
+    CHECK(dir_remove(p));
+    media_scan_sync();
+    CHECK(media_watch_get(adam, in2) != NULL); /* not moved to disk 3's copy */
+    char labels[2][100];
+    bool away = false;
+    media_history_lost(labels, 2, &away);
+    CHECK(away);
+    CHECK(media_history_forget() == 0); /* (nothing forgotten while a disk is away) */
+    /* back again: its own video, nothing moved */
+    puts_file(d2, rel, "the flower film");
+    media_scan_sync();
+    CHECK(media_watch_get(adam, in2) && media_watch_get(adam, in2)->pos == 300);
+    th_halt();
+}
+
+/* Issue #93: history from before places, then an upgrade together with a move to another folder:
+   the rows had no place, and nothing was said. The cache still knew where each id was. */
+TEST(media_progress_from_before_places_follows_after_an_upgrade_and_a_move) {
+    th_boot();
+    int adam = th_person("Adam");
+    char a[512], b[512];
+    str_copy(a, sizeof a, test_tmpdir());
+    str_copy(b, sizeof b, test_tmpdir());
+    const char *rel = "Series/Show/Season 1/Show S01E02.mkv";
+    puts_file(a, rel, "episode two");
+    puts_file(b, rel, "episode two");
+    setting_set("media.roots", a);
+    media_scan_sync();
+    uint64_t old_id = by_rel(rel)->id;
+    media_watch_report(adam, old_id, 200, 1400, false, now_sec());
+    MediaWatch rec = *media_watch_get(adam, old_id); /* as a row from before places looks */
+    rec.place = rec.fp = rec.ident = 0;
+    rec.label[0] = '\0';
+    tbl_put(&T_media_watch, &rec);
+    setting_set("media.roots", b); /* the new card, the disk somewhere else */
+    media_lib_start();             /* the start after the upgrade: the cache fills the row in */
+    CHECK(media_watch_get(adam, old_id)->place != 0);
+    CHECK_STR(media_watch_get(adam, old_id)->label, "Show S01E02");
+    media_scan_sync();
+    const MediaWatch *w = media_watch_get(adam, by_rel(rel)->id);
+    CHECK(w && w->pos == 200);
+    CHECK(media_watch_get(adam, old_id) == NULL);
+    th_halt();
+}
+
 TEST(media_library_lists_what_it_leaves_out) {
     /* issue #28: "Sample Film (2021)" never appeared, and nothing anywhere said so */
     th_boot();
@@ -662,7 +803,7 @@ TEST(media_library_lists_what_it_leaves_out) {
     for (int i = 0; i < media_lib()->nleft; i++) {
         const MediaLeft *l = &media_lib()->left[i];
         if (str_ends(l->rel, "sample-harbour.mkv")) CHECK_INT(l->why, MEDIA_LEFT_SAMPLE);
-        else CHECK(str_ends(l->rel, "Harbour-trailer.mkv") && l->why == MEDIA_LEFT_EXTRA);
+        else CHECK(str_ends(l->rel, "Harbour-trailer.mkv") && l->why == MEDIA_LEFT_NAMED);
     }
     const char *h = th_page(adam, "/media/settings");
     CHECK_HAS(h, "Left out");
@@ -676,16 +817,40 @@ TEST(media_library_lists_what_it_leaves_out) {
     th_halt();
 }
 
+/* Issue #94: named like an extra but long - or of a length the probe can't read (MPEG-PS, TS) - is a
+   real video. It used to be left out as "a trailer", or "under 10 minutes" when nobody knew. */
+TEST(media_library_keeps_long_videos_named_like_extras) {
+    th_boot();
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    put_mkv(root, "Movies/Up (2009)/Up (2009).mkv", 96);
+    put_mkv(root, "Movies/Up (2009)/Up - Making of-featurette.mkv", 45); /* 45 minutes: a film of its own */
+    put_mkv(root, "Movies/Up (2009)/Up-trailer.mkv", 2);
+    puts_file(root, "Recordings/Sample Day (2019).mpg", "an MPEG-PS recording the probe can't time");
+    puts_file(root, "Recordings/Night.sample.ts", "a TV recording");
+    setting_set("media.roots", root);
+    media_scan_sync();
+    CHECK(by_rel("Movies/Up (2009)/Up - Making of-featurette.mkv") != NULL);
+    CHECK(by_rel("Movies/Up (2009)/Up-trailer.mkv") == NULL);
+    CHECK(by_rel("Recordings/Sample Day (2019).mpg") != NULL);
+    CHECK(by_rel("Recordings/Night.sample.ts") != NULL);
+    CHECK_INT(media_lib()->nleft_all, 1);
+    th_halt();
+}
+
 TEST(media_library_lists_unfinished_uploads) {
-    /* issue #40: an abandoned upload's .part stayed for good - as big as a film, and unseen */
+    /* issue #40: an abandoned upload's half-sent file stayed for good - as big as a film, and unseen */
     th_boot();
     int adam = admin_named("Adam"), eva = th_person("Eva");
-    char root[512], part[700], film[700];
+    char root[512], part[700], film[700], torrent[700];
     str_copy(root, sizeof root, test_tmpdir());
     put_mkv(root, "Movies/A (2020)/A (2020).mkv", 90);
-    puts_file(root, "Movies/B (2021)/B (2021).mkv.part", "half a film");
-    snprintf(part, sizeof part, "%s/Movies/B (2021)/B (2021).mkv.part", root);
+    puts_file(root, "Movies/B (2021)/B (2021).mkv.hemma-part", "half a film");
+    snprintf(part, sizeof part, "%s/Movies/B (2021)/B (2021).mkv.hemma-part", root);
     snprintf(film, sizeof film, "%s/Movies/A (2020)/A (2020).mkv", root);
+    /* issue #89: a torrent's (or a browser's) unfinished download is no upload of Hemma's */
+    puts_file(root, "Downloads/Some.Film.2019.1080p.mkv.part", "a torrent's half");
+    snprintf(torrent, sizeof torrent, "%s/Downloads/Some.Film.2019.1080p.mkv.part", root);
     setting_set("media.roots", root);
     media_scan_sync();
     CHECK_INT(media_lib()->nparts_all, 0); /* written lately: it may still be resumed */
@@ -693,17 +858,18 @@ TEST(media_library_lists_unfinished_uploads) {
     g_fake_now = now_sec() + 8 * 86400; /* a week later, untouched */
     media_scan_sync();
     CHECK_INT(media_lib()->nparts_all, 1);
-    CHECK_STR(media_lib()->parts[0].rel, "Movies/B (2021)/B (2021).mkv.part");
+    CHECK_STR(media_lib()->parts[0].rel, "Movies/B (2021)/B (2021).mkv.hemma-part");
     CHECK(media_lib()->parts_bytes == 11);
     const char *h = th_page(adam, "/media/settings");
     CHECK_HAS(h, "Unfinished uploads");
-    CHECK_HAS(h, "B (2021).mkv.part");
+    CHECK_HAS(h, "B (2021).mkv.hemma-part");
     CHECK_HAS(h, "media.parts_remove");
     CHECK(!th_act(eva, "media.parts_remove", "").ok);
     CHECK(path_stat(part, NULL, NULL, NULL));
     CHECK(th_act(adam, "media.parts_remove", "").ok);
     CHECK(!path_stat(part, NULL, NULL, NULL));
     CHECK(path_stat(film, NULL, NULL, NULL)); /* only the unfinished upload */
+    CHECK(path_stat(torrent, NULL, NULL, NULL));
     media_scan_sync();
     CHECK_INT(media_lib()->nparts_all, 0);
     g_fake_now = 0;

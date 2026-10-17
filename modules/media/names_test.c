@@ -223,6 +223,44 @@ TEST(media_names_extras_are_flagged) {
     media_parse_name("Movies/Avatar (2009)/Extras/Behind the scenes.mkv", &n);
     CHECK_STR(n.title, "Behind the scenes");
     CHECK_INT(n.year, 2009); /* lets the scanner attach it to the movie */
+    CHECK(!n.named && !n.sample); /* (an Extras folder says so for sure: no length asked) */
+    /* by name: the scanner asks how long they run (a long one is a real video) */
+    static const char *const named[] = {"Movies/Up (2009)/Up - Trailer.mkv", "Movies/Up (2009)/Up_featurette.mkv",
+                                        "Up.2009.sample.mkv", "Movies/Up (2009)/trailer.mp4",
+                                        "Movies/Up (2009)/inception-trailer.mp4"};
+    for (int i = 0; i < countof(named); i++) {
+        media_parse_name(named[i], &n);
+        if (!n.extra || !n.named || n.sample)
+            test_fail(__FILE__, __LINE__, "%s: extra=%d named=%d sample=%d", named[i], n.extra, n.named, n.sample);
+    }
+    media_parse_name("Movies/Up (2009)/sample-up.mkv", &n);
+    CHECK(n.extra && n.sample && !n.named);
+}
+
+/* Issue #94: a plain word at the end made a film or an episode an extra, whatever its length. */
+TEST(media_names_titles_that_only_end_like_extras) {
+    MediaName n;
+    media_parse_name("Movies/The Sample (2019)/The Sample.mkv", &n);
+    CHECK(!n.extra);
+    CHECK_INT(n.kind, MEDIA_MOVIE);
+    CHECK_STR(n.title, "The Sample");
+    media_parse_name("Movies/The Interview.mp4", &n);
+    CHECK(!n.extra);
+    CHECK_STR(n.title, "The Interview");
+    media_parse_name("Series/Test Show/Season 1/Test Show S01E04 - Crime Scene.mp4", &n);
+    CHECK(!n.extra);
+    CHECK_INT(n.kind, MEDIA_EPISODE);
+    CHECK_INT(n.episode, 4);
+    CHECK_STR(n.ep_title, "Crime Scene");
+    media_parse_name("Series/Test Show/Season 1/Test Show S01E05 - Scene.mp4", &n); /* an episode code wins */
+    CHECK(!n.extra && n.kind == MEDIA_EPISODE && n.episode == 5);
+    media_parse_name("Series/Test Show/Extras/Test Show S01E05 - Scene.mp4", &n); /* ... not over an Extras folder */
+    CHECK(n.extra);
+    media_parse_name("Movies/Short Term 12 (2013)/Short Term 12.mkv", &n);
+    CHECK(!n.extra);
+    /* the length rule off (a long one): a real video, named as one */
+    media_parse_name_long(NULL, "Movies/Up (2009)/Up - Trailer.mkv", &n);
+    CHECK(!n.extra && !n.named);
 }
 
 TEST(media_names_degenerate_input) {

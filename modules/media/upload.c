@@ -14,7 +14,7 @@
  *   POST /media/upload/<batch>/<i>?original=1&why=.. it couldn't   -> {"at":n} (PUT the original) | {"skip":true}
  *
  * web/wire.js drives it (form[data-upload]): one plan, then one PUT per file.
- * Files are written as "<name>.part" and renamed when complete, so the library
+ * Files are written as "<name>.hemma-part" (MEDIA_PART_SUFFIX) and renamed when complete, so the library
  * never sees half a file and a dropped upload resumes where it stopped. Bytes
  * go socket -> disk on a worker thread through one fixed buffer: memory stays
  * flat whatever the file size, and the event loop never waits for the disk.
@@ -167,24 +167,23 @@ static bool junk(const char *rel) { /* system clutter that comes along with a pi
 static int64_t part_size(const Batch *b, const UpFile *f, int64_t *mtime) {
     char path[1024];
     int64_t size = 0;
-    join(path, sizeof path - 8, b->root, f->rel);
-    strcat(path, ".part");
+    join(path, sizeof path - sizeof MEDIA_PART_SUFFIX, b->root, f->rel);
+    strcat(path, MEDIA_PART_SUFFIX);
     return path_stat(path, &size, mtime, NULL) ? size : 0;
 }
 
 static void drop_part(const Batch *b, const UpFile *f) {
     char path[1024];
-    join(path, sizeof path - 8, b->root, f->rel);
-    strcat(path, ".part");
+    join(path, sizeof path - sizeof MEDIA_PART_SUFFIX, b->root, f->rel);
+    strcat(path, MEDIA_PART_SUFFIX);
     file_remove(path);
 }
 
-/* Where file f continues: its half-sent ".part", unless that can't be this file - longer than
+/* Where file f continues: its half-sent MEDIA_PART_SUFFIX file, unless that can't be this file - longer than
    it (a leftover from another file of that name), a picture (always one name, poster.jpg,
-   so a leftover is likely another picture), or a copy's ".part" from before this server
-   started (older Hemmas' converter wrote its half-made copies as "x.web.mp4.part" too: never
-   resumed from; a copy whose upload a restart cut off is sent again): then the leftover goes
-   and it starts over. */
+   so a leftover is likely another picture), or a copy's from before this server started (the
+   browser converts it again, maybe somewhere else: its bytes needn't match - a copy whose upload
+   a restart cut off is sent again): then the leftover goes and it starts over. */
 static int64_t resume_point(const Batch *b, const UpFile *f) {
     int64_t mtime = 0, have = part_size(b, f, &mtime);
     if (have && (have > f->size || b->art || (media_is_web_copy(f->rel) && mtime < g_since))) {
@@ -538,7 +537,7 @@ static int64_t left_to_send(const UpFile *f) { return f->conv == CV_WAIT ? copy_
 
 /* The server's converter is making this copy, so it comes from there: a plan leaves it out, and
    an upload that went quiet and comes back hears "sent" for it and goes on with the rest. Its
-   ".part" from an earlier try goes. Lock held (or b not shared yet), and f has no worker. */
+   half-sent file from an earlier try goes. Lock held (or b not shared yet), and f has no worker. */
 static void leave_to_server(Batch *b, UpFile *f, const char *why) {
     b->total -= left_to_send(f);
     drop_part(b, f);
@@ -1106,7 +1105,7 @@ static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     j->at = at;
     j->len = f->size - at;
     join(j->full, sizeof j->full, b->root, f->rel);
-    snprintf(j->part, sizeof j->part, "%s.part", j->full);
+    snprintf(j->part, sizeof j->part, "%s%s", j->full, MEDIA_PART_SUFFIX);
     f->state = UP_WRITING;
     f->saved = at;
     b->current = i;
@@ -1204,7 +1203,7 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     else if (size >= 0) { /* the copy is ready: size it, then the browser sends it */
         char full[1024], part[1100];
         join(full, sizeof full, b->root, f->rel);
-        snprintf(part, sizeof part, "%s.part", full);
+        snprintf(part, sizeof part, "%s%s", full, MEDIA_PART_SUFFIX);
         if (f->conv == CV_READY && size == f->size) { /* asked again (a lost answer): carry on */
             buf_printf(&out, "{\"at\":%lld}", (long long)resume_point(b, f));
         } else if (f->conv != CV_WAIT) {

@@ -3,7 +3,50 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.10.0 (not released yet)
+## 0.10.1 (not released yet)
+
+Follow-ups for the library: unfinished uploads, left-out videos, disk room, watch history.
+
+### Fixes
+
+- **"Remove unfinished uploads" only removes Hemma's own** (#89). Uploads now write
+  `<name>.hemma-part`. A torrent's or browser's unfinished `.part` file in a library folder is
+  never listed or removed. Removing also really skips a file an upload is about to resume (the
+  check never matched before), and says when more than the 100 listed wait.
+  Half-sent files from older versions, still named `.part`, aren't listed any more: delete
+  them yourself if you see any.
+- **Films and episodes named like extras stay in** (#94):
+  - "The Interview", "The Sample (2019)" and "Show S01E04 - Crime Scene" are videos again.
+    A name counts as an extra only after a mark that sets one apart: "Film-trailer",
+    "film.sample", "Film_featurette", "Film - Trailer".
+  - A name with an episode code is never an extra (an Extras folder still makes one).
+  - A video named like an extra stays in when it runs 40 minutes or more, or when Hemma
+    can't tell how long it runs (TS, WMV and MPEG-PS recordings). Before, those were dropped
+    as "under 10 minutes".
+  - "Left out" gives each file its own reason, and the scan's log line says how many were
+    left out.
+- **One "Disk space" check per disk** (#95). The System page and the library said "OK" and
+  "nearly full" about the same disk: two checks, two rules, two roundings. Now there's one
+  row per disk, naming what's on it ("Hemma's data and the library"), with the numbers it
+  compares: "11.8 GB free … the library wants 7.0 GB free to upload or convert a video as big
+  as its biggest (6.0 GB)". The library now wants room for its biggest video plus the 1 GB
+  reserve, which is what an upload or conversion takes, instead of two of them: 20 GB free
+  no longer warns next to a 10 GB film. Modules report their disks with the new
+  `health_disk()`.
+- **Watch history finds its videos again** (#93):
+  - A video that's gone hands its history to the one video at the same place below a
+    library folder. Else to the one with the same content (its size and its first and last
+    64 KB, read once per file and cached). Else to the one that is the same film or episode
+    by name. Never to one of two.
+  - A renamed file, a reorganised folder and a film replaced by a new copy keep their history.
+  - A library folder that's suddenly empty (an unplugged disk's mount point) counts as away,
+    so nothing moves to a copy on another disk.
+  - On the first start after upgrading, history from before 0.7.1 learns where its video was
+    from the library cache, also after a move.
+  - History that still finds no video is named on Library settings and the System page, and
+    can be forgotten.
+
+## 0.10.0 (2026-10-17)
 
 Hemma backs itself up every night, checks the copies, and can go back to one (#35).
 

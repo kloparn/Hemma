@@ -40,14 +40,6 @@ static uint32_t g_shown_seq;
 
 /* --------------------------------------------------------------- helpers */
 
-static void size_text(int64_t n, char *out, size_t cap) {
-    double g = (double)n / 1073741824.0;
-    if (g >= 1024) snprintf(out, cap, "%.1f TB", g / 1024);
-    else if (g >= 10) snprintf(out, cap, "%.0f GB", g);
-    else if (g >= 1) snprintf(out, cap, "%.1f GB", g);
-    else snprintf(out, cap, "%lld MB", (long long)(n >> 20));
-}
-
 static void span_text(int64_t s, char *out, size_t cap) { /* "12 min", "5 h", "3 days" */
     if (s < 60) snprintf(out, cap, "less than a minute");
     else if (s < 3600) snprintf(out, cap, "%lld min", (long long)(s / 60));
@@ -216,21 +208,6 @@ static void own_checks(Ctx *c, Health *h) {
         health_add(h, HEALTH_OK, "Saving", d, NULL, NULL);
     }
 
-    /* room where the database lives */
-    if (!g_disk_at) refresh_disk(now_ms());
-    if (g_free >= 0 && g_total > 0) {
-        size_text(g_free, a, sizeof a);
-        int used = (int)CLAMP((g_total - g_free) * 100 / g_total, 0, 100);
-        /* what's left counts, not the share: 5% of a big disk is plenty for a database and a log */
-        int st = g_free < (300LL << 20) ? HEALTH_BAD : g_free < (2LL << 30) ? HEALTH_WARN : HEALTH_OK;
-        snprintf(d, sizeof d, "%s free on the disk with Hemma's data (%d%% used).", a, used);
-        health_add(h, st, "Disk space", d,
-                   st ? "Make room on that disk: when it's full, Hemma can't save changes (old videos? the Watch "
-                        "library settings show what takes room)."
-                      : NULL,
-                   NULL);
-    }
-
     /* signing in */
     if (!auth_ready()) {
         snprintf(todo, sizeof todo, "Add it to the settings file (%s) - hemma --gen-salt makes one - and restart Hemma.",
@@ -281,10 +258,104 @@ static void own_checks(Ctx *c, Health *h) {
     }
 }
 
-/* The core's checks first, then every module's (their steps come along: see the list below). */
+/* Sizes as the disk rows compare them: one decimal up to 100 GB, so "11.8 GB free" and "needs
+   12.0 GB" can't both round to "12 GB" (issue #95). */
+static void room_words(int64_t n, char *out, size_t cap) {
+    double g = (double)n / 1073741824.0;
+    if (g >= 1024) snprintf(out, cap, "%.1f TB", g / 1024);
+    else if (g >= 100) snprintf(out, cap, "%.0f GB", g);
+    else if (g >= 1) snprintf(out, cap, "%.1f GB", g);
+    else snprintf(out, cap, "%lld MB", (long long)(n >> 20));
+}
+
+#define DATA_WANT (2LL << 30)   /* free on the data's disk: room to save changes and keep the log */
+#define DATA_BAD (300LL << 20)  /* ... under this, saving fails soon */
+
+typedef struct {
+    int64_t free, total, want;
+    bool data;
+    char what[160], where[300];
+    const HealthDiskRow *wish; /* the one that wants the most (NULL: the data folder's own wish) */
+} Disk;
+
+static void add_what(Disk *d, const char *what) {
+    if (strstr(d->what, what)) return; /* (two library folders on one disk) */
+    size_t n = strlen(d->what);
+    snprintf(d->what + n, sizeof d->what - n, "%s%s", n ? " and " : "", what);
+}
+
+/* One "Disk space" row per disk (issue #95): the data folder's, and each one a module keeps
+   things on (health_disk) - one disk once (the module says when it's the data's; others: the
+   same size, and free space within 64 MB), naming what's on it, held to the biggest wish. */
+static void disk_rows(Health *h) {
+    if (!g_disk_at) refresh_disk(now_ms());
+    Disk disks[16];
+    int nd = 0;
+    if (g_free >= 0 && g_total > 0) {
+        Disk *d = &disks[nd++];
+        memset(d, 0, sizeof *d);
+        d->free = g_free;
+        d->total = g_total;
+        d->want = DATA_WANT;
+        d->data = true;
+        add_what(d, "Hemma's data");
+    }
+    for (int i = 0; i < h->ndisks; i++) {
+        const HealthDiskRow *r = &h->disks[i];
+        int k = -1;
+        for (int j = 0; j < nd && k < 0; j++) {
+            if (r->data_disk ? disks[j].data
+                             : !disks[j].data && disks[j].total == r->total && llabs(disks[j].free - r->free) < (64LL << 20))
+                k = j;
+        }
+        if (k < 0) {
+            if (nd == countof(disks) || r->free < 0) continue;
+            k = nd++;
+            memset(&disks[k], 0, sizeof disks[k]);
+            disks[k].free = r->free;
+            disks[k].total = r->total;
+            str_copy(disks[k].where, sizeof disks[k].where, r->path);
+        }
+        add_what(&disks[k], r->what);
+        if (r->want > disks[k].want) {
+            disks[k].want = r->want;
+            disks[k].wish = r;
+        }
+    }
+    for (int i = 0; i < nd; i++) {
+        const Disk *d = &disks[i];
+        char fr[24], wt[24], title[80], text[320], who[80];
+        room_words(d->free, fr, sizeof fr);
+        room_words(d->want, wt, sizeof wt);
+        int used = d->total > 0 ? (int)CLAMP((d->total - d->free) * 100 / d->total, 0, 100) : 0;
+        int st = d->data && d->free < DATA_BAD ? HEALTH_BAD : d->free < d->want ? HEALTH_WARN : HEALTH_OK;
+        int n = snprintf(text, sizeof text, "%s free on the disk with %s (%d%% used).", fr, d->what, used);
+        if (st && n > 0 && (size_t)n < sizeof text) {
+            if (d->wish) {
+                str_copy(who, sizeof who, d->wish->what);
+                if (who[0] >= 'a' && who[0] <= 'z') who[0] = (char)(who[0] - 'a' + 'A');
+                snprintf(text + n, sizeof text - (size_t)n, " %s wants %s free %s.", who, wt, d->wish->why);
+            } else {
+                snprintf(text + n, sizeof text - (size_t)n, " Hemma wants %s free to save changes and keep its log%s.", wt,
+                         st == HEALTH_BAD ? " - under 300 MB, saving fails soon" : "");
+            }
+        }
+        if (d->data) str_copy(title, sizeof title, "Disk space");
+        else snprintf(title, sizeof title, "Disk space (%.60s)", d->where);
+        const char *todo = st == HEALTH_OK ? NULL
+                           : d->wish   ? d->wish->todo
+                                       : "Make room on that disk: when it's full, Hemma can't save changes (old videos? "
+                                         "the Watch library settings show what takes room).";
+        health_add(h, st, title, text, todo, st && d->wish ? d->wish->link : NULL);
+    }
+}
+
+/* The core's checks first, then every module's (their steps come along: see the list below), then
+   the disks they all use. */
 static void collect(Ctx *c, Health *h) {
     own_checks(c, h);
     health_collect(c, h);
+    disk_rows(h);
 }
 
 static int count_looks(const Health *h) {

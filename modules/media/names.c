@@ -50,12 +50,12 @@ static const char *const TAGS[] = {
     "truehd", "atmos", "flac", "opus", "mp3", "lpcm", "proper", "repack", "rerip", "internal", "limited", "extended",
     "unrated", "uncut", "remastered", "imax", "criterion", "theatrical", "multi", "multisubs", "subbed", "dubbed",
     "swesub", "swesubs", "nordic", "nordicsubs", "swe", "eng", "dual", "dual-audio", "complete", "readnfo", "nfofix",
-    "hc", "hardsub", "hardcoded", "sample", NULL};
+    "hc", "hardsub", "hardcoded", NULL}; /* (not "sample": "The Sample" is a title - issue #94; a scene's clip is cut at its year) */
 
 /* Tags that are also ordinary words: they never cut the very first title word ("Dual (2022)"). */
 static const char *const WORDLIKE_TAGS[] = {"dual",   "complete", "limited", "extended",  "internal", "proper",
                                             "unrated", "uncut",   "remastered", "theatrical", "criterion", "multi",
-                                            "sample", "imax",     "atmos",   "nordic",    "dubbed",   "subbed",
+                                            "imax",     "atmos",   "nordic",    "dubbed",   "subbed",
                                             "hulu",   "dv",       "dd",      "hc",        "swe",      "eng",
                                             "repack", "nf",       NULL};
 
@@ -736,22 +736,32 @@ static void strip_ext(char *s) {
     *dot = 0;
 }
 
-static _Thread_local bool t_long_sample; /* media_parse_name_long: the "sample..." rule is off */
+static _Thread_local bool t_long; /* media_parse_name_long: the name rules for extras are off */
 
-/* 0 = not an extra, 1 = by its ending ("-trailer", ".featurette", "sample"), 2 = only because it
-   starts with "sample" - a scene's preview clip, or a real film so called (issue #28). */
+/* 0 = not an extra by its name; 1 = by its ending, after a mark that sets an extra apart
+   ("Film-trailer", "film.sample", "Film_featurette", "Film - Trailer") or the whole name ("trailer");
+   2 = only because it starts with "sample" - a scene's preview clip, or a real film so called
+   (issue #28). A plain space doesn't count (issue #94: "The Interview", "S01E04 - Crime Scene" are
+   no extras). Either way library.c asks the probe: a long one is a real video. */
 static int extra_name(const char *base) {
     static const char *const SUF[] = {"trailer", "sample",  "featurette", "behindthescenes", "deleted",
                                       "deletedscene", "interview", "scene", "short", "extra", "teaser", NULL};
+    if (t_long) return 0;
     char lo[256];
     fold_copy(lo, sizeof lo, base);
+    str_trim(lo);
     size_t n = strlen(lo);
     for (int i = 0; SUF[i]; i++) {
         size_t k = strlen(SUF[i]);
         if (n == k && !strcmp(lo, SUF[i])) return 1;
-        if (n > k && !strcmp(lo + n - k, SUF[i]) && strchr("-._ ", lo[n - k - 1])) return 1;
+        if (n <= k || strcmp(lo + n - k, SUF[i]) != 0) continue;
+        char before = lo[n - k - 1];
+        if (before == '-' || before == '.' || before == '_') return 1;
+        size_t j = n - k - 1; /* "Film - Trailer": spaces, then a dash */
+        while (j > 0 && lo[j] == ' ') j--;
+        if (before == ' ' && lo[j] == '-') return 1;
     }
-    return !t_long_sample && str_starts(lo, "sample") && strchr("-._ ", lo[6]) && lo[6] ? 2 : 0;
+    return str_starts(lo, "sample") && strchr("-._ ", lo[6]) && lo[6] ? 2 : 0;
 }
 
 /* MakeMKV names its files "title_t00", "B1_t03", "<VOLUME_LABEL>_t07" or "title00": the title
@@ -863,9 +873,9 @@ int media_name_part(const char *rel) {
 void media_parse_name(const char *rel, MediaName *out) { media_parse_name_in(NULL, rel, out); }
 
 void media_parse_name_long(const char *root_name, const char *rel, MediaName *out) {
-    t_long_sample = true;
+    t_long = true;
     media_parse_name_in(root_name, rel, out);
-    t_long_sample = false;
+    t_long = false;
 }
 
 void media_parse_name_in(const char *root_name, const char *rel, MediaName *out) {
@@ -902,13 +912,13 @@ void media_parse_name_in(const char *root_name, const char *rel, MediaName *out)
     int nd = np - 1; /* directories */
 
     int why_extra = extra_name(base);
-    bool series_hint = false, movie_hint = false, home_hint = false, extra = why_extra != 0;
+    bool series_hint = false, movie_hint = false, home_hint = false, extra = why_extra != 0, by_folder = false;
     for (int i = 0; i < nd; i++) {
         int g = generic_dir(parts[i]);
         if (g == GEN_SERIES) series_hint = true;
         else if (g == GEN_MOVIES) movie_hint = true;
         else if (g == GEN_HOME) home_hint = true;
-        else if (g == GEN_EXTRAS) extra = true, why_extra = 1; /* (an Extras folder says so for sure) */
+        else if (g == GEN_EXTRAS) extra = by_folder = true; /* (an Extras folder says so for sure) */
     }
     int track = makemkv_title(base);
 
@@ -943,6 +953,8 @@ void media_parse_name_in(const char *root_name, const char *rel, MediaName *out)
 
     Toks *T = xmalloc(sizeof *T), *D = NULL;
     tokenize(base, T);
+    EpMatch probe_m;
+    if (extra && !by_folder && find_explicit(T, &probe_m)) extra = false, why_extra = 0; /* S01E04: an episode (issue #94) */
     bool ctx = sdir >= 0 || series_hint || T->lead_group;
     EpMatch m;
     const Toks *src = T;
@@ -1025,7 +1037,8 @@ void media_parse_name_in(const char *root_name, const char *rel, MediaName *out)
         if (!out->title[0]) str_copy(out->title, sizeof out->title, "Untitled");
     }
     out->extra = extra;
-    out->sample = extra && why_extra == 2;
+    out->sample = extra && !by_folder && why_extra == 2;
+    out->named = extra && !by_folder && why_extra == 1;
     out->disc = disc;
     out->track = track;
     free(T);

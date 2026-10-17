@@ -194,8 +194,8 @@ TEST(upload_streams_resumes_skips_and_refuses) {
     CHECK(at > 0 && at <= 1310720);
     char final[1024], part[1100];
     snprintf(final, sizeof final, "%s/Series/Show/Season 1/Show.S01E01.mkv", root);
-    snprintf(part, sizeof part, "%s.part", final);
-    CHECK(path_stat(part, NULL, NULL, NULL));  /* half a file waits as .part ... */
+    snprintf(part, sizeof part, "%s.hemma-part", final);
+    CHECK(path_stat(part, NULL, NULL, NULL));  /* half a file waits as .hemma-part ... */
     CHECK(!path_stat(final, NULL, NULL, NULL)); /* ... and the library never sees it */
 
     /* ... a wrong offset is answered with the right one ... */
@@ -427,7 +427,7 @@ TEST(upload_sets_pictures_and_sends_copies_not_originals) {
 
     /* a JPEG for the series: saved as poster.jpg in the show folder, the old picture goes */
     static const char jpg[] = "\xFF\xD8\xFF\xE0\0\x10JFIF\0 pretend the rest is a picture";
-    put_file(root, "Series/Show/poster.jpg.part", "OLD-PICTURE-HEAD", 16); /* another picture's leftover */
+    put_file(root, "Series/Show/poster.jpg.hemma-part", "OLD-PICTURE-HEAD", 16); /* another picture's leftover */
     art_plan_for(adam, hshow, "My poster.JPEG", sizeof jpg - 1, &r, batch);
     CHECK_HAS(body_of(&r), "\"todo\":[[0,0]]");
     snprintf(put0, sizeof put0, "/media/upload/%s/0?at=0", batch);
@@ -446,7 +446,7 @@ TEST(upload_sets_pictures_and_sends_copies_not_originals) {
     CHECK_HAS(buf_cstr(&r), "415");
     CHECK_HAS(body_of(&r), "isn't a JPEG, PNG or WebP");
     CHECK(!exists(root, "Movies/Film (2020)/Film (2020).png"));
-    CHECK(!exists(root, "Movies/Film (2020)/Film (2020).png.part"));
+    CHECK(!exists(root, "Movies/Film (2020)/Film (2020).png.hemma-part"));
 
     /* ... a real PNG is saved under the film's name, and served (?v= is only for caches) */
     static const char png[] = "\x89PNG\r\n\x1a\n pretend the rest is a picture";
@@ -558,10 +558,10 @@ TEST(upload_takes_copies_the_browser_makes) {
     upload_test_free_space(-1);
 
     /* the copy is ready: sized, then sent like any file, under the copy's name */
-    put_file(root, "Up/S/x.web.mp4.part", "stale", 5); /* an earlier try's leftover starts over */
+    put_file(root, "Up/S/x.web.mp4.hemma-part", "stale", 5); /* an earlier try's leftover starts over */
     call("POST", url, adam, NULL, "", 0, 0, &r);
     CHECK_HAS(body_of(&r), "\"at\":0");
-    CHECK(!exists(root, "Up/S/x.web.mp4.part"));
+    CHECK(!exists(root, "Up/S/x.web.mp4.hemma-part"));
     call("POST", url, adam, NULL, "", 0, 0, &r); /* asked again (a lost answer): same */
     CHECK_HAS(body_of(&r), "\"at\":0");
     snprintf(url, sizeof url, "/media/upload/%s/0?at=0", batch);
@@ -616,10 +616,10 @@ TEST(upload_takes_copies_the_browser_makes) {
     call("POST", "/a/media.upload_stop", adam, "Content-Type: application/x-www-form-urlencoded\r\n", "", 0, 0, &r);
 
     /* a leftover .part longer than the file can't be its beginning: it goes, the file starts over */
-    put_file(root, "Up/V/big.mp4.part", "0123456789ABCDEF", 16);
+    put_file(root, "Up/V/big.mp4.hemma-part", "0123456789ABCDEF", 16);
     plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"V/big.mp4\",10]]}", &r, batch);
     CHECK_HAS(body_of(&r), "\"todo\":[[0,0]]");
-    CHECK(!exists(root, "Up/V/big.mp4.part"));
+    CHECK(!exists(root, "Up/V/big.mp4.hemma-part"));
 
     /* falling back to the original needs room for it too */
     plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"conv\":\"1\",\"files\":[[\"W/c.mkv\",4000]]}", &r, batch);
@@ -752,7 +752,7 @@ TEST(upload_and_the_converter_never_write_the_same_copy) {
     CHECK_HAS(th_page(adam_id, "/media/upload"), "S/x.web.mp4</code> — Hemma is making this copy on the server right now");
     snprintf(path, sizeof path, "%s/Up/S/x.web.mp4.conv.part", root);
     CHECK(same_file(path, "half", 4));
-    CHECK(!exists(root, "Up/S/x.web.mp4.part"));
+    CHECK(!exists(root, "Up/S/x.web.mp4.hemma-part"));
     convert_api(adam, root, "Up/W/z.webm", &r);
     CHECK(convert_test_start() != NULL);
     plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"conv\":\"1\",\"dupes\":\"1\",\"files\":[[\"W/z.mkv\",4000]]}", &r,
@@ -783,12 +783,12 @@ TEST(upload_and_the_converter_never_write_the_same_copy) {
     CHECK(convert_test_start() != NULL);
     convert_api(adam, root, "Up/V/v.mkv", &r);
     CHECK(queued(root, "Up/V/v.mkv"));
-    put_file(root, "Up/V/u.web.mp4.part", "01234", 5);
+    put_file(root, "Up/V/u.web.mp4.hemma-part", "01234", 5);
     snprintf(url, sizeof url, "/media/upload/%s/1?at=5", batch);
     call("PUT", url, adam, NULL, "56789", 5, 5, &r);
     CHECK_HAS(buf_cstr(&r), "200 OK");
     CHECK(!exists(root, "Up/V/u.web.mp4"));
-    CHECK(!exists(root, "Up/V/u.web.mp4.part"));
+    CHECK(!exists(root, "Up/V/u.web.mp4.hemma-part"));
     snprintf(url, sizeof url, "/media/upload/%s/1", batch);
     call("GET", url, adam, NULL, "", 0, 0, &r);
     CHECK_HAS(body_of(&r), "\"at\":10"); /* (a browser that lost the answer: done) */
@@ -837,7 +837,7 @@ TEST(upload_and_the_converter_never_write_the_same_copy) {
     CHECK_HAS(buf_cstr(&r), "507");
     CHECK_HAS(body_of(&r), "No room for the rest of this file: it needs 3 KB, and the drive has 1 KB to spare");
     CHECK_HAS(body_of(&r), "\"stop\":true");
-    CHECK(!exists(root, "Up/R/big.mp4.part"));
+    CHECK(!exists(root, "Up/R/big.mp4.hemma-part"));
     CHECK_HAS(th_page(adam_id, "/media/upload"), "R/big.mp4</code> — not enough room on the drive");
     upload_test_free_space(-1);
 
@@ -849,8 +849,8 @@ TEST(upload_and_the_converter_never_write_the_same_copy) {
     th_halt();
 }
 
-/* A copy's ".part" from before this server started is never resumed from: older Hemmas' converter
-   wrote its half-made copies under that name too. Other files resume as ever. */
+/* A copy's half-sent file from before this server started is never resumed from: the browser makes
+   the copy again, maybe elsewhere - its bytes needn't match. Other files resume as ever. */
 TEST(upload_never_resumes_a_copy_from_an_older_part) {
     g_fake_now = now_sec() + 600; /* this server "started" after the parts below were written */
     th_boot();
@@ -859,8 +859,8 @@ TEST(upload_never_resumes_a_copy_from_an_older_part) {
     char root[512];
     str_copy(root, sizeof root, test_tmpdir());
     setting_set("media.roots", root);
-    put_file(root, "Up/P/a.web.mp4.part", "AAAAA", 5);
-    put_file(root, "Up/P/b.mp4.part", "BBBBB", 5);
+    put_file(root, "Up/P/a.web.mp4.hemma-part", "AAAAA", 5);
+    put_file(root, "Up/P/b.mp4.hemma-part", "BBBBB", 5);
     CHECK(server_listen("127.0.0.1", 0));
     g_port = server_port();
     g_done = 0;
@@ -870,8 +870,8 @@ TEST(upload_never_resumes_a_copy_from_an_older_part) {
     Buf r = {0};
     plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"P/a.web.mp4\",10],[\"P/b.mp4\",10]]}", &r, batch);
     CHECK_HAS(body_of(&r), "\"todo\":[[0,0],[1,5]]");
-    CHECK(!exists(root, "Up/P/a.web.mp4.part"));
-    CHECK(exists(root, "Up/P/b.mp4.part"));
+    CHECK(!exists(root, "Up/P/a.web.mp4.hemma-part"));
+    CHECK(exists(root, "Up/P/b.mp4.hemma-part"));
     server_stop();
     for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
     CHECK(g_done);
@@ -948,4 +948,42 @@ TEST(upload_skips_what_the_library_has_under_other_names) {
     server_shutdown();
     buf_free(&r);
     th_halt();
+}
+
+/* Issue #89: "Remove them" asked upload_claims about the half-sent file's own name, which never
+   matched an upload's, so an upload about to resume lost what it had sent - and a torrent's
+   ".part" went with them. */
+TEST(upload_keeps_a_half_sent_file_an_upload_is_about_to_resume) {
+    th_boot();
+    auth_configure("upload-salt", 1000);
+    int adam_id = make_user("Adam", "adam", "pw-adam-123", ROLE_ADMIN);
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    setting_set("media.roots", root);
+    put_file(root, "Up/Q/c.mp4.hemma-part", "CCCCC", 5);  /* an earlier try, a week ago ... */
+    put_file(root, "Up/Q/d.mp4.hemma-part", "DDDDD", 5);  /* ... and one nobody comes back for */
+    put_file(root, "Up/Q/t.mkv.part", "a torrent", 9);    /* not Hemma's */
+    g_fake_now = now_sec() + 8 * 86400;
+    CHECK(server_listen("127.0.0.1", 0));
+    g_port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], batch[17];
+    sign_in("adam", "pw-adam-123", adam, sizeof adam);
+    Buf r = {0};
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"Q/c.mp4\",10]]}", &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[[0,5]]"); /* it resumes from what it sent */
+    media_scan_sync();
+    CHECK_INT(media_lib()->nparts_all, 2);
+    CHECK(th_act(adam_id, "media.parts_remove", "").ok);
+    CHECK(exists(root, "Up/Q/c.mp4.hemma-part")); /* the upload is coming back for it */
+    CHECK(!exists(root, "Up/Q/d.mp4.hemma-part"));
+    CHECK(exists(root, "Up/Q/t.mkv.part"));
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    th_halt();
+    g_fake_now = 0;
 }

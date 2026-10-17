@@ -35,6 +35,8 @@ typedef struct {
     uint64_t series;  /* episodes and series extras: their MediaSeries id */
     uint64_t poster;  /* image file for this item (0 = draw a CSS poster) */
     uint64_t web;     /* its "<name>.web.mp4" copy that plays everywhere (0 = none): what gets streamed */
+    uint64_t fp;      /* its content: size + the first and last 64 KB, hashed - the same file under another
+                         name or folder (issue #93); read once per file, kept in the cache; 0 = not yet */
     /* subtitles */
     uint64_t video; /* the video this subtitle belongs to (0 = none) */
     char lang[16];  /* "sv", "en", ... or "" */
@@ -51,17 +53,22 @@ typedef struct {
 } MediaSeries;
 
 /* A video the scan left out (issue #28: they used to vanish without a word), or an upload's
-   unfinished ".part" not touched for MEDIA_PART_DAYS (issue #40: they stayed for good, unseen) -
-   both listed on Library settings, at most MEDIA_LEFT_MAX of each (the counts say how many). */
-enum { MEDIA_LEFT_EXTRA = 'e', MEDIA_LEFT_SAMPLE = 's' };
+   unfinished MEDIA_PART_SUFFIX file not touched for MEDIA_PART_DAYS (issue #40: they stayed for
+   good, unseen) - both listed on Library settings, at most MEDIA_LEFT_MAX of each (the counts say
+   how many). Uploads write "<name>.hemma-part", a suffix of Hemma's own (issue #89): a torrent's or
+   a browser's ".part" in a library folder is never listed, nor removed. */
+enum { MEDIA_LEFT_EXTRA = 'e', MEDIA_LEFT_SAMPLE = 's', MEDIA_LEFT_NAMED = 'n' };
 #define MEDIA_LEFT_MAX 100
 #define MEDIA_PART_DAYS 7
+#define MEDIA_PART_SUFFIX ".hemma-part"
 #define MEDIA_SAMPLE_LONG_S 600 /* a "sample..." this long is a real video (a scene's preview clip runs a minute or two) */
+#define MEDIA_EXTRA_LONG_S 2400 /* ... and a "Film-featurette" this long a film (issue #94) */
 typedef struct {
     int root;
     char rel[400];
     int64_t size, mtime;
-    char why; /* MEDIA_LEFT_*; parts: 0 */
+    int64_t duration_ms; /* what the probe said (named like an extra): the next scan needn't ask again */
+    char why;            /* MEDIA_LEFT_*; parts: 0 */
 } MediaLeft;
 
 typedef struct {
@@ -159,6 +166,9 @@ typedef struct {
     int64_t updated;
     uint64_t place; /* hash64 of the video's path below its library folder: how the history finds the
                        video again when the folder moves (issue #36; 0 = not known yet) */
+    uint64_t fp;    /* ... its content (MediaFile.fp), when it was renamed or moved within (issue #93) */
+    uint64_t ident; /* ... what it is by name (media_ident): film + year, show + season + episode */
+    char label[100]; /* ... and what to call it when none of that finds it ("Harbour Lights (2021)") */
     int64_t saved;  /* memory only: last write to SQLite */
 } MediaWatch;
 extern Table T_media_watch;
@@ -169,5 +179,13 @@ bool media_watch_report(int person, uint64_t id, int pos, int dur, bool ended, i
 void media_watch_set_done(int person, uint64_t id, bool done, int64_t now);
 /* An original gave way to its copy (remove.c): everyone's progress and watched ticks move to it. */
 void media_watch_move(uint64_t from, uint64_t to);
+/* What a video is by name, for finding its history again (0 = nothing to go by), and what to call it. */
+uint64_t media_ident(const MediaName *n);
+void media_label(const MediaName *n, char *out, size_t cap);
+/* History whose video isn't in the library, after the last scan did what it could (issue #93): how
+   many videos, and up to max of their labels ("" = from before labels). *away: a library folder is
+   missing or empty (an unplugged disk) - its videos may well come back. */
+int media_history_lost(char labels[][100], int max, bool *away);
+int media_history_forget(void); /* drops it (nothing away): how many videos' history went */
 
 #endif

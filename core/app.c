@@ -137,6 +137,24 @@ void health_add(Health *h, int state, const char *title, const char *detail, con
     str_copy(it->link, sizeof it->link, link);
 }
 
+void health_disk(Health *h, const HealthDisk *d) {
+    if (h->ndisks == h->capdisks) {
+        h->capdisks = h->capdisks ? h->capdisks * 2 : 4;
+        h->disks = xrealloc(h->disks, (size_t)h->capdisks * sizeof *h->disks);
+    }
+    HealthDiskRow *r = &h->disks[h->ndisks++];
+    memset(r, 0, sizeof *r);
+    str_copy(r->what, sizeof r->what, d->what);
+    str_copy(r->path, sizeof r->path, d->path);
+    str_copy(r->why, sizeof r->why, d->why);
+    str_copy(r->todo, sizeof r->todo, d->todo);
+    str_copy(r->link, sizeof r->link, d->link);
+    r->free = d->free;
+    r->total = d->total;
+    r->want = d->want;
+    r->data_disk = d->data_disk;
+}
+
 void health_step(Health *h, bool done, const char *title, const char *detail, const char *link) {
     health_add(h, done ? HEALTH_OK : HEALTH_INFO, title, detail, NULL, link);
     h->items[h->n - 1].step = true;
@@ -151,8 +169,10 @@ int health_worst(const Health *h) {
 
 void health_free(Health *h) {
     free(h->items);
+    free(h->disks);
     h->items = NULL;
-    h->n = h->cap = 0;
+    h->disks = NULL;
+    h->n = h->cap = h->ndisks = h->capdisks = 0;
 }
 
 /* =============================================================== modules */
@@ -237,9 +257,10 @@ void health_collect(Ctx *c, Health *out) {
     sort_mods();
     for (int i = 0; i < nmods; i++) {
         if (!mods[i]->health) continue;
-        int before = out->n;
+        int before = out->n, dbefore = out->ndisks;
         mods[i]->health(c, out);
         for (int k = before; k < out->n; k++) out->items[k].module = mods[i]->id;
+        for (int k = dbefore; k < out->ndisks; k++) out->disks[k].module = mods[i]->id;
     }
 }
 

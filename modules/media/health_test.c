@@ -31,16 +31,24 @@ TEST(media_health_counts_room_left_not_a_share) {
     Ctx c;
     app_ctx(&c, adam, "/system");
     Health h = {0};
+    /* issue #95: no row of its own any more - it tells the System page about the disk, which makes
+       one row per disk (system_test.c) */
     media_health(&c, &h);
+    CHECK_INT(h.ndisks, 1);
+    CHECK(h.disks[0].free == (20LL << 30) && h.disks[0].want == (2LL << 30));
+    CHECK(h.disks[0].data_disk); /* (the same disk as the data, here) */
+    CHECK_STR(h.disks[0].what, "the library");
+    CHECK_STR(h.disks[0].why, "for new videos");
     CHECK(item(&h, "Library disk nearly full") == NULL);
     health_free(&h);
-    media_test_free_space(1LL << 30);
+    /* a video: room to upload or convert one as big - itself and the reserve, 2 GB at least */
+    char film[700];
+    snprintf(film, sizeof film, "%s/Film (2020).mkv", dir);
+    CHECK(file_write_atomic(film, "a film", 6));
+    media_scan_sync();
     media_health(&c, &h);
-    const HealthItem *it = item(&h, "Library disk nearly full");
-    CHECK(it && it->state == HEALTH_WARN);
-    if (it) {
-        CHECK_HAS(it->detail, "(Hemma's data is on it too) has 1.0 GB free: less than 2 GB.");
-    }
+    CHECK(h.ndisks == 1 && h.disks[0].want == (2LL << 30));
+    CHECK_HAS(h.disks[0].why, "to upload or convert a video as big as its biggest (");
     health_free(&h);
     media_test_free_space(-1);
     app_ctx_free(&c);
@@ -80,13 +88,11 @@ TEST(media_health_checks_the_library_folders) {
     CHECK(it && it->state == HEALTH_OK); /* the step ticked itself */
     health_free(&h);
 
-    /* its disk fills up */
+    /* its disk fills up: said once, by the System page's "Disk space" (system_test.c) */
     media_test_free_space(1LL << 30);
     media_health(&c, &h);
-    it = item(&h, "Library disk nearly full");
-    CHECK(it && it->state == HEALTH_WARN);
-    CHECK_HAS(it->detail, "1.0 GB free");
-    CHECK(health_worst(&h) == HEALTH_WARN);
+    CHECK(h.ndisks == 1 && h.disks[0].free == (1LL << 30));
+    CHECK(item(&h, "Library disk nearly full") == NULL);
     health_free(&h);
     media_test_free_space(50LL << 30);
 

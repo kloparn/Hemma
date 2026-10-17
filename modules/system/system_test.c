@@ -742,3 +742,60 @@ TEST(system_backup_folder_can_be_chosen) {
     CHECK(name[0]);
     th_halt();
 }
+
+/* ------------------------------------------------------- one row per disk (issue #95) */
+
+static HealthDisk g_disks[2];
+static int g_ndisks;
+static void disky_health(Ctx *c, Health *h) {
+    for (int i = 0; i < g_ndisks; i++) health_disk(h, &g_disks[i]);
+}
+static const Module disky = {.id = "zzdisky", .title = "Disky", .icon = "settings", .nav = 998, .flags = MOD_ADMIN,
+                             .health = disky_health};
+
+static int count_of(const char *hay, const char *needle) {
+    int n = 0;
+    for (const char *p = hay; (p = strstr(p, needle)) != NULL; p += strlen(needle)) n++;
+    return n;
+}
+
+/* The library and the data on one disk said "OK" and "nearly full" at once - two checks, two rules,
+   two roundings. Now: one row per disk, naming what's on it, the numbers it compares. */
+TEST(system_says_disk_space_once_per_disk) {
+    static bool registered;
+    if (!registered) module_register(&disky);
+    registered = true;
+    th_boot();
+    int adam = all_well();
+    g_ndisks = 1;
+    g_disks[0] = (HealthDisk){.what = "the test library", .path = "/srv/test", .free = 3LL << 30, .total = 100LL << 30,
+                              .data_disk = true, .want = 7LL << 30, .why = "to hold a test (6.0 GB)",
+                              .todo = "Make room for the test.", .link = "/zzdisky"};
+    system_test_free_space(3LL << 30);
+    const char *h = th_page(adam, "/system");
+    CHECK_INT(count_of(h, "<b>Disk space"), 1);
+    CHECK_HAS(h, "3.0 GB free on the disk with Hemma&#39;s data and the test library (97% used). The test library "
+                 "wants 7.0 GB free to hold a test (6.0 GB).");
+    CHECK_HAS(h, "Make room for the test.");
+    CHECK_HAS(h, "1 thing below needs a look");
+    /* room enough: one OK row, the same words */
+    system_test_free_space(12LL << 30);
+    h = th_page(adam, "/system");
+    CHECK_INT(count_of(h, "<b>Disk space"), 1);
+    CHECK_HAS(h, "12.0 GB free on the disk with Hemma&#39;s data and the test library");
+    CHECK_HAS(h, "Everything works");
+    /* the data's own rule still holds on the shared disk: under 300 MB, saving fails soon */
+    system_test_free_space(100LL << 20);
+    CHECK_HAS(th_page(adam, "/system"), "Something isn't working");
+    system_test_free_space(50LL << 30);
+    /* a disk of its own: a row of its own */
+    g_disks[0].data_disk = false;
+    g_disks[0].free = 1700LL << 30;
+    g_disks[0].total = 2000LL << 30;
+    h = th_page(adam, "/system");
+    CHECK_INT(count_of(h, "<b>Disk space"), 2);
+    CHECK_HAS(h, "<b>Disk space (/srv/test)</b>");
+    CHECK_HAS(h, "1.7 TB free on the disk with the test library (15% used).");
+    g_ndisks = 0;
+    th_halt();
+}
