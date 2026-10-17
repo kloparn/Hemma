@@ -29,7 +29,9 @@ void media_safe_back(const char *in, char *out, size_t cap) {
 
 void media_tv_back(const Ctx *c, char *out, size_t cap) { media_safe_back(ctx_q(c, "back"), out, cap); }
 
-void media_row_back(const Ctx *c, char *out, size_t cap) { media_safe_back(c->path, out, cap); }
+/* (a TV's "/" is its screen: Back goes to "/", the address its browser has - so wire.js goes back in
+   the history instead of adding to it, issue #98) */
+void media_row_back(const Ctx *c, char *out, size_t cap) { media_safe_back(c->display_home ? "/" : c->path, out, cap); }
 
 void media_tv_open(Ctx *c, Buf *b, const char *back, const char *cls) {
     char safe[400];

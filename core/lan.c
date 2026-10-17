@@ -13,6 +13,7 @@
 #else
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <unistd.h>
 #ifdef __APPLE__
 #include <net/route.h>
 #include <sys/sysctl.h>
@@ -564,6 +565,18 @@ bool lan_iface(LanIface *out) {
 }
 
 #endif
+
+/* Does something on this machine answer for <name>.local (mDNS)? A Mac (Bonjour) and Windows 10+ do
+   for their own name - checked: a Pi's resolver found a Windows 11 PC by it. On Linux only a running
+   responder does: Avahi (the Raspberry Pi OS default), seen by its socket. Issue #99: the .local
+   address was offered on a box without one. */
+bool lan_mdns_announced(void) {
+#if defined(_WIN32) || defined(__APPLE__)
+    return true;
+#else
+    return access("/run/avahi-daemon/socket", F_OK) == 0 || access("/var/run/avahi-daemon/socket", F_OK) == 0;
+#endif
+}
 
 /* ======================================================= probes, waking */
 

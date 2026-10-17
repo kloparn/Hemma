@@ -57,8 +57,13 @@ void ui_form_end(Buf *b);
 /* View-only pages (a display account's; the core switches it on around its render - issue #54): a
    ui_form / ui_form_confirm / ui_act whose action the account may not run is left out whole, so a
    hallway tablet shows no quick-add boxes, ticks or x buttons that only answer "view-only". Forms
-   written by hand aren't covered: use these helpers. */
+   written by hand aren't covered: use these helpers. A dialog (ui_modal) in which a form was cut goes
+   whole too (issue #96). */
 void ui_view_only(bool on);
+/* May this screen use that action? false only in view-only mode for an action that isn't .display. Ask it
+   before drawing a link that opens a dialog for it ("?edit=", "?new=", a booking row), so a display
+   account gets plain text instead of a link to nothing. */
+bool ui_can(const char *action);
 void ui_hidden(Buf *b, const char *name, const char *value);
 void ui_hidden_int(Buf *b, const char *name, long long v);
 /* One-button form: label is raw HTML (icons allowed); name/value may be NULL. */

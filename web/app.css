@@ -220,6 +220,10 @@ small { font-size: 12.5px; }
    (a row's own display: flex would beat the hidden attribute) */
 .fit-more { margin: 8px 0 0; font-size: 13px; font-weight: 650; color: var(--muted); }
 [data-fit-cut] { display: none !important; }
+/* a bounded [data-fit] box wire.js lays out itself: each card in the shortest column (left/top/width
+   inline) - its CSS columns are only the no-JS fallback */
+[data-fit-laid] { position: relative; column-count: auto !important; columns: auto !important; }
+[data-fit-laid] > * { position: absolute; margin: 0 !important; box-sizing: border-box; }
 [data-fit] * { animation: none !important; } /* (re-fitting hides and shows rows: no fading in every minute) */
 
 /* tick: round "done" button: <button class="tick on"><svg check/></button> */

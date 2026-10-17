@@ -112,7 +112,7 @@ static void people_card(Ctx *c, Buf *b) {
             ui_ago(b, p->last_login, c->now);
         }
         buf_puts(b, "</small></div>");
-        if (can_edit(c, p)) {
+        if (can_edit(c, p) && ui_can("people.save")) {
             H(b, "<a class=\"icon-btn\" href=\"/people?edit=%d\" aria-label=\"Edit %s\">", p->id, p->name);
             ui_icon(b, "edit");
             buf_puts(b, "</a>");

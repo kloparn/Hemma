@@ -1,5 +1,5 @@
 /* modules/screens — screens an admin puts together out of what the other modules offer: the TV
- * view (big rows you scroll down with the remote: Continue watching, On now, Series, Movies...)
+ * view (big rows you scroll down with the remote: Continue watching, On TV, Series, Movies...)
  * and walls (a tablet in the hall: a big clock, now and next, who's home, then cards - Today,
  * Bookings, Coming days, the shopping list, notes... - as tall as what they show, in columns).
  * One of each is made once (TV_ROWS, WALL_CARDS); "/wall", the old wall's address, opens the

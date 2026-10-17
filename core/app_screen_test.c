@@ -174,11 +174,20 @@ TEST(app_display_pages_offer_only_what_a_display_may_do) {
     th_act(adam, "book.res_save", "name=Car&kind=hourly&always=1");
     th_act(adam, "book.quick", "q=car+tomorrow+14-17");
     int pages = 0;
-    for (int i = 0; i < module_count(); i++) {
-        const Module *m = module_at(i);
-        if (!m->page || (m->flags & MOD_ADMIN)) continue;
+    /* every module's page, and (issue #96) the addresses of the dialogs a person would open */
+    static const char *const extra[] = {"/plan/cal", "/plan/cal?edit=1", "/plan/cal?new=1", "/plan?edit=1", "/book?res=new",
+                                        "/book/1", "/book/1?res=1", "/book/1?new=2000000000", "/book/1?b=1",
+                                        "/board?edit=1", "/people?edit=2"};
+    int nmods = module_count();
+    for (int i = 0; i < nmods + countof(extra); i++) {
         char url[64];
-        snprintf(url, sizeof url, "/%s", m->id);
+        if (i < nmods) {
+            const Module *m = module_at(i);
+            if (!m->page || (m->flags & MOD_ADMIN)) continue;
+            snprintf(url, sizeof url, "/%s", m->id);
+        } else {
+            str_copy(url, sizeof url, extra[i - nmods]);
+        }
         const char *h = th_page(tablet, url);
         pages++;
         for (const char *s = strstr(h, "data-a=\""); s; s = strstr(s + 1, "data-a=\"")) {
@@ -187,9 +196,26 @@ TEST(app_display_pages_offer_only_what_a_display_may_do) {
             str_ncopy(name, sizeof name, s + 8, n);
             if (!app_action_display(name)) test_fail(__FILE__, __LINE__, "%s offers %s to a display account", url, name);
         }
+        if (strstr(h, "role=\"dialog\"")) test_fail(__FILE__, __LINE__, "%s opens a dialog on a display account", url);
+        if (strchr(url, '?')) continue; /* (a dialog's own address, typed in: its page's links may carry it along) */
+        for (const char *s = strstr(h, "href=\""); s; s = strstr(s + 1, "href=\"")) {
+            char href[300];
+            str_ncopy(href, sizeof href, s + 6, strcspn(s + 6, "\""));
+            const char *q = strchr(href, '?');
+            if (!q) continue;
+            static const char *const opens[] = {"edit=", "new=", "res=", "b="};
+            for (int k = 0; k < countof(opens); k++) { /* a parameter that opens a dialog */
+                const char *at = strstr(q, opens[k]);
+                if (at && (at[-1] == '?' || at[-1] == ';' || at[-1] == '&'))
+                    test_fail(__FILE__, __LINE__, "%s links a display account to %s", url, href);
+            }
+        }
     }
-    CHECK(pages > 3);
-    /* (a person still gets the forms) */
+    CHECK(pages > 10);
+    /* (a person still gets the forms, the dialogs and the links to them) */
     CHECK_HAS(th_page(adam, "/plan"), "data-a=\"plan.task_add\"");
+    CHECK_HAS(th_page(adam, "/plan/cal?edit=1"), "role=\"dialog\" aria-modal=\"true\" aria-label=\"Edit event\"");
+    CHECK_HAS(th_page(adam, "/book/1?b=1"), ">Change</a>");
+    CHECK_HAS(th_page(adam, "/book"), "href=\"/book?res=new\"");
     th_halt();
 }

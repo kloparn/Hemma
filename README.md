@@ -24,10 +24,10 @@ the tablet in the hallway shows it straight away.
 booking (and whether the car is free) before you press Enter.</em></p>
 
 <p align="center">
-  <img src="docs/img/tv.webp" alt="Hemma on a TV: Continue watching and On now rows with film posters" width="820">
+  <img src="docs/img/tv.webp" alt="Hemma on a TV: Continue watching and On TV rows with film posters" width="820">
 </p>
 <p align="center"><em>On the TV: big rows for the remote. Whoever picked themselves under
-"Who's watching?" gets their own Continue watching; On now is Live TV.</em></p>
+"Who's watching?" gets their own Continue watching; On TV is Live TV.</em></p>
 
 <p align="center">
   <img src="docs/img/wall.webp" alt="Hemma on a wall tablet: a big clock, what's on now and next, who's home, and cards for today, bookings, the coming days, notes, the shopping list and Live TV" width="820">
@@ -48,7 +48,7 @@ see [the credits](docs/img/CREDITS.md).</sub>
 | **Watch** | Your movie and series drive as a little cinema. It sorts series into seasons, has search and subtitles, and remembers where you stopped. It can convert videos a browser can't play (like DVD rips) into a copy that plays everywhere, and moves HEVC films into a file Safari on iPhone, iPad and Mac can play. Admins can upload whole folders from a browser: the uploading computer makes those copies itself, so only the small copy travels and the Pi does no heavy lifting. An upload picks up where it stopped if the connection drops, and skips episodes and films you already have. Admins can remove a film for good, folder and all. **Live TV** ("90s TV") is a tab here: channels that play your shows non-stop on a shared clock, with a TV guide |
 | **Board** | The fridge door: notes with pins and colours that disappear when they're out of date |
 | **Network** | The devices on your network, who owns which, a good guess at who's home (from phones on the Wi-Fi) and Wake-on-LAN |
-| **Screens** | Hemma on the TV: a streaming-app view with big rows you move through with the remote (Continue watching, On now, Recently added, Series, Movies), arranged by an admin. The TV asks *Who's watching?*: pick yourself (no password) and your progress follows you; on the TV you can only watch |
+| **Screens** | Hemma on the TV: a streaming-app view with big rows you move through with the remote (Continue watching, On TV, Recently added, Series, Movies), arranged by an admin. The TV asks *Who's watching?*: pick yourself (no password) and your progress follows you; on the TV you can only watch |
 | **Wall** | An always-on overview for a tablet on the wall (a Screen too): a big clock, what's on now and next, who's home, then cards for today, bookings, the coming days, the shopping list, notes, Live TV and what's new - an admin picks them. Cards with nothing to show stay away. Signed in with a read-only *display* account |
 | **Household** | People, sign-ins and roles, and your home's name |
 | **System** | For admins: is everything working (in plain words), a getting-started list that ticks itself off, the server's log live, and what to do when something's wrong |

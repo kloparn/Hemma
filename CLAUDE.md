@@ -89,7 +89,9 @@ core/            framework with a stable API for modules
   app.*          the live core: modules, routing, sessions, render→diff→morph, actions, presence,
                  settings, per-person prefs, activity feed, shared agenda, JSON API (/api), the health
                  API (health_add/health_step/health_collect, for Module.health), app_config(),
-                 app_addresses() (LAN IP + <hostname>.local), public `GET /healthz` -> "200 ok" (after
+                 app_addresses() (LAN IP + <hostname>.local only when lan_mdns_announced(); the listen setting read
+                 by plat.c listen_addr() like the listener: ""/"*"/0.0.0.0 = all, "localhost" = 127.0.0.1 - issue #99),
+                 app_local_only() (127.x/localhost: System, Screens and the banner ask it), public `GET /healthz` -> "200 ok" (after
                  the Host guard, nothing else in it), the startup banner (where to open it, setup code
                  hint, where the log is). HEMMA_VERSION lives in app.h; HEMMA_VERSION_FULL adds the
                  commit (build.ps1/Makefile pass -DHEMMA_COMMIT=<sha>[-dirty]) - raise the version per release
@@ -121,8 +123,11 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  (column-width 300px, inline column-count = cards, max 4: content-height masonry); no cards
                  with anything: "All quiet". Look only - no forms on a wall, and no links either (issue #80:
                  blocks render kind == SCREEN_WALL as <div class="tile">, book's upcoming(..., links=false)
-                 rows; plan's to-dos a .plan-dot, not a tick circle). Edit/Exit at .65, bottom right, with
-                 #screens-fitsay naming the cards that didn't fit. FITTING (issue #77): the cards box is
+                 rows; plan's to-dos a .plan-dot, not a tick circle). Edit/Exit at .65, bottom right; admins also
+                 get #screens-fitsay naming the cards that didn't fit (issue #97: not on the hall tablet); Exit
+                 is left out when "/" would bring this display account straight back (display_home_is: its
+                 PREF_START, else SETTING_DISPLAY_START - as core display_start()). Board notes are <li> rows so
+                 a full Notes card shortens instead of going whole. FITTING (issue #77): the cards box is
                  [data-fit="screens-fitsay"] (wire.js) and, wider than 600 px, flex-bounded to the screen
                  (overflow hidden; a phone just scrolls): rows give way ("+N more"), then whole cards from
                  the end, then rows come back where they fit - checked at 1024x768, 1280x800, 800x1280,
@@ -259,8 +264,8 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  the second starts at the first :00/:30 after it, and tv_epoch() = that minus starts[1] (so
                  every later airing is aligned; a slot = the length rounded UP to whole half hours: a
                  45-min show takes an hour, a 1 h 52 film two). Laps before the epoch (a clock set back)
-                 end exactly at it. tv_window walks the same sequence (advance()). On now, between
-                 programmes: the next one's tile dimmed (.tv-tile-off) + "Up next · HH:MM" (.tv-tile-up).
+                 end exactly at it. tv_window walks the same sequence (advance()). The row is "On TV" (issue #101):
+                 playing channels first, then those between programmes: the next one's tile dimmed (.tv-tile-off) + "Up next · HH:MM" (.tv-tile-up).
                  PLAYERS (owner, 2026-10-12: full screen must survive the
                  next episode): our own controls (media_controls -> ui_player, subtitles from media_subs;
                  tv: a live UiPlayer), the box (#media-box / #tv-screen) goes full screen, the <video>
@@ -581,8 +586,11 @@ MODULE(things)   /* self-registers: no shared file to edit */
 - **Forms through the helpers** (`ui_form` / `ui_form_confirm` / `ui_act`, closed with `ui_form_end`):
   a display account's pages render in view-only mode (core render_app -> ui_view_only), where a form
   whose action isn't `.display` is cut out whole (issue #54: the hall tablet showed quick-add boxes,
-  ticks and x buttons that only answered "view-only"). A form written by hand isn't covered.
-  core/app_screen_test.c renders every module page as a display account and fails on any other form.
+  ticks and x buttons that only answered "view-only"). A form written by hand isn't covered. A dialog
+  (ui_modal) in which a form was cut goes whole too, and links that OPEN a dialog ("?edit=", "?new=",
+  "?res=", a booking or event row) ask `ui_can("mod.verb")` first - plain text for a display account
+  (issue #96). core/app_screen_test.c renders every module page (and the dialog addresses) as a display
+  account and fails on any other form, any dialog, and any link with such a parameter.
 - **Rules**: no `#ifdef _WIN32` (use plat.h/lan.h); don't block the event loop (threads for disk
   scans/streaming, results handed back on `tick`); check `app_testing()` before opening sockets or
   starting threads; don't edit core/ or web/ for one module's needs — ask for a core change instead.
@@ -638,9 +646,13 @@ the video watched BEFORE the nav goes; an [autofocus] in it takes the focus from
 `form[data-a]` · `[data-live]` · `[data-auto]` (submit on change) ·
 `[data-esc]` (Escape) · `[data-back]` (TV mode's Back - issue #57: remotes rarely send Escape. The
 remote's Back key clicks it: Backspace outside text fields, BrowserBack, GoBack, XF86Back, keyCodes 8,
-166, 461 (LG), 10009 (Samsung); full screen is left first, an open menu closed; it waits 150 ms and
-skips the click when the browser went back itself (popstate/pagehide) - no double step. The arrows
-reach it: Up on a player's picture, Left/Up past the edge of a [data-arrows] area (toBack); from it Down/
+166, 461 (LG), 10009 (Samsung); full screen is left first, an open menu closed. Clicking it (the key,
+Escape, OK on it) goes through goBack() and never grows the history (issue #98): each pushed entry keeps
+history.state.prev; Back to that page = history.back(), else a nav with pop:1 (the server answers
+replaceState). A TV browser also going back by itself: a second popstate within 1.5 s is undone
+(history.forward) - can't undo a step out of the document. A display's "/" is its screen: Ctx.display_home,
+so media_row_back() gives "/" (what the TV's address bar says). The arrows reach it: Up on a player's
+picture, Left on a live picture, Left/Up past the edge of a [data-arrows] area (toBack); from it Down/
 Right go back where the focus came from, else [autofocus]) · `[data-key="/"]` (shortcut) · `[data-static]` (never morphed; `data-static="v"`:
 skipped while v stays, a new v morphs the SAME element in place and settles it again - how a player
 keeps full screen into the next episode/programme/channel: stable ids media-video / tv-video) ·
@@ -652,9 +664,14 @@ max 8, a few ahead of the upload), POST ?size= / ?original=1, then PUT the resul
 form field is dropped when the browser can't run WebAssembly; the server renders progress) ·
 `video[data-resume|data-report|data-next]` · `[data-start="id"]` (open a horizontal scroller at that
 child, once per URL — e.g. today's column on a phone) · `[data-fit="<id>"]` (a box of cards, its
-children, that must fit its CSS-bounded height - a wall tablet nobody scrolls: 1. the longest cards give
-up their last `li` rows down to FIT_ROWS (4), 2. whole cards go from the end, 2b. cards come back where
-room is left, 3. a lone card shrinks further, then rows come back where they fit; "+N more" (.fit-more,
+children, that must fit its CSS-bounded height - a wall tablet nobody scrolls. A bounded box (overflow
+hidden) is LAID OUT by wire.js ([data-fit-laid], app.css: absolute cards; issue #97 - CSS columns keep
+the order, so cards went while a third of the screen was empty): each card in order into the shortest
+column, n = min([data-fit-cols], cards shown, width / (--fit-col 300px + --fit-gap 18px)); the CSS
+columns are the no-JS fallback, a phone keeps them. 1. the longest cards give up their last `li` rows
+down to FIT_ROWS (4), then FIT_MIN (2), 2. whole cards go from the end, 2b. cards come back where room
+is left (down to FIT_MIN), 3. a lone card shrinks further, then rows come back - fairly: the card showing
+the fewest rows first; "+N more" (.fit-more,
 or the server's `[data-fit-more="N"]` row gets the total), `[data-fit-keep]` rows stay, a
 `[data-fit-head]` goes when nothing under it is left; per-card rects, since a card too tall for its CSS
 column doesn't show in the box's scroll size; `[data-fit-cut]` is display:none !important and animations
@@ -778,7 +795,7 @@ screen's address, #79 browser-log limits per person an hour (PR #81). 0.7.0 (bra
 guard + FIELD_WAS + the media cache's format + install-pi.sh keeps hemma.prev, #39 part 1 the time zone on
 System and a warning when it changes (PR #82). 0.7.1 (branch fix/library-keeps-progress) = #36 watch
 history follows videos to a new library folder, #40 unfinished uploads listed + removable, #28 left-out
-videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites. Next ideas: calmer home cards (hide empty ones), touch on the wall
+videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px. Next ideas: calmer home cards (hide empty ones), touch on the wall
 (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,

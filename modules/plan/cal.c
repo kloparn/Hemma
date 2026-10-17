@@ -78,7 +78,8 @@ static int ext_count(const Agenda *ag, int64_t from, int64_t to) {
     return n;
 }
 
-static void ext_row(Buf *b, const AgendaItem *it, int64_t day) {
+/* link = the row opens the item (not for a screen that only looks: issue #96) */
+static void ext_row(Buf *b, const AgendaItem *it, int64_t day, bool link) {
     Person *p = person_get(it->who);
     const Module *m = module_find(it->module);
     H(b, "<li class=\"plan-ev plan-ext%r\"", it->allday ? " plan-allday" : "");
@@ -94,8 +95,10 @@ static void ext_row(Buf *b, const AgendaItem *it, int64_t day) {
         buf_puts(b, "→ ");
         ui_hm(b, it->end);
     }
-    H(b, "</span><a class=\"plan-ev-main\" href=\"%s\"><b>%s%r%s</b><small>%s</small></a>", it->link, it->icon,
-      it->icon[0] ? " " : "", it->title, it->kind[0] ? it->kind : m ? m->title : "");
+    if (link) H(b, "</span><a class=\"plan-ev-main\" href=\"%s\">", it->link);
+    else buf_puts(b, "</span><div class=\"plan-ev-main\">");
+    H(b, "<b>%s%r%s</b><small>%s</small>%r", it->icon, it->icon[0] ? " " : "", it->title,
+      it->kind[0] ? it->kind : m ? m->title : "", link ? "</a>" : "</div>");
     if (p) {
         buf_puts(b, "<span class=\"plan-ev-who\">");
         ui_avatar(b, p, "sm");
@@ -275,9 +278,12 @@ void plan_cal_page(Ctx *c, Buf *b) {
     fmt_ymd(sel, ymd);
     Buf u = {0};
     ctx_url(c, &u, "new", "1", "edit", NULL, "day", ymd, NULL);
-    H(b, "<a class=\"btn plan-cal-new\" href=\"%s\">", buf_cstr(&u));
-    ui_icon(b, "calendar");
-    buf_puts(b, "<span>New event with details</span></a></div>");
+    if (ui_can("plan.event_add")) { /* (a display account only looks: issue #96) */
+        H(b, "<a class=\"btn plan-cal-new\" href=\"%s\">", buf_cstr(&u));
+        ui_icon(b, "calendar");
+        buf_puts(b, "<span>New event with details</span></a>");
+    }
+    buf_puts(b, "</div>");
 
     /* agenda: our events plus everything other modules put on the shared agenda */
     buf_puts(b, "<div class=\"plan-cal-main card\">");
@@ -321,10 +327,10 @@ void plan_cal_page(Ctx *c, Buf *b) {
                 snprintf(ids, sizeof ids, "%d", e->id);
                 buf_reset(&u);
                 ctx_url(c, &u, "edit", ids, "new", NULL, NULL);
-                event_row(c, b, e, day, buf_cstr(&u), "plan-e", false);
+                event_row(c, b, e, day, ui_can("plan.event_save") ? buf_cstr(&u) : NULL, "plan-e", false);
             }
             for (int k = 0; k < ext.n; k++)
-                if (ext_overlaps(&ext.items[k], day, add_days(day, 1))) ext_row(b, &ext.items[k], day);
+                if (ext_overlaps(&ext.items[k], day, add_days(day, 1))) ext_row(b, &ext.items[k], day, ui_can("plan.event_save"));
             buf_puts(b, "</ul>");
         }
         buf_puts(b, "</section>");
@@ -350,7 +356,7 @@ int plan_today_events(Ctx *c, Buf *b, bool wall) {
     for (int k = 0; k < n && k < 6; k++) {
         Event *e = tbl_at(&T_event, idx[k]);
         snprintf(href, sizeof href, "/plan/cal?edit=%d", e->id);
-        event_row(c, b, e, today, wall || !c->me ? NULL : href, wall ? "plan-we" : "plan-he", false);
+        event_row(c, b, e, today, wall || !c->me || !ui_can("plan.event_save") ? NULL : href, wall ? "plan-we" : "plan-he", false);
     }
     buf_puts(b, "</ul>");
     return n;

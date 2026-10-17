@@ -260,11 +260,21 @@ static struct {
     bool cut;
 } g_forms[8];
 static int g_nforms;
+/* The open dialog in view-only mode: where it began, and whether a form in it was cut - then the whole
+   dialog goes (issue #96: a hall tablet opened "New event" boxes with nothing in them). */
+static struct {
+    Buf *b;
+    size_t mark;
+    bool open, cut;
+} g_modal;
 
 void ui_view_only(bool on) {
     g_view_only = on;
     g_nforms = 0;
+    g_modal.open = false;
 }
+
+bool ui_can(const char *action) { return !g_view_only || app_action_display(action); }
 
 static void form_begins(Buf *b, const char *action) {
     if (g_nforms < countof(g_forms)) {
@@ -296,6 +306,7 @@ void ui_form_end(Buf *b) {
     if (i < countof(g_forms) && g_forms[i].cut && g_forms[i].b == b && g_forms[i].mark <= b->len) {
         b->len = g_forms[i].mark; /* the whole form, gone */
         if (b->p) b->p[b->len] = '\0';
+        if (g_modal.open && g_modal.b == b) g_modal.cut = true;
     }
 }
 
@@ -345,6 +356,12 @@ void ui_hue_picker(Buf *b, const char *name, int selected) {
 /* ----------------------------------------------------------------- modal */
 
 void ui_modal(Buf *b, const char *title, const char *close_href) {
+    if (g_view_only) {
+        g_modal.b = b;
+        g_modal.mark = b->len;
+        g_modal.open = true;
+        g_modal.cut = false;
+    }
     H(b,
       "<div class=\"modal\" role=\"dialog\" aria-modal=\"true\" aria-label=\"%s\">"
       "<a class=\"modal-bg\" href=\"%s\" data-esc aria-label=\"Close\"></a><div class=\"modal-card\">"
@@ -354,7 +371,15 @@ void ui_modal(Buf *b, const char *title, const char *close_href) {
     buf_puts(b, "</a></header><div class=\"modal-b\">");
 }
 
-void ui_modal_end(Buf *b) { buf_puts(b, "</div></div></div>"); }
+void ui_modal_end(Buf *b) {
+    buf_puts(b, "</div></div></div>");
+    if (!g_modal.open || g_modal.b != b) return;
+    g_modal.open = false;
+    if (g_modal.cut && g_modal.mark <= b->len) { /* a dialog for doing what this screen may not: all of it */
+        b->len = g_modal.mark;
+        if (b->p) b->p[b->len] = '\0';
+    }
+}
 
 /* ------------------------------------------------------------------ time */
 

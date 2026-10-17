@@ -3,7 +3,36 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.9.1 (not released yet)
+## 0.9.2 (not released yet)
+
+Follow-ups for the screens, the TV and the wall.
+
+### Fixes
+
+- **The wall uses its whole screen** (#97). Cards now go into the shortest column, so a
+  gap in an earlier column gets used. A card gives up rows down to two ("+N more") before
+  any card is left out, rows come back to the shortest cards first, and Notes can be
+  shortened too. With a busy week, a 1024×768 tablet now shows 7 of 8 cards with the
+  columns filled (it hid 3 with a third of the screen empty).
+- **"Didn't fit" is for admins only**, and the wall's **Exit** is gone when it would just
+  bring the tablet back to the same wall (#97).
+- **A view-only screen gets no links to dialogs it can't use** (#96): no "Add a thing",
+  "Book", "New event with details", no edit links, and bookings and events are plain rows.
+  A dialog opened by its address anyway shows nothing instead of an empty box.
+- **Back on the remote doesn't pile up history** (#98): it goes back through the browser's
+  history when that's where Back leads, and replaces the page otherwise. A TV browser
+  that also goes back by itself doesn't take you a step too far. On Live TV, Left on the
+  picture reaches Back.
+- **Screens shows an address a TV can use** (#99): `--host localhost` counts as this
+  computer only and `--host *` as every address (they were shown as `http://localhost`
+  and `http://*`). The `.local` name is only offered when this computer announces it
+  (on Linux: when Avahi runs; a Mac and Windows always do).
+- **The TV row is called "On TV"** (#101), with the channels that are playing first and
+  those between programmes after them.
+- **Calendar titles get room on a tablet** (#103): below 1200 px wide the month sits above
+  the agenda, and a title that can't get 8em beside its time goes under it.
+
+## 0.9.1 (2026-10-17)
 
 Ready for newcomers: the README and the guides. Nothing in the program changed.
 

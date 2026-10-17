@@ -272,6 +272,7 @@ static void week_nav(Ctx *c, Buf *b, int64_t ws, bool daily) {
 
 static void hourly_grid(Ctx *c, Buf *b, Resource *r, int64_t ws) {
     int slot = MAX(r->slot, 15);
+    bool can = ui_can("book.create");
     int vis_from = r->open_min, vis_to = r->close_min;
     if (vis_from <= 0 && vis_to >= 1440) { /* around the clock: show the waking day, grow to fit bookings */
         vis_from = 6 * 60;
@@ -321,8 +322,8 @@ static void hourly_grid(Ctx *c, Buf *b, Resource *r, int64_t ws) {
             int64_t s = dt_make(dt.year, dt.mon, dt.day, 0, m);
             int64_t e = dt_make(dt.year, dt.mon, dt.day, 0, m + slot);
             bool hour = m % 60 == 0;
-            if (e <= c->now) {
-                H(b, "<span class=\"book-wk-s book-past%r\"></span>", hour ? " book-hr" : "");
+            if (e <= c->now || !can) { /* (a display account only looks: no slots to tap - issue #96) */
+                H(b, "<span class=\"book-wk-s%r%r\"></span>", e <= c->now ? " book-past" : "", hour ? " book-hr" : "");
             } else {
                 Buf u = {0};
                 char at[24];
@@ -347,15 +348,19 @@ static void hourly_grid(Ctx *c, Buf *b, Resource *r, int64_t ws) {
             snprintf(id, sizeof id, "%d", bk->id);
             ctx_url(c, &u, "w", wq, "b", id, "new", NULL, "edit", NULL, NULL);
             bool mine = c->me && p && p->id == c->me->id;
-            H(b, "<a class=\"book-wk-b hued%r%r\" href=\"%s\" style=\"--h:%d;--top:%d.%02d;--len:%d.%02d\">",
-              mine ? " book-mine" : "", bk->end <= c->now ? " book-done" : "", buf_cstr(&u), p ? p->hue : 210,
+            Buf at = {0}; /* a link to the booking - or, for a screen that only looks, the block alone */
+            if (can) H(&at, "a href=\"%s\"", buf_cstr(&u));
+            else buf_puts(&at, "div");
+            H(b, "<%r class=\"book-wk-b hued%r%r\" style=\"--h:%d;--top:%d.%02d;--len:%d.%02d\">", buf_cstr(&at),
+              mine ? " book-mine" : "", bk->end <= c->now ? " book-done" : "", p ? p->hue : 210,
               (a - vis_from) / slot, (a - vis_from) % slot * 100 / slot, (z - a) / slot, (z - a) % slot * 100 / slot);
+            buf_free(&at);
             buf_free(&u);
             H(b, "<b>%s</b><small>", p ? p->name : "Someone");
             ui_span(b, bk->start, bk->end);
             buf_puts(b, "</small>");
             if (bk->note[0] && z - a >= 2 * slot) H(b, "<small class=\"book-n\">%s</small>", bk->note);
-            buf_puts(b, "</a>");
+            buf_puts(b, can ? "</a>" : "</div>");
         }
         if (today) {
             int nm = wall_min(c->now, d0);
@@ -369,6 +374,7 @@ static void hourly_grid(Ctx *c, Buf *b, Resource *r, int64_t ws) {
 }
 
 static void daily_grid(Ctx *c, Buf *b, Resource *r, int64_t ws) {
+    bool can = ui_can("book.create");
     char wq[11];
     fmt_ymd(ws, wq);
     buf_puts(b, "<div class=\"book-mo\"><div class=\"book-mo-head\">");
@@ -388,12 +394,13 @@ static void daily_grid(Ctx *c, Buf *b, Resource *r, int64_t ws) {
             snprintf(id, sizeof id, "%d", bk->id);
             ctx_url(c, &u, "w", wq, "b", id, "new", NULL, "edit", NULL, NULL);
             bool first = bk->start >= d0;
-            H(b, "<a class=\"book-mo-b hued%r\" href=\"%s\" style=\"--h:%d\">", first ? " book-first" : "", buf_cstr(&u),
-              p ? p->hue : 210);
+            if (can) H(b, "<a class=\"book-mo-b hued%r\" href=\"%s\" style=\"--h:%d\">", first ? " book-first" : "",
+                       buf_cstr(&u), p ? p->hue : 210);
+            else H(b, "<div class=\"book-mo-b hued%r\" style=\"--h:%d\">", first ? " book-first" : "", p ? p->hue : 210);
             ui_avatar(b, p, "xs");
-            H(b, "<span>%s</span></a>", first ? (p ? p->name : "Someone") : "");
+            H(b, "<span>%s</span>%r", first ? (p ? p->name : "Someone") : "", can ? "</a>" : "</div>");
             buf_free(&u);
-        } else if (!past) {
+        } else if (!past && can) { /* (a display account only looks - issue #96) */
             Buf u = {0};
             char at[24];
             snprintf(at, sizeof at, "%lld", (long long)d0);
@@ -482,9 +489,11 @@ static void overview(Ctx *c, Buf *b) {
     Resource *rs[64];
     int n = res_list(rs, 64, false);
     ui_head(b, "Bookings", n ? "What's booked and what's free" : NULL);
-    buf_puts(b, "<a class=\"btn\" href=\"/book?res=new\">");
-    ui_icon(b, "plus");
-    buf_puts(b, "<span>Add a thing</span></a>");
+    if (ui_can("book.res_save")) { /* (a display account only looks: issue #96) */
+        buf_puts(b, "<a class=\"btn\" href=\"/book?res=new\">");
+        ui_icon(b, "plus");
+        buf_puts(b, "<span>Add a thing</span></a>");
+    }
     ui_head_end(b);
     if (!n) {
         ui_empty(b, "🗝️", "What do you share at home?",
@@ -510,7 +519,7 @@ static void overview(Ctx *c, Buf *b) {
         }
         buf_puts(b, "</div>");
         ui_card(b, "Coming up", NULL, NULL);
-        upcoming(c, b, 0, 30, true);
+        upcoming(c, b, 0, 30, ui_can("book.cancel"));
         ui_card_end(b);
     }
     const char *rq = ctx_q(c, "res");
@@ -528,11 +537,13 @@ static void resource_page(Ctx *c, Buf *b, Resource *r) {
     buf_puts(b, "</h1>");
     if (r->rules[0]) H(b, "<p class=\"sub\">%s</p>", r->rules);
     buf_puts(b, "</div><div class=\"ph-a\">");
-    H(b, "<a class=\"icon-btn\" href=\"/book/%d?res=%d\" aria-label=\"Edit %s\">", r->id, r->id, r->name);
-    ui_icon(b, "settings");
-    buf_puts(b, "</a>");
+    if (ui_can("book.res_save")) {
+        H(b, "<a class=\"icon-btn\" href=\"/book/%d?res=%d\" aria-label=\"Edit %s\">", r->id, r->id, r->name);
+        ui_icon(b, "settings");
+        buf_puts(b, "</a>");
+    }
     int64_t len = res_daily(r) ? 86400 : (int64_t)(r->default_min > 0 ? r->default_min : 60) * 60, free_at;
-    if (book_next_free(r, c->now, len, 0, &free_at)) {
+    if (ui_can("book.create") && book_next_free(r, c->now, len, 0, &free_at)) {
         char at[24], w[11];
         snprintf(at, sizeof at, "%lld", (long long)free_at);
         fmt_ymd(free_at, w);
@@ -566,7 +577,7 @@ static void resource_page(Ctx *c, Buf *b, Resource *r) {
     buf_puts(b, "</div>");
 
     ui_card(b, "Coming up", NULL, NULL);
-    upcoming(c, b, r->id, 12, true);
+    upcoming(c, b, r->id, 12, ui_can("book.cancel"));
     ui_card_end(b);
 
     /* modals */
@@ -627,7 +638,7 @@ void book_widget(Ctx *c, Buf *b, int where) {
         return;
     }
     now_pills(c, b, rs, n);
-    upcoming(c, b, 0, 5, true);
+    upcoming(c, b, 0, 5, ui_can("book.cancel"));
     ui_card_end(b);
 }
 

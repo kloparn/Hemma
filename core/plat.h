@@ -51,6 +51,9 @@ bool sock_again(int err); /* would block / in progress / interrupted */
 long sock_send(sock_t s, const void *p, size_t n); /* never raises SIGPIPE */
 long sock_recv(sock_t s, void *p, size_t n);
 int plat_poll(pollfd_t *fds, int n, int timeout_ms);
+/* The address --host means, as tcp_listen reads it: "", "*" and 0.0.0.0 = every address (0), "localhost" =
+   127.0.0.1, else an IPv4 address. false: none of those (tcp_listen refuses it). */
+bool listen_addr(const char *host, uint32_t *ip);
 sock_t tcp_listen(const char *host, int port, char *err, size_t errcap);
 int tcp_local_port(sock_t s);
 sock_t tcp_accept(sock_t listener, uint32_t *peer_ip);

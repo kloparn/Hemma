@@ -468,7 +468,7 @@ static void page_home(Ctx *c, Buf *b) {
     const Block *onnow = block_find("tv.onnow", NULL);
     Buf row = {0};
     if (onnow && onnow->render(c, &row, 0, "")) { /* kind 0: an ordinary page - plain links */
-        buf_puts(b, "<section class=\"media-row media-onnow\"><header class=\"media-row-h\"><h2>On now</h2>"
+        buf_puts(b, "<section class=\"media-row media-onnow\"><header class=\"media-row-h\"><h2>On TV</h2>"
                     "<a href=\"/tv\">Guide</a></header>");
         buf_put(b, row.p, row.len);
         buf_puts(b, "</section>");

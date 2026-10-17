@@ -42,8 +42,7 @@ static void address_step(Buf *b) {
     char addr[2][96];
     int n = screens_addresses(addr);
     const char *host = app_config()->host;
-    uint32_t bound = 0;
-    if (host && ip_parse(host, &bound) && (bound >> 24) == 127) { /* listening on this computer only */
+    if (app_local_only()) { /* listening on this computer only (127.x or localhost - issue #99) */
         H(b, "On its web browser, open Hemma and sign in with it. Hemma only listens on this computer (%s) now, so "
              "a TV can't reach it: start it for the home network (see <a href=\"/system\">System</a>).",
           host);
@@ -101,7 +100,7 @@ static void list_page(Ctx *c, Buf *b) {
     int n = tbl_count(&T_screen);
     if (!n) {
         ui_empty(b, "📺", "No screens yet",
-                 is_admin(c) ? "Make one and pick its rows: Continue watching, On now, Series, Movies..."
+                 is_admin(c) ? "Make one and pick its rows: Continue watching, On TV, Series, Movies..."
                              : "An admin can put one together for the TV.");
     } else {
         buf_puts(b, "<section class=\"card\"><ul class=\"rows screens-list\">");
@@ -141,6 +140,15 @@ static void list_page(Ctx *c, Buf *b) {
 
 /* ============================================================= the screen */
 
+/* Is this screen where "/" takes the display account looking at it? Its own start page, else the
+   household's wall (core/app.c does the same). Then Exit would only bring it back here (issue #97). */
+static bool display_home_is(const Ctx *c, const char *url) {
+    if (c->me->role != ROLE_DISPLAY) return false;
+    const char *start = pref(c->me->id, PREF_START, "");
+    if (!start[0]) start = setting(SETTING_DISPLAY_START, "");
+    return str_eq(start, url);
+}
+
 /* Home name, the clock (the core re-renders every minute), and who's watching. */
 static void top_bar(Ctx *c, Buf *b, const Screen *s, int viewer) {
     char hm[6], url[32];
@@ -162,7 +170,7 @@ static void top_bar(Ctx *c, Buf *b, const Screen *s, int viewer) {
         ui_form_end(b);
     }
     if (is_admin(c)) H(b, "<a class=\"screens-btn\" href=\"/screens/%d/edit\">Edit</a>", s->id);
-    if (!display || !str_eq(pref(c->me->id, PREF_START, ""), url)) /* (a TV's own screen is its home) */
+    if (!display_home_is(c, url)) /* (a TV's own screen is its home) */
         buf_puts(b, "<a class=\"screens-btn\" href=\"/screens\">Exit</a>");
     buf_puts(b, "</div></header>");
 }
@@ -282,21 +290,26 @@ static void wall_page(Ctx *c, Buf *b, const Screen *s) {
     Buf cards = {0};
     int total = 0, shown = draw_rows(c, &cards, s, &total);
     /* data-fit (web/wire.js): the cards fit the tablet's screen - rows give way with "+N more", whole
-       cards only when nothing else can (issue #77: cards below the edge were never seen) */
-    H(b, "<div class=\"screens-cards\" data-fit=\"screens-fitsay\" style=\"column-count:%d\">", CLAMP(shown, 1, 4));
+       cards only when nothing else can (issue #77: cards below the edge were never seen); wire.js lays
+       them into the shortest column (issue #97), the CSS columns are the no-JS fallback */
+    H(b, "<div class=\"screens-cards\" data-fit=\"screens-fitsay\" data-fit-cols=\"%d\" style=\"column-count:%d\">",
+      CLAMP(shown, 1, 4), CLAMP(shown, 1, 4));
     buf_put(b, cards.p, cards.len);
     buf_puts(b, "</div>");
     buf_free(&cards);
     if (!shown)
         buf_puts(b, total ? "<p class=\"screens-calm\">All quiet - nothing booked, planned or on the list.</p>"
                           : "<p class=\"screens-calm\">No cards on this wall yet.</p>");
-    /* out of the way, for whoever stands at the tablet - and what didn't fit its screen (wire.js) */
-    buf_puts(b, "<nav class=\"screens-wfoot\"><span class=\"screens-fitsay\" id=\"screens-fitsay\"></span>");
-    if (is_admin(c)) H(b, "<a class=\"screens-btn\" href=\"/screens/%d/edit\">Edit</a>", s->id);
+    /* out of the way, for whoever stands at the tablet - and, for an admin, what didn't fit its screen
+       (wire.js; issue #97: the note stayed on the hall tablet for everyone) */
+    buf_puts(b, "<nav class=\"screens-wfoot\">");
+    if (is_admin(c)) {
+        buf_puts(b, "<span class=\"screens-fitsay\" id=\"screens-fitsay\"></span>");
+        H(b, "<a class=\"screens-btn\" href=\"/screens/%d/edit\">Edit</a>", s->id);
+    }
     char url[32];
     screens_url(s->id, url);
-    if (c->me->role != ROLE_DISPLAY || !str_eq(pref(c->me->id, PREF_START, ""), url))
-        buf_puts(b, "<a class=\"screens-btn\" href=\"/\">Exit</a>");
+    if (!display_home_is(c, url)) buf_puts(b, "<a class=\"screens-btn\" href=\"/\">Exit</a>");
     buf_puts(b, "</nav></div>");
 }
 

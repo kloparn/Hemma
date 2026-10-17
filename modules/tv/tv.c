@@ -543,7 +543,7 @@ static void channel_page(Ctx *c, Buf *b, Channel *ch) {
     buf_puts(b, "</nav></aside></div>");
 }
 
-/* A channel on the TV (?tv=1, opened from a TV screen's "On now" row): the picture fills the
+/* A channel on the TV (?tv=1, opened from a TV screen's "On TV" row): the picture fills the
    screen, tuned in at the shared clock; Up and Down on the remote change channel, 1-9 tune
    straight in, Back returns to the screen. */
 static void channel_tv(Ctx *c, Buf *b, Channel *ch) {
@@ -785,10 +785,11 @@ static void widget(Ctx *c, Buf *b, int where) {
 
 /* ==================================================================== blocks */
 
-/* "On now": every channel's programme right now as a wide tile - the channel's number, what's on,
+/* "On TV": every channel's programme right now as a wide tile - the channel's number, what's on,
    how long it has left - for a screen's row (TV mode: tune in full screen, Back returns to the
-   screen) and for Watch's home (kind 0: the ordinary channel page). Channels with nothing to air
-   are left out; none on the air: no row. */
+   screen) and for Watch's home (kind 0: the ordinary channel page). Channels playing come first,
+   those between programmes after them (issue #101: the row was "On now" and mixed both). Channels
+   with nothing to air are left out; none on the air: no row. */
 static bool row_onnow(Ctx *c, Buf *b, int kind, const char *arg) {
     (void)arg;
     Channel *chs[MAX_CHANNELS];
@@ -796,11 +797,12 @@ static bool row_onnow(Ctx *c, Buf *b, int kind, const char *arg) {
     char back[400];
     media_row_back(c, back, sizeof back);
     Buf row = {0};
-    for (int i = 0; i < n; i++) {
-        const Channel *ch = chs[i];
+    for (int k = 0; k < 2 * n; k++) { /* (playing ones, then those between programmes) */
+        const Channel *ch = chs[k % n];
         TvSlot s, nx;
         const MediaFile *f = NULL;
         if (!channel_now(ch, c->now, &s, &f)) continue; /* no signal */
+        if (s.gap != (k >= n)) continue;
         if (s.gap && !channel_now(ch, s.next, &nx, &f)) continue;
         char path[16];
         snprintf(path, sizeof path, "/tv/%d", ch->number);
@@ -857,7 +859,7 @@ static bool row_onnow(Ctx *c, Buf *b, int kind, const char *arg) {
 }
 
 static const Block blocks[] = {
-    {"tv.onnow", "On now", SCREEN_TV | SCREEN_WALL, row_onnow, NULL},
+    {"tv.onnow", "On TV", SCREEN_TV | SCREEN_WALL, row_onnow, NULL},
     {0},
 };
 
