@@ -36,6 +36,8 @@ typedef struct {
 /* The IPv4 interface holding the default route; falls back to the first
  * private (RFC 1918) non-loopback address. Never sends packets. */
 bool lan_iface(LanIface *out);
+/* Something here answers for this machine's <name>.local: a Mac or Windows 10+ itself, on Linux Avahi. */
+bool lan_mdns_announced(void);
 bool lan_in_subnet(const LanIface *ifc, uint32_t ip);
 bool lan_is_private(uint32_t ip); /* 10/8, 172.16/12, 192.168/16 */
 

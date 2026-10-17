@@ -14,6 +14,21 @@ TEST(ip_parse_and_format) {
     CHECK(!ip_parse("", &ip));
 }
 
+/* --host as the listener reads it (issue #99: "localhost" and "*" were taken for names) */
+TEST(listen_addr_reads_host_like_the_listener) {
+    uint32_t ip = 1;
+    CHECK(listen_addr(NULL, &ip) && ip == 0);
+    CHECK(listen_addr("", &ip) && ip == 0);
+    CHECK(listen_addr("*", &ip) && ip == 0);
+    CHECK(listen_addr("0.0.0.0", &ip) && ip == 0);
+    CHECK(listen_addr("localhost", &ip) && ip == 0x7F000001);
+    CHECK(listen_addr("LocalHost", &ip) && ip == 0x7F000001);
+    CHECK(listen_addr("127.0.0.1", &ip) && ip == 0x7F000001);
+    CHECK(listen_addr("192.168.1.50", &ip) && ip == 0xC0A80132);
+    CHECK(!listen_addr("hemma.local", &ip));
+    CHECK(!listen_addr("::", &ip));
+}
+
 TEST(files_roundtrip_with_utf8_names) {
     Buf path = {0};
     buf_printf(&path, "%s/nested/dir/räksmörgås.txt", test_tmpdir());

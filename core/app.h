@@ -17,7 +17,7 @@
 #include "server.h"
 #include "store.h"
 
-#define HEMMA_VERSION "0.9.1" /* raised for every release (SECURITY.md, CHANGELOG.md) */
+#define HEMMA_VERSION "0.9.2" /* raised for every release (SECURITY.md, CHANGELOG.md) */
 /* With the commit the binary was built from: "0.6.0 (8242ca8f1a2b)", "-dirty" with uncommitted
    changes (build.ps1 and the Makefile pass -DHEMMA_COMMIT=...); just the version outside git. */
 #define HEMMA_STR_(x) #x
@@ -84,6 +84,7 @@ typedef struct Ctx {
     /* set by renderers */
     char title[96];
     bool bare; /* render without the app chrome (wall display, fullscreen player) */
+    bool display_home; /* a display account's "/", shown as its start page: the browser's address is "/" */
     /* set by actions */
     char redirect[600];
     int toast_kind;
@@ -357,5 +358,8 @@ const AppConfig *app_config(void);
    Asks the OS (the network interface, the machine's name): call it at start or from a tick,
    not on every render. Returns how many were written. */
 int app_addresses(char out[][96], int max);
+/* Hemma listens on this computer only (--host 127.x or localhost): no other device can reach it. */
+bool app_local_only(void);
+void app_test_host(const char *host); /* tests: as if started with --host (NULL: none) */
 
 #endif

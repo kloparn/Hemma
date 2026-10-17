@@ -78,21 +78,23 @@ int app_addresses(char out[][96], int max) {
     int n = 0, port = server_port() > 0 ? server_port() : g_cfg.port;
     char ps[8] = "";
     if (port > 0 && port != 80) snprintf(ps, sizeof ps, ":%d", port);
-    const char *host = g_cfg.host && *g_cfg.host ? g_cfg.host : "0.0.0.0";
     uint32_t bound = 0;
-    if (max <= 0) return 0;
-    if (!ip_parse(host, &bound) || bound != 0) { /* listening on one address (or a name): that's the one */
-        snprintf(out[n++], 96, "http://%s%s", host, ps);
+    char ip[16];
+    /* the listen setting as the listener reads it (issue #99: "localhost" and "*" were shown as such) */
+    if (max <= 0 || !listen_addr(g_cfg.host, &bound)) return 0;
+    if (bound != 0) { /* listening on one address: that's the one (127.0.0.1: see app_local_only) */
+        ip_format(bound, ip);
+        snprintf(out[n++], 96, "http://%s%s", ip, ps);
         return n;
     }
     LanIface ifc;
     if (!lan_iface(&ifc)) return 0;
-    char ip[16];
     ip_format(ifc.ip, ip);
     snprintf(out[n++], 96, "http://%s%s", ip, ps);
-    /* the machine's own name, announced on the LAN as <name>.local (mDNS: Avahi, Bonjour, Windows) */
+    /* the machine's own name, announced on the LAN as <name>.local - only when something announces it
+       (mDNS: Avahi, Bonjour, Windows) */
     char name[64] = "";
-    if (n < max && gethostname(name, (int)sizeof name - 1) == 0 && name[0]) {
+    if (n < max && lan_mdns_announced() && gethostname(name, (int)sizeof name - 1) == 0 && name[0]) {
         name[sizeof name - 1] = '\0';
         bool ok = true;
         for (char *p = name; *p && ok; p++) {
@@ -105,6 +107,13 @@ int app_addresses(char out[][96], int max) {
     }
     return n;
 }
+
+bool app_local_only(void) {
+    uint32_t bound = 0;
+    return listen_addr(g_cfg.host, &bound) && (bound >> 24) == 127;
+}
+
+void app_test_host(const char *host) { g_cfg.host = host; }
 
 /* ================================================================ health */
 
@@ -822,6 +831,7 @@ static void display_start(Ctx *c) {
     char url[sizeof c->url];
     snprintf(url, sizeof url, "%s%s", start, q ? q : "");
     ctx_set_url(c, url);
+    c->display_home = true;
 }
 
 static void render_app(Ctx *c, Buf *out) {
@@ -1835,8 +1845,7 @@ void app_serve(void) {
 static void startup_banner(const char *where) {
     char addr[3][96];
     int na = app_addresses(addr, 3);
-    uint32_t bound = 0;
-    bool local_only = g_cfg.host && ip_parse(g_cfg.host, &bound) && (bound >> 24) == 127;
+    bool local_only = app_local_only();
     const char *svc = plat_getenv("INVOCATION_ID"), *agent = plat_getenv("XPC_SERVICE_NAME");
     bool systemd = svc && *svc, launchd = agent && str_starts(agent, "local.hemma");
     bool log_file = module_find("system") != NULL; /* the System page keeps <data>/hemma.log */
@@ -1872,16 +1881,12 @@ int app_main(const AppConfig *cfg) {
 
     char where[64] = "";
     uint32_t any = 0;
-    ip_parse(cfg->host ? cfg->host : "0.0.0.0", &any);
+    char ip[16];
+    listen_addr(cfg->host, &any); /* (the listener took it: it's valid) */
     LanIface ifc;
-    if ((!cfg->host || !*cfg->host || any == 0) && lan_iface(&ifc)) {
-        char ip[16];
-        ip_format(ifc.ip, ip);
-        snprintf(where, sizeof where, "http://%s:%d", ip, server_port());
-    } else {
-        snprintf(where, sizeof where, "http://%s:%d", cfg->host && *cfg->host ? cfg->host : "localhost",
-                 server_port());
-    }
+    if (any == 0 && lan_iface(&ifc)) ip_format(ifc.ip, ip);
+    else ip_format(any ? any : 0x7F000001, ip);
+    snprintf(where, sizeof where, "http://%s:%d", ip, server_port());
     log_info("%s is up on %s  (%d modules%s)", app_name(), where, nmods, cfg->web_dir ? ", dev mode" : "");
     if (!auth_ready())
         log_warn("HEMMA_AUTH_SALT is not set, so nobody can sign in or be created (see the line above; "

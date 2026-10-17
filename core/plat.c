@@ -192,14 +192,21 @@ static void addr_v4(struct sockaddr_in *a, uint32_t ip, int port) {
     a->sin_addr.s_addr = htonl(ip);
 }
 
+bool listen_addr(const char *host, uint32_t *ip) {
+    *ip = 0; /* every address */
+    if (!host || !*host || strcmp(host, "*") == 0) return true;
+    if (str_ieq(host, "localhost")) {
+        *ip = 0x7F000001;
+        return true;
+    }
+    return ip_parse(host, ip);
+}
+
 sock_t tcp_listen(const char *host, int port, char *err, size_t errcap) {
     uint32_t ip = 0;
-    if (host && *host && strcmp(host, "*") != 0) {
-        if (str_ieq(host, "localhost")) ip = 0x7F000001;
-        else if (!ip_parse(host, &ip)) {
-            snprintf(err, errcap, "bad listen address '%s' (use an IPv4 address)", host);
-            return SOCK_BAD;
-        }
+    if (!listen_addr(host, &ip)) {
+        snprintf(err, errcap, "bad listen address '%s' (use an IPv4 address)", host);
+        return SOCK_BAD;
     }
     sock_t s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == SOCK_BAD) {

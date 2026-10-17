@@ -96,7 +96,7 @@ A TV everyone shares gets a **Display** sign-in of its own, set up once:
    under **Shows on**. From then on the TV's Hemma address opens that screen by itself.
 
 The screen is big rows you move through with the remote's arrows, like a streaming app:
-Continue watching, On now, Recently added, Series, Movies. OK opens what's highlighted.
+Continue watching, On TV, Recently added, Series, Movies. OK opens what's highlighted.
 The remote's **Back** key goes back from a series, a video or a channel (in full screen it
 leaves full screen first); the arrows reach the **Back** button at the top too - press Up
 on a playing video.

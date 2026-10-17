@@ -81,7 +81,7 @@
 .board-hidden a { font-weight: 650; color: var(--text); }
 
 /* ---- widget: mini notes (home dashboard + wall) ---- */
-.board-minis { display: flex; flex-direction: column; gap: 8px; }
+.board-minis { display: flex; flex-direction: column; gap: 8px; list-style: none; margin: 0; padding: 0; }
 .board-mini {
   --h: 45; padding: 9px 12px; border-radius: 10px 10px 14px 10px;
   background: hsl(var(--h) 92% 87%); color: hsl(var(--h) 45% 16%);

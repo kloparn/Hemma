@@ -112,11 +112,7 @@ static bool phone_seen(void) {
     return false;
 }
 
-static bool local_only(void) { /* listening on 127.x: no other device can reach it */
-    const char *host = app_config()->host;
-    uint32_t bound = 0;
-    return host && ip_parse(host, &bound) && (bound >> 24) == 127;
-}
+static bool local_only(void) { return app_local_only(); } /* (127.x or localhost: no other device can reach it) */
 
 /* ---------------------------------------------------------------- checks */
 

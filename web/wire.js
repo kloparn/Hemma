@@ -142,9 +142,31 @@
     if (u.origin !== location.origin) return;
     e.preventDefault();
     if (u.hash && u.pathname + u.search === here()) { location.hash = u.hash; return; }
+    if (a.hasAttribute('data-back')) { goBack(a); return; }
     send({ t: 'nav', url: u.pathname + u.search });
   });
-  addEventListener('popstate', () => { if (!send({ t: 'nav', url: here(), pop: 1 })) location.reload(); });
+  // [data-back] goes back without growing the history (issue #98: every Back pushed one more entry,
+  // video -> series -> video -> series ...). Each pushed entry remembers the page it came from
+  // (history.state.prev, the 'url' op below): when that's where Back leads, the browser's own back;
+  // else that page replaces this one (a nav the server answers with replaceState, as for a pop). A
+  // TV's browser may also go back by itself on top of ours: a second popstate right after ours is
+  // undone (history.forward) - no timer to guess how slow the TV is.
+  let backGuard = null;
+  function goBack(x) {
+    const to = x.getAttribute('href'), st = history.state;
+    if (st && st.prev === to) {
+      backGuard = { until: Date.now() + 1500, pops: 1, undone: false };
+      history.back();
+    } else if (!send({ t: 'nav', url: to, pop: 1 })) location.replace(to);
+  }
+  addEventListener('popstate', () => {
+    const g = backGuard;
+    if (g && Date.now() < g.until) {
+      if (g.pops > 0) g.pops--;
+      else if (!g.undone) { g.undone = true; history.forward(); return; } /* (the browser's own back, one too many) */
+    }
+    if (!send({ t: 'nav', url: here(), pop: 1 })) location.reload();
+  });
 
   document.addEventListener('submit', (e) => {
     const f = e.target, a = f.dataset.a;
@@ -181,8 +203,8 @@
 
   // A TV remote's Back key (issue #57: remotes rarely send Escape): Samsung's says 10009, LG's 461,
   // others BrowserBack / GoBack; Backspace too, outside a text field. On a page with [data-back]
-  // (TV mode's Back) it goes there. Some TV browsers go back in their history themselves: when
-  // that happens (popstate, or the page leaves) we don't go a second step.
+  // (TV mode's Back) it goes there - through goBack(), which keeps a TV browser that also goes back
+  // by itself from taking a second step.
   const BACK_KEYS = { Backspace: 1, BrowserBack: 1, GoBack: 1, XF86Back: 1 }, BACK_CODES = { 8: 1, 166: 1, 461: 1, 10009: 1 };
   const typing = (t) => !!t && (t.isContentEditable || /^(TEXTAREA|SELECT)$/.test(t.tagName) ||
     (t.tagName === 'INPUT' && !/^(button|submit|reset|checkbox|radio|range|image)$/.test(t.type)));
@@ -196,15 +218,7 @@
       return true;
     }
     if (menus(null)) return true;
-    let went = false;
-    const gone = () => { went = true; };
-    addEventListener('popstate', gone);
-    addEventListener('pagehide', gone);
-    setTimeout(() => {
-      removeEventListener('popstate', gone);
-      removeEventListener('pagehide', gone);
-      if (!went && x.isConnected) x.click();
-    }, 150);
+    x.click(); /* (the link's click goes through goBack) */
     return true;
   }
 
@@ -529,7 +543,10 @@
         break;
       }
       case 'url':
-        if (op[1] !== here()) history[op[3] ? 'pushState' : 'replaceState'](null, '', op[1]);
+        if (op[1] !== here()) { /* (a new entry remembers where it came from: goBack) */
+          if (op[3]) history.pushState({ prev: here() }, '', op[1]);
+          else history.replaceState(history.state, '', op[1]);
+        }
         document.title = op[2];
         if (op[3]) scrollTo(0, 0);
         break;
@@ -665,12 +682,18 @@
 
   // [data-fit]: a box of cards (its children, the admin's order) that must fit the screen it's on - a
   // wall tablet nobody scrolls (issue #77). Its CSS bounds its height. While a card spills over the
-  // edges: 1. the longest cards give up their last rows (li), down to FIT_ROWS each; 2. whole cards go,
-  // from the end; 3. a card left alone gets shorter still; then rows come back while they fit.
-  // "+N more" says how many went (or adds to the server's own [data-fit-more="N"]); [data-fit-keep]
-  // rows stay; a [data-fit-head] (a day's heading) goes when nothing under it is left. From the start
-  // after every morph and resize: the server's HTML always has everything.
-  const FIT_ROWS = 4;
+  // edges: 1. the longest cards give up their last rows (li), down to FIT_ROWS each, 1b. then down to
+  // FIT_MIN; 2. whole cards go, from the end; 2b. they come back where room is left; 3. a card left
+  // alone gets shorter still; then rows come back while they fit. "+N more" says how many went (or adds
+  // to the server's own [data-fit-more="N"]); [data-fit-keep] rows stay; a [data-fit-head] (a day's
+  // heading) goes when nothing under it is left. From the start after every morph and resize: the
+  // server's HTML always has everything.
+  // A bounded box (overflow hidden) is laid out here, not by its CSS columns (issue #97: columns keep
+  // the order, so a card can't use a gap in an earlier column - cards went while a third of the screen
+  // was empty): each card, in order, goes to the shortest column ([data-fit-laid], app.css). As many
+  // columns as fit at --fit-col (300px) wide with --fit-gap between, at most [data-fit-cols] and never
+  // more than there are cards.
+  const FIT_ROWS = 4, FIT_MIN = 2;
   const fitCut = (el) => { el.hidden = true; el.setAttribute('data-fit-cut', ''); };
   const fitShow = (el) => { el.hidden = false; el.removeAttribute('data-fit-cut'); };
   function fit(box) {
@@ -678,8 +701,27 @@
     for (const x of box.querySelectorAll('.fit-more')) x.remove();
     for (const x of box.querySelectorAll('[data-fit-more]')) x.textContent = `+${x.dataset.fitMore} more`;
     const shown = () => [...box.children].filter((c) => !c.hidden);
+    const css = getComputedStyle(box), laid = css.overflowY === 'hidden';
+    if (laid) box.setAttribute('data-fit-laid', '');
+    else box.removeAttribute('data-fit-laid');
+    const gap = parseFloat(css.getPropertyValue('--fit-gap')) || 18, colW = parseFloat(css.getPropertyValue('--fit-col')) || 300;
+    const layout = () => {
+      if (!laid) return;
+      const cards = shown(), W = box.clientWidth;
+      const n = Math.max(1, Math.min(parseInt(box.dataset.fitCols, 10) || 4, cards.length, Math.floor((W + gap) / (colW + gap))));
+      const w = (W - gap * (n - 1)) / n, h = new Array(n).fill(0);
+      for (const card of cards) {
+        let col = 0;
+        for (let i = 1; i < n; i++) if (h[i] < h[col] - 1) col = i;
+        card.style.width = `${w}px`;
+        card.style.left = `${col * (w + gap)}px`;
+        card.style.top = `${h[col]}px`;
+        h[col] += card.offsetHeight + gap;
+      }
+    };
     /* (per card: in CSS columns a card too tall for its column doesn't count in the box's scroll size) */
     const spills = () => {
+      layout();
       const b = box.getBoundingClientRect();
       return shown().some((card) => {
         const r = card.getBoundingClientRect();
@@ -704,21 +746,22 @@
         p.textContent = `+${n} more`;
       } else if (p) p.remove();
     };
-    const cuts = [];
-    const shorten = (card) => { const r = rows(card); fitCut(r[r.length - 1]); cuts.push(r[r.length - 1]); settle(card); };
-    for (let g = 0; g < 400 && spills(); g++) { /* 1. the longest cards, down to FIT_ROWS rows */
-      let best = null, most = FIT_ROWS;
-      for (const card of shown()) {
-        const n = rows(card).length;
-        if (n > most) { most = n; best = card; }
+    const shorten = (card) => { const r = rows(card); fitCut(r[r.length - 1]); settle(card); };
+    for (const floor of [FIT_ROWS, FIT_MIN]) { /* 1. the longest cards, down to FIT_ROWS rows, then FIT_MIN */
+      for (let g = 0; g < 400 && spills(); g++) {
+        let best = null, most = floor;
+        for (const card of shown()) {
+          const n = rows(card).length;
+          if (n > most) { most = n; best = card; }
+        }
+        if (!best) break;
+        shorten(best);
       }
-      if (!best) break;
-      shorten(best);
     }
     while (spills() && shown().length > 1) { const s = shown(); fitCut(s[s.length - 1]); } /* 2. cards, from the end */
     for (const card of [...box.children].filter((c) => c.hasAttribute('data-fit-cut'))) { /* ...back where room's left */
       fitShow(card);
-      while (spills() && rows(card).length > FIT_ROWS) shorten(card);
+      while (spills() && rows(card).length > FIT_MIN) shorten(card);
       if (spills()) fitCut(card);
     }
     for (let g = 0; g < 400 && spills(); g++) { /* 3. the one card left */
@@ -726,13 +769,23 @@
       if (!card || rows(card).length <= 1) break;
       shorten(card);
     }
-    while (cuts.length) { /* rows back where they fit (a card that went may have made room) */
-      const r = cuts.pop(), card = [...box.children].find((c) => c.contains(r));
-      if (card.hasAttribute('data-fit-cut')) continue;
+    /* rows back where they fit (a card that went may have made room) - fairly: the card showing the
+       fewest rows gets the next one, its first hidden row, until no card can take one more */
+    const full = new Set();
+    for (let g = 0; g < 400; g++) {
+      let best = null, fewest = Infinity;
+      for (const card of shown()) {
+        if (full.has(card) || !card.querySelector('li[data-fit-cut]:not([data-fit-head])')) continue;
+        const n = rows(card).length;
+        if (n < fewest) { fewest = n; best = card; }
+      }
+      if (!best) break;
+      const r = best.querySelector('li[data-fit-cut]:not([data-fit-head])');
       fitShow(r);
-      settle(card);
-      if (spills()) { fitCut(r); settle(card); }
+      settle(best);
+      if (spills()) { fitCut(r); settle(best); full.add(best); }
     }
+    layout(); /* (as the cards finally are) */
     /* data-fit="<id>": that element names the cards that didn't fit (by their headings) */
     const say = box.dataset.fit && document.getElementById(box.dataset.fit);
     if (say) {
@@ -1174,6 +1227,8 @@
       }
     };
     else if (!live && (bare || onSeek) && (k === 'ArrowLeft' || k === 'Left')) act = () => seekBy(v, -10);
+    else if (live && bare && (k === 'ArrowLeft' || k === 'Left') && document.querySelector('[data-back]'))
+      act = () => toBack(none ? v : t); /* (live can't be wound: Left on the picture reaches Back - issue #98) */
     else if (!live && (bare || onSeek) && (k === 'ArrowRight' || k === 'Right')) act = () => seekBy(v, 10);
     else if (k === 'm' || k === 'M') act = () => mute(v);
     else if (k === 'f' || k === 'F') {

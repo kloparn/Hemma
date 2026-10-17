@@ -653,16 +653,16 @@ TEST(tv_on_now_row_on_watch_home_and_screens) {
     app_ctx(&c, adam, "/screens/2");
     CHECK(!bl->render(&c, &b, SCREEN_TV, "")); /* no channels: no row */
     app_ctx_free(&c);
-    CHECK(!strstr(th_page(adam, "/media"), "On now"));
+    CHECK(!strstr(th_page(adam, "/media"), "On TV"));
 
     CHECK(th_act(adam, "tv.save", "number=1&name=Main&all=1&order=rotate&align=none").ok);
     g_fake_now += 125; /* 2 min into Alpha S01E01 */
     const char *h = th_page(adam, "/media");
-    CHECK_HAS(h, "<h2>On now</h2><a href=\"/tv\">Guide</a></header><div class=\"tiles\"><a class=\"tile wide\" "
+    CHECK_HAS(h, "<h2>On TV</h2><a href=\"/tv\">Guide</a></header><div class=\"tiles\"><a class=\"tile wide\" "
                  "href=\"/tv/1\">"); /* Watch's own home: the ordinary channel page */
     CHECK_HAS(h, "<b class=\"tile-t\">Alpha</b><span class=\"tile-s\">Main · S01E01 · Pilot · 20 min left</span>");
     CHECK_HAS(h, "<span class=\"tile-bar\"><i style=\"width:9%\"></i></span>");
-    CHECK(strstr(h, "On now") < strstr(h, "Recently added"));
+    CHECK(strstr(h, "On TV") < strstr(h, "Recently added"));
     app_ctx(&c, adam, "/screens/2");
     CHECK(bl->render(&c, &b, SCREEN_TV, ""));
     CHECK_HAS(buf_cstr(&b), "href=\"/tv/1?tv=1&amp;back=%2Fscreens%2F2\""); /* a screen: full screen, and back */
@@ -680,6 +680,16 @@ TEST(tv_on_now_row_on_watch_home_and_screens) {
     CHECK_HAS(buf_cstr(&b), "tile-art tv-tile tv-tile-off"); /* dimmed, not "on now" (issue #56) */
     CHECK_HAS(buf_cstr(&b), "<span class=\"tv-tile-up\">Up next · 20:30</span>");
     app_ctx_free(&c);
+    /* playing first, then those between programmes - whatever their numbers (issue #101) */
+    CHECK(th_act(adam, "tv.save", "number=3&name=Third&all=1&align=none").ok);
+    buf_reset(&b);
+    app_ctx(&c, adam, "/screens/2");
+    CHECK(bl->render(&c, &b, SCREEN_TV, ""));
+    const char *t1 = strstr(buf_cstr(&b), ">01</span>"), *t2 = strstr(buf_cstr(&b), ">02</span>"),
+               *t3 = strstr(buf_cstr(&b), ">03</span>");
+    CHECK(t1 && t2 && t3 && t1 < t3 && t3 < t2);
+    app_ctx_free(&c);
+    CHECK_HAS(th_page(adam, "/media"), "<h2>On TV</h2>");
     buf_free(&b);
     th_halt();
 }

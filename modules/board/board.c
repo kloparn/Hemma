@@ -403,11 +403,12 @@ static void page(Ctx *c, Buf *b) {
 
 /* The newest notes (pinned first) as little coloured notes; links only where they lead somewhere
    one can go (the dashboard, not a wall). */
+/* (a list: a wall that runs out of room shortens it to "+N more" - wire.js [data-fit], issue #97) */
 static void minis(Ctx *c, Buf *b, Note **v, int show, bool links) {
-    buf_puts(b, "<div class=\"board-minis\">");
+    buf_puts(b, "<ul class=\"board-minis\">");
     for (int i = 0; i < show; i++) {
         Note *x = v[i];
-        H(b, "<div class=\"board-mini%r\"", x->pinned ? " pinned" : "");
+        H(b, "<li class=\"board-mini%r\"", x->pinned ? " pinned" : "");
         ui_hue_style(b, x->hue);
         buf_puts(b, "><p>");
         render_text(b, x->text, links);
@@ -416,9 +417,9 @@ static void minis(Ctx *c, Buf *b, Note **v, int show, bool links) {
         Person *p = person_get(x->by);
         H(b, "%s · ", p ? p->name : "Someone");
         ui_ago(b, x->created, c->now);
-        buf_puts(b, "</small></div>");
+        buf_puts(b, "</small></li>");
     }
-    buf_puts(b, "</div>");
+    buf_puts(b, "</ul>");
 }
 
 static void widget(Ctx *c, Buf *b, int where) {

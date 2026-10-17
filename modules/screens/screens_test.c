@@ -257,6 +257,22 @@ TEST(screens_show_the_address_to_type_on_the_tv) {
     CHECK(!strstr(h, "screens-addr"));
     CHECK_HAS(h, "type the address this browser shows");
     screens_test_addresses(NULL, NULL);
+    /* --host localhost is this computer only, like 127.0.0.1 (issue #99: it showed http://localhost and a
+       QR code for it); --host * is every address */
+    app_test_host("localhost");
+    h = th_page(adam, "/screens");
+    CHECK_HAS(h, "Hemma only listens on this computer (localhost) now");
+    CHECK(!strstr(h, "class=\"qr\""));
+    char addr[2][96];
+    CHECK_INT(app_addresses(addr, 2), 1);
+    CHECK(str_starts(addr[0], "http://127.0.0.1") && !strstr(addr[0], "localhost"));
+    app_test_host("*");
+    CHECK(!app_local_only());
+    for (int i = 0, n = app_addresses(addr, 2); i < n; i++) CHECK(!strchr(addr[i], '*'));
+    app_test_host("192.168.1.50");
+    CHECK_INT(app_addresses(addr, 2), 1);
+    CHECK(str_starts(addr[0], "http://192.168.1.50"));
+    app_test_host(NULL);
     halt();
 }
 
@@ -607,8 +623,15 @@ TEST(screens_a_wall_has_the_time_now_and_next_and_whos_home) {
     CHECK_HAS(h, "<b>Eva</b>");
     CHECK(!strstr(h, "screens-wnext")); /* nothing on, nothing next */
     CHECK_HAS(h, "All quiet");          /* every card empty: left out */
-    CHECK_HAS(h, "href=\"/\">Exit</a>"); /* (not this tablet's own start page) */
+    /* no start page of its own: "/" brings this tablet to the household's wall - this one - so there's
+       no Exit that only reloads it (issue #97) */
+    CHECK(!strstr(h, ">Exit</a>"));
     CHECK(!strstr(h, "/edit\">Edit</a>"));
+    CHECK(!strstr(h, "id=\"screens-fitsay\"")); /* "Didn't fit" is for an admin, not the hallway */
+    int other = new_screen(adam, "name=Upstairs&kind=wall");
+    char url2[40];
+    snprintf(url2, sizeof url2, "/screens/%d", other);
+    CHECK_HAS(th_page(tablet, url2), "href=\"/\">Exit</a>"); /* another wall: a way home */
 
     /* the car's out now, the dentist later, a note; Adam's home, Eva isn't */
     CHECK(th_act(adam, "book.preset", "name=Car").ok);
@@ -635,10 +658,16 @@ TEST(screens_a_wall_has_the_time_now_and_next_and_whos_home) {
     CHECK(!strstr(h, "<form")); /* a wall shows; it doesn't tick things off */
     CHECK(strstr(h, "<h2>Today</h2>") < strstr(h, "<h2>Bookings</h2>")); /* the wall's order */
 
-    /* admins can edit it from there; a tablet whose own start page it is has no Exit */
+    CHECK_HAS(h, "data-fit=\"screens-fitsay\" data-fit-cols=\"4\""); /* (wire.js lays the cards out, issue #97) */
+
+    /* admins can edit it from there, and see what didn't fit; a tablet whose own start page it is has no Exit */
     CHECK_HAS(th_page(adam, url), "/edit\">Edit</a>");
+    CHECK_HAS(th_page(adam, url), "id=\"screens-fitsay\"");
+    CHECK_HAS(th_page(adam, url), "href=\"/\">Exit</a>");
     pref_set(tablet, PREF_START, url);
     CHECK(!strstr(th_page(tablet, url), ">Exit</a>"));
+    pref_set(tablet, PREF_START, url2); /* its own start page elsewhere: Exit goes there */
+    CHECK_HAS(th_page(tablet, url), "href=\"/\">Exit</a>");
     halt();
 }
 
