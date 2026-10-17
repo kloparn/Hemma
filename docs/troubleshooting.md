@@ -18,7 +18,7 @@ will be different.
 
   ```
   ------------------------------------------------------------
-  Hemma 0.2.0 is running.
+  Hemma 0.x.y (1a2b3c4d5e6f) is running.
     Open it on a phone or computer at home:  http://192.168.1.50:8080
                                         or:  http://hemma.local:8080
     First time? Open that address and type the setup code shown above.

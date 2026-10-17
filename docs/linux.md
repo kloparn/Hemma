@@ -43,13 +43,11 @@ sudo pacman -S --needed base-devel git           # Arch, Manjaro
 Then:
 
 ```sh
-git clone <project URL> hemma      # or download the ZIP from the project page and unzip it
+git clone https://github.com/kloparn/Hemma.git hemma      # or Code -> Download ZIP on GitHub, and unzip it
 cd hemma
 make            # -> build/hemma (the first build compiles SQLite: a few minutes)
 make test       # optional: runs the test suite
 ```
-
-> **TODO (owner):** put the project's public address here once it's published.
 
 If [zig](https://ziglang.org) is installed, `make` also builds the in-browser video
 converter. Without it, uploads simply send the original files. `make CC=clang` or

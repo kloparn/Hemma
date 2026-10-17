@@ -21,14 +21,12 @@ terminal doesn't know it yet.)
 
 ## 2. Get the source code
 
-Download the ZIP from the project page and unzip it, for example to
+On [the project page](https://github.com/kloparn/Hemma), choose **Code -> Download ZIP** and unzip it, for example to
 `C:\Users\you\hemma`. Or, with [Git](https://git-scm.com) (`winget install Git.Git`):
 
 ```powershell
-git clone <project URL> hemma
+git clone https://github.com/kloparn/Hemma.git hemma
 ```
-
-> **TODO (owner):** put the project's public address here once it's published.
 
 ## 3. Build
 

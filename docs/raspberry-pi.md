@@ -99,12 +99,10 @@ On the Pi:
 
 ```sh
 sudo apt install -y build-essential git
-git clone <project URL> hemma      # or download the ZIP from the project page and unzip it
+git clone https://github.com/kloparn/Hemma.git hemma      # or Code -> Download ZIP on GitHub, and unzip it
 cd hemma
 make
 ```
-
-> **TODO (owner):** put the project's public address here once it's published.
 
 The first build takes a few minutes, because the database engine (SQLite) is compiled
 once. On a Pi with only 512 MB of memory (Zero, Zero 2) the build can run out of memory.
