@@ -200,13 +200,18 @@ typedef struct {
 } Note;
 static const FieldDef note_fields[] = {FIELD(Note, id, F_INT), FIELD(Note, text, F_STR)};
 
-/* The kept copy of a damaged file in dir: its size, or -1 when there's none. */
+/* The newest kept copy of a damaged file in dir (names carry the day and time): its size, or -1 when
+   there's none. (By name, not the listing's order: NTFS lists by name, ext4 and APFS don't.) */
 static int64_t damaged_copy(const char *dir) {
     DirIter *it = dir_open(dir);
     DirEntry e;
     int64_t size = -1;
+    char newest[256] = "";
     while (it && dir_next(it, &e))
-        if (str_starts(e.name, "hemma.db.damaged-") && !str_ends(e.name, "-wal")) size = e.size;
+        if (str_starts(e.name, "hemma.db.damaged-") && !str_ends(e.name, "-wal") && strcmp(e.name, newest) > 0) {
+            str_copy(newest, sizeof newest, e.name);
+            size = e.size;
+        }
     dir_close(it);
     return size;
 }
