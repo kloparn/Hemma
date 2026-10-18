@@ -414,7 +414,10 @@ static struct {
 
 static void fresh_reset(void);
 
+static void typed_forget(void);
+
 void auth_reset_throttle(void) {
+    typed_forget(); /* (what was typed, too: a start remembers none of it) */
     memset(g_pair, 0, sizeof g_pair);
     memset(g_account, 0, sizeof g_account);
     memset(g_recheck, 0, sizeof g_recheck);
@@ -1204,12 +1207,47 @@ static void setup_page(Ctx *c, Buf *b, bool others_can_sign_in) {
     if (others_can_sign_in) buf_puts(b, "<p class=\"small center mt\"><a href=\"/login\">I already have an account</a></p>");
 }
 
+/* Issue #100: what was typed into the name box went into the address after a failed try
+   (/login?u=..., /forgot?u=...) - into the browser's history and suggestions on a shared tablet,
+   and over the LAN in plain http: a password typed into the wrong box too. It's kept here instead,
+   for that device's address only, a minute, and put back into the box. */
+#define TYPED_SLOTS 32
+#define TYPED_KEEP_S 60
+static struct {
+    uint32_t ip;
+    int64_t at;
+    char text[64];
+} g_typed[TYPED_SLOTS];
+
+static void typed_keep(uint32_t ip, const char *text) {
+    int k = 0;
+    for (int i = 0; i < TYPED_SLOTS; i++) {
+        if (g_typed[i].ip == ip) {
+            k = i;
+            break;
+        }
+        if (g_typed[i].at < g_typed[k].at) k = i; /* (else the oldest makes room) */
+    }
+    g_typed[k].ip = ip;
+    g_typed[k].at = now_sec();
+    str_copy(g_typed[k].text, sizeof g_typed[k].text, text ? text : "");
+}
+
+static void typed_forget(void) { memset(g_typed, 0, sizeof g_typed); }
+
+static const char *typed_back(uint32_t ip) {
+    int64_t now = now_sec();
+    for (int i = 0; i < TYPED_SLOTS; i++)
+        if (g_typed[i].ip == ip && g_typed[i].at && now - g_typed[i].at <= TYPED_KEEP_S) return g_typed[i].text;
+    return "";
+}
+
 /* Signed-out page: no names of the household on it (review). */
 static void forgot_page(Ctx *c, Buf *b) {
     ctx_title(c, "Forgot password");
     buf_puts(b, "<h1>Forgot your password?</h1><p class=\"sub\">Use one of your recovery codes to choose a new one.</p>");
     error_notice(c, b);
-    const char *u = ctx_q(c, "u");
+    const char *u = typed_back(c->ip);
     buf_puts(b, "<form method=\"post\" action=\"/forgot\" class=\"stack\">");
     H(b,
       "<label class=\"field\"><span>Username or name</span><input name=\"username\" autocomplete=\"username\" "
@@ -1229,7 +1267,7 @@ static void forgot_page(Ctx *c, Buf *b) {
 static void signin_page(Ctx *c, Buf *b) {
     ctx_title(c, "Sign in");
     Person *guess = person_get(presence_guess(c->ip));
-    const char *u = ctx_q(c, "u");
+    const char *u = ctx_q(c, "e")[0] ? typed_back(c->ip) : "";
     const char *next = ctx_q(c, "next");
     if (!*next) next = str_starts(c->path, "/login") ? "/" : c->url;
     bool welcome_back = false;
@@ -1263,10 +1301,9 @@ static void signin_page(Ctx *c, Buf *b) {
       u, *u ? "" : " autofocus", *u ? " autofocus" : "");
     remember_box(b);
     buf_puts(b, "<button class=\"btn primary big\">Sign in</button></form>");
-    /* the username comes along only when it was typed: the address-based guess stays on this page */
-    const char *typed = welcome_back ? "" : u;
-    H(b, "<p class=\"small center mt\"><a href=\"/forgot%r%u\">Forgot your password?</a></p>", *typed ? "?u=" : "",
-      typed);
+    /* (what was typed comes along by the server's memory, not the address: issue #100) */
+    if (!welcome_back && *u) typed_keep(c->ip, u);
+    buf_puts(b, "<p class=\"small center mt\"><a href=\"/forgot\">Forgot your password?</a></p>");
 }
 
 void auth_page(Ctx *c, Buf *b) {
@@ -1309,7 +1346,10 @@ static void redirect(Conn *conn, const char *location, const char *cookie) {
    the most the server keeps an admin's session (ADMIN_SESSION_DAYS, issue #5). */
 static void session_cookie(char *out, size_t cap, const char *sid, int person, bool remember) {
     const Person *p = person_get(person);
-    long age = !remember ? 0 : p && p->role == ROLE_ADMIN ? ADMIN_SESSION_DAYS * 86400L : 31536000L;
+    long age = !remember                         ? 0
+               : p && p->role == ROLE_ADMIN   ? ADMIN_SESSION_DAYS * 86400L
+               : p && p->role == ROLE_DISPLAY ? DISPLAY_SESSION_DAYS * 86400L
+                                              : 31536000L;
     char max_age[32] = "";
     if (age) snprintf(max_age, sizeof max_age, " Max-Age=%ld;", age);
     snprintf(out, cap, "Set-Cookie: hemma=%s; Path=/;%s SameSite=Lax; HttpOnly\r\n", sid, max_age);
@@ -1434,8 +1474,7 @@ static void forgot_post(Conn *conn, HttpReq *r, Fields *f) {
         Buf loc = {0};
         buf_printf(&loc, "/forgot?e=%s", err);
         if (wait > 0) buf_printf(&loc, "&w=%d", wait);
-        buf_puts(&loc, "&u=");
-        url_encode(&loc, user, false);
+        typed_keep(conn->ip, user);
         redirect(conn, buf_cstr(&loc), NULL);
         buf_free(&loc);
         return;
@@ -1534,8 +1573,8 @@ bool auth_http(Ctx *c, Conn *conn, HttpReq *r) {
     } else {
         Buf loc = {0};
         bool wait_more = res == LOGIN_THROTTLED || res == LOGIN_BUSY;
-        buf_printf(&loc, "/login?e=%d&u=", wait_more ? 2 : 1);
-        url_encode(&loc, user, false);
+        buf_printf(&loc, "/login?e=%d", wait_more ? 2 : 1);
+        typed_keep(conn->ip, user);
         if (wait_more) buf_printf(&loc, "&w=%d%s", wait, res == LOGIN_BUSY ? "&busy=1" : "");
         buf_puts(&loc, "&next=");
         url_encode(&loc, next, false);

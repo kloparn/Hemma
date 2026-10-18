@@ -481,7 +481,9 @@ TEST(auth_sign_in_page) {
     CHECK_HAS(h, "autocomplete=\"current-password\"");
     CHECK_HAS(h, "href=\"/forgot\">Forgot your password?</a>");
     CHECK_HAS(th_page(0, "/login?e=1&u=adam"), "don't match");
-    CHECK_HAS(th_page(0, "/login?e=1&u=adam"), "href=\"/forgot?u=adam\""); /* the username comes along */
+    /* issue #100: the address carries no name - neither out of the page nor into the box */
+    CHECK(!strstr(th_page(0, "/login?e=1&u=adam"), "adam"));
+    CHECK_HAS(th_page(0, "/login?e=1&u=adam"), "href=\"/forgot\">Forgot your password?</a>");
     CHECK_HAS(th_page(0, "/forgot"), "No codes left? Ask an admin of your household to set a new password");
     CHECK(!strstr(th_page(0, "/forgot"), "Adam")); /* review: no names for signed-out visitors */
     CHECK_HAS(th_page(0, "/login?e=2&w=120"), "Wait 2 minutes");
@@ -506,7 +508,7 @@ TEST(auth_forgot_page_names_nobody) {
     h = th_page(0, "/forgot");
     CHECK_HAS(h, "Ask an admin of your household");
     CHECK(!strstr(h, "Adam") && !strstr(h, "Boss") && !strstr(h, "adam"));
-    CHECK_HAS(th_page(0, "/login?e=1&u=boss"), "href=\"/forgot?u=boss\""); /* typed: it comes along */
+    CHECK(!strstr(th_page(0, "/login?e=1&u=boss"), "boss")); /* (issue #100: not from the address) */
     presence_set_guesser(NULL);
     th_halt();
 }
@@ -810,11 +812,16 @@ TEST(auth_admin_sessions_end_after_a_month) {
     int adam = with_login("Adam", "adam", "correct horse", ROLE_ADMIN);
     int eva = with_login("Eva", "eva", "eva password", ROLE_MEMBER);
     char a[33], e[33], fresh[33];
+    int tv = with_login("Living room TV", "tv", "tv password", ROLE_DISPLAY);
+    char t_old[33], t_new[33];
     CHECK(session_create(adam, true, "test", a));
     CHECK(session_create(eva, true, "test", e));
-    for (int i = 0; i < tbl_count(&T_session); i++) { /* both signed in 31 days ago, used today */
+    CHECK(session_create(tv, true, "test", t_old));
+    CHECK(session_create(tv, true, "test", t_new));
+    for (int i = 0; i < tbl_count(&T_session); i++) { /* signed in 31 days ago (the TV: 91 and 89), used today */
         Session s = *(Session *)tbl_at(&T_session, i);
         s.created = now_sec() - 31 * 86400LL;
+        if (s.person == tv) s.created = now_sec() - (i == tbl_count(&T_session) - 1 ? 89 : 91) * 86400LL;
         s.seen = now_sec();
         tbl_put(&T_session, &s);
     }
@@ -826,6 +833,8 @@ TEST(auth_admin_sessions_end_after_a_month) {
     CHECK(!signed_in(port, a));
     CHECK(signed_in(port, fresh));
     CHECK(signed_in(port, e)); /* a member's "keep me signed in" lasts a year while it's used */
+    CHECK(!signed_in(port, t_old)); /* a display account's: DISPLAY_SESSION_DAYS (issue #90) */
+    CHECK(signed_in(port, t_new));
     server_stop();
     sock_t poke = tcp_connect_nb(0x7F000001, port);
     for (int i = 0; i < 300 && !g_served; i++) plat_sleep_ms(10);

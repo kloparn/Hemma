@@ -321,11 +321,13 @@ static void sid_token(const char *sid, char token[65]) {
 
 /* A session that has ended: its person is gone, it sat unused too long (a week; a year with
    "keep me signed in"), or it's an admin's and older than ADMIN_SESSION_DAYS however much it
-   was used - a captured admin cookie (plain http) stops working within a month (issue #5). */
+   was used - a captured admin cookie (plain http) stops working within a month (issue #5) - or a
+   display account's older than DISPLAY_SESSION_DAYS (a TV's cookie: issue #90). */
 static bool session_over(const Session *s, int64_t now) {
     const Person *p = s->token[0] ? person_get(s->person) : NULL;
     if (!p) return true;
     if (now - MAX(s->seen, s->created) > (s->remember ? 366 : 7) * 86400LL) return true;
+    if (p->role == ROLE_DISPLAY && now - s->created > DISPLAY_SESSION_DAYS * 86400LL) return true; /* (a TV's cookie: issue #90) */
     return p->role == ROLE_ADMIN && now - s->created > ADMIN_SESSION_DAYS * 86400LL;
 }
 
@@ -1128,7 +1130,9 @@ static void client_wants_render(Client *cl) {
    so a reload or a reconnect started it again - a TV that can't play a channel, or any signed-in
    account in a loop, could push the lines an admin needs out of the log). Per person, an hour
    at a time: BROWSER_LOGS lines; a line the same as that person's last one is only counted;
-   what was left out is said with the next line after the hour. */
+   what was left out is said when the hour is over (browser_log_tick - issue #102: it waited for
+   that person's next line, so a TV that repeated one message 500 times and went quiet never
+   said so). */
 #define BROWSER_LOGS 20
 #define BROWSER_HOUR 3600
 typedef struct {
@@ -1136,6 +1140,7 @@ typedef struct {
     int64_t since; /* the hour started then */
     int lines, left_out;
     uint64_t last; /* hash of the last line logged */
+    char who[40];  /* (for the summary) */
 } BrowserLog;
 static BrowserLog g_blog[32];
 
@@ -1159,6 +1164,7 @@ static bool browser_log_ok(int person, const char *who, const char *m, char *not
         }
         *b = (BrowserLog){.person = person, .since = now};
     }
+    str_copy(b->who, sizeof b->who, who);
     uint64_t h = hash64_str(m);
     if (h == b->last || b->lines >= BROWSER_LOGS) {
         b->left_out++;
@@ -1180,6 +1186,21 @@ static bool ua_first(int session) {
         if (g_ua_said[i] == session) return false;
     g_ua_said[g_ua_next++ % countof(g_ua_said)] = session;
     return true;
+}
+
+/* The hour is over for someone whose lines were left out: say how many, now - not only with their
+   next line, which may never come (issue #102). */
+static void browser_log_tick(void) {
+    int64_t now = now_sec();
+    for (int i = 0; i < countof(g_blog); i++) {
+        BrowserLog *b = &g_blog[i];
+        if (!b->left_out || now - b->since < BROWSER_HOUR) continue;
+        char hm[6];
+        fmt_hm(b->since, hm);
+        log_warn("browser of %s: %d more line%s since %s left out (repeats, or over %d an hour)", b->who, b->left_out,
+                 b->left_out == 1 ? "" : "s", hm, BROWSER_LOGS);
+        *b = (BrowserLog){.person = b->person}; /* (the next line starts a new hour) */
+    }
 }
 
 static void browser_log_reset(void) {
@@ -1258,11 +1279,15 @@ static void on_ws_message(Conn *conn, const char *msg, size_t n) {
         if (!p || !json_string(&j, json_get(&j, 0, "m"), m, sizeof m)) return;
         json_string(&j, json_get(&j, 0, "ua"), ua, sizeof ua);
         const char *who = p->username[0] ? p->username : p->name;
-        char note[80] = "";
+        char note[80] = "", where[200];
         if (!browser_log_ok(p->id, who, m, note, sizeof note)) return;
         bool first = ua[0] && ua_first(s->id);
-        log_warn("browser of %s (%s) on %s: %s%s%s%s", who, conn->peer, url, utf8_scrub(m), first ? " - " : "",
-                 first ? utf8_scrub(ua) : "", note);
+        /* the note first and the address cut short: a long one pushed the note past the end of the
+           line (issue #102: lines are cut at 1,024 bytes) */
+        if (strlen(url) > 160) snprintf(where, sizeof where, "%.157s...", url);
+        else str_copy(where, sizeof where, url);
+        log_warn("browser of %s (%s)%s on %s: %s%s%s", who, conn->peer, note, where, utf8_scrub(m), first ? " - " : "",
+                 first ? utf8_scrub(ua) : "");
     } else if (str_eq(t, "act") || str_eq(t, "live")) {
         char a[64];
         json_string(&j, json_get(&j, 0, "a"), a, sizeof a);
@@ -1579,6 +1604,7 @@ static void on_http(Conn *conn, HttpReq *r) {
     if (http_cookie(r, "hemma", sid, sizeof sid)) sid_token(sid, token);
     Session *live = session_by_token(token);
     if (live) live->seen = now_sec(); /* memory only; persisted hourly */
+    if (live && !session_over(live, now_sec())) conn->known = true; /* (a full server pushes strangers out first) */
 
     if (r->streaming) {
         /* A body too big to buffer (an upload): only a module endpoint that reads
@@ -1754,6 +1780,7 @@ static void on_tick(int64_t now) {
     g_wake_at = 0;
     g_tick_due = now + (nclients ? 1000 : 5000);
     auth_tick();
+    browser_log_tick();
     for (int i = 0; i < nmods; i++)
         if (mods[i]->tick) mods[i]->tick(now);
     bool moved = false;

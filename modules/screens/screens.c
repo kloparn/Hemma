@@ -22,6 +22,7 @@
  * so whoever turns it on next is asked again instead of watching as someone else. "Switch" asks
  * at once. People on their own phone or computer are always their own viewer, never asked. */
 #include "screens.h"
+#include "../../core/auth.h"
 
 static const FieldDef screen_fields[] = {
     FIELD(Screen, id, F_INT),         FIELD(Screen, name, F_STR),          FIELD(Screen, kind, F_INT),
@@ -185,6 +186,10 @@ static bool seat_lapsed(Seat *s, int64_t seen, int64_t now) {
 int screens_viewer(Ctx *c) {
     int v = ctx_viewer(c);
     if (!v || !c->me || c->me->role != ROLE_DISPLAY || !c->sess) return v; /* people watch as themselves */
+    if (!screens_on_picker(person_get(v))) { /* (off the list since: an admin who unticked it - issue #90) */
+        ctx_set_viewer(c, 0);
+        return 0;
+    }
     Seat *s = seat_find(c->me->id, c->sess->token);
     if (!s) s = seat_set(c->me->id, c->sess->token, first_use(c->sess, c->now));
     if (!seat_lapsed(s, c->sess->seen, c->now)) return v;
@@ -292,9 +297,84 @@ static void forget_viewer(int account) {
     }
 }
 
+/* TVs watching as `person` - or, with 0, as anyone no longer on the picker (issue #90) - ask again. */
+static void forget_viewer_of(int person) {
+    for (int i = 0; i < tbl_count(&T_session); i++) {
+        Session *s = tbl_at(&T_session, i);
+        if (!s->viewer || (person ? s->viewer != person : screens_on_picker(person_get(s->viewer)))) continue;
+        Person *acc = person_get(s->person);
+        if (!acc || acc->role != ROLE_DISPLAY) continue; /* (people watch as themselves) */
+        Session rec = *s;
+        rec.viewer = 0;
+        tbl_put(&T_session, &rec);
+    }
+}
+
 static void forget_viewers(void) {
     for (int i = 0; i < account_count(); i++)
         if (account_at(i)->role == ROLE_DISPLAY) forget_viewer(account_at(i)->id);
+    forget_viewer_of(0);
+}
+
+bool screens_on_picker(const Person *p) {
+    if (!p || p->role == ROLE_DISPLAY) return false;
+    return p->role != ROLE_ADMIN || str_eq(pref(p->id, PREF_ON_TV, ""), "1");
+}
+
+bool screens_has_pin(int person) { return pref(person, PREF_PIN, "")[0] != 0; }
+
+/* A PIN is kept as an HMAC with the server's secret (a copy of the database alone tells nothing). */
+static bool pin_hash(int person, const char *pin, char out[33]) {
+    char msg[48];
+    uint8_t mac[32];
+    snprintf(msg, sizeof msg, "pin:%d:%s", person, pin);
+    if (!auth_mac(msg, strlen(msg), mac)) return false;
+    hex_encode(mac, 16, out);
+    return true;
+}
+
+static bool four_digits(const char *s) { return strlen(s) == 4 && strspn(s, "0123456789") == 4; }
+
+/* Wrong guesses lock that person's PIN a while - 5 free, then 1, 2, 4 ... 15 minutes - on every TV:
+   10,000 PINs at that pace take days. Forgiven after an hour without one. */
+#define PIN_SLOTS 32
+static struct {
+    int person, fails;
+    int64_t until, last;
+} g_pin[PIN_SLOTS];
+
+static int pin_slot(int person, int64_t now) {
+    int k = 0;
+    for (int i = 0; i < PIN_SLOTS; i++) {
+        if (g_pin[i].person == person) {
+            if (now - g_pin[i].last > 3600) g_pin[i].fails = 0, g_pin[i].until = 0;
+            return i;
+        }
+        if (g_pin[i].last < g_pin[k].last) k = i;
+    }
+    memset(&g_pin[k], 0, sizeof g_pin[k]);
+    g_pin[k].person = person;
+    return k;
+}
+
+int screens_pin_wait(int person, int64_t now) {
+    for (int i = 0; i < PIN_SLOTS; i++)
+        if (g_pin[i].person == person && g_pin[i].until > now) return (int)(g_pin[i].until - now);
+    return 0;
+}
+
+static void pin_failed(int person, int64_t now) {
+    int k = pin_slot(person, now);
+    g_pin[k].last = now;
+    if (++g_pin[k].fails >= 5) {
+        int64_t lock = 60LL << MIN(g_pin[k].fails - 5, 4);
+        g_pin[k].until = now + MIN(lock, 900);
+    }
+}
+
+static void pin_passed(int person, int64_t now) {
+    int k = pin_slot(person, now);
+    memset(&g_pin[k], 0, sizeof g_pin[k]);
 }
 
 /* "Who's watching?" on a TV: who=<person>, or who=0 to ask again (Switch). People on their own
@@ -312,9 +392,56 @@ static void act_viewer(Ctx *c, Fields *f) {
         ctx_fail(c, "Only a TV picks who's watching: an admin ticks it under Screens, Edit, Shows on");
         return;
     }
+    if (who && !screens_on_picker(person_get(who))) { /* (issue #90: admins only when they said so) */
+        ctx_fail(c, "Pick someone from the list");
+        return;
+    }
+    if (who && screens_has_pin(who)) {
+        int wait = screens_pin_wait(who, c->now);
+        char want[33];
+        if (wait > 0) {
+            ctx_fail(c, "Too many wrong PINs - try again in %d min", (wait + 59) / 60);
+            return;
+        }
+        if (!pin_hash(who, fields_str(f, "pin"), want) || !str_eq(want, pref(who, PREF_PIN, ""))) {
+            pin_failed(who, c->now);
+            ctx_fail(c, "That PIN isn't right");
+            return;
+        }
+        pin_passed(who, c->now);
+    }
     ctx_set_viewer(c, who);
     if (who) seat_set(c->me->id, c->sess->token, c->now);
     else seat_drop(c->me->id, c->sess->token);
+}
+
+/* Your own place on the TV's picker (issue #90): an admin's "Show me on the TV", and anyone's PIN. */
+static void act_on_tv(Ctx *c, Fields *f) {
+    bool on = str_eq(fields_str(f, "on"), "1");
+    pref_set(c->me->id, PREF_ON_TV, on ? "1" : "");
+    if (!on) forget_viewer_of(c->me->id);
+    ctx_ok(c, on ? "You're on the TV's Who's watching? now" : "You're off the TV's Who's watching?");
+}
+
+static void act_pin(Ctx *c, Fields *f) {
+    if (str_eq(fields_str(f, "clear"), "1")) {
+        pref_set(c->me->id, PREF_PIN, "");
+        ctx_ok(c, "No PIN any more: the TV picks you straight away");
+        return;
+    }
+    const char *pin = fields_str(f, "pin");
+    char h[33];
+    if (!four_digits(pin)) {
+        ctx_fail(c, "A PIN is 4 digits");
+        return;
+    }
+    if (!pin_hash(c->me->id, pin, h)) {
+        ctx_fail(c, "Hemma has no password secret yet (HEMMA_AUTH_SALT), so it can't keep a PIN");
+        return;
+    }
+    pref_set(c->me->id, PREF_PIN, h);
+    forget_viewer_of(c->me->id); /* (a TV showing you now asks again, with the PIN) */
+    ctx_ok(c, "PIN saved: the TV asks for it when you're picked");
 }
 
 static void act_create(Ctx *c, Fields *f) {
@@ -456,6 +583,7 @@ static void act_shows(Ctx *c, Fields *f) {
 
 static const Action actions[] = {
     {"screens.viewer", act_viewer, false, true}, /* the one thing a TV may do here */
+    {"screens.on_tv", act_on_tv}, {"screens.pin", act_pin},
     {"screens.create", act_create},
     {"screens.save", act_save},
     {"screens.delete", act_delete},

@@ -4,6 +4,7 @@
 #include "../../core/plat.h"
 #include "../../tests/harness.h"
 #include "screens.h"
+#include "../../core/auth.h"
 
 static bool g_on; /* the test modules' blocks draw only while these tests run (they stay registered) */
 
@@ -379,7 +380,7 @@ TEST(screens_ask_whos_watching_on_a_tv) {
     const char *h = th_page(tv, url);
     CHECK_HAS(h, "<h1>Who's watching?</h1>");
     CHECK_HAS(h, "data-arrows");
-    CHECK_HAS(h, "<b>Adam</b>");
+    CHECK(!strstr(h, "<b>Adam</b>")); /* admins only once they say so (issue #90) */
     CHECK_HAS(h, "<b>Eva</b>");
     CHECK(!strstr(h, "<b>Living room TV</b>")); /* display accounts aren't people */
     CHECK(!strstr(h, "zz-on"));
@@ -737,5 +738,86 @@ TEST(screens_unknown_addresses_say_so) {
     snprintf(url, sizeof url, "/screens/%d/nope", ((Screen *)tbl_at(&T_screen, 0))->id);
     CHECK_HAS(th_page(eva, url), "That screen is gone");
     CHECK_HAS(th_page(eva, "/screens/"), "<h1>Screens</h1>");
+    halt();
+}
+
+/* ---------------------------------------------------- the picker's guard (issue #90) */
+
+static void tv_showing(int adam, char url[40], int *tv_out) {
+    int tv = *tv_out = with_role("Living room TV", ROLE_DISPLAY);
+    int id = new_screen(adam, "name=Kids");
+    char form[40];
+    snprintf(form, sizeof form, "id=%d&acc=%d", id, tv);
+    CHECK(th_act(adam, "screens.shows", form).ok);
+    snprintf(url, 40, "/screens/%d", id);
+}
+
+/* Anyone holding the TV's sign-in could pick an admin, then read and clear their watch history. */
+TEST(screens_admins_join_the_picker_when_they_say_so) {
+    boot();
+    int adam = with_role("Adam", ROLE_ADMIN);
+    th_person("Eva");
+    char url[40], form[40];
+    int tv = 0;
+    tv_showing(adam, url, &tv);
+    snprintf(form, sizeof form, "who=%d", adam);
+    CHECK(!strstr(th_page(tv, url), "<b>Adam</b>"));
+    CHECK(!th_act(tv, "screens.viewer", form).ok); /* (not by the address either) */
+    CHECK_INT(viewer_of(tv), 0);
+    CHECK_HAS(th_page(adam, "/screens"), "Show me on the TV");
+    CHECK(th_act(adam, "screens.on_tv", "on=1").ok);
+    CHECK_HAS(th_page(tv, url), "<b>Adam</b>");
+    CHECK(th_act(tv, "screens.viewer", form).ok);
+    CHECK_INT(viewer_of(tv), adam);
+    CHECK(th_act(adam, "screens.on_tv", "").ok); /* off again: the TV asks again */
+    CHECK_HAS(th_page(tv, url), "Who's watching?");
+    CHECK_INT(viewer_of(tv), 0);
+    halt();
+}
+
+TEST(screens_a_pin_guards_a_spot_on_the_picker) {
+    boot();
+    auth_configure("screens-salt", 1000);
+    int adam = with_role("Adam", ROLE_ADMIN), eva = th_person("Eva");
+    char url[40], form[60], pinurl[60];
+    int tv = 0;
+    tv_showing(adam, url, &tv);
+    CHECK(!th_act(eva, "screens.pin", "pin=12x4").ok);
+    CHECK(!th_act(eva, "screens.pin", "pin=123").ok);
+    CHECK(th_act(eva, "screens.pin", "pin=1234").ok);
+    CHECK(!strstr(pref(eva, PREF_PIN, ""), "1234")); /* (kept as an HMAC, never as it was typed) */
+    CHECK_HAS(th_page(eva, "/screens"), "Your PIN is set");
+    /* the picker asks for it first */
+    snprintf(pinurl, sizeof pinurl, "%s?pin=%d", url, eva);
+    char want[80];
+    snprintf(want, sizeof want, "href=\"%s\"", pinurl);
+    CHECK_HAS(th_page(tv, url), want);
+    const char *h = th_page(tv, pinurl);
+    CHECK_HAS(h, "<h1>Eva's PIN</h1>");
+    CHECK_HAS(h, "inputmode=\"numeric\"");
+    snprintf(form, sizeof form, "who=%d", eva);
+    CHECK(!th_act(tv, "screens.viewer", form).ok); /* no PIN: no */
+    CHECK_INT(viewer_of(tv), 0);
+    snprintf(form, sizeof form, "who=%d&pin=1234", eva);
+    CHECK(th_act(tv, "screens.viewer", form).ok);
+    CHECK_INT(viewer_of(tv), eva);
+    CHECK(th_act(tv, "screens.viewer", "who=0").ok);
+    /* wrong guesses: five, then a wait - even for the right one */
+    snprintf(form, sizeof form, "who=%d&pin=0000", eva);
+    for (int i = 0; i < 5; i++) CHECK(!th_act(tv, "screens.viewer", form).ok);
+    snprintf(form, sizeof form, "who=%d&pin=1234", eva);
+    ThResult r = th_act(tv, "screens.viewer", form);
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Too many wrong PINs");
+    CHECK_HAS(th_page(tv, pinurl), "Too many wrong PINs");
+    g_fake_now = now_sec() + 61;
+    CHECK(th_act(tv, "screens.viewer", form).ok);
+    CHECK_INT(viewer_of(tv), eva);
+    g_fake_now = 0;
+    /* gone again: picked straight away */
+    CHECK(th_act(eva, "screens.pin", "clear=1").ok);
+    CHECK(th_act(tv, "screens.viewer", "who=0").ok);
+    snprintf(form, sizeof form, "who=%d", eva);
+    CHECK(th_act(tv, "screens.viewer", form).ok);
     halt();
 }

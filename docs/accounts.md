@@ -104,12 +104,23 @@ Admins choose the rows and their order under **Screens → Edit** (Up, Down, Rem
 row) and can give a row a heading of its own. A row with nothing to show right now - no
 channels yet, nothing half-watched - is simply left out.
 
-The TV starts with everyone's picture: **Who's watching?** Pick yourself with the remote -
-no password. Continue watching then shows your shows, and what you watch on the TV counts
-as yours. That's all anyone can do on the TV: watch. **Switch** (top right) hands it to
-someone else, and after **4 hours without use** (nothing opened, nothing playing) the TV
-asks again by itself, so the next person doesn't watch as you. On your own phone or
-computer you're always yourself: **Screens** shows the same rows there, no question asked.
+The TV starts with the household's pictures: **Who's watching?** Pick yourself with the
+remote. No password is needed. Continue watching then shows your shows, and what you watch
+on the TV counts as yours. That's all anyone can do on the TV: watch. **Switch** (top
+right) hands it to someone else. After **4 hours without use** (nothing opened, nothing
+playing) the TV asks again by itself, so the next person doesn't watch as you. On your own
+phone or computer you're always yourself: **Screens** shows the same rows there, no
+question asked.
+
+Whoever holds the TV's sign-in can watch as anyone it lists, see their history and clear
+it. So:
+
+- **Admins aren't listed** until they tick **Show me on the TV** under **Screens** (the
+  "You on the TV" card).
+- **Anyone can set a PIN** there: four digits the TV asks for when you're picked. After
+  five wrong tries it waits a minute, then longer, before it lets anyone try again.
+- **A TV's or tablet's sign-in ends 90 days after signing in**, however much it's used, so
+  a stolen copy of it stops working. Sign the TV in again then.
 
 ## A tablet on the wall
 
@@ -291,7 +302,12 @@ or removed. (To force a change, use `HEMMA_ADMIN_RESET` as described above.)
 - **"Keep me signed in"** keeps you signed in on that device for a year, as long as you
   use it now and then (unticked: until a week without use). **Admins sign in again every
   30 days**, however much they use it: Hemma runs on plain http, so a stolen admin cookie
-  stops working within a month.
+  stops working within a month. **Display sign-ins (a TV, a wall tablet) end after 90
+  days** the same way.
+- **What you typed stays out of the address.** After a wrong password, Hemma puts the name
+  you typed back in the box for a minute, but never in the page's address. That matters
+  when a password lands in the name box by mistake: an address ends up in the browser's
+  history and suggestions.
 - **Video addresses carry a key** (`?k=...` at the end). Some TVs' video players fetch the
   video without the browser's sign-in, so the address proves it instead. A key works for
   that one video (or subtitle), only from the network address of the device it was shown

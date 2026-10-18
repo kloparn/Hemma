@@ -3,7 +3,41 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.10.1 (not released yet)
+## 0.11.0 (not released yet)
+
+Hardening follow-ups: the TV's picker, connection slots, typed names, the browser log.
+
+### New
+
+- **The TV's "Who's watching?" has a guard** (#90):
+  - Admins aren't listed until they tick **Show me on the TV** under **Screens** (the new
+    "You on the TV" card). The server refuses picking them otherwise. Whoever holds the TV's
+    sign-in could see and clear the watch history of anyone it lists.
+  - Anyone can set an optional 4-digit **PIN** there. The TV then asks for it when that
+    person is picked. After five wrong guesses it waits 1, 2, 4… up to 15 minutes. The PIN
+    is kept as an HMAC with the server's secret.
+  - A TV's or wall tablet's sign-in now ends **90 days after signing in**, however much it's
+    used, like an admin's after 30.
+
+### Fixes
+
+- **A full server makes room from busy strangers too** (#91). Reading just faster than the
+  slow-reader rule (6.4 KB/s) kept a slot for good, so 13 addresses could hold all 400. Now,
+  when nobody idle or slow can make room, a newcomer takes the place of the longest-held
+  connection from the address holding the most. That applies only to connections with
+  nothing signed in on them: the household's own are never pushed out that way, and
+  strangers always go first.
+- **What was typed into the name box stays out of the address** (#100). After a wrong
+  password or recovery code, the address said `/login?u=<what you typed>`: into the
+  browser's history, and over the LAN in plain http. That was a password, when it went into
+  the wrong box. Hemma now keeps it for that device for a minute and puts it back in the box.
+  The "Forgot your password?" link no longer carries it either.
+- **A browser's left-out log lines are summed up when the hour ends** (#102), not only when
+  that person's browser writes again: a TV that repeated one message 500 times and went
+  quiet now says so. The "(no more from …)" note comes before the page address, which is
+  shortened, so a long one can't push the note off the end of the line.
+
+## 0.10.1 (2026-10-17)
 
 Follow-ups for the library: unfinished uploads, left-out videos, disk room, watch history.
 
