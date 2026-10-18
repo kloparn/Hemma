@@ -88,6 +88,38 @@ static void new_modal(Buf *b) {
     ui_modal_end(b);
 }
 
+/* Your own place on the TV's "Who's watching?" (issue #90): admins choose to be there, anyone can
+   ask for a PIN first. */
+static void you_card(Ctx *c, Buf *b) {
+    if (!c->me || c->me->role == ROLE_DISPLAY) return;
+    ui_card(b, "You on the TV", NULL, NULL);
+    if (is_admin(c)) {
+        bool on = str_eq(pref(c->me->id, PREF_ON_TV, ""), "1");
+        ui_form(b, "screens.on_tv", "screens-ontv");
+        H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"on\" value=\"1\" data-auto%r> Show me on the "
+             "TV's <i>Who's watching?</i></label>",
+          on ? " checked" : "");
+        ui_form_end(b);
+        buf_puts(b, "<p class=\"muted small\">Admins are left off unless they tick this: whoever has the TV's sign-in "
+                    "could see and clear the watch history of anyone it lists.</p>");
+    } else {
+        buf_puts(b, "<p>The TV's <i>Who's watching?</i> lists you.</p>");
+    }
+    if (screens_has_pin(c->me->id)) {
+        buf_puts(b, "<p>Your PIN is set: the TV asks for it when you're picked.</p>");
+        ui_act(b, "screens.pin", "btn sm", "Remove the PIN", "clear", "1", NULL);
+    } else {
+        ui_form(b, "screens.pin", "screens-pinset");
+        buf_puts(b, "<label class=\"field\"><span>A PIN for the TV <span class=\"muted\">(optional)</span></span><input "
+                    "type=\"password\" name=\"pin\" inputmode=\"numeric\" pattern=\"[0-9]{4}\" maxlength=\"4\" "
+                    "autocomplete=\"new-password\" placeholder=\"4 digits\"><small class=\"muted\">The TV asks for it "
+                    "when someone picks you, so nobody watches - or clears your history - as you.</small></label>"
+                    "<button class=\"btn\">Save the PIN</button>");
+        ui_form_end(b);
+    }
+    ui_card_end(b);
+}
+
 static void list_page(Ctx *c, Buf *b) {
     ctx_title(c, "Screens");
     ui_head(b, "Screens", "What the TV and the wall tablets show");
@@ -135,6 +167,7 @@ static void list_page(Ctx *c, Buf *b) {
                     "asks <i>Who's watching?</i> - nobody types a password there.</li></ol>");
         ui_card_end(b);
     }
+    you_card(c, b);
     if (is_admin(c) && str_eq(ctx_q(c, "new"), "1")) new_modal(b);
 }
 
@@ -175,20 +208,48 @@ static void top_bar(Ctx *c, Buf *b, const Screen *s, int viewer) {
     buf_puts(b, "</div></header>");
 }
 
-/* Everyone's avatar, big, for the remote: picking needs no password - on the TV they can only watch. */
+/* The household's avatars, big, for the remote: no password - on the TV they can only watch. Admins
+   only once they ticked "Show me on the TV", and someone with a PIN gets asked for it (issue #90:
+   whoever holds the TV's sign-in could read and clear anyone's watch history). */
 static void picker(Ctx *c, Buf *b) {
     ctx_title(c, "Who's watching?");
     H(b, "<div class=\"screens-dark screens-tv screens-pick\" id=\"screens-pick\" data-arrows><div "
-         "class=\"screens-pick-in\"><p class=\"screens-home\">%s</p><h1>Who's watching?</h1>",
+         "class=\"screens-pick-in\"><p class=\"screens-home\">%s</p>",
       app_name());
-    if (!person_count())
+    Person *ask = person_get((int)ctx_qint(c, "pin", 0));
+    if (ask && screens_on_picker(ask) && screens_has_pin(ask->id)) { /* the PIN, then the pick */
+        H(b, "<h1>%s's PIN</h1>", ask->name);
+        int wait = screens_pin_wait(ask->id, c->now);
+        if (wait > 0)
+            H(b, "<p class=\"screens-note\">Too many wrong PINs - try again in %d min.</p>", (wait + 59) / 60);
+        ui_form(b, "screens.viewer", "screens-pinform");
+        ui_hidden_int(b, "who", ask->id);
+        buf_puts(b, "<input class=\"screens-pin\" type=\"password\" name=\"pin\" inputmode=\"numeric\" "
+                    "pattern=\"[0-9]*\" maxlength=\"4\" autocomplete=\"off\" aria-label=\"PIN\" autofocus>"
+                    "<button class=\"screens-btn\">OK</button>");
+        ui_form_end(b);
+        H(b, "<p><a class=\"screens-btn\" href=\"%s\">Back</a></p></div></div>", c->path);
+        return;
+    }
+    buf_puts(b, "<h1>Who's watching?</h1>");
+    int shown = 0;
+    for (int i = 0; i < person_count(); i++) shown += screens_on_picker(person_at(i));
+    if (!shown)
         buf_puts(b, "<p class=\"screens-note\">Nobody's set up yet: add the household on a phone or computer.</p>");
     buf_puts(b, "<div class=\"screens-people\">");
-    for (int i = 0; i < person_count(); i++) {
+    for (int i = 0, k = 0; i < person_count(); i++) {
         Person *p = person_at(i);
+        if (!screens_on_picker(p)) continue;
+        if (screens_has_pin(p->id)) { /* (asks for it first) */
+            H(b, "<a class=\"screens-person\" id=\"screens-p%d\" href=\"%s?pin=%d\"%r>", p->id, c->path, p->id,
+              k++ == 0 ? " autofocus" : "");
+            ui_avatar(b, p, "xl");
+            H(b, "<b>%s</b></a>", p->name);
+            continue;
+        }
         H(b, "<form method=\"post\" action=\"/a/screens.viewer\" data-a=\"screens.viewer\" class=\"inline\" "
              "id=\"screens-p%d\"><input type=\"hidden\" name=\"who\" value=\"%d\"><button class=\"screens-person\"%r>",
-          p->id, p->id, i == 0 ? " autofocus" : "");
+          p->id, p->id, k++ == 0 ? " autofocus" : "");
         ui_avatar(b, p, "xl");
         H(b, "<b>%s</b></button></form>", p->name);
     }

@@ -120,7 +120,7 @@ TEST(app_http_sign_in_pages_wire_and_sign_out) {
              strlen(bad), bad);
     request(port, req, &r);
     CHECK_HAS(buf_cstr(&r), "303 See Other");
-    CHECK_HAS(buf_cstr(&r), "Location: /login?e=1&u=adam&next=%2Fbook");
+    CHECK_HAS(buf_cstr(&r), "Location: /login?e=1&next=%2Fbook"); /* (no typed name in the address: issue #100) */
     cookie_of(&r, cookie, sizeof cookie);
     CHECK_STR(cookie, "");
 
@@ -742,6 +742,8 @@ TEST(app_a_browser_reports_its_trouble_to_the_log) {
     ws_wait(st, &a, NULL, 400);
     CHECK_INT(browser_lines(last, sizeof last), 20);
     CHECK_HAS(last, "(no more from tv's browsers until ");
+    /* issue #102: the note comes before the address - a long one pushed it past the end of the line */
+    CHECK(strstr(last, "(no more from") && strstr(last, " on /") && strstr(last, "(no more from") < strstr(last, " on /"));
     sock_t again = ws_open(port, tv);
     ws_say(again, "{\"t\":\"hello\",\"url\":\"/\"}");
     ws_say(again, "{\"t\":\"log\",\"url\":\"/\",\"m\":\"another\"}");
@@ -753,15 +755,16 @@ TEST(app_a_browser_reports_its_trouble_to_the_log) {
     ws_say(sx, "{\"t\":\"log\",\"url\":\"/\",\"m\":\"stranger\"}");
     ws_wait(sx, &a, NULL, 300);
     CHECK_INT(browser_lines(NULL, 0), 20);
-    /* the hour over: what was left out is said, and lines come again */
+    /* the hour over: what was left out is said at once - issue #102: not only when that browser
+       writes again (a TV that went quiet never said how bad it was) - and lines come again */
     g_fake_now = now_sec() + 3601;
+    for (int i = 0; i < 1000 && browser_lines(NULL, 0) < 21; i++) plat_sleep_ms(10); /* (a tick: up to 10 s on a slow box) */
+    CHECK_INT(browser_lines(last, sizeof last), 21);
+    CHECK_HAS(last, "browser of tv: 18 more lines since "); /* 5 repeats, 12 + 1 over */
     ws_say(again, "{\"t\":\"log\",\"url\":\"/\",\"m\":\"the next hour\"}");
     for (int i = 0; i < 200 && browser_lines(NULL, 0) < 22; i++) plat_sleep_ms(10);
     CHECK_INT(browser_lines(last, sizeof last), 22);
     CHECK_HAS(last, "the next hour");
-    lock_take(&g_seen_lock);
-    CHECK_HAS(buf_cstr(&g_seen_all), "browser of tv: 18 more lines since "); /* 5 repeats, 12 + 1 over */
-    lock_give(&g_seen_lock);
     g_fake_now = 0;
     log_set_sink(was);
     g_log_level = level;

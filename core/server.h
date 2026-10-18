@@ -24,6 +24,8 @@ struct Conn {
     size_t moved;                  /* bytes sent since then */
     bool ws, keep_alive, closing, lingering, dead, detached, ping_sent;
     bool head_req; /* the request being answered is HEAD: replies carry no body */
+    bool known;    /* the app served a signed-in request on it: never pushed out to make room unless it's
+                      idle or reading too slowly (strangers go first: issue #91) */
     bool peer_eof; /* the peer finished sending; we are still sending to it */
     int64_t linger_until, close_at;
     Buf frag; /* fragmented WebSocket message being reassembled */

@@ -144,6 +144,13 @@
 .screens-person b { font-size: 1.15em; font-weight: 650; }
 .screens-person:hover { color: var(--text); }
 .screens-person:focus { outline: none; color: var(--text); transform: scale(1.08); }
+a.screens-person { text-decoration: none; } /* (someone with a PIN: the picker asks for it first) */
+.screens-pinform { display: flex; justify-content: center; align-items: center; gap: 1vw; margin: 0 0 1.2em; }
+.screens-pin {
+  width: 6em; padding: .3em .5em; border: 2px solid var(--line-2); border-radius: .4em; background: var(--panel);
+  color: var(--text); font: inherit; font-size: 2em; letter-spacing: .4em; text-align: center;
+}
+.screens-pin:focus { outline: none; border-color: var(--text); }
 .screens-person:focus .av { box-shadow: 0 0 0 .3vw var(--bg), 0 0 0 .65vw var(--text); }
 
 /* ---- the same screens on a phone or a small window ---- */

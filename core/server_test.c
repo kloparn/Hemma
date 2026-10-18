@@ -14,8 +14,9 @@ static void t_http(Conn *c, HttpReq *r) {
         conn_reply(c, 200, "text/plain", "hello", 5, NULL);
     } else if (str_eq(r->path, "/echo")) {
         conn_reply(c, 200, "text/plain", r->body, r->body_len, NULL);
-    } else if (str_eq(r->path, "/big")) { /* more than the sockets' own buffers take */
+    } else if (str_eq(r->path, "/big") || str_eq(r->path, "/bigknown")) { /* more than the sockets' buffers take */
         static char big[16 << 20];
+        if (str_eq(r->path, "/bigknown")) c->known = true; /* (as the app marks a signed-in request) */
         conn_reply(c, 200, "application/octet-stream", big, sizeof big, NULL);
     } else {
         conn_reply(c, 404, "text/plain", "nf", 2, NULL);
@@ -390,3 +391,59 @@ TEST(server_slow_readers_make_room_for_newcomers) {
     server_set_slow_after(0);
     buf_free(&b);
 }
+
+/* Issue #91: reading just faster than the slow-reader rule (64 KB per 10 s) kept a slot for good -
+   13 addresses at ~21 Mbit/s held all 400. Full, with nobody idle or slow, a newcomer takes the
+   place of the longest-held connection of the address holding the most strangers' ones. */
+static void busy_slots(const char *path, bool household) {
+    server_set_max_conns(4); /* (slow_after stays 10 s: these replies are owed, not slow) */
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    srv_done = 0;
+    CHECK(thread_spawn(server_thread, NULL));
+    char one[80], req[300]; /* three big replies: more than the sockets' buffers hold - output stays queued */
+    snprintf(one, sizeof one, "GET %s HTTP/1.1\r\nHost: t\r\n\r\n", path);
+    snprintf(req, sizeof req, "%s%s%s", one, one, one);
+    sock_t s[4];
+    for (int i = 0; i < 4; i++) {
+        s[i] = dial(port);
+        CHECK(s[i] != SOCK_BAD);
+        send_all(s[i], req, strlen(req));
+    }
+    plat_sleep_ms(300); /* (all four being answered) */
+    const char *get = "GET /hello HTTP/1.1\r\nHost: t\r\n\r\n";
+    sock_t n = dial(port);
+    Buf b = {0};
+    send_all(n, get, strlen(get));
+    if (household) { /* (a second is plenty: room is made at once, or not at all) */
+        for (int64_t end = now_ms() + 1000; now_ms() < end && !strstr(buf_cstr(&b), "hello");) {
+            pollfd_t pf = {.fd = n, .events = POLLIN};
+            if (plat_poll(&pf, 1, 50) != 1) continue;
+            char tmp[512];
+            long k = sock_recv(n, tmp, sizeof tmp);
+            if (k <= 0) break;
+            buf_put(&b, tmp, (size_t)k);
+        }
+    } else {
+        recv_until(n, &b, "hello", 5);
+    }
+    if (household) { /* the household's connections stay while they're busy: the newcomer waits */
+        CHECK(!strstr(buf_cstr(&b), "200 OK"));
+    } else {
+        int went = 0; /* (reading them drains them - idle then: only once the newcomer is in) */
+        for (int i = 0; i < 4; i++) went += closed_by_server(s[i]);
+        CHECK_HAS(buf_cstr(&b), "200 OK");
+        CHECK_INT(went, 1); /* the longest-held one */
+    }
+    sock_close(n);
+    for (int i = 0; i < 4; i++) sock_close(s[i]);
+    server_stop();
+    for (int i = 0; i < 300 && !srv_done; i++) plat_sleep_ms(10);
+    CHECK(srv_done);
+    server_set_max_conns(0);
+    buf_free(&b);
+}
+
+TEST(server_busy_strangers_make_room_for_newcomers) { busy_slots("/big", false); }
+
+TEST(server_never_pushes_out_the_households_busy_connections) { busy_slots("/bigknown", true); }

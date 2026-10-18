@@ -534,11 +534,23 @@ TEST(auth_forgot_password_end_to_end) {
     recv_reply(s, &r);
     CHECK_HAS(buf_cstr(&r), " 403 ");
     post(port, "/forgot", NULL, "username=adam&code=AAAA-BBBB-CCCC&password=brand+new+pw&again=other+new+pw", &r);
-    CHECK_HAS(buf_cstr(&r), "Location: /forgot?e=again&u=adam\r\n");
+    CHECK_HAS(buf_cstr(&r), "Location: /forgot?e=again\r\n"); /* issue #100: no typed name in the address ... */
+    get(port, "/forgot?e=again", NULL, &r);
+    CHECK_HAS(buf_cstr(&r), "value=\"adam\""); /* ... the box has it back from the server */
     post(port, "/forgot", NULL, "username=adam&code=AAAA-BBBB-CCCC&password=brand+new+pw&again=brand+new+pw", &r);
-    CHECK_HAS(buf_cstr(&r), "Location: /forgot?e=code&u=adam\r\n");
+    CHECK_HAS(buf_cstr(&r), "Location: /forgot?e=code\r\n");
     post(port, "/forgot", NULL, "username=nobody&code=AAAA-BBBB-CCCC&password=brand+new+pw&again=brand+new+pw", &r);
-    CHECK_HAS(buf_cstr(&r), "Location: /forgot?e=code&u=nobody\r\n"); /* the same answer */
+    CHECK_HAS(buf_cstr(&r), "Location: /forgot?e=code\r\n"); /* the same answer */
+    /* a password typed into the name box: in no address, and gone from the box a minute later */
+    post(port, "/login", NULL, "username=my+secret+pw&password=x", &r);
+    CHECK_HAS(buf_cstr(&r), "Location: /login?e=1&next=");
+    CHECK(!strstr(buf_cstr(&r), "secret"));
+    get(port, "/login?e=1", NULL, &r);
+    CHECK_HAS(buf_cstr(&r), "value=\"my secret pw\"");
+    g_fake_now = now_sec() + 61;
+    get(port, "/login?e=1", NULL, &r);
+    CHECK(!strstr(buf_cstr(&r), "my secret pw"));
+    g_fake_now = 0;
     CHECK(signed_in(port, phone)); /* failures change nothing */
 
     post(port, "/forgot", NULL, buf_cstr(&form), &r);
@@ -551,7 +563,7 @@ TEST(auth_forgot_password_end_to_end) {
     get(port, "/people?recovered=1", cookie, &r);
     CHECK_HAS(buf_cstr(&r), "You have 7 recovery codes left.");
     post(port, "/forgot", NULL, buf_cstr(&form), &r); /* the same code twice: no */
-    CHECK_HAS(buf_cstr(&r), "Location: /forgot?e=code&u=adam\r\n");
+    CHECK_HAS(buf_cstr(&r), "Location: /forgot?e=code\r\n");
     post(port, "/login", NULL, "username=adam&password=correct+horse", &r);
     CHECK_HAS(buf_cstr(&r), "Location: /login?e=1");
     post(port, "/login", NULL, "username=adam&password=brand+new+pw", &r);

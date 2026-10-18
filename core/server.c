@@ -31,6 +31,7 @@
 #define T_STALL 60000   /* queued output that makes no progress for this long: the peer is gone */
 #define T_SLOW 10000             /* queued output that hasn't moved a SLOW_CHUNK in this long ... */
 #define SLOW_CHUNK (64 * 1024)   /* ... is read too slowly to count (6.4 KB/s; a phone on bad Wi-Fi reads far faster) */
+#define BUSY_FLOOR 4              /* full, nobody idle or slow: an address with this many stranger connections gives one up */
 
 typedef struct {
     sock_t fd;
@@ -513,13 +514,44 @@ static Conn *slot_holder(int64_t now) {
         int n = conns_from(c->ip);
         bool idle = !c->t_req, best_idle = best && !best->t_req;
         int64_t since = idle ? c->t_last : c->t_req, best_since = best ? (best_idle ? best->t_last : best->t_req) : 0;
-        if (!best || n > best_n || (n == best_n && idle && !best_idle) ||
-            (n == best_n && idle == best_idle && since < best_since)) {
+        bool better = !best || (best->known && !c->known) || /* strangers go before the household (issue #91) */
+                      (best->known == c->known &&
+                       (n > best_n || (n == best_n && idle && !best_idle) ||
+                        (n == best_n && idle == best_idle && since < best_since)));
+        if (better) {
             best = c;
             best_n = n;
         }
     }
     return best;
+}
+
+static bool busy_stranger(const Conn *c) { return !c->dead && !c->ws && !c->detached && !c->known; }
+
+static int strangers_from(uint32_t ip) {
+    int n = 0;
+    for (int i = 0; i < nconns; i++) n += busy_stranger(conns[i]) && conns[i]->ip == ip;
+    return n;
+}
+
+/* Full, and nobody idle or slow to make room (issue #91: a client reading just faster than
+   SLOW_CHUNK per T_SLOW - 6.4 KB/s - kept its slot for good, so 13 addresses at ~21 Mbit/s could
+   hold all 400): the longest-held connection of the address holding the most - strangers' only
+   (nothing signed in served on it), and only from an address with BUSY_FLOOR of them. The
+   household's own connections, screens and handed-over streams never go this way. */
+static Conn *busy_holder(void) {
+    Conn *best = NULL;
+    int best_n = 0;
+    for (int i = 0; i < nconns; i++) {
+        Conn *c = conns[i];
+        if (!busy_stranger(c)) continue;
+        int n = strangers_from(c->ip);
+        if (n > best_n || (n == best_n && c->t_open < best->t_open)) {
+            best = c;
+            best_n = n;
+        }
+    }
+    return best_n >= BUSY_FLOOR ? best : NULL;
 }
 
 static bool any_slot_holder(int64_t now) {
@@ -532,7 +564,7 @@ static void accept_all(void) {
     for (int k = 0; k < 64; k++) {
         int64_t now = now_ms();
         bool full = live_conns() >= g_max_conns;
-        if (full && !any_slot_holder(now)) break;
+        if (full && !any_slot_holder(now) && !busy_holder()) break;
         uint32_t ip = 0;
         sock_t s = tcp_accept(g_listen, &ip);
         if (s == SOCK_BAD) break;
@@ -540,7 +572,11 @@ static void accept_all(void) {
             sock_close(s);
             continue;
         }
-        if (full) conn_kill(slot_holder(now)); /* freed by the next compact() */
+        if (full) { /* freed by the next compact() */
+            Conn *room = slot_holder(now);
+            if (!room) room = busy_holder();
+            if (room) conn_kill(room);
+        }
         Conn *c = xcalloc(1, sizeof *c);
         c->fd = s;
         c->ip = ip;
@@ -619,7 +655,7 @@ void server_run(const ServerHooks *hooks) {
         int n = 0, nc = nconns, nw = nwatches;
         /* at capacity - nothing a newcomer could take the place of - the listener stays out of
            the poll set (or poll would spin on it) */
-        bool room = nconns < g_max_conns || any_slot_holder(now_ms());
+        bool room = nconns < g_max_conns || any_slot_holder(now_ms()) || busy_holder();
         pf[n++] = (pollfd_t){.fd = g_listen, .events = (short)(room ? POLLIN : 0)};
         pf[n++] = (pollfd_t){.fd = g_wake, .events = (short)(g_wake != SOCK_BAD ? POLLIN : 0)};
         for (int i = 0; i < nc; i++) pf[n++] = (pollfd_t){.fd = conns[i]->fd, .events = conn_events(conns[i])};

@@ -43,6 +43,14 @@ int screens_first(int kind); /* the first screen of that kind (SCREEN_TV / SCREE
 /* The display account opens a TV screen at its "/" (Screens -> Edit -> Shows on): only such an
    account picks who's watching. */
 bool screens_drives_tv(int account);
+/* Issue #90 (owner, 2026-10-17): who a TV's "Who's watching?" lists - people, admins only once they
+   ticked "Show me on the TV" (PREF_ON_TV: whoever holds the TV's sign-in could read and clear their
+   history) - and who asked for a PIN there (PREF_PIN, optional, 4 digits). */
+#define PREF_ON_TV "screens.on_tv"
+#define PREF_PIN "screens.pin"
+bool screens_on_picker(const Person *p);
+bool screens_has_pin(int person);
+int screens_pin_wait(int person, int64_t now); /* seconds wrong guesses still lock that person out */
 
 /* Hemma's addresses for other devices (the LAN IP first, then <name>.local), as last asked of the
    OS - none under tests unless screens_test_addresses() set some (NULL: ask the OS again). */

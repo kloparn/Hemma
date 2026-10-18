@@ -188,8 +188,17 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  (screens_drives_tv: its PREF_START is a SCREEN_TV screen; issue #33 - the hall tablet could
                  pick anyone and read/rewrite/clear their Continue watching): others get no picker or Switch
                  and watch as nobody; forget_viewers() clears the pick from the sessions of display accounts
-                 that stop driving a TV (Shows on, a deleted screen, and at start). PIN / leaving admins off
-                 the picker: issue #42.
+                 that stop driving a TV (Shows on, a deleted screen, and at start). THE GUARD (issue #90;
+                 owner, 2026-10-17): screens_on_picker() = people, admins only with pref PREF_ON_TV
+                 ("screens.on_tv" = "1", ticked under the /screens "You on the TV" card); act_viewer refuses
+                 anyone else, screens_viewer() drops a pick that's off the list since (an admin who unticked).
+                 An optional PIN (PREF_PIN = hex of HMAC(salt, "pin:<id>:<4 digits>") via auth_mac, 128 bits
+                 shown; set/cleared by screens.pin): the picker's entry is a link to ?pin=<id>, a numeric
+                 password field posting who + pin; 5 wrong guesses lock that PERSON (every TV) for 1, 2, 4 ...
+                 15 min (g_pin, forgiven after an hour), screens_pin_wait(). Setting a PIN or unticking
+                 forgets the picks of you (forget_viewer_of). Display sign-ins end DISPLAY_SESSION_DAYS (90)
+                 after signing in. Per-device pairing (a second device on the TV's login can pick too) is not
+                 done: the PIN covers it for people who set one.
                  Wall blocks (SCREEN_WALL): plan.today (events + chores due, plan-wall look), plan.days (the
                  next 7 days, 8 rows; an event once, on its first day, "until Sun"), plan.shop, book.now
                  (each thing by name: Free / "Adam · until 17:00", then what's coming), board.notes,
@@ -475,8 +484,10 @@ fired `playing` 25 s later (watch(): readyState, networkState, paused, buffered)
 readable console; read it on the System page or the journal. Limits (app.c browser_log_ok, issue #79 -
 the old per-connection cap restarted with every reload): per PERSON, 20 lines an hour (BROWSER_LOGS,
 g_blog: 32 people, the oldest hour gives way); a line the same as that person's last one is only counted;
-what was left out is one line with the next one after the hour ("N more lines since HH:MM left out");
-the user agent (`ua`) goes with a session's first line only (ua_first, the last 64 sessions).
+what was left out is one line when the hour ends ("N more lines since HH:MM left out") - from the tick
+(browser_log_tick, issue #102: it waited for that person's next line); the "(no more from X's browsers until
+HH:MM)" note comes right after "browser of X (ip)" and the page address is cut to 160 bytes (lines are cut at
+1,024); the user agent (`ua`) goes with a session's first line only (ua_first, the last 64 sessions).
 A `nav`/`hello` re-renders only that screen (plus `/` and `/people`, which show who is where;
 the shell's "Here now" names people only); navs are rate-limited per screen. Every page carries
 its hash (`<html data-h>`): the first `hello` after a load sends it, so an unchanged page isn't
@@ -494,7 +505,9 @@ it: the build embeds a `.gz` twin of each text file and av.wasm (~120 KB -> ~30 
   A session ends (`session_over`, checked at every lookup, rows pruned hourly) a week unused, a year
   unused with "keep me signed in", and - for admins - `ADMIN_SESSION_DAYS` (30) after signing in however
   much it's used (owner, 2026-10-12: plain http, a captured admin cookie must die; the cookie's Max-Age
-  says 30 days for admins too). The owner wants more conditions on top later - ask before adding any.
+  says 30 days for admins too) - and for display accounts `DISPLAY_SESSION_DAYS` (90; owner, 2026-10-17,
+  issue #90: a TV's cookie; Max-Age 90 days too). The owner wants more conditions on top later - ask
+  before adding any.
 - Sign in with the username OR the name (`person_for_sign_in`: the username first, else the one account
   that can sign in and goes by that name, folded - "Åsa"/"åsa"; two such accounts = name doesn't work).
   Throttling keys on the resolved username, so name and username share one budget. Same on /forgot.
@@ -572,6 +585,10 @@ it: the build embeds a `.gz` twin of each text file and av.wasm (~120 KB -> ~30 
 - Log lines go through `log_clean()`: control characters become visible escapes (no forged lines).
   A typed sign-in name is logged only as the account's username when it names one, else as "an unknown
   name (N characters)" (auth.c typed_for_log, issue #34: passwords typed into the name box reached the log).
+  Nor does it go into an ADDRESS (issue #100: /login?u=..., /forgot?u=...): a failed /login or /forgot keeps
+  it per device address for TYPED_KEEP_S (60 s, typed_keep/typed_back, cleared with the throttle at each
+  boot) and the page puts it back in the box; redirects carry only e=, w=, next=. (/setup still carries the
+  new admin's name/username/home: that's what's being created, not a sign-in.)
 
 ## Writing a module (the contract — see core/app.h)
 
@@ -784,7 +801,11 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
   newcomer takes the place of a slot holder - an idle keep-alive connection, a slow reader (queued output
   that hasn't moved SLOW_CHUNK = 64 KB in T_SLOW = 10 s: Conn.t_moved/moved, issue #32 - a few bytes now and
   then used to keep a slot for good), else a half-sent request - from the address holding the most
-  (server.c slot_holder; screens/WebSockets never; `server_set_slow_after` in tests), a shared 32 MB budget
+  (server.c slot_holder; screens/WebSockets never; `server_set_slow_after` in tests); strangers before the
+  household (Conn.known = a signed-in request was served on it: app.c on_http sets it); and with none of
+  those, the longest-held BUSY connection of the address holding the most strangers' (busy_holder, at least
+  BUSY_FLOOR = 4 of them; issue #91: reading just over 6.4 KB/s held a slot for good) - never a known one.
+  A shared 32 MB budget
   for request bodies / WebSocket messages still arriving (past it: 503 + close; `server_set_buffer_budget`
   in tests), output backpressure, stall timeouts; keep new code bounded too.
 - Bind 127.0.0.1 for dev servers (0.0.0.0 pops a Windows Firewall prompt). Never send Wake-on-LAN to
@@ -885,7 +906,7 @@ screen's address, #79 browser-log limits per person an hour (PR #81). 0.7.0 (bra
 guard + FIELD_WAS + the media cache's format + install-pi.sh keeps hemma.prev, #39 part 1 the time zone on
 System and a warning when it changes (PR #82). 0.7.1 (branch fix/library-keeps-progress) = #36 watch
 history follows videos to a new library folder, #40 unfinished uploads listed + removable, #28 left-out
-videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px (PR #105). 0.9.3 (pushed to main) = the player remembers the volume and mute per device. 0.9.4 (branch fix/database-recovery) = #87 a rescue that gets next to nothing back refuses (no new household over the data) + no welcome page after a rescue + the damaged page, #88 SQLite 3.54.1 + its recovery extension (orphans placed back), counts against the census in household words (Table.what), damaged copies pruned, #92 refusals in versions + into hemma.log + exit 78 (RestartPreventExitStatus), going back = a swap, the installer copies the database, FIELD_WAS needs its breaks_older migration (test). 0.10.0 (branch feat/backups) = #35 nightly checked backups (7 days, on the media disk by default), System → Backups (Back up now, Download with the secret, Go back to this + restart), hemma --restore, core/tar, docs for a new memory card (PR #107). 0.10.1 (branch library-follow-ups) = #89 uploads write .hemma-part (torrents' .part left alone) + upload_claims by the video's name, #94 extras only after a separating mark + by length (40 min) + unknown length kept + episode codes never extras, #95 one "Disk space" row per disk (health_disk) + the library wants its biggest video + the reserve, #93 history follows by place, content (fp) or name (ident), away = an emptied library folder, filled from the cache at start, lost history listed + forgettable. Next ideas: calmer home cards (hide empty ones), touch on the wall
+videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px (PR #105). 0.9.3 (pushed to main) = the player remembers the volume and mute per device. 0.9.4 (branch fix/database-recovery) = #87 a rescue that gets next to nothing back refuses (no new household over the data) + no welcome page after a rescue + the damaged page, #88 SQLite 3.54.1 + its recovery extension (orphans placed back), counts against the census in household words (Table.what), damaged copies pruned, #92 refusals in versions + into hemma.log + exit 78 (RestartPreventExitStatus), going back = a swap, the installer copies the database, FIELD_WAS needs its breaks_older migration (test). 0.10.0 (branch feat/backups) = #35 nightly checked backups (7 days, on the media disk by default), System → Backups (Back up now, Download with the secret, Go back to this + restart), hemma --restore, core/tar, docs for a new memory card (PR #107). 0.11.0 (branch fix/hardening-2) = #90 admins on the TV picker only when they opt in + an optional 4-digit PIN + display sign-ins end after 90 days, #91 a full server pushes out busy strangers (Conn.known), #100 typed names kept on the server for a minute instead of in the address, #102 left-out browser lines summed up from the tick + the note before the address. 0.10.1 (branch library-follow-ups) = #89 uploads write .hemma-part (torrents' .part left alone) + upload_claims by the video's name, #94 extras only after a separating mark + by length (40 min) + unknown length kept + episode codes never extras, #95 one "Disk space" row per disk (health_disk) + the library wants its biggest video + the reserve, #93 history follows by place, content (fp) or name (ident), away = an emptied library folder, filled from the cache at start, lost history listed + forgettable. Next ideas: calmer home cards (hide empty ones), touch on the wall
 (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,
