@@ -51,12 +51,35 @@ static const char *url(const char *fmt, uint64_t id) {
     return u;
 }
 
+/* An admin who can sign in, named on members' pages (issue #58). */
+static int signing_admin(const char *name, const char *user) {
+    int id = th_person(name);
+    Person p = *person_get(id);
+    p.role = ROLE_ADMIN;
+    str_copy(p.username, sizeof p.username, user);
+    str_copy(p.pass, sizeof p.pass, "hash");
+    tbl_put(&T_person, &p);
+    return id;
+}
+
 TEST(media_home_without_folders_invites_setup) {
     th_boot();
-    int adam = th_person("Adam");
+    int adam = signing_admin("Adam", "adam");
+    int eva = th_person("Eva");
     const char *html = th_page(adam, "/media");
     CHECK_HAS(html, "Point Hemma at your movies");
-    CHECK_HAS(html, "/media/settings");
+    CHECK_HAS(html, "Choose folders");
+    /* a member can't choose folders: no button to a page where they can't, but who to ask (issue #58) */
+    html = th_page(eva, "/media");
+    CHECK(!strstr(html, "Choose folders"));
+    CHECK_HAS(html, "Ask Adam (admin) to add the movie folders.");
+    signing_admin("Åsa <3", "asa");
+    CHECK_HAS(th_page(eva, "/media"), "Ask Adam or Åsa &lt;3 (admins) to add");
+    signing_admin("Bo", "bo");
+    CHECK_HAS(th_page(eva, "/media"), "Ask Adam, Åsa &lt;3 or Bo (admins) to add");
+    signing_admin("Cia", "cia");
+    CHECK_HAS(th_page(eva, "/media"), "Ask an admin to add");
+    CHECK_HAS(th_page(eva, "/media/upload"), "Ask an admin to add videos");
     th_halt();
 }
 
@@ -275,8 +298,15 @@ TEST(media_widgets_for_home_and_wall) {
 
 TEST(media_widget_invites_setup_without_folders) {
     th_boot();
-    int adam = th_person("Adam");
-    CHECK_HAS(th_page(adam, "/"), "Point Hemma at the drive");
+    int adam = signing_admin("Adam", "adam");
+    int eva = th_person("Eva");
+    const char *html = th_page(adam, "/");
+    CHECK_HAS(html, "Point Hemma at the drive");
+    CHECK_HAS(html, "\"/media/settings\">Set up</a>");
+    html = th_page(eva, "/"); /* issue #58: "Set up" led members to a page they can't change */
+    CHECK(!strstr(html, "\"/media/settings\">Set up</a>"));
+    CHECK_HAS(html, "Ask Adam (admin) to add the movie folders.");
+    CHECK_HAS(th_page(eva, "/media/settings"), "An admin chooses which folders are in the library: ask Adam (admin).");
     th_halt();
 }
 
@@ -746,6 +776,9 @@ TEST(media_keeps_only_the_most_compatible_version) {
         page = th_page(adam, url("/media/watch/%s", hev->id));
         CHECK_HAS(page, ">Plays on newer devices</span>");
         CHECK_HAS(page, "Converted copy · HEVC video: Safari on iPhone, iPad and Mac");
+        /* the file's codecs by the names people know, folded away (issue #62: "MP4 · H264 · AAC") */
+        CHECK_HAS(page, "<details class=\"media-tech\"><summary>File details</summary><span>MP4 file · HEVC (H.265) "
+                        "video</span></details>");
     }
 
     /* the setting, and what it does right after a conversion: the copy file itself is checked */

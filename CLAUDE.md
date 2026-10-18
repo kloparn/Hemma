@@ -46,7 +46,9 @@ core/            framework with a stable API for modules
                  g_log_stderr = false keeps tests quiet)
   plat.*         the ONLY place with #ifdef _WIN32 besides lan.c and base.c's two clock calls (sockets,
                  files, dirs, threads, random, env)
-  lan.*          LAN facts: interface/gateway, ARP neighbours, probes, Wake-on-LAN, reverse-DNS packets
+  lan.*          LAN facts: interface/gateway (LanIface.link: Wi-Fi or a cable - Windows the adapter's IfType, Linux
+                 /sys/class/net/<dev>/wireless or a real device of type 1, macOS SIOCGIFFUNCTIONALTYPE, not yet seen on a
+                 real Mac; unknown -> the page names the interface), ARP neighbours, probes, Wake-on-LAN, reverse-DNS packets
                  (Windows: iphlpapi; Linux: /proc + /sys; macOS: routing-table sysctl, parsed by the
                  portable lan_parse_rt_addrs so it's unit-tested on every platform)
   codec.*        SHA-1, SHA-256, HMAC, PBKDF2, Base64, hex, URL encoding
@@ -134,7 +136,9 @@ core/            framework with a stable API for modules
                  the Host guard, nothing else in it), the startup banner (where to open it, setup code
                  hint, where the log is). HEMMA_VERSION lives in app.h; HEMMA_VERSION_FULL adds the
                  commit (build.ps1/Makefile pass -DHEMMA_COMMIT=<sha>[-dirty]) - raise the version per release
-  ui.*           components: shell, icons, avatars, cards, forms, modals, time formatting
+  ui.*           components: shell, icons, avatars, cards, forms, modals, time formatting; ui_admins() = who a member
+                 asks ("Anna (admin)", "Anna or Jonas (admins)", "an admin" past three - issue #58: no "Set up" links
+                 to pages members can't change)
   qr.*           QR codes (byte mode, versions 1-10, levels L-H, best of 8 masks) -> qr_svg(); ours, not a
                  library (after ISO 18004 / Nayuki's reference). qr_test.c holds fingerprints of codes the
                  independent reader jsQR decoded back (137 cases, every version/level/mask, checked in Node
@@ -144,6 +148,14 @@ core/            framework with a stable API for modules
   main.c         command line (--gen-salt, --env, --web, --reset-password, --restore ...)
 modules/<id>/    one folder per feature; folder name == module id (home book plan media tv board net people
                  screens system)
+  book/          things to book (Resource) and bookings. Quick booking (book_quick_parse) matches a thing by its
+                 emoji, name, its own "Other names" (Resource.aliases, comma-separated) and - while it's still named
+                 like a starter - the starter's Swedish words (PRESETS .aliases: bastu, tvätt ... - issue #55); a
+                 word that names nothing gets "I don't know 'x'. You can book: ...". Someone else cancelling or
+                 moving a booking (issue #43) tells the person it's for and whoever made it: a toast plus a
+                 `book_news` row (30 days, 20 each) on their Bookings page and home card until "Got it"
+                 (book.news_seen). Resource.own_only (an admin sets it): only those two or an admin may cancel or
+                 move (book_may_change; the booking dialog says who may).
   screens/       the TV view and walls: screens an admin builds from the Blocks modules offer.
                  Tables `screen` + `screen_row` (position, block id, choice arg, custom heading); seeded once
                  each: a "TV" (setting screens.seeded; TV_ROWS: media.continue, tv.onnow, media.recent,
@@ -488,6 +500,14 @@ what was left out is one line when the hour ends ("N more lines since HH:MM left
 (browser_log_tick, issue #102: it waited for that person's next line); the "(no more from X's browsers until
 HH:MM)" note comes right after "browser of X (ip)" and the page address is cut to 160 bytes (lines are cut at
 1,024); the user agent (`ua`) goes with a session's first line only (ua_first, the last 64 sessions).
+FORM ERRORS (issue #60): a failed act's error rides on its ack - `["ack",id,false,"<text>","<field>"]`, no
+toast op - and wire.js formErr puts it beside the field (`.form-err` in its `.field` label, the field
+aria-invalid + aria-describedby), or, without a field, above `.modal-f` in a form of class "stack"; else a
+toast (quick bars: their live preview already says it). It's the browser's own node ([data-client]: kids()
+steps over such nodes and key() ignores their ids; morph() re-marks a field whose ._err is set) and goes
+when that field (or, form-level, any field) changes or the form is sent again. A success toast with
+`{"undo":"<token>"}` gets an Undo button (sends core.undo, k=token; 8 s). Toasts over the focused field
+(a phone's keyboard pushes fields down) go to the top (#toasts.toasts-top, dodge() on toast and focusin).
 A `nav`/`hello` re-renders only that screen (plus `/` and `/people`, which show who is where;
 the shell's "Here now" names people only); navs are rate-limited per screen. Every page carries
 its hash (`<html data-h>`): the first `hello` after a load sends it, so an unchanged page isn't
@@ -604,7 +624,12 @@ MODULE(things)   /* self-registers: no shared file to edit */
 ```
 - **Pages**: `page()` renders `/<id>` and `/<id>/...`; read `c->path`, `ctx_q()`. Set `c->bare` for
   fullscreen pages. Modals = URL state (`?edit=3`) + `ui_modal(b, title, close_href)`.
-- **Actions** mutate data, then `ctx_ok/ctx_fail/ctx_redirect`. They run inside one SQLite
+- **Actions** mutate data, then `ctx_ok/ctx_fail/ctx_redirect`. An error about one form field:
+  `ctx_fail_at(c, "password", ...)` (wire.js shows it beside that field - issue #60). Deleting: `ctx_undo(c, &T,
+  id)` BEFORE `tbl_del` keeps the row, and the success toast offers Undo for UNDO_S (30 s) - no "are you sure?"
+  for small things (the core's `core.undo` action puts the rows back with their ids; only for whoever removed
+  them; display accounts get none). `app_notify_but(c, a, b, ...)` = app_notify leaving out people who got
+  their own `app_notify_person` toast. They run inside one SQLite
   transaction; the core re-renders every screen afterwards. Never hand-craft DOM updates.
   `c->me` is always set in actions (signed in, not a display account); check `is_admin(c)` when needed.
   `app_notify()` toasts everyone else, `app_notify_person()` one person; `activity_add()` feeds home.
@@ -633,7 +658,8 @@ MODULE(things)   /* self-registers: no shared file to edit */
   the sections on /more). Every page calls it - cached numbers only, no disk/network work (media's
   storage meter refreshes its cache from `tick` every 30 s).
 - **Health**: `health(c, h)` reports checks for the admin System page with `health_add(h, HEALTH_OK|
-  INFO|WARN|BAD, title, detail, todo, link)` and getting-started steps with `health_step(h, done, title,
+  INFO|WARN|BAD, title, detail, todo, link)` (plain words; a flag, variable or command goes in `health_tech(h,
+  text)`, folded under "Technical details" - issue #62) and getting-started steps with `health_step(h, done, title,
   detail, link)`. A disk the module keeps things on: `health_disk(h, &(HealthDisk){what, path, free,
   total, data_disk, want, why, todo, link})` - never a disk row of its own: System makes one per disk.
   Called for admins only (also on the home page): cached facts only. `system` never links other
@@ -906,7 +932,7 @@ screen's address, #79 browser-log limits per person an hour (PR #81). 0.7.0 (bra
 guard + FIELD_WAS + the media cache's format + install-pi.sh keeps hemma.prev, #39 part 1 the time zone on
 System and a warning when it changes (PR #82). 0.7.1 (branch fix/library-keeps-progress) = #36 watch
 history follows videos to a new library folder, #40 unfinished uploads listed + removable, #28 left-out
-videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px (PR #105). 0.9.3 (pushed to main) = the player remembers the volume and mute per device. 0.9.4 (branch fix/database-recovery) = #87 a rescue that gets next to nothing back refuses (no new household over the data) + no welcome page after a rescue + the damaged page, #88 SQLite 3.54.1 + its recovery extension (orphans placed back), counts against the census in household words (Table.what), damaged copies pruned, #92 refusals in versions + into hemma.log + exit 78 (RestartPreventExitStatus), going back = a swap, the installer copies the database, FIELD_WAS needs its breaks_older migration (test). 0.10.0 (branch feat/backups) = #35 nightly checked backups (7 days, on the media disk by default), System → Backups (Back up now, Download with the secret, Go back to this + restart), hemma --restore, core/tar, docs for a new memory card (PR #107). 0.11.0 (branch fix/hardening-2) = #90 admins on the TV picker only when they opt in + an optional 4-digit PIN + display sign-ins end after 90 days, #91 a full server pushes out busy strangers (Conn.known), #100 typed names kept on the server for a minute instead of in the address, #102 left-out browser lines summed up from the tick + the note before the address. 0.10.1 (branch library-follow-ups) = #89 uploads write .hemma-part (torrents' .part left alone) + upload_claims by the video's name, #94 extras only after a separating mark + by length (40 min) + unknown length kept + episode codes never extras, #95 one "Disk space" row per disk (health_disk) + the library wants its biggest video + the reserve, #93 history follows by place, content (fp) or name (ident), away = an emptied library folder, filled from the cache at start, lost history listed + forgettable. Next ideas: calmer home cards (hide empty ones), touch on the wall
+videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px (PR #105). 0.9.3 (pushed to main) = the player remembers the volume and mute per device. 0.9.4 (branch fix/database-recovery) = #87 a rescue that gets next to nothing back refuses (no new household over the data) + no welcome page after a rescue + the damaged page, #88 SQLite 3.54.1 + its recovery extension (orphans placed back), counts against the census in household words (Table.what), damaged copies pruned, #92 refusals in versions + into hemma.log + exit 78 (RestartPreventExitStatus), going back = a swap, the installer copies the database, FIELD_WAS needs its breaks_older migration (test). 0.10.0 (branch feat/backups) = #35 nightly checked backups (7 days, on the media disk by default), System → Backups (Back up now, Download with the secret, Go back to this + restart), hemma --restore, core/tar, docs for a new memory card (PR #107). 0.11.0 (branch fix/hardening-2) = #90 admins on the TV picker only when they opt in + an optional 4-digit PIN + display sign-ins end after 90 days, #91 a full server pushes out busy strangers (Conn.known), #100 typed names kept on the server for a minute instead of in the address, #102 left-out browser lines summed up from the tick + the note before the address (PR #109). 0.12.0 (branch fix/forms-and-wording) = #60 errors beside their field (ctx_fail_at, wire.js formErr) + toasts dodge the focused field + Undo instead of "are you sure?" (ctx_undo, core.undo), #43 someone else cancelling/moving your booking tells you (book_news, app_notify_but) + an admin's per-thing "only theirs" rule (Resource.own_only), #55 quick booking knows other names (starters' Swedish words + Resource.aliases) and says what can be booked, #58 members are told which admin to ask (ui_admins), #62 plain words (Address check, File details, What plays where, "Connected over Wi-Fi" via LanIface.link, the password secret; HealthItem.tech folded under "Technical details"). 0.10.1 (branch library-follow-ups) = #89 uploads write .hemma-part (torrents' .part left alone) + upload_claims by the video's name, #94 extras only after a separating mark + by length (40 min) + unknown length kept + episode codes never extras, #95 one "Disk space" row per disk (health_disk) + the library wants its biggest video + the reserve, #93 history follows by place, content (fp) or name (ident), away = an emptied library folder, filled from the cache at start, lost history listed + forgettable. Next ideas: calmer home cards (hide empty ones), touch on the wall
 (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,

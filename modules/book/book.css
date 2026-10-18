@@ -165,3 +165,5 @@ a.book-up-row:hover { background: var(--panel-2); } /* (a wall's rows aren't lin
   .book-tile-e { grid-row: span 2; font-size: 28px; }
   .book-tile b, .book-tile small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
+.book-news ul { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.book-news a { color: inherit; }

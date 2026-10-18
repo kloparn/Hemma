@@ -195,7 +195,14 @@ static bool channel_now(const Channel *ch, int64_t now, TvSlot *s, const MediaFi
 
 /* ===================================================================== pages */
 
-static void no_library(Buf *b) {
+static void no_library(Ctx *c, Buf *b) {
+    if (!is_admin(c)) { /* Library settings are an admin's (issue #58) */
+        ui_empty(b, "📼", "Nothing to broadcast yet", "TV channels air the series and movies from your library.");
+        buf_puts(b, "<p class=\"center muted\">Ask ");
+        ui_admins(b);
+        buf_puts(b, " to add the folders with your movies and series.</p>");
+        return;
+    }
     ui_empty(b, "📼", "Nothing to broadcast yet",
              "TV channels air the series and movies from your library. Point Hemma at your drive first.");
     buf_puts(b, "<p class=\"center\"><a class=\"btn primary\" href=\"/media/settings\">Set up the library</a></p>");
@@ -327,7 +334,7 @@ static void overview(Ctx *c, Buf *b) {
     media_lib_head(c, b, "tv", "Live TV", "Always on — tune in like it's 1996", add.len ? buf_cstr(&add) : NULL);
     buf_free(&add);
     if (!library && !n) {
-        no_library(b);
+        no_library(c, b);
         return;
     }
     if (!n) {
@@ -639,12 +646,12 @@ static void act_save(Ctx *c, Fields *f) {
     }
     long long number = fields_int(f, "number", 0);
     if (number < 1 || number > MAX_CHANNELS) {
-        ctx_fail(c, "Channel numbers go from 1 to %d", MAX_CHANNELS);
+        ctx_fail_at(c, "number", "Channel numbers go from 1 to %d", MAX_CHANNELS);
         return;
     }
     Channel *other = tv_channel_by_number((int)number);
     if (other && other->id != ch.id) {
-        ctx_fail(c, "Channel %lld is already %s", number, other->name);
+        ctx_fail_at(c, "number", "Channel %lld is already %s", number, other->name);
         return;
     }
     char name[64];

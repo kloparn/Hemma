@@ -28,6 +28,10 @@ void ui_head_end(Buf *b);
 void ui_card(Buf *b, const char *title, const char *more_href, const char *more_label);
 void ui_card_end(Buf *b);
 void ui_empty(Buf *b, const char *emoji, const char *title, const char *text);
+/* Who a member asks for what only an admin can do (issue #58: "Set up" links led members nowhere):
+   "Anna (admin)", "Anna or Jonas (admins)", "Anna, Jonas or Maja (admins)"; "an admin" with none that
+   can sign in, or more than three. Escaped. */
+void ui_admins(Buf *b);
 /* A video player's own controls (wire.js [data-player], web/app.css .pl): drawn over the <video> inside
    `box` (position: relative; the element that goes full screen, so whatever else is drawn over the
    video shows there too). The same in every browser and for a TV's remote. It arrives hidden: without

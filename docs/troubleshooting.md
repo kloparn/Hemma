@@ -97,7 +97,9 @@ Hemma doesn't do https, and a browser that tries https gets no answer. The phone
 on the home Wi-Fi, not mobile data. A Windows PC running Hemma must let it through its
 firewall ([windows.md](windows.md#the-firewall-question)). If the address changed, give
 the server a fixed one in your router ([home-network.md](home-network.md)). Some TVs don't
-understand `hemma.local`: give them the number.
+understand `hemma.local`: give them the number. When the System page's **Address** check
+says only this computer can open Hemma, it was started with `--host 127.0.0.1` (or
+`HEMMA_HOST=127.0.0.1` in the settings file): leave that out, or use `0.0.0.0`, and restart it.
 
 **Hemma doesn't start.**
 Its last log lines say why. The usual reasons: another program already uses the port

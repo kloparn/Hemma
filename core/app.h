@@ -17,7 +17,7 @@
 #include "server.h"
 #include "store.h"
 
-#define HEMMA_VERSION "0.11.0" /* raised for every release (SECURITY.md, CHANGELOG.md) */
+#define HEMMA_VERSION "0.12.0" /* raised for every release (SECURITY.md, CHANGELOG.md) */
 /* With the commit the binary was built from: "0.6.0 (8242ca8f1a2b)", "-dirty" with uncommitted
    changes (build.ps1 and the Makefile pass -DHEMMA_COMMIT=...); just the version outside git. */
 #define HEMMA_STR_(x) #x
@@ -91,6 +91,8 @@ typedef struct Ctx {
     int toast_kind;
     char toast[240];
     bool failed;
+    char fail_field[32]; /* ctx_fail_at(): the form field the error is about */
+    uint64_t undo;       /* ctx_undo(): what this action removed can be put back - the toast's Undo */
 } Ctx;
 
 const char *ctx_q(const Ctx *c, const char *key); /* "" when absent */
@@ -99,6 +101,15 @@ void ctx_title(Ctx *c, const char *fmt, ...) FMT(2, 3);
 void ctx_ok(Ctx *c, const char *fmt, ...) FMT(2, 3);   /* success toast */
 void ctx_info(Ctx *c, const char *fmt, ...) FMT(2, 3); /* neutral toast */
 void ctx_fail(Ctx *c, const char *fmt, ...) FMT(2, 3); /* error toast; the form keeps its input */
+/* An error about one field of the form ("password"): wire.js shows it next to that field until the field
+   changes (issue #60: a toast said "Use at least 8 characters" over that very field, then vanished). A
+   plain ctx_fail in a form of class "stack" shows above its buttons; elsewhere, and without wire.js, a toast. */
+void ctx_fail_at(Ctx *c, const char *field, const char *fmt, ...) FMT(3, 4);
+/* Keep row `id` of t - call it BEFORE tbl_del - so the success toast offers Undo for UNDO_S seconds,
+   which puts it back as it was, id and all. More calls in one action add rows to the same Undo (issue #60:
+   deleting was instant and final). Only the person who removed them can put them back. */
+#define UNDO_S 30
+void ctx_undo(Ctx *c, Table *t, int id);
 void ctx_redirect(Ctx *c, const char *fmt, ...) FMT(2, 3);
 /* Current URL with some query parameters replaced or removed:
  *   ctx_url(c, &b, "w", "2026-10-12", "new", NULL, NULL);   // NULL value removes, NULL key ends */
@@ -205,6 +216,8 @@ typedef struct {
     char detail[320];   /* how it is */
     char todo[240];     /* what to do about it, one line ("" = nothing) */
     char link[160];     /* where to do it ("" = nowhere) */
+    char tech[240];     /* the flag, variable or command behind it, for whoever runs the server: shown folded
+                           under "Technical details" (issue #62: plain words first) - health_tech() */
 } HealthItem;
 /* A disk a module keeps things on (issue #95: two checks with two rules said "OK" and "nearly full"
    about the same disk). The System page makes ONE "Disk space" row per disk - the data folder's
@@ -231,6 +244,7 @@ typedef struct {
     int ndisks, capdisks;
 } Health;
 void health_add(Health *h, int state, const char *title, const char *detail, const char *todo, const char *link);
+void health_tech(Health *h, const char *tech); /* the technical detail of the item added last */
 void health_disk(Health *h, const HealthDisk *d);
 void health_step(Health *h, bool done, const char *title, const char *detail, const char *link);
 void health_collect(Ctx *c, Health *out); /* every module's health hook, in navigation order */
@@ -298,6 +312,9 @@ void app_wake_in(int ms);
 void app_tick_soon(void);
 /* Toast on every open screen except the one belonging to `except` (may be NULL). */
 void app_notify(const Ctx *except, int kind, const char *fmt, ...) FMT(3, 4);
+/* ... and not on these people's either (0 = nobody): they get a toast of their own from app_notify_person
+   ("Adam cancelled your Laundry booking" instead of "Adam cancelled Laundry" - issue #43). */
+void app_notify_but(const Ctx *except, int skip_a, int skip_b, int kind, const char *fmt, ...) FMT(5, 6);
 /* Toast only on one person's open screens (e.g. "Adam assigned you: Vacuum"). */
 void app_notify_person(int person, int kind, const char *fmt, ...) FMT(3, 4);
 

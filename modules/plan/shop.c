@@ -248,7 +248,14 @@ void plan_act_shop_toggle(Ctx *c, Fields *f) {
 }
 
 void plan_act_shop_delete(Ctx *c, Fields *f) {
-    if (!tbl_del(&T_item, (int)fields_int(f, "id", 0))) ctx_fail(c, "That item is gone");
+    Item *it = tbl_get(&T_item, (int)fields_int(f, "id", 0));
+    if (!it) {
+        ctx_fail(c, "That item is gone");
+        return;
+    }
+    ctx_undo(c, &T_item, it->id); /* the × is instant: the toast's Undo puts it back (issue #60) */
+    ctx_ok(c, "Removed %s", it->text);
+    tbl_del(&T_item, it->id);
 }
 
 void plan_act_shop_clear(Ctx *c, Fields *f) {
@@ -256,6 +263,7 @@ void plan_act_shop_clear(Ctx *c, Fields *f) {
     for (int i = tbl_count(&T_item) - 1; i >= 0; i--) {
         Item *it = tbl_at(&T_item, i);
         if (it->done) {
+            ctx_undo(c, &T_item, it->id);
             tbl_del(&T_item, it->id);
             n++;
         }

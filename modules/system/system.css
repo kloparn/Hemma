@@ -89,3 +89,6 @@ a.system-st { font-weight: 650; color: var(--text); }
 .system-bk-a { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .system-bk-a form { margin: 0; }
 .system-bk-dir { margin: 0; }
+.system-tech { margin-top: 4px; font-size: 13px; color: var(--muted); }
+.system-tech summary { cursor: pointer; width: max-content; }
+.system-tech span { display: block; margin-top: 2px; overflow-wrap: anywhere; }

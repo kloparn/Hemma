@@ -459,7 +459,12 @@ TEST(tv_pages_without_library_or_channels) {
     adam = th_person("Adam");
     const char *h = th_page(adam, "/tv");
     CHECK_HAS(h, "Nothing to broadcast yet");
-    CHECK_HAS(h, "/media/settings");
+    CHECK_HAS(h, "Ask an admin to add the folders"); /* a member: no "Set up the library" (issue #58) */
+    CHECK(!strstr(h, "Set up the library"));
+    Person p = *person_get(adam);
+    p.role = ROLE_ADMIN;
+    tbl_put(&T_person, &p);
+    CHECK_HAS(th_page(adam, "/tv"), "Set up the library");
     th_halt();
     library();
     h = th_page(adam, "/tv");

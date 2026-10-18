@@ -1453,7 +1453,10 @@ void upload_page(Ctx *c, Buf *b) {
     ui_head(b, "Add videos", "Send movies and series from this device to the library");
     ui_head_end(b);
     if (!is_admin(c)) {
-        ui_empty(b, "🔒", "Admins only", "Ask an admin to add videos to the library.");
+        ui_empty(b, "🔒", "Admins only", NULL);
+        buf_puts(b, "<p class=\"center muted\">Ask ");
+        ui_admins(b);
+        buf_puts(b, " to add videos to the library.</p>");
         return;
     }
     char roots[MEDIA_MAX_ROOTS][300];

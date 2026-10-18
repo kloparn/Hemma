@@ -139,9 +139,16 @@ static void own_checks(Ctx *c, Health *h) {
     /* where to open it */
     if (!g_addr_at && !app_testing()) refresh_addresses(now_ms());
     if (local_only()) {
-        snprintf(d, sizeof d, "Only this computer can open Hemma: it listens on %s.", app_config()->host);
-        health_add(h, app_dev_mode() ? HEALTH_INFO : HEALTH_WARN, "Address", d,
-                   "Start it without --host (or with --host 0.0.0.0) so phones and the TV can open it too.", NULL);
+        /* plain words first, the flag folded away (issue #62) */
+        health_add(h, app_dev_mode() ? HEALTH_INFO : HEALTH_WARN, "Address",
+                   "Only this computer can open Hemma: phones and the TV can't reach it.",
+                   "Let the rest of the home in: start Hemma so it listens on the home network "
+                   "(docs/troubleshooting.md).",
+                   NULL);
+        snprintf(d, sizeof d, "It listens on %s. Start it without --host, or with --host 0.0.0.0 (HEMMA_HOST=0.0.0.0 in "
+                              "the settings file).",
+                 app_config()->host);
+        health_tech(h, d);
     } else if (!g_naddr) {
         health_add(h, HEALTH_WARN, "Address", "Hemma can't find its address on the home network.",
                    "Check this computer's network cable or Wi-Fi - other devices need it to find Hemma.", NULL);
@@ -210,18 +217,19 @@ static void own_checks(Ctx *c, Health *h) {
 
     /* signing in */
     if (!auth_ready()) {
-        snprintf(todo, sizeof todo, "Add it to the settings file (%s) - hemma --gen-salt makes one - and restart Hemma.",
-                 env_path());
-        health_add(h, HEALTH_BAD, "Sign-in",
-                   "There's no password secret (HEMMA_AUTH_SALT), so nobody can sign in or be added.", todo, NULL);
+        snprintf(todo, sizeof todo, "Add one to the settings file (%s) and restart Hemma.", env_path());
+        health_add(h, HEALTH_BAD, "Sign-in", "There's no password secret, so nobody can sign in or be added.", todo,
+                   NULL);
+        health_tech(h, "The secret is the line HEMMA_AUTH_SALT=... in the settings file; hemma --gen-salt makes one.");
     } else if (auth_salt_mismatch()) {
-        snprintf(todo, sizeof todo, "Put the original HEMMA_AUTH_SALT line back into %s and restart Hemma "
-                                    "(docs/accounts.md, \"Locked out\").",
+        snprintf(todo, sizeof todo, "Put the original line back into %s and restart Hemma (docs/accounts.md, "
+                                    "\"Locked out\").",
                  env_path());
         health_add(h, HEALTH_BAD, "Sign-in",
-                   "The password secret in the settings file (HEMMA_AUTH_SALT) isn't the one the passwords were made "
-                   "with, so nobody can sign in with a password.",
+                   "The password secret (a line in the settings file) isn't the one the passwords were made with, so "
+                   "nobody can sign in with a password.",
                    todo, NULL);
+        health_tech(h, "The secret is the line HEMMA_AUTH_SALT=... in the settings file.");
     } else if (auth_setup_open()) {
         health_add(h, HEALTH_WARN, "Sign-in",
                    "The welcome page is still open: whoever has the setup code can make the first admin.",
@@ -364,6 +372,11 @@ static int count_looks(const Health *h) {
     return n;
 }
 
+/* The flag, variable or command behind a check, folded away: the household reads plain words (issue #62). */
+static void tech_more(Buf *b, const char *tech) {
+    H(b, "<details class=\"system-tech\"><summary>Technical details</summary><span>%s</span></details>", tech);
+}
+
 static void check_row(Buf *b, const HealthItem *it) {
     static const char *const cls[] = {"ok", "info", "warn", "bad"};
     static const char *const badge[] = {"<span class=\"badge ok\">OK</span>", "<span class=\"badge\">Note</span>",
@@ -380,6 +393,7 @@ static void check_row(Buf *b, const HealthItem *it) {
     } else if (it->link[0]) {
         H(b, "<a class=\"system-more\" href=\"%s\">Have a look</a>", it->link);
     }
+    if (it->tech[0] && it->state != HEALTH_OK) tech_more(b, it->tech);
     buf_puts(b, "</div></li>");
 }
 
@@ -398,7 +412,7 @@ static void checks_card(Buf *b, const Health *h) {
 
 typedef struct {
     bool done, salt;
-    char title[80], detail[600], link[160];
+    char title[80], detail[600], link[160], tech[200]; /* tech: folded under "Technical details" (issue #62) */
 } Step;
 
 static void step(Step *s, int *n, int max, bool done, const char *title, const char *detail, const char *link) {
@@ -432,15 +446,20 @@ static int build_steps(Ctx *c, Step *s, int max, const Health *h) {
     step(s, &n, max, c->me && auth_codes_left(c->me->id) > 0, "Save your recovery codes",
          "They get you back in if you forget your password. Keep them somewhere safe, away from this server.",
          "/people#people-codes-h");
-    snprintf(d, sizeof d, "Every password depends on the HEMMA_AUTH_SALT line in the settings file (%s%s). Keep a copy "
-                          "of that line somewhere safe, apart from Hemma's data - a password manager, or a note in a "
-                          "drawer. The nightly backups can't sign anyone in on a new install without it (a Download "
-                          "from Backups has it in).%s",
-             env_path(), relative(env_path()) ? ", in the folder Hemma was started from" : "",
-             run_kind() == RUN_SYSTEMD ? " On the server: sudo grep HEMMA_AUTH_SALT /etc/hemma/hemma.env" : "");
+    snprintf(d, sizeof d, "Every password depends on the password secret (a line in the settings file, %s%s). Keep a "
+                          "copy of that line somewhere safe, apart from Hemma's data - a password manager, or a note in "
+                          "a drawer. The nightly backups can't sign anyone in on a new install without it (a Download "
+                          "from Backups has it in).",
+             env_path(), relative(env_path()) ? ", in the folder Hemma was started from" : "");
     int before = n;
     step(s, &n, max, setting_int(SET_SALT, 0) == 1, "Keep a copy of the password secret", d, NULL);
-    if (n > before) s[n - 1].salt = true;
+    if (n > before) {
+        s[n - 1].salt = true;
+        str_copy(s[n - 1].tech, sizeof s[n - 1].tech,
+                 run_kind() == RUN_SYSTEMD ? "The line starts HEMMA_AUTH_SALT=. On the server: sudo grep HEMMA_AUTH_SALT "
+                                             "/etc/hemma/hemma.env"
+                                           : "The line starts HEMMA_AUTH_SALT=.");
+    }
     return n;
 }
 
@@ -459,6 +478,7 @@ static void steps_card(Ctx *c, Buf *b, const Health *h) {
         if (s[i].link[0] && !s[i].done) H(b, "<a class=\"system-st\" href=\"%s\">%s</a>", s[i].link, s[i].title);
         else H(b, "<b class=\"system-st\">%s</b>", s[i].title);
         if (!s[i].done) H(b, "<small>%s</small>", s[i].detail);
+        if (!s[i].done && s[i].tech[0]) tech_more(b, s[i].tech);
         if (s[i].salt && !s[i].done) {
             buf_puts(b, "<div class=\"system-step-a\">");
             ui_act(b, "system.salt_saved", "btn sm", "Done - I have a copy", NULL, NULL, NULL);

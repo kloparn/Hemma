@@ -149,6 +149,21 @@ void ui_card(Buf *b, const char *title, const char *more_href, const char *more_
 
 void ui_card_end(Buf *b) { buf_puts(b, "</section>"); }
 
+void ui_admins(Buf *b) {
+    const Person *a[4];
+    int n = 0;
+    for (int i = 0; i < account_count() && n < 4; i++) {
+        const Person *p = account_at(i);
+        if (p->role == ROLE_ADMIN && p->username[0] && p->pass[0]) a[n++] = p;
+    }
+    if (n == 0 || n > 3) {
+        buf_puts(b, "an admin");
+        return;
+    }
+    for (int i = 0; i < n; i++) H(b, "%r%s", i == 0 ? "" : i == n - 1 ? " or " : ", ", a[i]->name);
+    buf_puts(b, n == 1 ? " (admin)" : " (admins)");
+}
+
 void ui_empty(Buf *b, const char *emoji, const char *title, const char *text) {
     H(b, "<div class=\"empty\"><div class=\"empty-e\">%s</div><h3>%s</h3>", emoji, title);
     if (text) H(b, "<p>%s</p>", text);

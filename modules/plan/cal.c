@@ -232,9 +232,7 @@ static void event_modal(Ctx *c, Buf *b, const Event *e, int64_t day) {
       e ? e->note : "");
     ui_form_end(b);
     if (e) {
-        char q[300];
-        snprintf(q, sizeof q, "Delete “%s”?", e->title);
-        ui_form_confirm(b, "plan.event_delete", "danger-zone", q);
+        ui_form(b, "plan.event_delete", "danger-zone"); /* no "Delete ...?": the toast offers Undo (issue #60) */
         ui_hidden_int(b, "id", e->id);
         buf_puts(b, "<button class=\"btn danger\">");
         ui_icon(b, "trash");
@@ -484,20 +482,20 @@ void plan_act_event_save(Ctx *c, Fields *f) {
     str_copy(title, sizeof title, fields_str(f, "title"));
     str_trim(title);
     if (!title[0]) {
-        ctx_fail(c, "What's happening?");
+        ctx_fail_at(c, "title", "What's happening?");
         return;
     }
     plan_capitalise(title);
     str_copy(e.title, sizeof e.title, title);
     int y, m, d, uy, um, ud;
     if (!parse_ymd(fields_str(f, "date"), &y, &m, &d)) {
-        ctx_fail(c, "Pick a date");
+        ctx_fail_at(c, "date", "Pick a date");
         return;
     }
     bool has_until = parse_ymd(fields_str(f, "until"), &uy, &um, &ud);
     if (!has_until) uy = y, um = m, ud = d;
     if (dt_make(uy, um, ud, 0, 0) < dt_make(y, m, d, 0, 0)) {
-        ctx_fail(c, "“Until” is before the start");
+        ctx_fail_at(c, "until", "“Until” is before the start");
         return;
     }
     e.allday = fields_get(f, "allday") != NULL;
@@ -507,7 +505,7 @@ void plan_act_event_save(Ctx *c, Fields *f) {
     } else {
         int from, to;
         if (!parse_hm(fields_str(f, "from"), &from)) {
-            ctx_fail(c, "Pick a start time (or tick “All day”)");
+            ctx_fail_at(c, "from", "Pick a start time (or tick “All day”)");
             return;
         }
         e.start = dt_make(y, m, d, from / 60, from % 60);
@@ -515,7 +513,7 @@ void plan_act_event_save(Ctx *c, Fields *f) {
             e.end = dt_make(uy, um, ud, to / 60, to % 60);
             if (e.end <= e.start) {
                 if (has_until && (uy != y || um != m || ud != d)) {
-                    ctx_fail(c, "It ends before it starts");
+                    ctx_fail_at(c, "to", "It ends before it starts");
                     return;
                 }
                 e.end = add_days(e.end, 1); /* 22:00–02:00 */
@@ -535,7 +533,9 @@ void plan_act_event_save(Ctx *c, Fields *f) {
 }
 
 void plan_act_event_delete(Ctx *c, Fields *f) {
-    if (!tbl_del(&T_event, (int)fields_int(f, "id", 0))) {
+    int id = (int)fields_int(f, "id", 0);
+    ctx_undo(c, &T_event, id); /* Undo rather than "Delete ...?" (issue #60) */
+    if (!tbl_del(&T_event, id)) {
         ctx_fail(c, "That event is gone");
         return;
     }

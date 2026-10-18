@@ -43,7 +43,7 @@ see [the credits](docs/img/CREDITS.md).</sub>
 | Section | What it does |
 |---|---|
 | **Home** | A greeting, who's home, a card from every section and the latest news |
-| **Book** | Shared things like the car, laundry, guest room or sauna. It has a week view, warns about clashes and understands quick text like *"car fri 14-17 ikea"* (in English or Swedish) |
+| **Book** | Shared things like the car, laundry, guest room or sauna. It has a week view, warns about clashes and understands quick text like *"car fri 14-17 ikea"* or *"bastu ikväll 19"* (English or Swedish, and any other names you give a thing). Whoever's booking someone else cancels or moves is told |
 | **Plan** | Chores with repeats and people (*"vacuum @sam fri every week"*), a shared shopping list that remembers what you often buy, and a calendar that also shows bookings |
 | **Watch** | Your movie and series drive as a little cinema. It sorts series into seasons, has search and subtitles, and remembers where you stopped. It can convert videos a browser can't play (like DVD rips) into a copy that plays everywhere, and moves HEVC films into a file Safari on iPhone, iPad and Mac can play. Admins can upload whole folders from a browser: the uploading computer makes those copies itself, so only the small copy travels and the Pi does no heavy lifting. An upload picks up where it stopped if the connection drops, and skips episodes and films you already have. Admins can remove a film for good, folder and all. **Live TV** ("90s TV") is a tab here: channels that play your shows non-stop on a shared clock, with a TV guide |
 | **Board** | The fridge door: notes with pins and colours that disappear when they're out of date |
