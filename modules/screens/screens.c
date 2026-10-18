@@ -256,7 +256,7 @@ static bool name_arg(Ctx *c, Fields *f, char *out, size_t cap) {
     str_copy(out, cap, fields_str(f, "name"));
     str_trim(out);
     if (out[0]) return true;
-    ctx_fail(c, "Give the screen a name");
+    ctx_fail_at(c, "name", "Give the screen a name");
     return false;
 }
 
@@ -405,7 +405,7 @@ static void act_viewer(Ctx *c, Fields *f) {
         }
         if (!pin_hash(who, fields_str(f, "pin"), want) || !str_eq(want, pref(who, PREF_PIN, ""))) {
             pin_failed(who, c->now);
-            ctx_fail(c, "That PIN isn't right");
+            ctx_fail_at(c, "pin", "That PIN isn't right");
             return;
         }
         pin_passed(who, c->now);
@@ -432,11 +432,11 @@ static void act_pin(Ctx *c, Fields *f) {
     const char *pin = fields_str(f, "pin");
     char h[33];
     if (!four_digits(pin)) {
-        ctx_fail(c, "A PIN is 4 digits");
+        ctx_fail_at(c, "pin", "A PIN is 4 digits");
         return;
     }
     if (!pin_hash(c->me->id, pin, h)) {
-        ctx_fail(c, "Hemma has no password secret yet (HEMMA_AUTH_SALT), so it can't keep a PIN");
+        ctx_fail(c, "Hemma has no password secret yet, so it can't keep a PIN (System says how to add one)");
         return;
     }
     pref_set(c->me->id, PREF_PIN, h);

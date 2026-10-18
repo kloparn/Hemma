@@ -445,6 +445,23 @@ TEST(system_getting_started_ticks_itself) {
     th_halt();
 }
 
+/* Listening on this computer only: plain words on home and System, the flag folded away (issue #62). */
+TEST(system_address_check_speaks_plainly) {
+    th_boot();
+    int adam = all_well();
+    system_log_reset();
+    app_test_host("127.0.0.1");
+    const char *html = th_page(adam, "/");
+    CHECK_HAS(html, "Let the rest of the home in");
+    CHECK(!strstr(html, "--host"));
+    html = th_page(adam, "/system");
+    CHECK_HAS(html, "Only this computer can open Hemma: phones and the TV can&#39;t reach it.");
+    CHECK_HAS(html, "<summary>Technical details</summary><span>It listens on 127.0.0.1. Start it without --host");
+    app_test_host(NULL);
+    CHECK(!strstr(th_page(adam, "/system"), "Technical details</summary><span>It listens"));
+    th_halt();
+}
+
 TEST(system_home_card_only_when_something_needs_a_look) {
     th_boot();
     int adam = all_well(), eva = th_person("Eva");
@@ -454,7 +471,12 @@ TEST(system_home_card_only_when_something_needs_a_look) {
     const char *html = th_page(adam, "/");
     CHECK_HAS(html, "id=\"system-widget\"");
     CHECK_HAS(html, "Something isn&#39;t working");
-    CHECK_HAS(html, "HEMMA_AUTH_SALT");
+    CHECK_HAS(html, "Put the original line back into");
+    CHECK(!strstr(html, "HEMMA_AUTH_SALT")); /* plain words on the home card (issue #62) ... */
+    html = th_page(adam, "/system"); /* ... the variable folded away on System */
+    CHECK_HAS(html, "The password secret (a line in the settings file) isn&#39;t the one");
+    CHECK_HAS(html, "<details class=\"system-tech\"><summary>Technical details</summary><span>The secret is the line "
+                    "HEMMA_AUTH_SALT=");
     CHECK(!strstr(th_page(eva, "/"), "system-widget")); /* members never see it */
     setting_set("auth.salt_check", "");
     system_test_free_space(1LL << 30);

@@ -27,10 +27,13 @@ bool mac_is_multicast(const Mac *m); /* group bit; includes broadcast ff:ff:.. *
 bool mac_is_random(const Mac *m);
 
 /* ---- the interface we live on ---- */
+enum { LAN_LINK_UNKNOWN, LAN_LINK_WIFI, LAN_LINK_CABLE };
 typedef struct {
     char name[64];                         /* interface (friendly) name, UTF-8 */
     uint32_t ip, mask, gateway, broadcast; /* gateway 0 if unknown */
     Mac mac;                               /* zero if unknown */
+    int link; /* LAN_LINK_*: "Connected over Wi-Fi" rather than "en0" (issue #62). Windows: the adapter's
+                 type; Linux: /sys/class/net/<dev>/wireless, else a real device = a cable; macOS: SIOCGIFFUNCTIONALTYPE */
 } LanIface;
 
 /* The IPv4 interface holding the default route; falls back to the first

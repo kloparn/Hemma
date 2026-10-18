@@ -809,6 +809,11 @@ static void filter_chip(Ctx *c, Buf *b, const char *value, const char *label, in
     buf_free(&u);
 }
 
+/* How this hub is connected, in words: "Wi-Fi", "a network cable" - not "en0" (issue #62). NULL: can't tell. */
+static const char *link_words(int link) {
+    return link == LAN_LINK_WIFI ? "Wi-Fi" : link == LAN_LINK_CABLE ? "a network cable" : NULL;
+}
+
 static void hub_card(Buf *b) {
     ui_card(b, "This hub", NULL, NULL);
     if (!S.have_ifc) {
@@ -819,8 +824,10 @@ static void hub_card(Buf *b) {
         ip_format(S.ifc.gateway, gw);
         int prefix = 0;
         for (uint32_t m = S.ifc.mask; m; m <<= 1) prefix++;
-        H(b, "<dl class=\"net-facts\"><dt>Interface</dt><dd>%s</dd><dt>Address</dt><dd>%s/%d</dd>", S.ifc.name, ip,
-          prefix);
+        const char *how = link_words(S.ifc.link);
+        if (how) H(b, "<dl class=\"net-facts\"><dt>Connected</dt><dd title=\"%s\">over %s</dd>", S.ifc.name, how);
+        else H(b, "<dl class=\"net-facts\"><dt>Connected</dt><dd>through %s</dd>", S.ifc.name);
+        H(b, "<dt>Address</dt><dd>%s/%d</dd>", ip, prefix);
         if (S.ifc.gateway) H(b, "<dt>Router</dt><dd>%s</dd>", gw);
         buf_puts(b, "</dl>");
     }
@@ -1246,12 +1253,14 @@ static void health(Ctx *c, Health *h) {
     char d[320], ip[16], gw[16];
     if (S.have_ifc) {
         ip_format(S.ifc.ip, ip);
+        char how[96];
+        if (link_words(S.ifc.link)) snprintf(how, sizeof how, "over %s", link_words(S.ifc.link));
+        else snprintf(how, sizeof how, "through \"%s\"", S.ifc.name);
         if (S.ifc.gateway) {
             ip_format(S.ifc.gateway, gw);
-            snprintf(d, sizeof d, "Connected as %s (%s), with the router at %s.", ip, S.ifc.name, gw);
+            snprintf(d, sizeof d, "Connected %s as %s, with the router at %s.", how, ip, gw);
         } else {
-            snprintf(d, sizeof d, "Connected as %s (%s), but no router was found: devices may go unnamed.", ip,
-                     S.ifc.name);
+            snprintf(d, sizeof d, "Connected %s as %s, but no router was found: devices may go unnamed.", how, ip);
         }
         health_add(h, HEALTH_OK, "Home network", d, NULL, NULL);
     } else if (!app_testing()) { /* (tests have no interface unless they set one) */

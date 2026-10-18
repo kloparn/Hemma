@@ -162,9 +162,9 @@ static bool read_text(Ctx *c, Fields *f, char *dst, size_t cap) {
     size_t chars = utf8_count(t);
     bool ok = false;
     if (!t[0]) {
-        ctx_fail(c, "Write something first");
+        ctx_fail_at(c, "text", "Write something first");
     } else if (chars > NOTE_MAX_CHARS) {
-        ctx_fail(c, "Keep it under %d characters (that one has %zu)", NOTE_MAX_CHARS, chars);
+        ctx_fail_at(c, "text", "Keep it under %d characters (that one has %zu)", NOTE_MAX_CHARS, chars);
     } else {
         str_copy(dst, cap, t);
         ok = true;
@@ -180,12 +180,12 @@ static bool read_expiry(Ctx *c, Fields *f, int64_t current, int64_t *out) {
     if (until[0] || str_eq(keep, "date")) {
         int y, m, d;
         if (!parse_ymd(until, &y, &m, &d)) {
-            ctx_fail(c, "Pick a date for the note to disappear");
+            ctx_fail_at(c, "until", "Pick a date for the note to disappear");
             return false;
         }
         *out = dt_make(y, m, d + 1, 0, 0);
         if (*out <= c->now) {
-            ctx_fail(c, "That date has already passed");
+            ctx_fail_at(c, "until", "That date has already passed");
             return false;
         }
     } else if (str_eq(keep, "keep")) *out = current;
@@ -240,7 +240,7 @@ static void note_actions(Buf *b, const Note *n, bool expired_view) {
       expired_view ? "expired=1&amp;" : "", n->id);
     ui_icon(b, "edit");
     buf_puts(b, "</a>");
-    ui_form_confirm(b, "board.delete", "inline", "Remove this note?");
+    ui_form(b, "board.delete", "inline");
     ui_hidden_int(b, "id", n->id);
     buf_puts(b, "<button class=\"icon-btn\" title=\"Remove\" aria-label=\"Remove\">");
     ui_icon(b, "trash");
@@ -333,7 +333,7 @@ static void edit_modal(Ctx *c, Buf *b, const Note *n, bool expired_view) {
       today);
     buf_puts(b, "<div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>");
     ui_form_end(b);
-    ui_form_confirm(b, "board.delete", "danger-zone", "Remove this note?");
+    ui_form(b, "board.delete", "danger-zone");
     ui_hidden_int(b, "id", n->id);
     buf_puts(b, "<button class=\"btn danger\">Remove note</button>");
     ui_form_end(b);
@@ -527,6 +527,7 @@ static void act_delete(Ctx *c, Fields *f) {
     char snip[160];
     snippet(cur->text, snip, sizeof snip, 40);
     int author_id = cur->by;
+    ctx_undo(c, &T_note, cur->id); /* no "Remove this note?" any more: Undo instead (issue #60) */
     tbl_del(&T_note, cur->id);
     Person *author = person_get(author_id);
     if (author_id == c->me->id) activity_add(c->me->id, "🗑️", "/board", "%s took down their note: “%s”", c->me->name, snip);

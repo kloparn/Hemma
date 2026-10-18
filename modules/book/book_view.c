@@ -105,6 +105,25 @@ static void quick_bar(Ctx *c, Buf *b, int res) {
     }
 }
 
+/* What others did to your bookings (issue #43), newest first, until "Got it". */
+static void news(Ctx *c, Buf *b) {
+    if (!c->me) return;
+    int n = 0;
+    for (int i = 0; i < tbl_count(&T_book_news); i++) n += ((BookNews *)tbl_at(&T_book_news, i))->person == c->me->id;
+    if (!n) return;
+    buf_puts(b, "<div class=\"notice book-news\" id=\"book-news\" role=\"status\"><ul>");
+    for (int i = tbl_count(&T_book_news) - 1; i >= 0; i--) {
+        BookNews *x = tbl_at(&T_book_news, i);
+        if (x->person != c->me->id) continue;
+        H(b, "<li id=\"book-news-%d\"><a href=\"%s\">%s</a> <small class=\"muted\">", x->id, x->link, x->text);
+        ui_ago(b, x->ts, c->now);
+        buf_puts(b, "</small></li>");
+    }
+    buf_puts(b, "</ul>");
+    ui_act(b, "book.news_seen", "btn sm", "Got it", NULL, NULL, NULL);
+    buf_puts(b, "</div>");
+}
+
 /* ------------------------------------------------------------------ modals */
 
 static void booking_form(Ctx *c, Buf *b, Resource *r, Booking *edit, int64_t at) {
@@ -151,7 +170,8 @@ static void booking_modal(Ctx *c, Buf *b, Booking *bk, const char *close) {
     if (!r) return;
     Person *who = person_get(bk->who), *by = person_get(bk->by);
     ui_modal(b, r->name, close);
-    if (str_eq(ctx_q(c, "edit"), "1")) {
+    bool may = book_may_change(c, r, bk);
+    if (may && str_eq(ctx_q(c, "edit"), "1")) {
         booking_form(c, b, r, bk, 0);
         ui_modal_end(b);
         return;
@@ -165,7 +185,18 @@ static void booking_modal(Ctx *c, Buf *b, Booking *bk, const char *close) {
     buf_puts(b, "<small class=\"muted\">Booked ");
     if (by && by != who) H(b, "by %s ", by->name);
     ui_ago(b, bk->created, c->now);
-    buf_puts(b, "</small></div></div><div class=\"modal-f spread\">");
+    buf_puts(b, "</small></div></div>");
+    /* the thing's rule: only theirs to change (issue #43). A display account keeps the forms below,
+       so the core cuts the dialog whole (issue #96). */
+    if (!may && ui_can("book.cancel")) {
+        buf_puts(b, "<p class=\"muted small\">Only ");
+        if (by && by != who) H(b, "%s, %s", who ? who->name : "the person it's for", by->name);
+        else H(b, "%s", who ? who->name : "the person it's for");
+        buf_puts(b, " or an admin can cancel or move it.</p>");
+        ui_modal_end(b);
+        return;
+    }
+    buf_puts(b, "<div class=\"modal-f spread\">");
     ui_form(b, "book.cancel", "inline");
     ui_hidden_int(b, "id", bk->id);
     buf_puts(b, "<button class=\"btn danger\">Cancel booking</button>");
@@ -197,6 +228,15 @@ static void resource_modal(Ctx *c, Buf *b, Resource *r, const char *close) {
       "<label class=\"field narrow\"><span>Emoji</span><input name=\"emoji\" maxlength=\"8\" value=\"%s\" "
       "placeholder=\"🚗\"></label></div>",
       r ? r->name : "", r ? "" : " autofocus", r ? r->emoji : "");
+    /* what quick booking also knows it by (issue #55: "bastu ikväll 19" and a thing called "Sauna") */
+    const char *starter = r ? book_starter_aliases(r->name) : "";
+    H(b,
+      "<label class=\"field\"><span>Other names (optional)</span><input name=\"aliases\" maxlength=\"110\" "
+      "value=\"%s\" placeholder=\"bastu, the cabin…\" aria-describedby=\"book-aliases-h\"><small class=\"muted\" "
+      "id=\"book-aliases-h\">Quick booking knows it by these too, comma-separated.",
+      r ? r->aliases : "");
+    if (starter[0]) H(b, " It already knows “%s”.", starter);
+    buf_puts(b, "</small></label>");
     bool daily = r && res_daily(r);
     bool always = !r || (r->open_min <= 0 && r->close_min >= 1440);
     char open[6], close_hm[6];
@@ -229,6 +269,14 @@ static void resource_modal(Ctx *c, Buf *b, Resource *r, const char *close) {
       "<label class=\"field\"><span>House rules (optional)</span><input name=\"rules\" maxlength=\"150\" "
       "value=\"%s\" placeholder=\"Fill up the tank, clean the filter…\"></label>",
       r ? r->rules : "");
+    if (is_admin(c)) /* issue #43: in a household, usually anyone may - an admin can make it stricter */
+        H(b,
+          "<label class=\"check\"><input type=\"checkbox\" name=\"own_only\" value=\"1\"%r> Only the person a booking "
+          "is for, whoever made it, or an admin can cancel or move it</label>",
+          r && r->own_only ? " checked" : "");
+    else if (r && r->own_only)
+        buf_puts(b, "<p class=\"muted small\">Only the person a booking is for, whoever made it, or an admin can cancel "
+                    "or move it (an admin's choice).</p>");
     buf_puts(b, "<div class=\"field\"><span>Colour</span>");
     ui_hue_picker(b, "hue", r ? r->hue : 200);
     buf_puts(b, "</div><div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>");
@@ -495,6 +543,7 @@ static void overview(Ctx *c, Buf *b) {
         buf_puts(b, "<span>Add a thing</span></a>");
     }
     ui_head_end(b);
+    news(c, b);
     if (!n) {
         ui_empty(b, "🗝️", "What do you share at home?",
                  "Add the things people take turns with — then anyone can book them from their phone.");
@@ -631,6 +680,7 @@ void book_widget(Ctx *c, Buf *b, int where) {
     Resource *rs[64];
     int n = res_list(rs, 64, false);
     ui_card(b, "Bookings", "/book", n ? "Book" : "Set up");
+    news(c, b);
     if (!n) {
         buf_puts(b, "<p class=\"muted\">Share the car, the laundry room or the guest room — add them under "
                     "<a href=\"/book\">Book</a>.</p>");

@@ -16,6 +16,8 @@
 #include <unistd.h>
 #ifdef __APPLE__
 #include <net/route.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/sysctl.h>
 #endif
 #endif
@@ -355,6 +357,9 @@ bool lan_iface(LanIface *out) {
         out->broadcast = out->ip | ~out->mask;
         if (pick->PhysicalAddressLength == 6) memcpy(out->mac.b, pick->PhysicalAddress, 6);
         wide_to_utf8(pick->FriendlyName, out->name, sizeof out->name);
+        out->link = pick->IfType == IF_TYPE_IEEE80211       ? LAN_LINK_WIFI
+                    : pick->IfType == IF_TYPE_ETHERNET_CSMACD ? LAN_LINK_CABLE
+                                                              : LAN_LINK_UNKNOWN;
     }
     free(list);
     return pick != NULL;
@@ -485,6 +490,24 @@ int lan_neighbors(Neighbor *out, int max) {
     return l.n;
 }
 
+/* The interface's "functional type" (ifconfig's "type: Wi-Fi" line). Not the media type: Apple's Wi-Fi
+   driver is an Ethernet controller underneath. Not yet seen on a real Mac: unknown when the call fails,
+   and the page then names the interface. */
+static int iface_link(const char *name) {
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) return LAN_LINK_UNKNOWN;
+    struct ifreq r;
+    memset(&r, 0, sizeof r);
+    str_copy(r.ifr_name, sizeof r.ifr_name, name);
+    int link = LAN_LINK_UNKNOWN;
+    if (ioctl(s, SIOCGIFFUNCTIONALTYPE, &r) == 0) {
+        if (r.ifr_ifru.ifru_functional_type == IFRTYPE_FUNCTIONAL_WIFI_INFRA) link = LAN_LINK_WIFI;
+        else if (r.ifr_ifru.ifru_functional_type == IFRTYPE_FUNCTIONAL_WIRED) link = LAN_LINK_CABLE;
+    }
+    close(s);
+    return link;
+}
+
 #else /* Linux (other Unixes: no /proc, so no gateway, MAC or neighbours - just the address) */
 
 static bool default_route(char ifname[64], uint32_t *gw) {
@@ -506,6 +529,26 @@ static void iface_mac(const struct ifaddrs *all, const char *name, Mac *mac) {
     if (file_read_all(buf_cstr(&path), &addr, 64)) mac_parse(buf_cstr(&addr), mac);
     buf_free(&path);
     buf_free(&addr);
+}
+
+/* Wi-Fi drivers have a wireless/ (or phy80211) folder; a cable is a real device of type 1 (Ethernet) -
+   bridges, veth pairs and tunnels have no device/ link, so they stay unknown */
+static int iface_link(const char *name) {
+    char dev[64], p[160];
+    str_copy(dev, sizeof dev, name);
+    char *colon = strchr(dev, ':');
+    if (colon) *colon = '\0';
+    snprintf(p, sizeof p, "/sys/class/net/%s/wireless", dev);
+    if (access(p, F_OK) == 0) return LAN_LINK_WIFI;
+    snprintf(p, sizeof p, "/sys/class/net/%s/phy80211", dev);
+    if (access(p, F_OK) == 0) return LAN_LINK_WIFI;
+    snprintf(p, sizeof p, "/sys/class/net/%s/device", dev);
+    if (access(p, F_OK) != 0) return LAN_LINK_UNKNOWN;
+    Buf type = {0};
+    snprintf(p, sizeof p, "/sys/class/net/%s/type", dev);
+    bool ether = file_read_all(p, &type, 16) && atoi(buf_cstr(&type)) == 1;
+    buf_free(&type);
+    return ether ? LAN_LINK_CABLE : LAN_LINK_UNKNOWN;
 }
 
 int lan_neighbors(Neighbor *out, int max) {
@@ -559,6 +602,7 @@ bool lan_iface(LanIface *out) {
         out->broadcast = out->ip | ~out->mask;
         str_copy(out->name, sizeof out->name, pick->ifa_name);
         iface_mac(ifs, pick->ifa_name, &out->mac);
+        out->link = iface_link(pick->ifa_name);
     }
     freeifaddrs(ifs);
     return pick != NULL;

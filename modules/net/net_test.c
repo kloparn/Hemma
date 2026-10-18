@@ -45,6 +45,31 @@ static uint32_t ip(const char *s) {
 #define ADAMS_PHONE "a4:83:e7:11:22:33"
 #define PRIVATE_MAC "02:11:22:33:44:55"
 
+/* The hub's connection in words, not "en0" (issue #62); the interface's name when it can't tell. */
+TEST(net_hub_says_how_it_is_connected) {
+    boot();
+    int adam = admin("Adam");
+    const char *html = th_page(adam, "/net");
+    CHECK_HAS(html, "<dt>Connected</dt><dd>through eth0</dd>");
+    CHECK_HAS(th_page(adam, "/system"), "Connected through &quot;eth0&quot; as 192.168.1.2, with the router at "
+                                          "192.168.1.1.");
+    LanIface f = {0};
+    str_copy(f.name, sizeof f.name, "en0");
+    ip_parse("192.168.1.2", &f.ip);
+    ip_parse("255.255.255.0", &f.mask);
+    ip_parse("192.168.1.1", &f.gateway);
+    f.link = LAN_LINK_WIFI;
+    net_set_iface(&f);
+    html = th_page(adam, "/net");
+    CHECK_HAS(html, "<dt>Connected</dt><dd title=\"en0\">over Wi-Fi</dd>");
+    CHECK(!strstr(html, "Interface"));
+    CHECK_HAS(th_page(adam, "/system"), "Connected over Wi-Fi as 192.168.1.2");
+    f.link = LAN_LINK_CABLE;
+    net_set_iface(&f);
+    CHECK_HAS(th_page(adam, "/net"), ">over a network cable</dd>");
+    th_halt();
+}
+
 TEST(net_ingest_creates_devices_in_our_subnet_only) {
     boot();
     Neighbor r[] = {

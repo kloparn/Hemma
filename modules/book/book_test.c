@@ -80,6 +80,154 @@ TEST(book_rules_hours_max_and_past) {
     th_halt();
 }
 
+static int news_for(int person, const char *has) {
+    int n = 0;
+    for (int i = 0; i < tbl_count(&T_book_news); i++) {
+        BookNews *x = tbl_at(&T_book_news, i);
+        n += x->person == person && (!has || strstr(x->text, has));
+    }
+    return n;
+}
+
+static int last_booking(void) {
+    int n = tbl_count(&T_booking);
+    return n ? ((Booking *)tbl_at(&T_booking, n - 1))->id : 0;
+}
+
+/* Someone else cancelling or moving your booking tells you, and it waits until you've seen it
+   (issue #43); a thing can be kept to whoever it's for, whoever booked it, and admins. */
+TEST(book_changes_by_others_are_told_and_can_be_kept_to_theirs) {
+    setup();
+    int laundry = add_res("Laundry", "🧺", 60, 7 * 60, 22 * 60, 120, 0);
+    char form[200];
+    CHECK(th_act(eva, "book.quick", "q=laundry+thu+10-12").ok);
+    int bk = last_booking();
+    /* Adam moves it: Eva hears, with where it went and where it was */
+    snprintf(form, sizeof form, "res=%d&id=%d&date=2026-10-08&from=13:00&to=15:00&who=%d", laundry, bk, eva);
+    CHECK(th_act(adam, "book.create", form).ok);
+    CHECK_INT(news_for(eva, "Adam moved your Laundry booking · now "), 1);
+    CHECK_INT(news_for(eva, "(was "), 1);
+    CHECK_INT(news_for(adam, NULL), 0);
+    const char *html = th_page(eva, "/book");
+    CHECK_HAS(html, "id=\"book-news\"");
+    CHECK_HAS(html, "Adam moved your Laundry booking");
+    CHECK_HAS(th_page(eva, "/"), "Adam moved your Laundry booking"); /* the home card too */
+    CHECK(!strstr(th_page(adam, "/book"), "book-news"));
+    /* a change of note only isn't a move */
+    snprintf(form, sizeof form, "res=%d&id=%d&date=2026-10-08&from=13:00&to=15:00&who=%d&note=towels", laundry, bk, eva);
+    CHECK(th_act(adam, "book.create", form).ok);
+    CHECK_INT(news_for(eva, NULL), 1);
+    CHECK(th_act(eva, "book.news_seen", "").ok);
+    CHECK_INT(news_for(eva, NULL), 0);
+    CHECK(!strstr(th_page(eva, "/book"), "book-news"));
+    /* Adam cancels it: told */
+    snprintf(form, sizeof form, "id=%d", bk);
+    CHECK(th_act(adam, "book.cancel", form).ok);
+    CHECK_INT(news_for(eva, "Adam cancelled your Laundry booking · "), 1);
+    /* your own: nothing to tell */
+    CHECK(th_act(eva, "book.news_seen", "").ok);
+    CHECK(th_act(eva, "book.quick", "q=laundry+thu+10-12").ok);
+    snprintf(form, sizeof form, "id=%d", last_booking());
+    CHECK(th_act(eva, "book.cancel", form).ok);
+    CHECK_INT(news_for(eva, NULL), 0);
+    /* booked by Adam for Eva, cancelled by Eva: Adam hears */
+    CHECK(th_act(adam, "book.quick", "q=laundry+thu+10-12+@eva").ok);
+    snprintf(form, sizeof form, "id=%d", last_booking());
+    CHECK(th_act(eva, "book.cancel", form).ok);
+    CHECK_INT(news_for(adam, "Eva cancelled the Laundry booking you made · "), 1);
+    CHECK_INT(news_for(eva, NULL), 0);
+
+    /* the rule: only theirs (and admins') to change - set by an admin only */
+    int anna = th_person("Anna");
+    Person a = *person_get(anna);
+    a.role = ROLE_ADMIN;
+    tbl_put(&T_person, &a);
+    snprintf(form, sizeof form, "id=%d&name=Laundry&kind=hourly&slot=60&open=07:00&close=22:00&own_only=1", laundry);
+    CHECK(th_act(adam, "book.res_save", form).ok); /* (a member saves the rest; the rule stays) */
+    CHECK(!res_get(laundry)->own_only);
+    CHECK(!strstr(th_page(adam, "/book/1?res=1"), "name=\"own_only\""));
+    CHECK(th_act(anna, "book.res_save", form).ok);
+    CHECK(res_get(laundry)->own_only);
+    CHECK_HAS(th_page(anna, "/book/1?res=1"), "name=\"own_only\" value=\"1\" checked");
+    CHECK_HAS(th_page(adam, "/book/1?res=1"), "(an admin's choice)");
+    CHECK(th_act(eva, "book.quick", "q=laundry+thu+10-12").ok);
+    bk = last_booking();
+    snprintf(form, sizeof form, "id=%d", bk);
+    ThResult r = th_act(adam, "book.cancel", form);
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Only Eva or an admin can cancel this booking");
+    snprintf(form, sizeof form, "res=%d&id=%d&date=2026-10-08&from=13:00&to=15:00&who=%d", laundry, bk, eva);
+    r = th_act(adam, "book.create", form);
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Only Eva or an admin can move this booking");
+    char url[64];
+    snprintf(url, sizeof url, "/book/1?b=%d", bk);
+    html = th_page(adam, url);
+    CHECK_HAS(html, "Only Eva or an admin can cancel or move it.");
+    CHECK(!strstr(html, "Cancel booking"));
+    snprintf(url, sizeof url, "/book/1?b=%d&edit=1", bk);
+    CHECK(!strstr(th_page(adam, url), "name=\"from\"")); /* no way in through the address either */
+    CHECK_HAS(th_page(eva, url), "name=\"from\"");
+    snprintf(form, sizeof form, "res=%d&id=%d&date=2026-10-08&from=13:00&to=15:00&who=%d", laundry, bk, eva);
+    CHECK(th_act(anna, "book.create", form).ok); /* an admin may */
+    CHECK_INT(news_for(eva, "Anna moved your Laundry booking"), 1);
+    snprintf(form, sizeof form, "id=%d", bk);
+    CHECK(th_act(eva, "book.cancel", form).ok); /* and the person it's for */
+    th_halt();
+}
+
+/* The hint's own "bastu ikväll 19" on a fresh install, whose starter is called "Sauna" (issue #55): the
+   starters know their Swedish names, and any thing can be given more. */
+TEST(book_quick_parse_knows_other_names) {
+    setup();
+    CHECK(th_act(adam, "book.preset", "name=Sauna").ok);
+    CHECK(th_act(adam, "book.preset", "name=Laundry").ok);
+    CHECK(th_act(adam, "book.preset", "name=TV+room").ok);
+    int sauna = 1, laundry = 2, tvroom = 3;
+    Quick q;
+    book_quick_parse("bastu ikväll 19", 0, g_fake_now, &q);
+    CHECK_INT(q.res, sauna);
+    CHECK_STR(q.problem, "");
+    CHECK_INT(at(q.start).day, 7);
+    CHECK_INT(at(q.start).hour, 19);
+    book_quick_parse("bastun imorgon 7", 0, g_fake_now, &q); /* a form of the word */
+    CHECK_INT(q.res, sauna);
+    book_quick_parse("tvätt imorgon 19-20", 0, g_fake_now, &q);
+    CHECK_INT(q.res, laundry);
+    CHECK_STR(q.problem, "");
+    CHECK_STR(q.note, "");
+    book_quick_parse("tvättstugan lör 10-12", 0, g_fake_now, &q);
+    CHECK_INT(q.res, laundry);
+    book_quick_parse("tv-rum fre 20-22", 0, g_fake_now, &q); /* one token with a dash */
+    CHECK_INT(q.res, tvroom);
+    book_quick_parse("tv room fri 20-22", 0, g_fake_now, &q);
+    CHECK_INT(q.res, tvroom);
+
+    /* a thing's own other names, from its edit form */
+    book_quick_parse("stugan lör 10-12", 0, g_fake_now, &q);
+    CHECK_INT(q.res, 0);
+    CHECK_STR(q.problem, "I don't know “stugan”. You can book: Sauna, Laundry, TV room.");
+    CHECK(th_act(adam, "book.res_save", "id=1&name=Sauna&kind=hourly&always=1&aliases=+stugan%2C+the+cabin+").ok);
+    CHECK_STR(res_get(sauna)->aliases, "stugan, the cabin");
+    book_quick_parse("stugan lör 10-12", 0, g_fake_now, &q);
+    CHECK_INT(q.res, sauna);
+    book_quick_parse("the cabin sat 10-12", 0, g_fake_now, &q);
+    CHECK_INT(q.res, sauna);
+    CHECK_STR(q.note, "");
+    const char *html = th_page(adam, "/book/1?res=1");
+    CHECK_HAS(html, "name=\"aliases\" maxlength=\"110\" value=\"stugan, the cabin\"");
+    CHECK_HAS(html, "It already knows “bastu”.");
+    /* a renamed starter is the household's own: only its own other names count */
+    CHECK(th_act(adam, "book.res_save", "id=1&name=Bastun&kind=hourly&always=1").ok);
+    book_quick_parse("bastu ikväll 19", 0, g_fake_now, &q);
+    CHECK_INT(q.res, sauna); /* (by its new name, "Bastun") */
+    CHECK(th_act(adam, "book.res_save", "id=1&name=Hot+room&kind=hourly&always=1").ok);
+    book_quick_parse("bastu ikväll 19", 0, g_fake_now, &q);
+    CHECK_INT(q.res, 0);
+    CHECK(!strstr(th_page(adam, "/book/1?res=1"), "It already knows"));
+    th_halt();
+}
+
 TEST(book_quick_parse_english_and_swedish) {
     setup();
     int car = add_res("Car", "🚗", 30, 0, 1440, 120, 0);
@@ -113,7 +261,10 @@ TEST(book_quick_parse_english_and_swedish) {
     CHECK_INT(at(q.start).day, 10);
     CHECK_INT(q.end - q.start, 86400);
 
-    book_quick_parse("boat fri 10-12", 0, g_fake_now, &q);
+    book_quick_parse("boat fri 10-12", 0, g_fake_now, &q); /* a word that names nothing: say so, and what can be */
+    CHECK_INT(q.res, 0);
+    CHECK_STR(q.problem, "I don't know “boat”. You can book: Car, Tvättstuga, Guest room.");
+    book_quick_parse("fri 10-12", 0, g_fake_now, &q); /* no word at all */
     CHECK_INT(q.res, 0);
     CHECK_HAS(q.problem, "Start with what to book");
 

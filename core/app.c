@@ -137,6 +137,10 @@ void health_add(Health *h, int state, const char *title, const char *detail, con
     str_copy(it->link, sizeof it->link, link);
 }
 
+void health_tech(Health *h, const char *tech) {
+    if (h->n) str_copy(h->items[h->n - 1].tech, sizeof h->items[h->n - 1].tech, tech);
+}
+
 void health_disk(Health *h, const HealthDisk *d) {
     if (h->ndisks == h->capdisks) {
         h->capdisks = h->capdisks ? h->capdisks * 2 : 4;
@@ -594,6 +598,94 @@ void ctx_fail(Ctx *c, const char *fmt, ...) {
     c->failed = true;
 }
 
+void ctx_fail_at(Ctx *c, const char *field, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    ctx_toast_v(c, TOAST_ERR, fmt, ap);
+    va_end(ap);
+    c->failed = true;
+    str_copy(c->fail_field, sizeof c->fail_field, field ? field : "");
+}
+
+/* ------------------------------------------------------------------ undo */
+
+#define UNDO_SLOTS 16  /* the last few deletes, the household's together: the oldest gives way */
+#define UNDO_ROWS 512  /* rows one Undo puts back (a cleared shopping basket) */
+typedef struct {
+    uint64_t token; /* the toast's Undo names it; 0 = free */
+    int person;
+    int64_t until;
+    int n;
+    Table **tables;
+    void **rows;
+} UndoSlot;
+static UndoSlot g_undo[UNDO_SLOTS];
+
+static void undo_free(UndoSlot *s) {
+    for (int i = 0; i < s->n; i++) free(s->rows[i]);
+    free(s->rows);
+    free(s->tables);
+    memset(s, 0, sizeof *s);
+}
+
+void ctx_undo(Ctx *c, Table *t, int id) {
+    const void *row = tbl_get(t, id);
+    if (!row || !c->me || c->me->role == ROLE_DISPLAY) return; /* (a TV takes nothing back: view-only) */
+    UndoSlot *s = NULL;
+    for (int i = 0; i < UNDO_SLOTS && c->undo && !s; i++)
+        if (g_undo[i].token == c->undo) s = &g_undo[i];
+    if (!s) {
+        s = &g_undo[0];
+        for (int i = 0; i < UNDO_SLOTS; i++) { /* a free one, else the one that runs out first */
+            if (!g_undo[i].token) {
+                s = &g_undo[i];
+                break;
+            }
+            if (g_undo[i].until < s->until) s = &g_undo[i];
+        }
+        undo_free(s);
+        while (!s->token) rand_bytes(&s->token, sizeof s->token);
+        s->person = c->me->id;
+        s->until = now_sec() + UNDO_S;
+        c->undo = s->token;
+    }
+    if (s->n >= UNDO_ROWS) return;
+    s->tables = xrealloc(s->tables, (size_t)(s->n + 1) * sizeof *s->tables);
+    s->rows = xrealloc(s->rows, (size_t)(s->n + 1) * sizeof *s->rows);
+    s->tables[s->n] = t;
+    s->rows[s->n] = xmalloc(t->rec_size);
+    memcpy(s->rows[s->n], row, t->rec_size);
+    s->n++;
+}
+
+/* "core.undo" (k = the token, hex): what one action removed comes back - rows something else took
+   the place of meanwhile stay as they are. */
+static void undo_run(Ctx *c, const char *k) {
+    uint64_t token = strtoull(k, NULL, 16);
+    for (int i = 0; token && i < UNDO_SLOTS; i++) {
+        UndoSlot *s = &g_undo[i];
+        if (s->token != token || s->person != c->me->id) continue;
+        if (s->until < now_sec()) break;
+        int back = 0;
+        for (int r = 0; r < s->n; r++) {
+            int id;
+            memcpy(&id, s->rows[r], sizeof id);
+            if (tbl_get(s->tables[r], id)) continue;
+            tbl_put(s->tables[r], s->rows[r]);
+            back++;
+        }
+        undo_free(s);
+        if (back) ctx_ok(c, "Put back");
+        else ctx_info(c, "Nothing left to put back");
+        return;
+    }
+    ctx_fail(c, "Too late to undo that");
+}
+
+static void undo_reset(void) {
+    for (int i = 0; i < UNDO_SLOTS; i++) undo_free(&g_undo[i]);
+}
+
 void ctx_redirect(Ctx *c, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -960,12 +1052,7 @@ static void flush_dirty(void) {
     all_dirty = false;
 }
 
-void app_notify(const Ctx *except, int kind, const char *fmt, ...) {
-    char text[240];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(text, sizeof text, fmt, ap);
-    va_end(ap);
+static void notify_all(const Ctx *except, int skip_a, int skip_b, int kind, const char *text) {
     Buf ops = {0};
     buf_printf(&ops, "[[\"toast\",%d,", kind);
     json_str(&ops, text);
@@ -975,9 +1062,28 @@ void app_notify(const Ctx *except, int kind, const char *fmt, ...) {
         Session *s = session_by_token(clients[i]->token);
         /* household news is for signed-in screens only (not the sign-in page, not revoked sessions) */
         if (!clients[i]->ready || !s || !person_get(s->person) || s->person == skip) continue;
+        if ((skip_a && s->person == skip_a) || (skip_b && s->person == skip_b)) continue;
         send_ops(clients[i], &ops);
     }
     buf_free(&ops);
+}
+
+void app_notify(const Ctx *except, int kind, const char *fmt, ...) {
+    char text[240];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof text, fmt, ap);
+    va_end(ap);
+    notify_all(except, 0, 0, kind, text);
+}
+
+void app_notify_but(const Ctx *except, int skip_a, int skip_b, int kind, const char *fmt, ...) {
+    char text[240];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof text, fmt, ap);
+    va_end(ap);
+    notify_all(except, skip_a, skip_b, kind, text);
 }
 
 void app_notify_person(int person, int kind, const char *fmt, ...) {
@@ -1038,6 +1144,17 @@ static bool run_action(Ctx *c, const char *name, Fields *f, bool *ran, bool live
     const Module *owner = NULL;
     const Action *a = action_find(name, &owner);
     if (ran) *ran = false;
+    if (!live && str_eq(name, "core.undo")) { /* the toast's Undo (ctx_undo) */
+        if (!c->me || c->me->role == ROLE_DISPLAY) {
+            ctx_fail(c, c->me ? "This screen is view-only" : "Sign in first");
+            return true;
+        }
+        db_begin();
+        undo_run(c, fields_str(f, "k"));
+        db_commit();
+        if (ran) *ran = !c->failed;
+        return true;
+    }
     if (!a || (live && !a->live)) return false; /* a "live" message can't run a change: issue #8 */
     if (!c->me) {
         ctx_fail(c, "Sign in first");
@@ -1051,6 +1168,7 @@ static bool run_action(Ctx *c, const char *name, Fields *f, bool *ran, bool live
     db_begin(); /* all writes of one action land atomically */
     a->run(c, f);
     db_commit();
+    if (c->failed) c->undo = 0; /* (nothing was removed after all) */
     c->me = person_get(me); /* rows move when a table grows (adding a person): look ourselves up again */
     if (ran) *ran = true;
     return true;
@@ -1069,12 +1187,21 @@ static void ws_action(Client *cl, const char *name, Fields *f, long long id, boo
     }
     Buf ops = {0};
     buf_putc(&ops, '[');
-    if (!live) buf_printf(&ops, "[\"ack\",%lld,%s]", id, c.failed ? "false" : "true");
-    if (c.toast[0]) {
-        if (!live) buf_putc(&ops, ',');
-        buf_printf(&ops, "[\"toast\",%d,", c.toast_kind);
+    if (!live && c.failed) { /* the error goes with the ack: wire.js puts it in the form (issue #60) */
+        buf_printf(&ops, "[\"ack\",%lld,false,", id);
         json_str(&ops, c.toast);
+        buf_putc(&ops, ',');
+        json_str(&ops, c.fail_field);
         buf_putc(&ops, ']');
+    } else {
+        if (!live) buf_printf(&ops, "[\"ack\",%lld,true]", id);
+        if (c.toast[0]) {
+            if (!live) buf_putc(&ops, ',');
+            buf_printf(&ops, "[\"toast\",%d,", c.toast_kind);
+            json_str(&ops, c.toast);
+            if (c.undo) buf_printf(&ops, ",{\"undo\":\"%016llx\"}", (unsigned long long)c.undo);
+            buf_putc(&ops, ']');
+        }
     }
     buf_putc(&ops, ']');
     if (ops.len > 2) send_ops(cl, &ops);
@@ -1876,6 +2003,7 @@ void app_halt(void) {
     for (int i = 0; i < nmods; i++)
         if (mods[i]->stop) mods[i]->stop();
     store_close();
+    undo_reset();
     g_nhome = 0;
     g_tracking = false;
 }

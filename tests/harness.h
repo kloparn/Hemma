@@ -20,6 +20,8 @@ typedef struct {
     bool ok; /* the action exists and didn't fail */
     char toast[240];
     char redirect[600];
+    char field[32]; /* ctx_fail_at's field */
+    char undo[17];  /* ctx_undo's token, hex ("" = none): th_act(p, "core.undo", "k=<it>") */
 } ThResult;
 
 void th_boot(void);

@@ -31,12 +31,13 @@ TEST(net_health_says_whether_discovery_is_on) {
     f.ip = 0xC0A80132;
     f.mask = 0xFFFFFF00;
     f.gateway = 0xC0A80101;
+    f.link = LAN_LINK_CABLE;
     net_set_iface(&f);
     CHECK(th_act(adam, "net.scan", "on=1").ok);
     m->health(&c, &h);
     it = item(&h, "Home network");
     CHECK(it && it->state == HEALTH_OK);
-    CHECK_STR(it->detail, "Connected as 192.168.1.50 (eth0), with the router at 192.168.1.1.");
+    CHECK_STR(it->detail, "Connected over a network cable as 192.168.1.50, with the router at 192.168.1.1.");
     it = item(&h, "Device discovery");
     CHECK(it && it->state == HEALTH_OK);
     CHECK_HAS(it->detail, "every 2 minutes");

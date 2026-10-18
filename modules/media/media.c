@@ -148,6 +148,42 @@ static void quality(Buf *b, const MediaFile *f) {
     else if (h > 0) buf_puts(b, "SD");
 }
 
+/* A codec or container by the name people know it by ("h264" -> "H.264"); others in capitals. */
+static void tech_name(Buf *b, const char *id) {
+    static const char *const names[][2] = {
+        {"h264", "H.264"}, {"hevc", "HEVC (H.265)"}, {"mpeg2", "MPEG-2"}, {"mpeg4", "MPEG-4 (XviD/DivX)"},
+        {"ac3", "AC-3 (Dolby Digital)"}, {"eac3", "E-AC-3"}, {"opus", "Opus"}, {"vorbis", "Vorbis"},
+        {"truehd", "TrueHD"}, {"pcm", "PCM"}};
+    for (int i = 0; i < countof(names); i++)
+        if (str_eq(id, names[i][0])) {
+            buf_puts(b, names[i][1]);
+            return;
+        }
+    for (const char *p = id; *p; p++) buf_putc(b, (char)(*p >= 'a' && *p <= 'z' ? *p - 32 : *p));
+}
+
+/* "MP4 file · H.264 video · AAC sound (5.1)" - folded under the plain badge (issue #62). Escaped. */
+static void tech_facts(Buf *b, const MediaFile *f) {
+    Buf t = {0};
+    if (f->probe.container[0]) {
+        tech_name(&t, f->probe.container);
+        buf_puts(&t, " file");
+    }
+    if (f->probe.vcodec[0]) {
+        buf_puts(&t, t.len ? " · " : "");
+        tech_name(&t, f->probe.vcodec);
+        buf_puts(&t, " video");
+    }
+    if (f->probe.acodec[0]) {
+        buf_puts(&t, t.len ? " · " : "");
+        tech_name(&t, f->probe.acodec);
+        buf_puts(&t, " sound");
+        if (f->probe.audio_channels > 2) buf_printf(&t, " (%d.1)", f->probe.audio_channels - 1);
+    }
+    html_esc(b, buf_cstr(&t));
+    buf_free(&t);
+}
+
 static void duration(Buf *b, const MediaFile *f) {
     char d[32];
     media_fmt_duration(f->probe.duration_ms, d, sizeof d);
@@ -398,6 +434,13 @@ static void batch_card(Buf *b, const MediaRecent *r) {
 
 static bool library_empty_states(Ctx *c, Buf *b) {
     const MediaIndex *ix = media_lib();
+    if (ix->nroots == 0 && !is_admin(c)) {
+        ui_empty(b, "🎬", "No movies yet", "Movies and series from the drive at home will show up here.");
+        buf_puts(b, "<p class=\"media-center muted\">Ask ");
+        ui_admins(b);
+        buf_puts(b, " to add the movie folders.</p>");
+        return true;
+    }
     if (ix->nroots == 0) {
         ui_empty(b, "🎬", "Point Hemma at your movies",
                  "Tell it which folders hold your movies and series — the drive on the Pi, a mounted share, "
@@ -980,12 +1023,10 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
           pf != f ? "Converted copy · " : "");
     else if (pf != f) buf_puts(b, "<span class=\"muted\">Converted copy</span>");
     else if (pl != PLAY_YES && pf->probe.why[0]) H(b, "<span class=\"muted\">%s</span>", pf->probe.why);
-    if (pf->probe.container[0] || pf->probe.vcodec[0]) {
-        H(b, "<span class=\"media-tech\">%s", pf->probe.container);
-        if (pf->probe.vcodec[0]) H(b, " · %s", pf->probe.vcodec);
-        if (pf->probe.acodec[0]) H(b, " · %s", pf->probe.acodec);
-        if (pf->probe.audio_channels > 2) H(b, " %d.1", pf->probe.audio_channels - 1);
-        buf_puts(b, "</span>");
+    if (pf->probe.container[0] || pf->probe.vcodec[0]) { /* the codecs folded away: plain words first (issue #62) */
+        buf_puts(b, "<details class=\"media-tech\"><summary>File details</summary><span>");
+        tech_facts(b, pf);
+        buf_puts(b, "</span></details>");
     }
     buf_puts(b, "</div>");
     ConvertNeed need = convert_need(f);
@@ -1002,7 +1043,11 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
             char hex[17];
             media_id_hex(f->id, hex);
             ui_act(b, "media.convert", "btn", hevc ? "Make it play in Safari too" : "Make it play everywhere", "id", hex, NULL);
-        } else buf_puts(b, "<p class=\"muted\">An admin can make this play everywhere (Watch → settings).</p>");
+        } else {
+            buf_puts(b, "<p class=\"muted\">Hemma can make a copy of this that plays everywhere: ask ");
+            ui_admins(b);
+            buf_puts(b, ".</p>");
+        }
         buf_puts(b, "</div>");
     } else if (pl == PLAY_NO && pf == f) {
         buf_puts(b, "<p class=\"muted media-convert\">This format can't be converted by Hemma yet.</p>");
@@ -1231,7 +1276,9 @@ static void page_settings(Ctx *c, Buf *b) {
         buf_puts(b, "<ul class=\"rows\">");
         for (int r = 0; r < ix->nroots; r++) H(b, "<li class=\"row\"><code class=\"media-code\">%s</code></li>", ix->roots[r]);
         if (!ix->nroots) buf_puts(b, "<li class=\"row muted\">No folders yet.</li>");
-        buf_puts(b, "</ul><p class=\"muted media-small\">An admin chooses which folders are in the library.</p>");
+        buf_puts(b, "</ul><p class=\"muted media-small\">An admin chooses which folders are in the library: ask ");
+        ui_admins(b);
+        buf_puts(b, ".</p>");
     }
     ui_card_end(b);
 
@@ -1285,13 +1332,20 @@ static void page_settings(Ctx *c, Buf *b) {
     }
 
     ui_card(b, "What plays where", NULL, NULL);
-    buf_puts(b, "<ul class=\"media-tips\"><li><span class=\"badge ok\">Plays in browsers</span> MP4 or WebM with H.264/VP9 "
-                "video and AAC/MP3/Opus sound.</li><li><span class=\"badge warn\">May not play everywhere</span> MKV, "
-                "HEVC, or Dolby (AC-3) sound — fine in Chrome/Edge or Safari, not all of them. An HEVC film converted here "
-                "(<i>Plays on newer devices</i>) plays in Safari and on most devices from the last few years.</li>"
-                "<li><span class=\"badge bad\">Needs conversion</span> MPEG-2 (DVD rips), AVI/XviD, DTS sound. Hemma "
-                "converts MKV files with MPEG-2 or H.264 video and Dolby or AAC sound itself (<i>Play everywhere</i> "
-                "above); the copies play on every browser, iPhone and TV.</li></ul>");
+    /* plain words first, the formats folded away (issue #62) */
+    buf_puts(b, "<p class=\"muted media-plays\">Most videos play straight away. Some - DVD rips especially - need "
+                "converting first: one button (<i>Play everywhere</i> above) makes a copy that plays on every phone, "
+                "computer and TV.</p><ul class=\"media-tips\"><li><span class=\"badge ok\">Plays in browsers</span> On "
+                "every screen.</li><li><span class=\"badge warn\">May not play everywhere</span> On computers and most "
+                "phones, but a TV's browser or an iPhone may refuse it. <i>Plays on newer devices</i>: most from the last "
+                "few years.</li><li><span class=\"badge bad\">Needs conversion</span> Nowhere until Hemma has made its "
+                "copy.</li></ul><details class=\"media-formats\"><summary>Which formats are which</summary><ul "
+                "class=\"media-tips\"><li><b>Plays in browsers:</b> MP4 or WebM with H.264/VP9 video and AAC/MP3/Opus "
+                "sound.</li><li><b>May not play everywhere:</b> MKV, HEVC, or Dolby (AC-3) sound — fine in Chrome/Edge "
+                "or Safari, not all of them. An HEVC film converted here (<i>Plays on newer devices</i>) plays in Safari "
+                "and on most devices from the last few years.</li><li><b>Needs conversion:</b> MPEG-2 (DVD rips), "
+                "AVI/XviD, DTS sound. Hemma converts MKV files with MPEG-2 or H.264 video and Dolby or AAC sound "
+                "itself.</li></ul></details>");
     ui_card_end(b);
     buf_puts(b, "</div>");
 }
@@ -1361,6 +1415,14 @@ static void widget(Ctx *c, Buf *b, int where) {
     const MediaIndex *ix = media_lib();
     (void)where;
     if (ix->nroots == 0) {
+        if (!is_admin(c)) { /* Library settings are an admin's: no "Set up" that leads nowhere (issue #58) */
+            ui_card(b, "Watch", NULL, NULL);
+            buf_puts(b, "<p class=\"muted\">Movies and series from the drive at home will show up here. Ask ");
+            ui_admins(b);
+            buf_puts(b, " to add the movie folders.</p>");
+            ui_card_end(b);
+            return;
+        }
         ui_card(b, "Watch", "/media/settings", "Set up");
         buf_puts(b, "<p class=\"muted\">Point Hemma at the drive with your movies and series, and everyone can watch "
                     "them on any screen at home — offline.</p>");
@@ -1542,7 +1604,10 @@ static void act_forget(Ctx *c, Fields *f) {
         return;
     }
     const MediaWatch *w = media_watch_get(who, id);
-    if (w && !w->done) tbl_del(&T_media_watch, w->id);
+    if (w && !w->done) {
+        ctx_undo(c, &T_media_watch, w->id); /* the card's x is instant: Undo brings the progress back (issue #60) */
+        tbl_del(&T_media_watch, w->id);
+    }
     const MediaFile *v = media_file(id);
     char what[200] = "it";
     if (v && v->name.kind == MEDIA_EPISODE)
@@ -1601,12 +1666,12 @@ static void act_roots(Ctx *c, Fields *f) {
         for (char *p = line; *p; p++)
             if (*p == '\\') *p = '/';
         if (!path_is_dir(line)) {
-            ctx_fail(c, "Can't find the folder \"%s\" on the server", line);
+            ctx_fail_at(c, "roots", "Can't find the folder \"%s\" on the server", line);
             buf_free(&keep);
             return;
         }
         if (++n > MEDIA_MAX_ROOTS) {
-            ctx_fail(c, "That's more than %d folders — point at a parent folder instead", MEDIA_MAX_ROOTS);
+            ctx_fail_at(c, "roots", "That's more than %d folders — point at a parent folder instead", MEDIA_MAX_ROOTS);
             buf_free(&keep);
             return;
         }

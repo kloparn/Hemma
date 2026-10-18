@@ -146,9 +146,7 @@ static void task_modal(Ctx *c, Buf *b, const Task *t) {
     buf_puts(b, "</select></label><div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>");
     ui_form_end(b);
     if (t) {
-        char q[300];
-        snprintf(q, sizeof q, "Delete “%s”?", t->title);
-        ui_form_confirm(b, "plan.task_delete", "danger-zone", q);
+        ui_form(b, "plan.task_delete", "danger-zone"); /* no "Delete ...?": the toast offers Undo (issue #60) */
         ui_hidden_int(b, "id", t->id);
         buf_puts(b, "<button class=\"btn danger\">");
         ui_icon(b, "trash");
@@ -394,7 +392,7 @@ void plan_act_task_save(Ctx *c, Fields *f) {
     str_copy(title, sizeof title, fields_str(f, "title"));
     str_trim(title);
     if (!title[0]) {
-        ctx_fail(c, "Give it a name");
+        ctx_fail_at(c, "title", "Give it a name");
         return;
     }
     plan_capitalise(title);
@@ -404,7 +402,7 @@ void plan_act_task_save(Ctx *c, Fields *f) {
     const char *due = fields_str(f, "due");
     int y = 0, m = 0, d = 0;
     if (due[0] && !parse_ymd(due, &y, &m, &d)) {
-        ctx_fail(c, "That date doesn't look right");
+        ctx_fail_at(c, "due", "That date doesn't look right");
         return;
     }
     t.due = due[0] ? dt_make(y, m, d, 0, 0) : 0;
@@ -419,7 +417,9 @@ void plan_act_task_save(Ctx *c, Fields *f) {
 }
 
 void plan_act_task_delete(Ctx *c, Fields *f) {
-    if (!tbl_del(&T_task, (int)fields_int(f, "id", 0))) {
+    int id = (int)fields_int(f, "id", 0);
+    ctx_undo(c, &T_task, id); /* Undo rather than "Delete ...?" (issue #60) */
+    if (!tbl_del(&T_task, id)) {
         ctx_fail(c, "That to-do is gone");
         return;
     }

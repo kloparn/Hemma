@@ -3,7 +3,49 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.11.0 (not released yet)
+## 0.12.0 (not released yet)
+
+Forms and wording: errors where they belong, Undo, bookings that tell their owner, plain words.
+
+### New
+
+- **Errors show next to the field they're about** (#60). An error about one field ("Use at
+  least 8 characters") stays under that field, which gets a red border, until you change it.
+  A screen reader reads the error with the field. An error about the whole form shows above its
+  buttons. Toasts are kept for the rest, and they move to the top of the screen when they would
+  cover the field you're typing in.
+- **Undo instead of "Are you sure?"** (#60). Removing a shopping item, clearing the basket,
+  taking down a note, deleting a to-do or an event, and the × on a Continue watching card
+  happen at once, and the toast offers **Undo** for 30 seconds. Notes, to-dos and events no
+  longer ask first.
+- **Someone else cancelling or moving your booking tells you** (#43). The person it was for, and
+  whoever made it, get a toast and a line on their Bookings page and home card ("Adam moved
+  your Laundry booking · now Sat 10:00–12:00 (was Fri 14:00–17:00)") until they press
+  **Got it**. An admin can make a thing stricter: **only the person a booking is for, whoever
+  made it, or an admin can cancel or move it**.
+- **Quick booking knows other names** (#55). The starter things answer to their Swedish names
+  too ("bastu ikväll 19" books the Sauna, "tvätt imorgon 19-20" the Laundry), and any thing
+  can be given **Other names** in its settings. A word that names nothing gets "I don't know
+  'boat'. You can book: Car, Laundry, Sauna."
+
+### Changes
+
+- **Members are told who to ask** (#58). The Watch card's "Set up" led members to a page
+  they can't change. They now read "Ask Anna (admin) to add the movie folders" (the
+  household's admins by name), on Live TV, the Watch page and Library settings too.
+- **Plain words instead of developer ones** (#62):
+  - The **Address** check: "Only this computer can open Hemma: phones and the TV can't reach
+    it", with the `--host` details folded away.
+  - The player shows **File details** ("MP4 file · H.264 video · AAC sound"), folded, instead of
+    "MP4 · H264 · AAC".
+  - Library settings' **What plays where** starts with "Most videos play straight away", with
+    the formats folded away.
+  - The **Network** page says "Connected over Wi-Fi" or "over a network cable" instead of
+    "Interface en0".
+  - The password secret is "the password secret (a line in the settings file)" on the
+    System page, with `HEMMA_AUTH_SALT` under **Technical details**.
+
+## 0.11.0 (2026-10-18)
 
 Hardening follow-ups: the TV's picker, connection slots, typed names, the browser log.
 

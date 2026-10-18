@@ -182,8 +182,18 @@
     const id = ++seq;
     pending.set(id, f);
     busy(f, true);
+    errsOff(f);
     send({ t: 'act', a, id, url: here(), f: pairs(fd) });
   });
+
+  // An error stays by its field until the field changes; a form's own error until any field does.
+  const errEdit = (e) => {
+    const x = e.target;
+    if (x._err) errOff(x._err);
+    else if (x.form && x.form._err) errOff(x.form._err);
+  };
+  document.addEventListener('input', errEdit);
+  document.addEventListener('change', errEdit);
 
   let liveTimer = 0;
   document.addEventListener('input', (e) => {
@@ -554,22 +564,115 @@
         const f = pending.get(op[1]);
         pending.delete(op[1]);
         if (f) { busy(f, false); if (op[2] && !f.hasAttribute('data-keep')) f.reset(); }
+        if (op[2] === false && op[3]) formErr(f, op[3], op[4]); // (an error rides on the ack: issue #60)
         break;
       }
-      case 'toast': toast(op[1], op[2]); break;
+      case 'toast': toast(op[1], op[2], op[3]); break;
       case 'reload': if (!isLeaving()) location.reload(); break;
     }
   }
 
-  function toast(kind, text) {
+  // more: {undo: token} - the action kept what it removed (ctx_undo): an Undo button puts it back.
+  function toast(kind, text, more) {
     const box = document.getElementById('toasts');
     if (!box) return;
     const el = document.createElement('div');
     el.className = 'toast t-' + (['ok', 'info', 'err'][kind] || 'info');
     el.textContent = text;
+    const undo = more && more.undo;
+    if (undo) {
+      const u = document.createElement('button');
+      u.type = 'button';
+      u.className = 'toast-undo';
+      u.textContent = 'Undo';
+      u.onclick = (e) => {
+        e.stopPropagation();
+        el.remove();
+        send({ t: 'act', a: 'core.undo', id: ++seq, url: here(), f: [['k', undo]] });
+      };
+      el.append(u);
+    }
     el.onclick = () => el.remove();
     box.append(el);
-    setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 400); }, kind === 2 ? 6000 : 3500);
+    dodge();
+    setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 400); }, undo ? 8000 : kind === 2 ? 6000 : 3500);
+  }
+
+  // Toasts never sit on the field being typed in (issue #60: an error covered the very field it was
+  // about): over the focused field - a phone's keyboard pushes fields down to them - they go to the top.
+  function dodge() {
+    const box = document.getElementById('toasts'), t = document.activeElement;
+    if (!box) return;
+    box.classList.remove('toasts-top');
+    if (!box.firstChild || !t || !t.matches('input,textarea,select,[contenteditable]')) return;
+    const a = box.getBoundingClientRect(), b = t.getBoundingClientRect();
+    if (a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom) box.classList.add('toasts-top');
+  }
+  document.addEventListener('focusin', dodge);
+
+  // ------------------------------------------------------------ form errors
+  // An action's error beside the field it names (aria-describedby: a screen reader reads it with the
+  // field), or - unnamed, in a form of class "stack" - above the form's buttons; else a toast. They are
+  // the browser's own nodes ([data-client]): morphs leave them, the field's change takes them away.
+  let errSeq = 0;
+  function describe(el, id, on) {
+    const ids = (el.getAttribute('aria-describedby') || '').split(' ').filter((x) => x && x !== id);
+    if (on) ids.push(id);
+    if (ids.length) el.setAttribute('aria-describedby', ids.join(' '));
+    else el.removeAttribute('aria-describedby');
+  }
+  const shown = (el) => el.type !== 'hidden' && !!el.getClientRects().length;
+  function formErr(f, text, field) {
+    let at = null;
+    if (f && f.isConnected && field && f.elements) {
+      at = f.elements.namedItem(field);
+      if (at && !at.nodeType) at = at[0]; // (radio buttons: the first)
+      if (at && !shown(at)) at = null;
+    }
+    if (!at && !(f && f.isConnected && f.classList.contains('stack'))) { toast(2, text); return; }
+    const e = document.createElement('small');
+    e.className = 'form-err';
+    e.id = 'form-err-' + ++errSeq;
+    e.setAttribute('role', 'alert');
+    e.setAttribute('data-client', '');
+    e.textContent = text;
+    if (at) {
+      const wrap = at.closest('.field');
+      if (wrap && f.contains(wrap) && !wrap.querySelector('.field')) wrap.append(e);
+      else at.after(e);
+      at._err = e;
+      e._for = at;
+      errMark(at);
+    } else {
+      const foot = f.querySelector('.modal-f');
+      if (foot && foot.parentNode === f) f.insertBefore(e, foot);
+      else f.append(e);
+      f._err = e;
+      e._for = null;
+    }
+    e._form = f;
+    (f._errs = f._errs || []).push(e);
+    if (at && unfocused()) at.focus();
+  }
+  function errMark(at) {
+    at.setAttribute('aria-invalid', 'true');
+    describe(at, at._err.id, true);
+  }
+  function errOff(e) {
+    e.remove();
+    const at = e._for, f = e._form;
+    if (at && at._err === e) {
+      at._err = null;
+      at.removeAttribute('aria-invalid');
+      describe(at, e.id, false);
+    }
+    if (f) {
+      if (f._err === e) f._err = null;
+      if (f._errs) f._errs = f._errs.filter((x) => x !== e);
+    }
+  }
+  function errsOff(f) {
+    for (const e of f._errs || []) errOff(e);
   }
 
   // -------------------------------------------------------------- morphing
@@ -591,6 +694,7 @@
       fresh.push(from); // the same element with something new in it (a video's next one): settled again
     }
     attrs(from, to);
+    if (from._err) errMark(from); // (the server's markup doesn't know about the error beside it)
     if (from.nodeName === 'TEXTAREA') {
       if (from.defaultValue !== to.textContent) from.defaultValue = to.textContent;
       return;
@@ -609,7 +713,10 @@
 
   // A node's key: its id attribute. (Not el.id: a form holding <input name="id"> answers el.id
   // with that input, so such forms never matched and were rebuilt - typing lost - every morph.)
-  const key = (n) => (n.nodeType === 1 && n.getAttribute('id')) || '';
+  // The browser's own nodes ([data-client]: a form error) aren't the server's to take away: morphs
+  // step over them.
+  const client = (n) => n.nodeType === 1 && n.hasAttribute('data-client');
+  const key = (n) => (n.nodeType === 1 && !n.hasAttribute('data-client') && n.getAttribute('id')) || '';
   function kids(from, to) {
     const keyed = new Map(), wanted = new Set();
     for (let c = from.firstChild; c; c = c.nextSibling) if (key(c)) keyed.set(key(c), c);
@@ -617,6 +724,7 @@
     let cur = from.firstChild;
     for (let nxt = to.firstChild; nxt;) {
       const after = nxt.nextSibling;
+      while (cur && client(cur)) cur = cur.nextSibling;
       let match = null;
       if (key(nxt)) {
         match = keyed.get(key(nxt)) || null;
@@ -624,9 +732,9 @@
       } else {
         // step over keyed nodes: gone ones are dropped now, moved ones get placed
         // when their turn comes - so the unkeyed node after them still lines up
-        while (cur && key(cur)) {
+        while (cur && (key(cur) || client(cur))) {
           const n = cur.nextSibling;
-          if (!wanted.has(key(cur))) cur.remove();
+          if (key(cur) && !wanted.has(key(cur))) cur.remove();
           cur = n;
         }
         if (cur && cur.nodeType === nxt.nodeType && cur.nodeName === nxt.nodeName) match = cur;
@@ -643,7 +751,7 @@
     }
     while (cur) {
       const n = cur.nextSibling;
-      cur.remove();
+      if (!client(cur)) cur.remove();
       cur = n;
     }
   }

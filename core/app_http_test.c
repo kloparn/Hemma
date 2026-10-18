@@ -639,6 +639,17 @@ TEST(app_live_messages_and_signed_out_screens_are_bounded) {
     ws_say(sa, "{\"t\":\"act\",\"a\":\"household.save\",\"id\":7,\"url\":\"/\",\"f\":[[\"name\",\"Openly\"]]}");
     CHECK(ws_wait(sa, &a, "[\"ack\",7,true]", 3000));
     CHECK_STR(app_name(), "Openly");
+    /* issue #60: an error rides on the ack, with the field it's about - wire.js shows it there, not
+       in a toast over it; a removal's toast carries its Undo */
+    buf_reset(&a);
+    ws_say(sa, "{\"t\":\"act\",\"a\":\"people.save\",\"id\":8,\"url\":\"/\",\"f\":[[\"name\",\" \"]]}");
+    CHECK(ws_wait(sa, &a, "[\"ack\",8,false,\"A name, please\",\"name\"]", 3000));
+    CHECK(!strstr(buf_cstr(&a), "[\"toast\",2,"));
+    buf_reset(&a);
+    ws_say(sa, "{\"t\":\"act\",\"a\":\"plan.shop_add\",\"id\":9,\"url\":\"/\",\"f\":[[\"q\",\"milk\"]]}");
+    CHECK(ws_wait(sa, &a, "[\"ack\",9,true]", 3000));
+    ws_say(sa, "{\"t\":\"act\",\"a\":\"plan.shop_delete\",\"id\":10,\"url\":\"/\",\"f\":[[\"id\",\"1\"]]}");
+    CHECK(ws_wait(sa, &a, "[\"toast\",0,\"Removed Milk\",{\"undo\":\"", 3000));
 
     /* issue #5: signed-out screens (they stay open while they answer pings) get a few
        connections per address, so one host can't hold every slot */

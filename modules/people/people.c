@@ -364,11 +364,11 @@ static void act_save(Ctx *c, Fields *f) {
     str_copy(name, sizeof name, fields_str(f, "name"));
     str_trim(name);
     if (!name[0]) {
-        ctx_fail(c, "A name, please");
+        ctx_fail_at(c, "name", "A name, please");
         return;
     }
     if (name_taken(name, p.id)) {
-        ctx_fail(c, "There's already a %s here", name);
+        ctx_fail_at(c, "name", "There's already a %s here", name);
         return;
     }
     str_copy(p.name, sizeof p.name, name);
@@ -384,36 +384,36 @@ static void act_save(Ctx *c, Fields *f) {
             if (*q >= 'A' && *q <= 'Z') *q = (char)(*q + 32);
         const char *pw = fields_str(f, "password");
         if (*pw && id && id == me) { /* review: that skipped the current-password check and kept other sessions */
-            ctx_fail(c, "Change your own password under Your account - it asks for the current one first");
+            ctx_fail_at(c, "password", "Change your own password under Your account - it asks for the current one first");
             return;
         }
         if (set_user && user[0]) {
             if (!auth_username_ok(user)) {
-                ctx_fail(c, "Usernames are 2–32 of a–z, 0–9 and . _ -");
+                ctx_fail_at(c, "username", "Usernames are 2–32 of a–z, 0–9 and . _ -");
                 return;
             }
             Person *other = person_by_username(user);
             if (other && other->id != p.id) {
-                ctx_fail(c, "@%s is taken", user);
+                ctx_fail_at(c, "username", "@%s is taken", user);
                 return;
             }
             if (!p.pass[0] && !*pw) {
-                ctx_fail(c, "Give %s a password to sign in with", p.name);
+                ctx_fail_at(c, "password", "Give %s a password to sign in with", p.name);
                 return;
             }
         }
         if (*pw) {
             const char *why = auth_password_problem(pw);
             if (why) {
-                ctx_fail(c, "%s", why);
+                ctx_fail_at(c, "password", "%s", why);
                 return;
             }
             if (!user[0]) {
-                ctx_fail(c, "A password needs a username too");
+                ctx_fail_at(c, "username", "A password needs a username too");
                 return;
             }
             if (!auth_hash(pw, p.pass, sizeof p.pass)) {
-                ctx_fail(c, "Passwords can't be set: HEMMA_AUTH_SALT isn't configured");
+                ctx_fail(c, "Passwords can't be set: Hemma has no password secret yet (System says how to add one)");
                 return;
             }
         }
@@ -467,21 +467,21 @@ static void act_password(Ctx *c, Fields *f) {
         return;
     }
     if (r != LOGIN_OK) {
-        ctx_fail(c, "Your current password isn't right");
+        ctx_fail_at(c, "current", "Your current password isn't right");
         return;
     }
     const char *why = auth_password_problem(nw);
     if (why) {
-        ctx_fail(c, "%s", why);
+        ctx_fail_at(c, "new", "%s", why);
         return;
     }
     if (!str_eq(nw, again)) {
-        ctx_fail(c, "The new passwords don't match");
+        ctx_fail_at(c, "again", "The new passwords don't match");
         return;
     }
     int n = auth_set_password(c->me->id, nw, c->sess); /* c->me may dangle from here on */
     if (n < 0) {
-        ctx_fail(c, "Passwords can't be set: HEMMA_AUTH_SALT isn't configured");
+        ctx_fail(c, "Passwords can't be set: Hemma has no password secret yet (System says how to add one)");
         return;
     }
     if (n) ctx_ok(c, "Password changed — signed out %d other device%s", n, n == 1 ? "" : "s");
@@ -499,7 +499,7 @@ static void act_codes(Ctx *c, Fields *f) {
         return;
     }
     if (r != LOGIN_OK) {
-        ctx_fail(c, "Your password isn't right");
+        ctx_fail_at(c, "current", "Your password isn't right");
         return;
     }
     if (!auth_codes_new(c->me->id, c->sess)) {

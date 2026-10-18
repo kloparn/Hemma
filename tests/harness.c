@@ -40,6 +40,8 @@ ThResult th_act(int person, const char *action, const char *form) {
     r.ok = found && !c.failed;
     str_copy(r.toast, sizeof r.toast, c.toast);
     str_copy(r.redirect, sizeof r.redirect, c.redirect);
+    str_copy(r.field, sizeof r.field, c.fail_field);
+    if (c.undo) snprintf(r.undo, sizeof r.undo, "%016llx", (unsigned long long)c.undo);
     fields_free(&f);
     app_ctx_free(&c);
     return r;

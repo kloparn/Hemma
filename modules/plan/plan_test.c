@@ -292,6 +292,62 @@ TEST(plan_shopping_add_check_clear_suggest) {
     th_halt();
 }
 
+/* Removing is quick and the toast's Undo puts it back, id and all (issue #60: the × was final) - for
+   whoever removed it, while the toast can still be there. */
+TEST(plan_removals_can_be_undone) {
+    g_fake_now = NOW;
+    th_boot();
+    int adam = th_person("Adam"), eva = th_person("Eva");
+    CHECK(th_act(adam, "plan.shop_add", "q=milk%2C+eggs%2C+bread").ok);
+    ThResult r = th_act(adam, "plan.shop_delete", "id=2");
+    CHECK(r.ok);
+    CHECK_STR(r.toast, "Removed Eggs");
+    CHECK(r.undo[0]);
+    CHECK(!tbl_get(&T_item, 2));
+    char k[40];
+    snprintf(k, sizeof k, "k=%s", r.undo);
+    CHECK(!th_act(eva, "core.undo", k).ok); /* not Eva's to take back */
+    ThResult u = th_act(adam, "core.undo", k);
+    CHECK(u.ok);
+    CHECK_STR(u.toast, "Put back");
+    Item *it = tbl_get(&T_item, 2);
+    CHECK(it && str_eq(it->text, "Eggs"));
+    u = th_act(adam, "core.undo", k); /* once */
+    CHECK(!u.ok);
+    CHECK_STR(u.toast, "Too late to undo that");
+    CHECK(!th_act(adam, "core.undo", "k=nonsense").ok);
+    /* a cleared basket comes back whole */
+    CHECK(th_act(adam, "plan.shop_toggle", "id=1").ok);
+    CHECK(th_act(adam, "plan.shop_toggle", "id=3").ok);
+    r = th_act(adam, "plan.shop_clear", "");
+    CHECK(r.ok && r.undo[0]);
+    CHECK_INT(tbl_count(&T_item), 1);
+    snprintf(k, sizeof k, "k=%s", r.undo);
+    CHECK(th_act(adam, "core.undo", k).ok);
+    CHECK_INT(tbl_count(&T_item), 3);
+    CHECK(((Item *)tbl_get(&T_item, 1))->done);
+    /* not after UNDO_S */
+    r = th_act(adam, "plan.shop_delete", "id=1");
+    snprintf(k, sizeof k, "k=%s", r.undo);
+    g_fake_now += UNDO_S + 1;
+    CHECK(!th_act(adam, "core.undo", k).ok);
+    CHECK(!tbl_get(&T_item, 1));
+    /* a failed removal offers nothing */
+    r = th_act(adam, "plan.shop_delete", "id=1");
+    CHECK(!r.ok && !r.undo[0]);
+    /* to-dos and events: no "Delete ...?" first any more, Undo after */
+    CHECK(th_act(adam, "plan.task_save", "title=Water+plants").ok);
+    const char *html = th_page(adam, "/plan?edit=1");
+    CHECK_HAS(html, "data-a=\"plan.task_delete\"");
+    CHECK(!strstr(html, "data-confirm"));
+    r = th_act(adam, "plan.task_delete", "id=1");
+    CHECK(r.ok && r.undo[0]);
+    snprintf(k, sizeof k, "k=%s", r.undo);
+    CHECK(th_act(adam, "core.undo", k).ok);
+    CHECK(tbl_get(&T_task, 1) != NULL);
+    th_halt();
+}
+
 /* ------------------------------------------------------------- calendar */
 
 TEST(plan_events_add_edit_and_agenda) {

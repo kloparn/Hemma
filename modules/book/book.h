@@ -21,6 +21,8 @@ typedef struct {
     int default_min; /* suggested length of a new booking */
     int max_min;     /* longest allowed booking, 0 = no limit */
     char rules[160]; /* "Fill the tank below a quarter", shown when booking */
+    char aliases[120]; /* other names quick booking knows it by, comma-separated ("bastu, bastun"; issue #55) */
+    bool own_only; /* only the person a booking is for, whoever made it, or an admin may cancel or move it (#43) */
     bool archived;
     int sort;
 } Resource;
@@ -35,10 +37,25 @@ typedef struct {
     int64_t created;
 } Booking;
 
-extern Table T_resource, T_booking;
+/* What happened to someone's booking while someone else had it in hand (issue #43: "someone cancelled
+   my laundry slot and I never knew"): shown on their Bookings page and home card until "Got it". */
+typedef struct {
+    int id;
+    int person; /* whose booking it was */
+    int64_t ts;
+    char text[200]; /* "Adam cancelled your Laundry booking · Fri 14:00–17:00" */
+    char link[160];
+} BookNews;
+
+extern Table T_resource, T_booking, T_book_news;
 
 Resource *res_get(int id);
+/* May the one signed in on c cancel or move b? Everyone (not a display account), unless r is own_only:
+   then the person it's for, whoever booked it, or an admin. */
+bool book_may_change(const Ctx *c, const Resource *r, const Booking *b);
 int res_list(Resource **out, int max, bool with_archived); /* ordered for display */
+/* The Swedish names a thing still called like its starter answers to ("Sauna": "bastu"), or "". */
+const char *book_starter_aliases(const char *name);
 static inline bool res_daily(const Resource *r) { return r->slot >= 1440; }
 
 Booking *book_get(int id);
