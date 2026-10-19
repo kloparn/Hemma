@@ -17,16 +17,12 @@
 #include "server.h"
 #include "store.h"
 
-#define HEMMA_VERSION "0.13.0" /* raised for every release (SECURITY.md, CHANGELOG.md) */
+#define HEMMA_VERSION "0.13.1" /* raised for every release (SECURITY.md, CHANGELOG.md) */
 /* With the commit the binary was built from: "0.6.0 (8242ca8f1a2b)", "-dirty" with uncommitted
-   changes (build.ps1 and the Makefile pass -DHEMMA_COMMIT=...); just the version outside git. */
-#define HEMMA_STR_(x) #x
-#define HEMMA_STR(x) HEMMA_STR_(x)
-#ifdef HEMMA_COMMIT
-#define HEMMA_VERSION_FULL HEMMA_VERSION " (" HEMMA_STR(HEMMA_COMMIT) ")"
-#else
-#define HEMMA_VERSION_FULL HEMMA_VERSION
-#endif
+   changes; just the version outside git. core/version.c is the one file the build hands
+   -DHEMMA_COMMIT=..., so a new commit (or an edit that makes it "-dirty") recompiles that file only. */
+const char *hemma_version_full(void);
+#define HEMMA_VERSION_FULL hemma_version_full()
 
 /* ------------------------------------------------------------- people */
 

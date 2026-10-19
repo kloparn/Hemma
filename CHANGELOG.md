@@ -3,7 +3,30 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.13.0 (not released yet)
+## 0.13.1 (not released yet)
+
+Faster builds and tests for whoever works on Hemma, and one small upload fix.
+
+### Fixes
+
+- **An upload counts a file before it answers "done"**. A browser told a file had arrived could
+  ask straight away and still read "0 of 2 files": someone else's new upload was then refused
+  with the old count. Seen on a busy Raspberry Pi.
+
+### For developers
+
+- **`make` builds one object per source file**, so `make -j8` keeps every core busy and a change
+  compiles again only the files it touches (each object knows the headers it read). A new commit
+  recompiles one file: the version with its commit now lives in `core/version.c`.
+- **The test suite runs in one process per core** (`make test`, `.\build.ps1 test`): about 5-10 s
+  instead of a minute on a 20-thread PC. `build/test --shard K/N` runs a share of it;
+  `make test T=lan` runs a filter in one process. Running tests in different company showed one
+  that leaned on an earlier test: the sidebar's disk meter now measures afresh at every start.
+- **CI's Linux jobs on your own machine** (`tools/ci/local.sh test|asan|fuzz`; on Windows
+  `.\build.ps1 ci`, in WSL): the gcc build and suite, the suite under ASan + UBSan, and the
+  converter's fuzzer, in seconds to a minute. GitHub CI compiles with every core too.
+
+## 0.13.0 (2026-10-19)
 
 Accessibility: keyboard, screen readers, contrast, motion.
 

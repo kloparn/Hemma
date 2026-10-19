@@ -643,7 +643,7 @@ TEST(upload_takes_copies_the_browser_makes) {
     call("PUT", url, adam, NULL, "0123456789", 10, 10, &r); /* g.mp4 arrives: Adam's upload is running */
     CHECK_HAS(body_of(&r), "\"ok\":true");
     const char *both = "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"X/e.mp4\",10],[\"X/f.mp4\",10]]}";
-    plan_for(eva, both, &r, evas);
+    plan_for(eva, both, &r, evas); /* (g.mp4 counted before its "ok" went: never "0 of 2" here) */
     CHECK_HAS(buf_cstr(&r), "422");
     CHECK_HAS(body_of(&r), "Adam's upload is running (1 of 2 files)");
     CHECK_HAS(th_page(eva_id, "/media/upload"), "id=\"media-up-force\"><input");

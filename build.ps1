@@ -3,7 +3,9 @@
 
     ./build.ps1                 debug build          -> build/hemma.exe
     ./build.ps1 run [args]      debug build + run on http://127.0.0.1:8080 (web/ + module CSS served live)
-    ./build.ps1 test [filter]   build + run tests    (filter = substring of a test or file name)
+    ./build.ps1 test [filter]   build + run tests    (one process per core; a filter = substring of a test
+                                or file name, run in one process)
+    ./build.ps1 ci [job]        CI's Linux jobs in WSL (tools/ci/local.sh): test | asan | fuzz [seconds]
     ./build.ps1 release         optimised build      -> build/hemma.exe
     ./build.ps1 pi              Raspberry Pi 64-bit  -> build/hemma-pi64   (static, aarch64)
     ./build.ps1 pi32            Raspberry Pi 32-bit  -> build/hemma-pi32   (static, armv6: every Pi)
@@ -14,6 +16,8 @@
 
   $env:HEMMA_SKIP_MODULES = "media,tv"   leaves those module folders out of the build
   $env:HEMMA_BUILD_DIR = "build-book"    private output folder (parallel workers); SQLite objects stay shared
+  $env:HEMMA_TEST_JOBS = "4"             test processes (default: one per core)
+  $env:HEMMA_WSL = "Ubuntu-24.04"        the WSL distribution for ci (default: WSL's default)
 #>
 param(
     [Parameter(Position = 0)][string]$Cmd = "build",
@@ -191,6 +195,65 @@ function Build-Tests {
     Invoke-Zig (@("cc") + $Flags + $Debug + @("-Itests") + (Get-Sources $true) + $sqlite + @("-o", "$B/test.exe") + $WinLibs)
 }
 
+# The whole suite in one process per core (test.exe --shard K/N), then one summary - what
+# tests/parallel.sh does for make test. A filter runs in one process, as before.
+function Invoke-Tests([string[]]$Filter) {
+    if ($Filter) {
+        & "./$B/test.exe" @Filter
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        return
+    }
+    $n = if ($env:HEMMA_TEST_JOBS) { [int]$env:HEMMA_TEST_JOBS } else { [Environment]::ProcessorCount }
+    $out = "$B/test-out"
+    New-Item -ItemType Directory -Force $out | Out-Null
+    $procs = @(for ($k = 0; $k -lt $n; $k++) {
+            $p = Start-Process -FilePath "$B/test.exe" -ArgumentList @("--shard", "$k/$n") -NoNewWindow -PassThru `
+                -RedirectStandardError "$out/$k.log" -RedirectStandardOutput "$out/$k.out"
+            $null = $p.Handle # (so its exit code can still be read once it has ended)
+            $p
+        })
+    foreach ($p in $procs) { $p.WaitForExit() }
+    $run = 0; $failed = 0; $checks = 0; $ms = 0; $bad = $false
+    for ($k = 0; $k -lt $n; $k++) {
+        $sum = $null
+        foreach ($line in [IO.File]::ReadAllLines((Join-Path $PSScriptRoot "$out/$k.log"))) {
+            if ($line -match '^shard \d+/\d+: (\d+) run, (\d+) failed, (\d+) checks, (\d+) ms') { $sum = $Matches }
+            else { Write-Host $line }
+        }
+        if (-not $sum) { $failed++; $bad = $true; continue } # (it never got to the end: a crash)
+        $run += [int]$sum[1]; $failed += [int]$sum[2]; $checks += [int]$sum[3]
+        $ms = [math]::Max($ms, [int]$sum[4])
+        if ($procs[$k].ExitCode -ne 0) { $bad = $true }
+    }
+    if ($failed -or $bad) {
+        Write-Host "`n$failed of $run tests failed ($checks checks, $ms ms in $n processes)" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "`nall $run tests passed ($checks checks, $ms ms in $n processes)" -ForegroundColor Green
+}
+
+# CI's Linux jobs (gcc + the suite, ASan + UBSan, the converter's fuzzer) in WSL: this checkout's files
+# go over as one tar, and tools/ci/local.sh runs the job in WSL's RAM disk (docs/development.md).
+function Invoke-CI([string[]]$JobArgs) {
+    if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
+        throw "WSL isn't installed - see 'Checking before you push' in docs/development.md"
+    }
+    $distro = if ($env:HEMMA_WSL) { @("-d", $env:HEMMA_WSL) } else { @() }
+    New-Item -ItemType Directory -Force $B | Out-Null
+    $files = @(& git ls-files -co --exclude-standard)
+    if ($LASTEXITCODE -ne 0) { throw "git ls-files failed" }
+    # (LF line ends: tar would take a CR as part of the name)
+    [IO.File]::WriteAllText((Join-Path $PSScriptRoot "$B/ci-files.txt"), ($files -join "`n") + "`n", (New-Object Text.UTF8Encoding $false))
+    $tarExe = Join-Path $env:SystemRoot "System32/tar.exe" # (Windows' own: Git's may come first on PATH)
+    if (-not (Test-Path $tarExe)) { $tarExe = "tar.exe" }
+    & $tarExe -cf "$B/ci-src.tar" -T "$B/ci-files.txt"
+    if ($LASTEXITCODE -ne 0) { throw "packing the tree failed" }
+    $tar = (& wsl.exe @distro --exec wslpath -a (Join-Path $PSScriptRoot "$B/ci-src.tar")).Trim()
+    $sh = (& wsl.exe @distro --exec wslpath -a (Join-Path $PSScriptRoot "tools/ci/local.sh")).Trim()
+    & wsl.exe @distro --exec bash $sh @JobArgs --tar $tar
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
 switch ($Cmd) {
     "build" { Build-Target "win" $Debug }
     "release" { Build-Target "win" $Release }
@@ -200,17 +263,16 @@ switch ($Cmd) {
     }
     "test" {
         Build-Tests
-        & "./$B/test.exe" @Rest
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Invoke-Tests $Rest
     }
+    "ci" { Invoke-CI $(if ($Rest) { $Rest } else { @("test") }) }
     "pi" { Build-Target "pi" $Release }
     "pi32" { Build-Target "pi32" $Release }
     "linux" { Build-Target "linux" $Release }
     "mac" { foreach ($n in "mac-arm64", "mac-x64") { Build-Target $n $Release } }
     "all" {
         Build-Tests
-        & "./$B/test.exe"
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Invoke-Tests @()
         foreach ($n in "win", "pi", "pi32", "linux", "mac-arm64", "mac-x64") { Build-Target $n $Release }
     }
     "clean" { Remove-Item -Recurse -Force $B -ErrorAction SilentlyContinue; Write-Host "cleaned $B" }

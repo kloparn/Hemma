@@ -2,8 +2,9 @@
 # (Xcode's clang: xcode-select --install). `make CC="zig cc"` works too.
 # On Windows use build.ps1 (it can also cross-compile the Linux, Pi and Mac binaries).
 #
-#   make                 build/hemma
-#   make test            build and run every *_test.c
+#   make -j8             build/hemma (one object per source file: -j keeps every core busy)
+#   make test            build and run every *_test.c, one process per core (tests/parallel.sh)
+#   make test T="http"   only tests whose name or file contains "http", in one process
 #   make run             run on 127.0.0.1:8080 with web/ served live from disk
 #   make SKIP="tv"       leave module folders out (media needs av and tv needs media: they go too)
 #   sudo make install    Linux with systemd: /opt/hemma + the service (see deploy/, docs/linux.md)
@@ -24,7 +25,6 @@ CPPFLAGS += -Icore -Ithird_party/sqlite -D_FILE_OFFSET_BITS=64 -D_TIME_BITS=64
 # The commit a binary is built from, for `hemma --version` ("-dirty": with uncommitted changes).
 # Nothing outside a git checkout.
 HEMMA_COMMIT := $(shell git rev-parse --short=12 HEAD 2>/dev/null)$(shell git status --porcelain --untracked-files=no 2>/dev/null | grep -q . && echo -dirty)
-CPPFLAGS += $(if $(HEMMA_COMMIT),-DHEMMA_COMMIT=$(HEMMA_COMMIT))
 LDLIBS   += -lpthread -lm
 # SQLite for size: its data is read into memory once, so -Os costs nothing you'd notice
 SQLITE_FLAGS = -Os -w -DSQLITE_DQS=0 -DSQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_MEMSTATUS=0 \
@@ -40,7 +40,6 @@ MODULE_DIRS := $(filter-out $(addprefix modules/,$(SKIPPED)),$(wildcard modules/
 SRC_ALL     := $(wildcard core/*.c) $(foreach d,$(MODULE_DIRS),$(wildcard $(d)/*.c))
 SRC         := $(filter-out %_test.c,$(SRC_ALL))
 TEST_SRC    := $(filter-out core/main.c,$(SRC)) $(filter %_test.c,$(SRC_ALL)) tests/runner.c tests/harness.c
-HEADERS     := $(wildcard core/*.h) $(foreach d,$(MODULE_DIRS),$(wildcard $(d)/*.h))
 CSS         := web/app.css $(sort $(foreach d,$(MODULE_DIRS),$(wildcard $(d)/*.css)))
 WEB         := $(filter-out web/app.css,$(shell find web -type f ! -name '.*'))
 
@@ -82,22 +81,56 @@ build/assets.c: build/embed build/app.css $(WEB) $(WASM)
 	  gzip -9nc "$$f" > "build/gz/$$n.gz" && twins="$$twins /$$n.gz=build/gz/$$n.gz"; done; fi; \
 	build/embed $@ web $(WEB) /app.css=build/app.css $(if $(WASM),/av.wasm=$(WASM)) $$twins
 
-build/obj/sqlite3.o: third_party/sqlite/sqlite3.c build/.dir
+build/obj/sqlite.flags: FORCE | build/.dir
+	@echo '$(CC) $(SQLITE_FLAGS)' | cmp -s - $@ || echo '$(CC) $(SQLITE_FLAGS)' > $@
+
+build/obj/sqlite3.o: third_party/sqlite/sqlite3.c build/obj/sqlite.flags
 	$(CC) -c $(SQLITE_FLAGS) -o $@ third_party/sqlite/sqlite3.c
 
 # SQLite's recovery extension (third_party/sqlite/recover.c = dbdata.c + sqlite3recover.c)
 build/obj/recover.o: third_party/sqlite/recover.c third_party/sqlite/dbdata.c third_party/sqlite/sqlite3recover.c \
-  third_party/sqlite/sqlite3recover.h build/.dir
+  third_party/sqlite/sqlite3recover.h build/obj/sqlite.flags
 	$(CC) -c $(SQLITE_FLAGS) -o $@ third_party/sqlite/recover.c
 
-build/hemma: $(SRC) $(HEADERS) build/assets.c $(SQLITE_OBJ)
-	$(CC) $(CPPFLAGS) $(WARN) $(LEAN) $(CFLAGS) -o $@ $(SRC) build/assets.c $(SQLITE_OBJ) $(LEAN_LD) $(LDFLAGS) $(LDLIBS)
+# One object per source file: Hemma's in build/obj/h (LEAN), the test program's in build/obj/t
+# (-Itests). -MMD: each object knows the headers it read, so a change compiles again only the files it
+# touches. A different compiler or flags since the last build (the .flags stamps) compiles them all
+# again; a new commit, only core/version.o (the one file that gets -DHEMMA_COMMIT).
+OBJ_H   := $(patsubst %.c,build/obj/h/%.o,$(SRC)) build/obj/h/assets.o
+OBJ_T   := $(patsubst %.c,build/obj/t/%.o,$(TEST_SRC)) build/obj/t/assets.o
+FLAGS_H  = $(CC) $(CPPFLAGS) $(WARN) $(LEAN) $(CFLAGS)
+FLAGS_T  = $(CC) $(CPPFLAGS) $(WARN) $(CFLAGS) -Itests
 
-build/test: $(TEST_SRC) $(HEADERS) build/assets.c $(SQLITE_OBJ)
-	$(CC) $(CPPFLAGS) $(WARN) $(CFLAGS) -Itests -o $@ $(TEST_SRC) build/assets.c $(SQLITE_OBJ) $(LDFLAGS) $(LDLIBS)
+build/obj/h.flags: FORCE | build/.dir
+	@echo '$(FLAGS_H)' | cmp -s - $@ || echo '$(FLAGS_H)' > $@
+build/obj/t.flags: FORCE | build/.dir
+	@echo '$(FLAGS_T)' | cmp -s - $@ || echo '$(FLAGS_T)' > $@
+build/obj/commit: FORCE | build/.dir
+	@echo '$(HEMMA_COMMIT)' | cmp -s - $@ || echo '$(HEMMA_COMMIT)' > $@
 
+build/obj/h/%.o: %.c build/obj/h.flags
+	@mkdir -p $(@D)
+	$(FLAGS_H) -MMD -MP -c -o $@ $<
+build/obj/t/%.o: %.c build/obj/t.flags
+	@mkdir -p $(@D)
+	$(FLAGS_T) -MMD -MP -c -o $@ $<
+build/obj/h/assets.o: build/assets.c build/obj/h.flags
+	$(FLAGS_H) -c -o $@ build/assets.c
+build/obj/t/assets.o: build/assets.c build/obj/t.flags
+	$(FLAGS_T) -c -o $@ build/assets.c
+build/obj/h/core/version.o build/obj/t/core/version.o: build/obj/commit
+build/obj/h/core/version.o build/obj/t/core/version.o: CPPFLAGS += $(if $(HEMMA_COMMIT),-DHEMMA_COMMIT=$(HEMMA_COMMIT))
+-include $(OBJ_H:.o=.d) $(OBJ_T:.o=.d)
+
+build/hemma: $(OBJ_H) $(SQLITE_OBJ)
+	$(CC) $(CFLAGS) -o $@ $(OBJ_H) $(SQLITE_OBJ) $(LEAN_LD) $(LDFLAGS) $(LDLIBS)
+
+build/test: $(OBJ_T) $(SQLITE_OBJ)
+	$(CC) $(CFLAGS) -o $@ $(OBJ_T) $(SQLITE_OBJ) $(LDFLAGS) $(LDLIBS)
+
+T ?=
 test: build/test
-	build/test
+	$(if $(T),build/test $(T),sh tests/parallel.sh build/test)
 
 run: build/hemma
 	build/hemma --host 127.0.0.1 --web web --data data
@@ -110,4 +143,4 @@ install:
 clean:
 	rm -rf build
 
-.PHONY: all test run install clean
+.PHONY: all test run install clean FORCE
