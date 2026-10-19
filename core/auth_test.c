@@ -229,6 +229,7 @@ TEST(auth_junk_usernames_cant_flush_failures) {
     char user[32];
     int wrong = 0;
     for (int i = 0; i < 600; i++) { /* more than the table holds, from 120 helper addresses (5 each: no lock) */
+        auth_set_hash_budget(4000); /* about the tables, not the hashing budget: a slow machine runs it dry */
         snprintf(user, sizeof user, "junk-%d", i);
         wrong += auth_login(user, "x", 0x0A010000 + (uint32_t)(i / 5), now + 10, &who, &wait) == LOGIN_WRONG;
     }
@@ -249,8 +250,10 @@ TEST(auth_full_address_table_makes_new_addresses_wait) {
     int who = 0, wait = 0;
     const uint32_t home = 0x0A000070, fresh = 0x0A000071;
     CHECK_INT(auth_login("adam", "correct horse", home, now, &who, &wait), LOGIN_OK);
-    for (int i = 0; i < 256; i++)
+    for (int i = 0; i < 256; i++) {
+        auth_set_hash_budget(4000); /* about the table, not the hashing budget: a slow machine runs it dry */
         CHECK_INT(auth_login("nobody", "x", 0x0A020000 + (uint32_t)i, now + 1, &who, &wait), LOGIN_WRONG);
+    }
     CHECK_INT(auth_login("adam", "correct horse", fresh, now + 2, &who, &wait), LOGIN_THROTTLED);
     CHECK_INT(wait, 60);
     CHECK_INT(auth_login("adam", "correct horse", home, now + 3, &who, &wait), LOGIN_OK);
