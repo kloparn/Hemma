@@ -36,6 +36,10 @@ Downloads, and a demo to try Hemma before setting it up.
   release with that version's section of this file as its notes, plus the commits since the
   previous release (no section: no release). Run by hand, the workflow is a dry run. See
   [docs/development.md](docs/development.md#versions-and-releases).
+- **Two sign-in tests no longer depend on the machine's speed.** They make hundreds of wrong
+  sign-ins to fill the throttle tables, and on GitHub's slower Windows machine the hashing budget
+  (the flood guard that answers "busy" past 4 s of password checks) ran out part-way. They now
+  top it up between tries; the budget keeps its own test.
 
 ## 0.13.1 (2026-10-19)
 
