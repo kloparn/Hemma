@@ -60,7 +60,7 @@ static void event_row(Ctx *c, Buf *b, const Event *e, int64_t day, const char *h
     if (e->note[0]) H(b, "<small>%s</small>", e->note);
     buf_puts(b, href ? "</a>" : "</div>");
     if (p) {
-        buf_puts(b, "<span class=\"plan-ev-who\">");
+        buf_puts(b, "<span class=\"plan-ev-who\"><span class=\"sr-only\">for </span>");
         ui_avatar(b, p, "sm");
         buf_puts(b, "</span>");
     }
@@ -100,7 +100,7 @@ static void ext_row(Buf *b, const AgendaItem *it, int64_t day, bool link) {
     H(b, "<b>%s%r%s</b><small>%s</small>%r", it->icon, it->icon[0] ? " " : "", it->title,
       it->kind[0] ? it->kind : m ? m->title : "", link ? "</a>" : "</div>");
     if (p) {
-        buf_puts(b, "<span class=\"plan-ev-who\">");
+        buf_puts(b, "<span class=\"plan-ev-who\"><span class=\"sr-only\">for </span>");
         ui_avatar(b, p, "sm");
         buf_puts(b, "</span>");
     }
@@ -115,13 +115,13 @@ static void preview(Ctx *c, Buf *b) {
     EventDraft d;
     char err[160];
     if (!plan_parse_event(q, c->now, &d, err, sizeof err)) {
-        H(b, "<div class=\"preview bad\">%s</div>", err);
+        H(b, "<div class=\"preview bad\" data-say>%s</div>", err);
         return;
     }
     char when[96];
     when_describe(d.start, d.end, c->now, when, sizeof when);
     const char *icon = plan_task_icon(d.title);
-    H(b, "<div class=\"preview ok\">%s%r<b>%s</b>", icon, icon[0] ? " " : "", d.title);
+    H(b, "<div class=\"preview ok\" data-say>%s%r<b>%s</b>", icon, icon[0] ? " " : "", d.title);
     sep(b);
     html_esc(b, when);
     Person *p = person_get(d.who);
@@ -266,7 +266,8 @@ void plan_cal_page(Ctx *c, Buf *b) {
     ui_form(b, "plan.event_add", "quick plan-quick");
     buf_puts(b, "<div class=\"quick-row\"><input name=\"q\" required maxlength=\"200\" autocomplete=\"off\" "
                 "enterkeyhint=\"done\" data-live=\"plan.event_preview\" data-key=\"/\" aria-label=\"New event\" "
-                "placeholder=\"Add an event — “dentist tue 14:30 @adam”\"><button class=\"btn primary\">");
+                "placeholder=\"Add an event — “dentist tue 14:30 @adam”\"><button class=\"btn primary\" "
+                "aria-label=\"Add event\">"); /* (on phones only the + shows: issue #65) */
     ui_icon(b, "plus");
     buf_puts(b, "<span>Add</span></button></div>");
     preview(c, b);
@@ -410,7 +411,7 @@ int plan_days(Ctx *c, Buf *b, int days, int max) {
             H(b, "><span class=\"plan-ev-time\">To do</span><div class=\"plan-ev-main\"><b>%s%r%s</b></div>", icon,
               icon[0] ? " " : "", t->title);
             if (p) {
-                buf_puts(b, "<span class=\"plan-ev-who\">");
+                buf_puts(b, "<span class=\"plan-ev-who\"><span class=\"sr-only\">for </span>");
                 ui_avatar(b, p, "sm");
                 buf_puts(b, "</span>");
             }

@@ -993,7 +993,7 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         ui_form(b, "media.watched", "inline");
         H(b, "<input type=\"hidden\" name=\"id\" value=\"%X\"><input type=\"hidden\" name=\"done\" value=\"%d\">", f->id,
           done ? 0 : 1);
-        H(b, "<button class=\"btn%r\">", done ? " media-watched" : "");
+        H(b, "<button class=\"btn%r\" aria-pressed=\"%r\">", done ? " media-watched" : "", done ? "true" : "false");
         ui_icon(b, "check");
         H(b, "<span>%s</span></button>", done ? "Watched" : "Mark watched");
         ui_form_end(b);

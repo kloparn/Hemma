@@ -916,14 +916,16 @@ static void device_row(Ctx *c, Buf *b, const Device *d) {
         ui_hidden(b, "id", idstr);
         ui_hidden_int(b, "person", u->id);
         H(b, "<button class=\"chip net-suggest\" title=\"%s opened Hemma from this device\">", u->name);
-        ui_avatar(b, u, "xs");
+        ui_avatar_deco(b, u, "xs");
         H(b, "%s's?</button>", u->name);
         ui_form_end(b);
     }
     if (d->wol && admin) {
         Buf ic = {0};
         ui_icon(&ic, "power");
-        ui_act(b, "net.wake", "icon-btn net-wake", buf_cstr(&ic), "id", idstr, "Wake up");
+        char what[120];
+        snprintf(what, sizeof what, "Wake up %s", net_label(d)); /* (which one: issue #69) */
+        ui_act(b, "net.wake", "icon-btn net-wake", buf_cstr(&ic), "id", idstr, what);
         buf_free(&ic);
     }
     if (admin) {

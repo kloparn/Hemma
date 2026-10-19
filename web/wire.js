@@ -141,7 +141,12 @@
     const u = new URL(a.href, location.href);
     if (u.origin !== location.origin) return;
     e.preventDefault();
-    if (u.hash && u.pathname + u.search === here()) { location.hash = u.hash; return; }
+    if (u.hash && u.pathname + u.search === here()) { // (an in-page link takes the focus along: "Skip to content", #68)
+      location.hash = u.hash;
+      const t = document.getElementById(decodeURIComponent(u.hash.slice(1)));
+      if (t) t.focus();
+      return;
+    }
     if (a.hasAttribute('data-back')) { goBack(a); return; }
     send({ t: 'nav', url: u.pathname + u.search });
   });
@@ -298,9 +303,10 @@
     const inside = af ? (af.matches(FOCUSABLE) ? [af] : focusables(af)) : [];
     return inside[0] || focusables(area)[0] || null;
   }
+  const lessMotion = () => !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches); // (#70)
   const moveTo = (el, smooth) => {
     el.focus({ preventScroll: true });
-    el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: smooth ? 'smooth' : 'auto' });
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: smooth && !lessMotion() ? 'smooth' : 'auto' });
   };
   // [data-back] (TV mode's Back) is in reach of the arrows too (issue #57: a playing video had no
   // way out on a remote): Up from the picture, Left or Up past the edge of a [data-arrows] area;
@@ -353,6 +359,75 @@
     if (!area) return null;
     const r = t.getBoundingClientRect();
     return { area, url: pageUrl, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+  // Dialogs (ui_modal: .modal[role=dialog]; issue #63 - focus stayed on the button behind, and Shift+Tab
+  // reached "Sign out"): a dialog that appears takes the focus (its first field, else its title), Tab
+  // and Shift+Tab go round inside it, and everything outside is inert (set again after every morph:
+  // the server's markup doesn't carry it). When it goes, the focus goes back to what opened it - or,
+  // that gone, near where it was (keepSpot's rules). A TV's engine without inert still gets the rest.
+  let dlg = null, dlgFrom = null, inerted = [];
+  function dialogs(opener) {
+    const d = document.querySelector('#app .modal[role="dialog"]');
+    for (const el of inerted) el.inert = false;
+    inerted = [];
+    for (let n = d; n && n.parentElement && n.getAttribute('id') !== 'app'; n = n.parentElement)
+      for (const s of n.parentElement.children)
+        if (s !== n && 'inert' in s && !s.inert) { s.inert = true; inerted.push(s); }
+    if (d) {
+      if (!dlg && opener && opener.el && opener.el !== document.body) dlgFrom = opener; // (what had the focus before it)
+      const fresh = d !== dlg;
+      dlg = d;
+      if (fresh || unfocused() || !d.contains(document.activeElement)) {
+        const fields = focusables(d.querySelector('.modal-b') || d).filter((el) => el.matches('input,select,textarea'));
+        const h = d.querySelector('.modal-h h2');
+        if (fields[0]) fields[0].focus();
+        else if (h) { h.tabIndex = -1; h.focus(); }
+      }
+    } else if (dlg) {
+      dlg = null;
+      const from = dlgFrom;
+      dlgFrom = null;
+      if (from && unfocused()) {
+        if (from.el.isConnected && focusables(document).indexOf(from.el) >= 0) from.el.focus();
+        else keepSettle(from.keep);
+      }
+    }
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab' || !dlg || !dlg.isConnected) return;
+    const f = focusables(dlg).filter((el) => el.tabIndex >= 0); // (not the backdrop's close link)
+    if (!f.length) return;
+    const t = document.activeElement, first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && (t === first || !dlg.contains(t))) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (t === last || !dlg.contains(t))) { e.preventDefault(); first.focus(); }
+  });
+
+  // Everywhere else (issue #68: ticking a to-do off sent the focus to the top of the page): where the
+  // focus was - its item (nearest ancestor with an id), which of the item's controls, and the items
+  // either side of it - so that a morph that takes it away puts it back: on the same item if it's still
+  // in the same list, else the next item there (ticking several in a row), else the one before, else
+  // the item wherever it went. A dialog's own focus is the dialog's business (dialogs below).
+  function keepSpot() {
+    const t = document.activeElement;
+    if (!t || t === document.body || !t.closest || !t.closest('#app') || t.closest('[data-arrows]')) return null;
+    if (t.closest('.modal')) return null;
+    const item = t.parentElement && t.parentElement.closest('[id]'), iid = item && item.getAttribute('id');
+    if (!item || iid === 'app' || iid === 'main') return null;
+    const sib = (el, dir) => {
+      for (let s = el[dir]; s; s = s[dir]) if (s.nodeType === 1 && s.getAttribute('id')) return s.getAttribute('id');
+      return '';
+    };
+    return { url: pageUrl, id: iid, list: item.parentElement, index: focusables(item).indexOf(t),
+             next: sib(item, 'nextElementSibling'), prev: sib(item, 'previousElementSibling') };
+  }
+  function keepSettle(k) {
+    if (!k || k.url !== here() || !unfocused()) return;
+    const here_ = (id) => { const el = id && document.getElementById(id); return el && el.parentElement === k.list ? el : null; };
+    const item = here_(k.id) || here_(k.next) || here_(k.prev) || document.getElementById(k.id);
+    if (!item) return;
+    const f = focusables(item);
+    const el = f[Math.max(0, Math.min(k.index, f.length - 1))];
+    if (el) el.focus({ preventScroll: true });
   }
   // After a load or a morph a [data-arrows] area always has something focused: when the morph
   // took the focused thing away (a tile that went), whatever is nearest to where it was; on a
@@ -546,8 +621,8 @@
         t.innerHTML = op[1];
         const next = t.content.firstElementChild, app = document.getElementById('app');
         if (next && app) {
-          const was = focusSpot();
-          morph(app, next); settle(); starts(); gaps(); fits(); arrowsSettle(was);
+          const was = focusSpot(), kept = keepSpot(), opener = dlg ? null : { el: document.activeElement, keep: kept };
+          morph(app, next); settle(); starts(); gaps(); fits(); arrowsSettle(was); keepSettle(kept); dialogs(opener); says();
           pageUrl = here();
         }
         break;
@@ -673,6 +748,45 @@
   }
   function errsOff(f) {
     for (const e of f._errs || []) errOff(e);
+  }
+
+  // [data-say]: a line a screen reader should hear when it changes - the quick bars' previews ("Car ·
+  // Today 20:00-22:00 · Free", a clash; issue #69). Not at every keystroke: once typing pauses, its text
+  // goes into ONE polite live region (#wire-say), which is what gets read.
+  let sayTimer = 0, said = '';
+  function announce(text) {
+    let live = document.getElementById('wire-say');
+    if (!live) {
+      live = document.createElement('div');
+      live.id = 'wire-say';
+      live.className = 'sr-only';
+      live.setAttribute('aria-live', 'polite');
+      document.body.append(live);
+    }
+    live.textContent = text;
+  }
+  // What a screen reader would read of el: aria-hidden parts left out (an avatar beside its name),
+  // the "·" between parts a pause.
+  function spoken(el) {
+    let s = '';
+    const walk = (n) => {
+      if (n.nodeType === 3) s += n.nodeValue;
+      else if (n.nodeType === 1 && n.getAttribute('aria-hidden') !== 'true' && !n.hidden) {
+        const p = n !== el && n.previousElementSibling; // (a line of its own: it starts below the one before)
+        const line = p && n.getBoundingClientRect().top >= p.getBoundingClientRect().bottom - 2;
+        if (line && /\S\s*$/.test(s) && !/[.,:;!?]\s*$/.test(s)) s += '. ';
+        for (let c = n.firstChild; c; c = c.nextSibling) walk(c);
+        if (line) s += ' ';
+      }
+    };
+    walk(el);
+    return s.replace(/\s*·\s*/g, ', ').replace(/\s+/g, ' ').trim();
+  }
+  function says() {
+    const text = [...document.querySelectorAll('[data-say]')].map(spoken).join(' ').trim();
+    clearTimeout(sayTimer);
+    if (text === said) return;
+    sayTimer = setTimeout(() => { said = text; announce(text); }, 700);
   }
 
   // -------------------------------------------------------------- morphing
@@ -1092,11 +1206,13 @@
     const show = !m._away && m.duration > s * 3 && left <= s;
     if (show) for (const n of card.querySelectorAll('[data-count]')) n.textContent = String(Math.max(0, Math.ceil(left)));
     if (show === !card.hidden) return;
-    const t = document.activeElement;
+    const t = document.activeElement, pl = plOf(m);
     card.hidden = !show;
     if (show) {
+      const head = card.querySelector('.media-upnext-t'); // read out once, not each second (issue #64)
+      announce(spoken(head || card));
       const af = card.querySelector('[autofocus]');
-      if (af && (!t || t === document.body || t === m)) af.focus();
+      if (af && (!t || t === document.body || t === m || (pl && pl.contains(t)))) af.focus();
     } else if (card.contains(t)) m.focus();
   }
   // (capturing: "this one is watched" has to go before the link's nav - the server takes a live
@@ -1147,9 +1263,18 @@
     plSync(pl, v);
     plWake(pl);
   }
+  // (attributes only when they change: plSync runs at every timeupdate)
+  const attr = (el, name, value) => { if (el && el.getAttribute(name) !== value) el.setAttribute(name, value); };
   function plSync(pl, v) {
     flag(pl, 'data-paused', v.paused); /* (a live channel too: one that never started) */
     flag(pl, 'data-muted', v.muted || v.volume === 0);
+    // what the buttons do now, in words (issue #64: "Play" and "Sound" never said paused or muted)
+    for (const b of pl.querySelectorAll('[data-p="play"]')) {
+      const l = (v.paused ? 'Play' : 'Pause') + (b.title ? ' (Space)' : '');
+      attr(b, 'aria-label', l);
+      if (b.title) attr(b, 'title', l);
+    }
+    attr(pl.querySelector('[data-p="mute"]'), 'aria-pressed', v.muted || v.volume === 0 ? 'true' : 'false');
     const d = v.duration, seek = pl.querySelector('[data-p="seek"]');
     if (seek && d > 0 && isFinite(d)) {
       const at = pl._drag ? pl._to : v.currentTime;
@@ -1158,6 +1283,7 @@
         seek.value = at;
       }
       pl.querySelector('.pl-fill').style.width = (100 * at / d) + '%';
+      attr(seek, 'aria-valuetext', clock(at) + ' of ' + clock(d)); /* (not a bare "12": #64) */
       let end = 0;
       for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= v.currentTime + 1) end = Math.max(end, v.buffered.end(i));
       pl.querySelector('.pl-buf').style.width = (100 * Math.min(end, d) / d) + '%';
@@ -1195,7 +1321,9 @@
     if (!v || !pl.isConnected) return;
     const live = v.hasAttribute('data-onair');
     if (v.paused) return; // paused: it stays until playing again
-    if ((live && v.muted) || pl._drag || pl.querySelector('[role="menu"]:not([hidden])') ||
+    const bar = pl.querySelector('.pl-bar');
+    const keyed = bar && !bar.hasAttribute('data-arrows') && bar.contains(document.activeElement) && Date.now() - lastKey < 30000;
+    if ((live && v.muted) || pl._drag || keyed || pl.querySelector('[role="menu"]:not([hidden])') ||
         (pointer === 'mouse' && pl.querySelector('.pl-bar:hover'))) {
       pl._t = setTimeout(() => plSleep(pl), 3000);
       return;
@@ -1245,6 +1373,14 @@
     return was;
   }
   addEventListener('pointerdown', (e) => { pointer = e.pointerType || 'mouse'; }, true);
+  // The keyboard on a player's bar keeps it (issue #64: the focused button faded away with it), for
+  // 30 s after the last key; and focus arriving there by keyboard (Tab) shows it.
+  let lastKey = 0;
+  addEventListener('keydown', () => { lastKey = Date.now(); }, true);
+  document.addEventListener('focusin', (e) => {
+    const pl = e.target.closest && e.target.closest('[data-player]');
+    if (pl && !pl.hidden && !pl.hasAttribute('data-native') && Date.now() - lastKey < 1000) plWake(pl);
+  });
   document.addEventListener('click', (e) => {
     const t = e.target;
     if (!t.closest) return;
@@ -1435,5 +1571,6 @@
   gaps();
   fits();
   arrowsSettle(null);
+  dialogs(null);
   connect();
 })();

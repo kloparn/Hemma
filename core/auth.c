@@ -1308,7 +1308,8 @@ static void signin_page(Ctx *c, Buf *b) {
 
 void auth_page(Ctx *c, Buf *b) {
     c->bare = true;
-    buf_puts(b, "<div class=\"center-page\"><div class=\"welcome card signin\"><div class=\"welcome-logo\">");
+    /* a landmark like the app's pages (issue #70) */
+    buf_puts(b, "<main class=\"center-page\" id=\"main\"><div class=\"welcome card signin\"><div class=\"welcome-logo\">");
     ui_icon(b, "logo");
     buf_puts(b, "</div>");
     bool can = anyone_can_sign_in();
@@ -1318,7 +1319,7 @@ void auth_page(Ctx *c, Buf *b) {
     else if (!can) locked_page(c, b);
     else if (str_eq(c->path, "/forgot")) forgot_page(c, b);
     else signin_page(c, b);
-    buf_puts(b, "</div></div>");
+    buf_puts(b, "</div></main>");
 }
 
 /* ------------------------------------------------------------------ HTTP */

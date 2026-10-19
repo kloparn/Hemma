@@ -65,7 +65,7 @@ static void quick_bar(Ctx *c, Buf *b, int res) {
         book_quick_parse(q, res, c->now, &k);
         Resource *r = res_get(k.res);
         bool ok = !k.problem[0] && r;
-        H(b, "<div class=\"preview %s\">", ok ? "ok" : "bad");
+        H(b, "<div class=\"preview %s\" data-say>", ok ? "ok" : "bad"); /* read out once typing pauses (#69) */
         if (r && k.has_when && k.start) {
             res_title(b, r);
             buf_puts(b, " · <b>");
@@ -78,6 +78,7 @@ static void quick_bar(Ctx *c, Buf *b, int res) {
             }
             if (k.note[0]) H(b, " · <i>%s</i>", k.note);
         }
+        if (r && k.has_when && k.start) buf_puts(b, "<span class=\"sr-only\">. </span>"); /* (read as a pause: #69) */
         if (k.problem[0]) H(b, "<span class=\"book-why\">%s</span>", k.problem);
         else buf_puts(b, "<span class=\"book-why ok\">Free — press Enter to book</span>");
         buf_puts(b, "</div>");
@@ -177,7 +178,7 @@ static void booking_modal(Ctx *c, Buf *b, Booking *bk, const char *close) {
         return;
     }
     buf_puts(b, "<div class=\"book-bk-detail\">");
-    ui_avatar(b, who, "lg");
+    ui_avatar_deco(b, who, "lg");
     H(b, "<div><b class=\"book-bk-who\">%s</b><div class=\"book-bk-when\">", who ? who->name : "Someone");
     book_span_text(r, bk->start, bk->end, c->now, b);
     buf_puts(b, "</div>");
@@ -445,7 +446,8 @@ static void daily_grid(Ctx *c, Buf *b, Resource *r, int64_t ws) {
             if (can) H(b, "<a class=\"book-mo-b hued%r\" href=\"%s\" style=\"--h:%d\">", first ? " book-first" : "",
                        buf_cstr(&u), p ? p->hue : 210);
             else H(b, "<div class=\"book-mo-b hued%r\" style=\"--h:%d\">", first ? " book-first" : "", p ? p->hue : 210);
-            ui_avatar(b, p, "xs");
+            if (first) ui_avatar_deco(b, p, "xs"); /* (the name follows) */
+            else ui_avatar(b, p, "xs");
             H(b, "<span>%s</span>%r", first ? (p ? p->name : "Someone") : "", can ? "</a>" : "</div>");
             buf_free(&u);
         } else if (!past && can) { /* (a display account only looks - issue #96) */

@@ -17,6 +17,8 @@ void ui_icon(Buf *b, const char *name);
 
 /* Avatars: emoji or initials on the person's colour. size: "xs" "sm" "md" "lg" "xl". */
 void ui_avatar(Buf *b, const Person *p, const char *size);
+/* The same picture for a spot where the name is printed right beside it: hidden from screen readers. */
+void ui_avatar_deco(Buf *b, const Person *p, const char *size);
 void ui_person(Buf *b, const Person *p); /* avatar + name chip */
 void ui_hue_style(Buf *b, int hue);      /* style="--h:<hue>" */
 

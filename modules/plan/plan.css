@@ -11,7 +11,7 @@
 .plan-tabs a.on .plan-n, .plan-filter .chip.on .plan-n { background: var(--accent-soft); color: var(--accent); }
 .plan-sep { margin: 0 6px; opacity: .55; }
 @keyframes plan-in { from { opacity: 0; transform: translateY(-3px); } }
-@media (max-width: 420px) { .plan-quick .btn span { display: none; } }
+@media (max-width: 420px) { .plan-quick .btn span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; } } /* as .sr-only: hidden, still read (#65) */
 
 /* ------------------------------------------------------------- to-dos */
 
@@ -23,7 +23,6 @@
 .plan-g0 { border-color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); }
 .plan-g0 .card-h h2 { color: var(--danger); }
 .plan-g1 .card-h h2 { color: var(--accent); }
-.plan-done-grp { opacity: .8; }
 
 .plan-tasks { list-style: none; margin: 0; padding: 0; }
 .plan-task { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); animation: plan-in .25s ease-out; }
@@ -37,6 +36,7 @@ a.plan-task-main:hover b { text-decoration: underline; text-decoration-color: va
 .plan-late .plan-task-t small { color: var(--danger); font-weight: 650; }
 .plan-task.plan-done .plan-task-t b { text-decoration: line-through; color: var(--muted); font-weight: 500; }
 .plan-task-who { flex: none; }
+.plan-task > form:first-child { margin-right: 7px; } /* the tick's tap area ends 8 px or more before the edit link (#67) */
 .plan-tasks.plan-compact .plan-task { padding: 7px 0; gap: 10px; }
 /* a to-do that can't be ticked here (a wall, a display account): a dot where the tick circle goes */
 .plan-dot { display: grid; place-items: center; flex: none; width: 26px; height: 26px; }
@@ -56,6 +56,7 @@ a.plan-task-main:hover b { text-decoration: underline; text-decoration-color: va
 .plan-shop { list-style: none; margin: 0; padding: 0; }
 .plan-shop-i { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--line); animation: plan-in .25s ease-out; }
 .plan-shop-i:last-child { border-bottom: 0; }
+.plan-shop-i .icon-btn { width: 44px; height: 44px; } /* the × as before, a finger-sized target (#67) */
 form.plan-shop-f { display: flex; flex: 1; min-width: 0; }
 .plan-shop-btn {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 12px 2px;
@@ -87,7 +88,7 @@ form.plan-shop-f { display: flex; flex: 1; min-width: 0; }
 .plan-mm-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .plan-mm-grid { display: grid; grid-template-columns: 24px repeat(7, 1fr); gap: 2px; text-align: center; }
 .plan-mm-hd { font-size: 11px; font-weight: 700; color: var(--muted); padding: 4px 0; }
-.plan-mm-wk { display: grid; place-items: center; font-size: 10.5px; color: var(--muted); opacity: .75; }
+.plan-mm-wk { display: grid; place-items: center; font-size: 11px; color: var(--muted); }
 .plan-mm-d {
   position: relative; display: grid; place-items: center; aspect-ratio: 1; max-height: 44px; border-radius: 10px;
   text-decoration: none; font-size: 14px; font-weight: 550; font-variant-numeric: tabular-nums;

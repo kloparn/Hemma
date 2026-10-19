@@ -231,18 +231,22 @@ static void note_actions(Buf *b, const Note *n, bool expired_view) {
     char id[16];
     snprintf(id, sizeof id, "%d", n->id);
     buf_puts(b, "<div class=\"board-note-x\">");
+    /* each button names its note: a screen reader's list of buttons said "Pin to the top" over and over (#69) */
+    char snip[80], what[160];
+    snippet(n->text, snip, sizeof snip, 30);
     Buf icon = {0};
     ui_icon(&icon, expired_view ? "check" : "pin");
-    if (expired_view) ui_act(b, "board.keep", "icon-btn", buf_cstr(&icon), "id", id, "Keep it");
-    else ui_act(b, "board.pin", "icon-btn", buf_cstr(&icon), "id", id, n->pinned ? "Unpin" : "Pin to the top");
+    if (expired_view) snprintf(what, sizeof what, "Keep “%s”", snip);
+    else snprintf(what, sizeof what, n->pinned ? "Unpin “%s”" : "Pin “%s” to the top", snip);
+    ui_act(b, expired_view ? "board.keep" : "board.pin", "icon-btn", buf_cstr(&icon), "id", id, what);
     buf_free(&icon);
-    H(b, "<a class=\"icon-btn\" href=\"/board?%redit=%d\" title=\"Edit\" aria-label=\"Edit\">",
-      expired_view ? "expired=1&amp;" : "", n->id);
+    H(b, "<a class=\"icon-btn\" href=\"/board?%redit=%d\" title=\"Edit\" aria-label=\"Edit “%s”\">",
+      expired_view ? "expired=1&amp;" : "", n->id, snip);
     ui_icon(b, "edit");
     buf_puts(b, "</a>");
     ui_form(b, "board.delete", "inline");
     ui_hidden_int(b, "id", n->id);
-    buf_puts(b, "<button class=\"icon-btn\" title=\"Remove\" aria-label=\"Remove\">");
+    H(b, "<button class=\"icon-btn\" title=\"Remove\" aria-label=\"Remove “%s”\">", snip);
     ui_icon(b, "trash");
     buf_puts(b, "</button>");
     ui_form_end(b);
@@ -265,7 +269,7 @@ static void note_card(Ctx *c, Buf *b, const Note *n, bool expired_view) {
     }
     buf_puts(b, "<footer class=\"board-note-f\">");
     Person *p = person_get(n->by);
-    ui_avatar(b, p, "xs");
+    ui_avatar_deco(b, p, "xs");
     H(b, "<span class=\"board-note-m\"><b>%s</b> · ", p ? p->name : "Someone");
     ui_ago(b, n->created, c->now);
     if (n->edited_by && n->updated > n->created + 60) {

@@ -3,7 +3,44 @@
 What changed in each release of Hemma. `hemma --version` says which one you run (and the
 commit it was built from).
 
-## 0.12.0 (not released yet)
+## 0.13.0 (not released yet)
+
+Accessibility: keyboard, screen readers, contrast, motion.
+
+### Changes
+
+- **Dialogs keep the keyboard inside** (#63). Opening one moves the focus to its first field,
+  or to its title. Tab and Shift+Tab go round inside it, and the page behind can't be reached.
+  Closing it puts the focus back on the button that opened it. A screen reader names the
+  dialog by its title.
+- **The video player says what it's doing** (#64). Play reads "Pause" while playing, Mute
+  says whether the sound is off, and the position reads "0:12 of 22:35". The control bar
+  stays while the keyboard is on it, up to 30 seconds after the last key. On a TV it still
+  hides after 3 seconds and comes back with any key. The "Next episode" card is read out
+  once when it appears, and on a TV it takes the focus from the player's buttons too.
+- **Add buttons have names on phones** (#65): "Add to-do", "Add items", "Add event".
+- **Grey text is easier to read** (#66). The light theme's secondary text went from 4.1:1 to
+  4.9:1 contrast. Done to-dos are no longer faded on top of being grey and crossed out. A
+  booking's small text in the week view is 12 px at full colour, and past bookings stay
+  readable.
+- **Bigger tap targets in Plan** (#67). The done circle and the shopping ×
+  look the same but answer to a 44 × 44 px tap, with room between the circle and the to-do's
+  link.
+- **"Skip to content"** (#68) is the first thing Tab reaches. After an action the focus
+  stays where it was: ticking a to-do off moves it to the next to-do, not to the top of the
+  page.
+- **Things that were only shown are read out too** (#69):
+  - The quick-add preview ("Sauna, Today 19:00–20:30. Free") and clash warnings are read
+    out once typing pauses.
+  - Who a to-do or an event is for, and who added a shopping item, are read out as well as
+    shown as a picture.
+  - Each note's Pin, Edit and Remove buttons, and each device's Wake up button, say which
+    item they're for, and so do the Screens editor's Up, Down and Remove.
+- **Less motion when asked** (#70). With "reduce motion" set on the device, fades, slides and
+  pops are over at once. The sign-in, welcome and recovery-code pages have a main
+  landmark like the rest.
+
+## 0.12.0 (2026-10-18)
 
 Forms and wording: errors where they belong, Undo, bookings that tell their owner, plain words.
 

@@ -214,7 +214,8 @@ TEST(app_display_pages_offer_only_what_a_display_may_do) {
     CHECK(pages > 10);
     /* (a person still gets the forms, the dialogs and the links to them) */
     CHECK_HAS(th_page(adam, "/plan"), "data-a=\"plan.task_add\"");
-    CHECK_HAS(th_page(adam, "/plan/cal?edit=1"), "role=\"dialog\" aria-modal=\"true\" aria-label=\"Edit event\"");
+    CHECK_HAS(th_page(adam, "/plan/cal?edit=1"), "role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"modal-t\"");
+    CHECK_HAS(th_page(adam, "/plan/cal?edit=1"), "<h2 id=\"modal-t\">Edit event</h2>");
     CHECK_HAS(th_page(adam, "/book/1?b=1"), ">Change</a>");
     CHECK_HAS(th_page(adam, "/book"), "href=\"/book?res=new\"");
     th_halt();

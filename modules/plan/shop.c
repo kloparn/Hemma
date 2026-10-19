@@ -70,7 +70,7 @@ static void item_row(Buf *b, const Item *it) {
     ui_form_end(b);
     Person *p = person_get(it->by);
     if (p && !it->done) {
-        buf_puts(b, "<span class=\"plan-shop-by\">");
+        buf_puts(b, "<span class=\"plan-shop-by\"><span class=\"sr-only\">added by </span>"); /* (issue #69) */
         ui_avatar(b, p, "xs");
         buf_puts(b, "</span>");
     }
@@ -91,7 +91,7 @@ static void preview(Ctx *c, Buf *b) {
     char items[MAX_ITEMS][100];
     int n = plan_split_items(q, items, MAX_ITEMS);
     if (!n) return;
-    buf_puts(b, "<div class=\"preview ok\"><span>Adding</span>");
+    buf_puts(b, "<div class=\"preview ok\" data-say><span>Adding</span>");
     for (int i = 0; i < n; i++) {
         bool dup = item_named(items[i], false) != NULL;
         H(b, "<span class=\"chip%r\">%s%r</span>", dup ? " plan-dup" : "", items[i],
@@ -112,7 +112,8 @@ void plan_shop_page(Ctx *c, Buf *b) {
     ui_form(b, "plan.shop_add", "quick plan-quick");
     buf_puts(b, "<div class=\"quick-row\"><input name=\"q\" required maxlength=\"500\" autocomplete=\"off\" "
                 "enterkeyhint=\"done\" data-live=\"plan.shop_preview\" data-key=\"/\" aria-label=\"Add to the shopping "
-                "list\" placeholder=\"Add items — “milk, eggs, 2 bread”\"><button class=\"btn primary\">");
+                "list\" placeholder=\"Add items — “milk, eggs, 2 bread”\"><button class=\"btn primary\" "
+                "aria-label=\"Add items\">"); /* (on phones only the + shows: issue #65) */
     ui_icon(b, "plus");
     buf_puts(b, "<span>Add</span></button></div>");
     preview(c, b);
