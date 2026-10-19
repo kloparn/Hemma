@@ -2,6 +2,7 @@
  * a shared calendar. This file holds the data, the quick-add parsing and the
  * module glue; tasks.c, shop.c and cal.c render the three tabs. */
 #include "plan.h"
+#include "../../core/db.h"
 
 /* ================================================================== data */
 
@@ -9,7 +10,8 @@ static const FieldDef task_fields[] = {
     FIELD(Task, id, F_INT),        FIELD(Task, title, F_STR),   FIELD(Task, who, F_INT),
     FIELD(Task, due, F_I64),       FIELD(Task, repeat, F_INT),  FIELD(Task, rep_day, F_INT),
     FIELD(Task, done_by, F_INT),   FIELD(Task, done_at, F_I64), FIELD(Task, by, F_INT),
-    FIELD(Task, created, F_I64),   FIELD(Task, spawned, F_INT),
+    FIELD(Task, created, F_I64),   FIELD(Task, spawned, F_INT), FIELD(Task, turns, F_STR),
+    FIELD(Task, turn, F_INT),      FIELD(Task, swap, F_INT),
 };
 Table T_task = TABLE("plan_task", Task, task_fields);
 
@@ -29,8 +31,18 @@ static const FieldDef event_fields[] = {
     FIELD(Event, id, F_INT),    FIELD(Event, title, F_STR), FIELD(Event, start, F_I64),
     FIELD(Event, end, F_I64),   FIELD(Event, allday, F_BOOL), FIELD(Event, who, F_INT),
     FIELD(Event, note, F_STR),  FIELD(Event, by, F_INT),    FIELD(Event, created, F_I64),
+    FIELD(Event, series, F_INT),
 };
 Table T_event = TABLE("plan_event", Event, event_fields);
+
+static const FieldDef series_fields[] = {
+    FIELD(EventSeries, id, F_INT),      FIELD(EventSeries, title, F_STR),  FIELD(EventSeries, start, F_I64),
+    FIELD(EventSeries, end, F_I64),     FIELD(EventSeries, allday, F_BOOL), FIELD(EventSeries, who, F_INT),
+    FIELD(EventSeries, note, F_STR),    FIELD(EventSeries, repeat, F_INT), FIELD(EventSeries, until, F_I64),
+    FIELD(EventSeries, made, F_INT),    FIELD(EventSeries, by, F_INT),     FIELD(EventSeries, created, F_I64),
+    FIELD(EventSeries, stopped, F_BOOL),
+};
+Table T_event_series = TABLE("plan_event_series", EventSeries, series_fields);
 
 /* =============================================================== helpers */
 
@@ -131,22 +143,35 @@ void plan_subtitle(Buf *b) {
 
 /* =============================================================== parsing */
 
-static void claim_people(Tokens *t, int *who) {
+/* Everyone named with an @, in order: "@anna @erik", "@anna, @erik" or "@anna,@erik" (one word) - up to max,
+   once each. The first is who it's for; more take turns (a chore that repeats). Returns how many. */
+static int claim_people(Tokens *t, int *who, int *all, int max) {
+    int n = 0;
     for (int i = 0; i < t->n; i++) {
         if (t->used[i] || t->raw[i][0] != '@' || !t->raw[i][1]) continue;
-        Person *p = person_find(t->raw[i] + 1);
-        if (p) {
-            *who = p->id;
-            t->used[i] = true;
+        char word[TOK_LEN];
+        str_copy(word, sizeof word, t->raw[i]);
+        bool any = false;
+        for (char *part = strtok(word, ","); part; part = strtok(NULL, ",")) {
+            while (*part == '@' || *part == ' ') part++;
+            Person *p = *part ? person_find(part) : NULL;
+            if (!p) continue;
+            any = true;
+            bool dup = false;
+            for (int k = 0; k < n; k++) dup |= all[k] == p->id;
+            if (!dup && n < max) all[n++] = p->id;
         }
+        if (any) t->used[i] = true;
     }
+    if (n) *who = all[0];
+    return n;
 }
 
 bool plan_parse_task(const char *text, int64_t now, TaskDraft *out, char *err, size_t errcap) {
     memset(out, 0, sizeof *out);
     Tokens t;
     tok_split(&t, text ? text : "");
-    claim_people(&t, &out->who);
+    out->nturns = claim_people(&t, &out->who, out->turns, PLAN_TURNS);
     When w;
     bool when = when_parse(&t, now, &w);
     if (!when && w.refused[0]) { /* "pay rent 31 sep": not an undated to-do called that */
@@ -177,9 +202,11 @@ bool plan_parse_event(const char *text, int64_t now, EventDraft *out, char *err,
     memset(out, 0, sizeof *out);
     Tokens t;
     tok_split(&t, text ? text : "");
-    claim_people(&t, &out->who);
+    int people[PLAN_TURNS];
+    claim_people(&t, &out->who, people, PLAN_TURNS);
     When w;
     bool timed = when_parse(&t, now, &w);
+    if (timed) out->repeat = w.repeat;
     tok_rest(&t, out->title, sizeof out->title);
     str_trim(out->title);
     if (!out->title[0]) {
@@ -279,6 +306,118 @@ int64_t plan_next_due(const Task *t, int64_t now) {
     return add_days(today, 1);
 }
 
+/* ============================================================ taking turns */
+
+int plan_turn_ids(const Task *t, int out[PLAN_TURNS]) {
+    int n = 0;
+    for (const char *p = t->turns; *p && n < PLAN_TURNS;) {
+        int id = atoi(p);
+        if (id > 0) out[n++] = id;
+        p += strcspn(p, ",");
+        if (*p) p++;
+    }
+    return n;
+}
+
+int plan_next_turn(const Task *t, int *place) {
+    int ids[PLAN_TURNS], n = plan_turn_ids(t, ids);
+    if (n < 2) return 0;
+    for (int k = 1; k <= n; k++) { /* the next place in the line with someone still in the household */
+        int q = (t->turn + k) % n;
+        if (!person_real(ids[q])) continue;
+        *place = q;
+        return person_real(t->swap) ? t->swap : ids[q];
+    }
+    return 0;
+}
+
+void plan_turn_names(Buf *b, const Task *t) {
+    int ids[PLAN_TURNS], n = plan_turn_ids(t, ids), shown = 0;
+    for (int k = 0; k < n; k++) {
+        Person *p = person_real(ids[k]);
+        if (p) buf_printf(b, "%s%s", shown++ ? ", " : "", p->name);
+    }
+}
+
+/* ======================================================== repeating events */
+
+#define SERIES_AHEAD_DAYS 400 /* the phone's calendar shows a year ahead */
+#define SERIES_AHEAD_DAILY 60 /* ... but a daily one isn't made 400 times */
+
+static int64_t month_shift(int64_t t, int months) {
+    DateTime d = dt_local(t);
+    int y = d.year, m = d.mon - 1 + months;
+    y += m / 12;
+    m = m % 12 + 1;
+    return dt_make(y, m, MIN(d.day, days_in_month(y, m)), d.hour, d.min);
+}
+
+int64_t plan_series_at(const EventSeries *s, int k, int64_t *end) {
+    int step = s->repeat == REPEAT_DAILY ? 1 : s->repeat == REPEAT_BIWEEKLY ? 14 : 7;
+    if (s->repeat == REPEAT_MONTHLY) {
+        int64_t a = month_shift(s->start, k);
+        *end = s->allday ? add_days(a, (int)((s->end - s->start + 43200) / 86400)) : a + (s->end - s->start);
+        return a;
+    }
+    *end = add_days(s->end, step * k);
+    return add_days(s->start, step * k);
+}
+
+int plan_series_fill(int64_t now) {
+    int made = 0;
+    for (int i = 0; i < tbl_count(&T_event_series); i++) {
+        EventSeries s = *(EventSeries *)tbl_at(&T_event_series, i);
+        if (s.stopped || s.repeat == REPEAT_NONE) continue;
+        int64_t horizon = add_days(day_start(now), s.repeat == REPEAT_DAILY ? SERIES_AHEAD_DAILY : SERIES_AHEAD_DAYS);
+        bool changed = false;
+        for (int guard = 0; guard < 500; guard++) {
+            int64_t e, st = plan_series_at(&s, s.made, &e);
+            if (s.until && day_start(st) > s.until) {
+                s.stopped = true; /* (its last one is made: nothing more to come) */
+                changed = true;
+                break;
+            }
+            if (st >= horizon) break;
+            s.made++;
+            changed = true;
+            if (e <= now) continue; /* (a series that missed its time: no events in the past) */
+            Event ev = {.start = st, .end = e, .allday = s.allday, .who = s.who, .by = s.by, .created = now,
+                        .series = s.id};
+            str_copy(ev.title, sizeof ev.title, s.title);
+            str_copy(ev.note, sizeof ev.note, s.note);
+            tbl_put(&T_event, &ev);
+            made++;
+        }
+        if (changed) tbl_put(&T_event_series, &s);
+    }
+    return made;
+}
+
+static const char *ordinal(int d) { /* 1st 2nd 3rd 4th ... 11th 12th 13th ... 21st */
+    if (d % 100 >= 11 && d % 100 <= 13) return "th";
+    return d % 10 == 1 ? "st" : d % 10 == 2 ? "nd" : d % 10 == 3 ? "rd" : "th";
+}
+
+void plan_series_label(Buf *b, const EventSeries *s) {
+    int wday = dt_local(s->start).wday;
+    switch (s->repeat) {
+    case REPEAT_DAILY: buf_puts(b, "every day"); break;
+    case REPEAT_WEEKLY: buf_printf(b, "every %s", weekday_name(wday, false)); break;
+    case REPEAT_BIWEEKLY: buf_printf(b, "every other %s", weekday_name(wday, false)); break;
+    case REPEAT_MONTHLY: {
+        int d = dt_local(s->start).day;
+        buf_printf(b, "every month on the %d%s", d, ordinal(d));
+        break;
+    }
+    default: break;
+    }
+    if (s->stopped) buf_puts(b, ", stopped");
+    else if (s->until) {
+        DateTime u = dt_local(s->until);
+        buf_printf(b, ", until %d %s", u.day, month_name(u.mon, true));
+    }
+}
+
 int plan_task_group(const Task *t, int64_t now) {
     if (!t->due) return GRP_SOMEDAY;
     int64_t today = day_start(now), due = day_start(t->due);
@@ -315,6 +454,8 @@ static void init(void) {
     store_register(&T_bought);
     T_event.what = "calendar events";
     store_register(&T_event);
+    T_event_series.what = "repeating events";
+    store_register(&T_event_series);
 }
 
 static void start(void) {
@@ -328,6 +469,19 @@ static void start(void) {
         Event *e = tbl_at(&T_event, i);
         if (e->end < now - 365 * 86400) tbl_del(&T_event, e->id);
     }
+    db_begin();
+    plan_series_fill(now); /* (the days passed while Hemma was off) */
+    db_commit();
+}
+
+/* repeating events: a day's worth more, an hour at a time */
+static int64_t g_filled_ms;
+static void tick(int64_t now_ms) {
+    if (g_filled_ms && now_ms - g_filled_ms < 3600 * 1000) return;
+    g_filled_ms = now_ms;
+    db_begin();
+    if (plan_series_fill(now_sec())) app_changed();
+    db_commit();
 }
 
 static void page(Ctx *c, Buf *b) {
@@ -389,7 +543,8 @@ static const Block blocks[] = {
 static const Action actions[] = {
     {"plan.task_preview", plan_act_task_preview, true},   {"plan.task_add", plan_act_task_add},
     {"plan.task_done", plan_act_task_done},         {"plan.task_save", plan_act_task_save},
-    {"plan.task_delete", plan_act_task_delete},     {"plan.shop_preview", plan_act_shop_preview, true},
+    {"plan.task_delete", plan_act_task_delete},
+    {"plan.task_swap", plan_act_task_swap},     {"plan.shop_preview", plan_act_shop_preview, true},
     {"plan.shop_add", plan_act_shop_add},           {"plan.shop_toggle", plan_act_shop_toggle},
     {"plan.shop_delete", plan_act_shop_delete},     {"plan.shop_clear", plan_act_shop_clear},
     {"plan.event_preview", plan_act_event_preview, true}, {"plan.event_add", plan_act_event_add},
@@ -410,10 +565,19 @@ static int rezone(Rezone *z) {
     for (int i = 0; i < tbl_count(&T_event); i++) {
         Event e = *(Event *)tbl_at(&T_event, i);
         int64_t was = e.start;
-        if (!rezone_span(z, e.allday, e.created, &e.start, &e.end)) continue;
+        /* one a series made counts as typed when the series was (made at a start after the change) */
+        const EventSeries *from = e.series ? tbl_get(&T_event_series, e.series) : NULL;
+        int64_t typed = from && from->created < e.created ? from->created : e.created;
+        if (!rezone_span(z, e.allday, typed, &e.start, &e.end)) continue;
         n++;
         if (z->apply) tbl_put(&T_event, &e);
         else if (!z->days) rezone_note(z, e.title, was, e.start);
+    }
+    for (int i = 0; i < tbl_count(&T_event_series); i++) { /* what the events still to be made follow (#47) */
+        EventSeries s = *(EventSeries *)tbl_at(&T_event_series, i);
+        bool moved = rezone_span(z, s.allday, s.created, &s.start, &s.end);
+        moved |= z->days && rezone_day(z, &s.until);
+        if (moved && z->apply) tbl_put(&T_event_series, &s); /* (not counted: no event of its own) */
     }
     return n;
 }
@@ -425,6 +589,7 @@ static const Module plan = {
     .nav = 3,
     .init = init,
     .start = start,
+    .tick = tick,
     .page = page,
     .actions = actions,
     .widget = widget,

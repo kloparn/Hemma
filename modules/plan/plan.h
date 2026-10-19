@@ -21,7 +21,15 @@ typedef struct {
     int by;          /* created by */
     int64_t created;
     int spawned; /* repeating: the next occurrence created on completion (undo removes it) */
+    /* Taking turns (issue #47): the people, in order, as ids ("3,5,9"; "" = not). Ticking it off gives the
+       next one in line the next time. turn = whose place in the line this time is; swap = the person who
+       swapped this time away, and so takes the next one. */
+    char turns[48];
+    int turn;
+    int swap;
 } Task;
+
+#define PLAN_TURNS 8 /* people taking turns at most */
 
 typedef struct {
     int id;
@@ -49,9 +57,27 @@ typedef struct {
     char note[200];
     int by;
     int64_t created;
+    int series; /* made by a repeating event (EventSeries), 0 = a one-off */
 } Event;
 
-extern Table T_task, T_item, T_bought, T_event;
+/* A repeating event (issue #47): its events are made ahead (a year; a daily one 60 days) so the calendar,
+   the wall and the phone's calendar see them as events; each one can then change or go on its own. */
+typedef struct {
+    int id;
+    char title[120];
+    int64_t start, end; /* the first one; all-day: local midnights */
+    bool allday;
+    int who;
+    char note[200];
+    int repeat;    /* REPEAT_* (when.h) */
+    int64_t until; /* the last day one may start on (a local midnight); 0 = until stopped */
+    int made;      /* events 0..made-1 are made */
+    int by;
+    int64_t created;
+    bool stopped;
+} EventSeries;
+
+extern Table T_task, T_item, T_bought, T_event, T_event_series;
 
 /* --------------------------------------------------------------- parsing */
 
@@ -60,6 +86,8 @@ typedef struct {
     int who;
     int64_t due; /* 0 = someday */
     int repeat, rep_day;
+    int turns[PLAN_TURNS]; /* everyone named ("@anna,@erik"), in order: taking turns when it repeats */
+    int nturns;
 } TaskDraft;
 
 typedef struct {
@@ -67,6 +95,7 @@ typedef struct {
     int who;
     int64_t start, end;
     bool allday;
+    int repeat; /* "every wednesday": REPEAT_* */
 } EventDraft;
 
 /* "vacuum @eva fri every week" -> title, assignee, due, repeat. Returns false
@@ -79,6 +108,17 @@ int plan_split_items(const char *text, char out[][100], int max);
 
 /* Next due day after completing a repeating task (always after today). */
 int64_t plan_next_due(const Task *t, int64_t now);
+/* Taking turns: the line's ids (people since removed too) - returns how many; and who does the next time
+   (the one who swapped this time away, else the next one in line still in the household), with *place
+   = its place in the line. 0 = not taking turns. */
+int plan_turn_ids(const Task *t, int out[PLAN_TURNS]);
+int plan_next_turn(const Task *t, int *place);
+void plan_turn_names(Buf *b, const Task *t); /* "Anna, Erik" */
+
+/* Repeating events: occurrence k of a series (start; *end), and making what's due (a year ahead). */
+int64_t plan_series_at(const EventSeries *s, int k, int64_t *end);
+int plan_series_fill(int64_t now); /* returns how many events were made */
+void plan_series_label(Buf *b, const EventSeries *s); /* "every Wednesday, until 20 Dec" */
 
 enum { GRP_OVERDUE, GRP_TODAY, GRP_TOMORROW, GRP_WEEK, GRP_LATER, GRP_SOMEDAY, GRP_COUNT };
 int plan_task_group(const Task *t, int64_t now);
@@ -114,6 +154,7 @@ void plan_act_task_add(Ctx *c, Fields *f);
 void plan_act_task_done(Ctx *c, Fields *f);
 void plan_act_task_save(Ctx *c, Fields *f);
 void plan_act_task_delete(Ctx *c, Fields *f);
+void plan_act_task_swap(Ctx *c, Fields *f);
 void plan_act_shop_preview(Ctx *c, Fields *f);
 void plan_act_shop_add(Ctx *c, Fields *f);
 void plan_act_shop_toggle(Ctx *c, Fields *f);

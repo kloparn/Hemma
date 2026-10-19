@@ -581,3 +581,187 @@ TEST(plan_keeps_days_when_the_zone_changes) {
     plat_set_tz(NULL);
     th_halt();
 }
+
+/* ------------------------------------------------- taking turns (issue #47) */
+
+static Task *open_task(const char *title) {
+    for (int i = 0; i < tbl_count(&T_task); i++) {
+        Task *t = tbl_at(&T_task, i);
+        if (!t->done_at && str_eq(t->title, title)) return t;
+    }
+    return NULL;
+}
+
+TEST(plan_chores_take_turns) {
+    th_boot();
+    g_fake_now = NOW; /* Wednesday 7 October */
+    int adam = th_person("Adam"), eva = th_person("Eva"), leo = th_person("Leo");
+    TaskDraft d;
+    char err[100], want[48];
+    CHECK(plan_parse_task("vacuum every friday @eva,@adam @leo", NOW, &d, err, sizeof err));
+    CHECK_STR(d.title, "Vacuum");
+    CHECK_INT(d.nturns, 3);
+    CHECK(d.turns[0] == eva && d.turns[1] == adam && d.turns[2] == leo && d.who == eva);
+    CHECK(th_act(adam, "plan.task_add", "q=vacuum+every+friday+%40eva%2C%40adam+%40leo").ok);
+    Task *t = open_task("Vacuum");
+    CHECK(t != NULL);
+    if (!t) return;
+    snprintf(want, sizeof want, "%d,%d,%d", eva, adam, leo);
+    CHECK_STR(t->turns, want);
+    CHECK_INT(t->who, eva);
+    CHECK_HAS(th_page(adam, "/plan"), "next: Adam");
+    /* Eva's done: Adam's turn, and he hears of it */
+    char form[32], url[40];
+    snprintf(form, sizeof form, "id=%d", t->id);
+    ThResult r = th_act(eva, "plan.task_done", form);
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "Adam's turn next: Fri");
+    t = open_task("Vacuum");
+    CHECK(t && t->who == adam && t->turn == 1);
+    if (!t) return;
+    CHECK_HAS(th_page(adam, "/plan"), "next: Leo");
+    /* Adam swaps: Leo does this one, Adam the next */
+    snprintf(form, sizeof form, "id=%d", t->id);
+    snprintf(url, sizeof url, "/plan?edit=%d", t->id);
+    CHECK_HAS(th_page(adam, url), "Swap: Leo does this one, Adam the next");
+    r = th_act(adam, "plan.task_swap", form);
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "Swapped: Leo does this one, Adam the next");
+    t = open_task("Vacuum");
+    CHECK(t && t->who == leo && t->swap == adam);
+    if (!t) return;
+    CHECK_HAS(th_page(adam, "/plan"), "next: Adam");
+    CHECK_HAS(th_page(adam, url), "Swap back: Adam does this one");
+    /* Leo's done: the swapped turn comes back to Adam - then the line goes on from Leo's place */
+    snprintf(form, sizeof form, "id=%d", t->id);
+    CHECK(th_act(leo, "plan.task_done", form).ok);
+    t = open_task("Vacuum");
+    CHECK(t && t->who == adam && t->turn == 2 && !t->swap);
+    if (!t) return;
+    snprintf(form, sizeof form, "id=%d", t->id);
+    CHECK(th_act(adam, "plan.task_done", form).ok);
+    t = open_task("Vacuum");
+    CHECK(t && t->who == eva && t->turn == 0);
+    /* someone who moved out is skipped */
+    tbl_del(&T_person, adam);
+    CHECK_HAS(th_page(eva, "/plan"), "next: Leo");
+    /* naming two without a repeat: only the first, and the preview says why */
+    CHECK(plan_parse_task("fix the bike @eva @leo", NOW, &d, err, sizeof err));
+    CHECK(d.who == eva && d.nturns == 2);
+    CHECK(th_act(eva, "plan.task_add", "q=fix+the+bike+%40eva+%40leo").ok);
+    Task *bike = open_task("Fix the bike");
+    CHECK(bike && bike->who == eva && !bike->turns[0]);
+    g_fake_now = 0;
+    th_halt();
+}
+
+TEST(plan_turns_are_set_in_the_dialog) {
+    th_boot();
+    g_fake_now = NOW;
+    int adam = th_person("Adam"), eva = th_person("Eva");
+    CHECK(th_act(adam, "plan.task_add", "q=take+out+the+trash+every+monday").ok);
+    Task *t = open_task("Take out the trash");
+    CHECK(t != NULL);
+    if (!t) return;
+    int id = t->id;
+    char form[200], want[48], url[40];
+    snprintf(form, sizeof form, "id=%d&title=Take+out+the+trash&who=0&due=2026-10-12&repeat=2&turns=Eva%%2C+Adam", id);
+    CHECK(th_act(adam, "plan.task_save", form).ok);
+    t = tbl_get(&T_task, id);
+    snprintf(want, sizeof want, "%d,%d", eva, adam);
+    CHECK(t && str_eq(t->turns, want) && t->who == eva);
+    snprintf(url, sizeof url, "/plan?edit=%d", id);
+    CHECK_HAS(th_page(adam, url), "value=\"Eva, Adam\"");
+    /* who it's for, picked above, does this one */
+    snprintf(form, sizeof form, "id=%d&title=Take+out+the+trash&who=%d&due=2026-10-12&repeat=2&turns=Eva%%2C+Adam", id,
+             adam);
+    CHECK(th_act(adam, "plan.task_save", form).ok);
+    t = tbl_get(&T_task, id);
+    CHECK(t && t->who == adam && t->turn == 1);
+    /* names nobody has, and turns without a repeat, are said beside the field */
+    snprintf(form, sizeof form, "id=%d&title=Take+out+the+trash&due=2026-10-12&repeat=2&turns=Eva%%2C+Bob", id);
+    ThResult r = th_act(adam, "plan.task_save", form);
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Who's “Bob”?");
+    snprintf(form, sizeof form, "id=%d&title=Take+out+the+trash&due=2026-10-12&repeat=0&turns=Eva%%2C+Adam", id);
+    r = th_act(adam, "plan.task_save", form);
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "needs it to repeat");
+    /* emptied: one person again */
+    snprintf(form, sizeof form, "id=%d&title=Take+out+the+trash&who=%d&due=2026-10-12&repeat=2&turns=", id, eva);
+    CHECK(th_act(adam, "plan.task_save", form).ok);
+    t = tbl_get(&T_task, id);
+    CHECK(t && !t->turns[0] && t->who == eva);
+    g_fake_now = 0;
+    th_halt();
+}
+
+/* ------------------------------------------- repeating events (issue #47) */
+
+static int series_events(int series) {
+    int n = 0;
+    for (int i = 0; i < tbl_count(&T_event); i++) n += ((const Event *)tbl_at(&T_event, i))->series == series;
+    return n;
+}
+
+static int event_at(int series, int64_t start) {
+    for (int i = 0; i < tbl_count(&T_event); i++) {
+        const Event *e = tbl_at(&T_event, i);
+        if (e->series == series && e->start == start) return e->id;
+    }
+    return 0;
+}
+
+TEST(plan_events_repeat) {
+    th_boot();
+    g_fake_now = NOW; /* Wednesday 7 October, 10:00 */
+    int adam = th_person("Adam");
+    EventDraft ed;
+    char err[100];
+    CHECK(plan_parse_event("football practice every wednesday 17:30-19", NOW, &ed, err, sizeof err));
+    CHECK(ed.repeat == REPEAT_WEEKLY && ed.start == dt_make(2026, 10, 7, 17, 30) && ed.end == dt_make(2026, 10, 7, 19, 0));
+    ThResult r = th_act(adam, "plan.event_add", "q=football+practice+every+wednesday+17%3A30-19");
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "every Wednesday");
+    CHECK_INT(tbl_count(&T_event_series), 1);
+    int sid = ((const EventSeries *)tbl_at(&T_event_series, 0))->id;
+    CHECK_INT(series_events(sid), 58); /* a year ahead (and a little): today's and 57 more */
+    CHECK_HAS(th_page(adam, "/plan/cal?day=2026-10-14"), "Football practice");
+    CHECK_HAS(th_page(adam, "/plan/cal?day=2026-10-14"), "plan-rep");
+    /* one of them goes on its own (with Undo); the rest stay */
+    int oct14 = event_at(sid, dt_make(2026, 10, 14, 17, 30)), nov4 = event_at(sid, dt_make(2026, 11, 4, 17, 30));
+    CHECK(oct14 && nov4);
+    char url[60], form[40];
+    snprintf(url, sizeof url, "/plan/cal?day=2026-10-14&edit=%d", oct14);
+    CHECK_HAS(th_page(adam, url), "Repeats every Wednesday");
+    CHECK_HAS(th_page(adam, url), "Delete this and later ones");
+    snprintf(form, sizeof form, "id=%d", oct14);
+    CHECK(th_act(adam, "plan.event_delete", form).ok);
+    CHECK_INT(series_events(sid), 57);
+    /* this one and every later one: 7, 21 and 28 October are left */
+    snprintf(form, sizeof form, "id=%d&later=1", nov4);
+    CHECK(th_act(adam, "plan.event_delete", form).ok);
+    CHECK_INT(series_events(sid), 3);
+    const EventSeries *s = tbl_get(&T_event_series, sid);
+    CHECK(s && s->stopped);
+    g_fake_now += 30 * 86400;
+    CHECK_INT(plan_series_fill(g_fake_now), 0);
+    /* from the dialog: every month on the 31st, until spring - the short months on their last day */
+    g_fake_now = NOW;
+    CHECK(th_act(adam, "plan.event_save", "title=Pay+rent&date=2026-10-31&allday=1&rep=4&rep_until=2027-03-31").ok);
+    int rent = 0;
+    for (int i = 0; i < tbl_count(&T_event_series); i++) {
+        const EventSeries *x = tbl_at(&T_event_series, i);
+        if (str_eq(x->title, "Pay rent")) rent = x->id;
+    }
+    CHECK_INT(series_events(rent), 6); /* 31 Oct, 30 Nov, 31 Dec, 31 Jan, 28 Feb, 31 Mar */
+    int feb = event_at(rent, dt_make(2027, 2, 28, 0, 0));
+    CHECK(feb && ((const Event *)tbl_get(&T_event, feb))->end == dt_make(2027, 3, 1, 0, 0));
+    s = tbl_get(&T_event_series, rent);
+    CHECK(s && s->stopped); /* (its last one is made) */
+    r = th_act(adam, "plan.event_save", "title=Pay+rent&date=2026-10-31&allday=1&rep=4&rep_until=2026-10-01");
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Repeat until a day on or after the first one");
+    g_fake_now = 0;
+    th_halt();
+}

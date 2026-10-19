@@ -1,5 +1,6 @@
 /* modules/book/book.c — booking rules, quick add, actions and the module. */
 #include "book.h"
+#include "../../core/db.h"
 #include "../../core/ui.h"
 
 static const FieldDef res_fields[] = {
@@ -14,9 +15,17 @@ Table T_resource = TABLE("resource", Resource, res_fields);
 static const FieldDef booking_fields[] = {
     FIELD(Booking, id, F_INT),     FIELD(Booking, res, F_INT),  FIELD(Booking, who, F_INT),
     FIELD(Booking, by, F_INT),     FIELD(Booking, start, F_I64), FIELD(Booking, end, F_I64),
-    FIELD(Booking, note, F_STR),   FIELD(Booking, created, F_I64),
+    FIELD(Booking, note, F_STR),   FIELD(Booking, created, F_I64), FIELD(Booking, series, F_INT),
 };
 Table T_booking = TABLE("booking", Booking, booking_fields);
+
+static const FieldDef series_fields[] = {
+    FIELD(BookSeries, id, F_INT),       FIELD(BookSeries, res, F_INT),    FIELD(BookSeries, who, F_INT),
+    FIELD(BookSeries, by, F_INT),       FIELD(BookSeries, start, F_I64),  FIELD(BookSeries, end, F_I64),
+    FIELD(BookSeries, repeat, F_INT),   FIELD(BookSeries, until, F_I64),  FIELD(BookSeries, made, F_INT),
+    FIELD(BookSeries, note, F_STR),     FIELD(BookSeries, created, F_I64), FIELD(BookSeries, stopped, F_BOOL),
+};
+Table T_book_series = TABLE("booking_series", BookSeries, series_fields);
 
 static const FieldDef news_fields[] = {
     FIELD(BookNews, id, F_INT),     FIELD(BookNews, person, F_INT), FIELD(BookNews, ts, F_I64),
@@ -308,6 +317,7 @@ void book_quick_parse(const char *q, int default_res, int64_t now, Quick *out) {
     take_person(&t, &out->who);
     When w;
     out->has_when = when_parse(&t, now, &w);
+    if (out->has_when) out->repeat = w.repeat; /* "every tuesday": the next Tuesday, then every one */
     tok_rest(&t, out->note, sizeof out->note);
     if (str_istarts(out->note, "for ")) memmove(out->note, out->note + 4, strlen(out->note + 4) + 1);
     else if (str_istarts(out->note, "för ")) memmove(out->note, out->note + 5, strlen(out->note + 5) + 1);
@@ -396,6 +406,97 @@ static void news_add(int person, const char *link, const char *text) {
     app_notify_person(person, TOAST_INFO, "%s", text);
 }
 
+/* ======================================================= repeating bookings */
+
+static int64_t month_shift(int64_t t, int months) {
+    DateTime d = dt_local(t);
+    int y = d.year, m = d.mon - 1 + months;
+    y += m / 12;
+    m = m % 12 + 1;
+    return dt_make(y, m, MIN(d.day, days_in_month(y, m)), d.hour, d.min);
+}
+
+int64_t book_series_at(const BookSeries *s, int k, int64_t *end) {
+    if (s->repeat == REPEAT_MONTHLY) {
+        int64_t a = month_shift(s->start, k);
+        *end = a + (s->end - s->start);
+        return a;
+    }
+    int step = s->repeat == REPEAT_DAILY ? 1 : s->repeat == REPEAT_BIWEEKLY ? 14 : 7;
+    *end = add_days(s->end, step * k); /* (the same clock times, summer or winter) */
+    return add_days(s->start, step * k);
+}
+
+const BookSeries *book_series_of(const Booking *b) { return b->series ? tbl_get(&T_book_series, b->series) : NULL; }
+
+void book_series_label(Buf *b, const BookSeries *s) {
+    int wday = dt_local(s->start).wday;
+    switch (s->repeat) {
+    case REPEAT_DAILY: buf_puts(b, "every day"); break;
+    case REPEAT_WEEKLY: buf_printf(b, "every %s", weekday_name(wday, false)); break;
+    case REPEAT_BIWEEKLY: buf_printf(b, "every other %s", weekday_name(wday, false)); break;
+    case REPEAT_MONTHLY: buf_printf(b, "every month on the %d", dt_local(s->start).day); break;
+    default: break;
+    }
+    if (s->stopped) buf_puts(b, ", stopped");
+    else if (s->until) {
+        DateTime u = dt_local(s->until);
+        buf_printf(b, ", until %d %s", u.day, month_name(u.mon, true));
+    }
+}
+
+static void news_add(int person, const char *link, const char *text);
+
+int book_series_fill(int64_t now) {
+    int made = 0;
+    for (int i = 0; i < tbl_count(&T_book_series); i++) {
+        BookSeries s = *(BookSeries *)tbl_at(&T_book_series, i);
+        if (s.stopped || s.repeat == REPEAT_NONE) continue;
+        Resource *r = res_get(s.res);
+        if (!r || r->archived || !person_real(s.who)) { /* the thing or the person is gone: so is the series */
+            s.stopped = true;
+            tbl_put(&T_book_series, &s);
+            continue;
+        }
+        bool changed = false;
+        int64_t horizon = add_days(day_start(now), SERIES_AHEAD_DAYS);
+        for (int guard = 0; guard < 500; guard++) {
+            int64_t e, st = book_series_at(&s, s.made, &e);
+            if (s.until && day_start(st) > s.until) {
+                s.stopped = true; /* (its last one is made) */
+                changed = true;
+                break;
+            }
+            if (st >= horizon) break;
+            s.made++;
+            changed = true;
+            if (e <= now) continue; /* (time that passed while Hemma was off: nothing to book) */
+            const char *why = book_check(r, st, e, 0, now);
+            if (why) { /* taken (or outside the hours now): left out, and whoever it's for hears of it */
+                Buf span = {0}, rep = {0}, text = {0}, link = {0};
+                book_span_text(r, st, e, now, &span);
+                book_series_label(&rep, &s);
+                buf_printf(&text, "Your %s %s: %s isn't booked - %s", r->name, buf_cstr(&rep), buf_cstr(&span), why);
+                char ymd[11];
+                fmt_ymd(st, ymd);
+                buf_printf(&link, "/book/%d?w=%s", r->id, ymd);
+                news_add(s.who, buf_cstr(&link), buf_cstr(&text));
+                buf_free(&span);
+                buf_free(&rep);
+                buf_free(&text);
+                buf_free(&link);
+                continue;
+            }
+            Booking b = {.res = s.res, .who = s.who, .by = s.by, .start = st, .end = e, .created = now, .series = s.id};
+            str_copy(b.note, sizeof b.note, s.note);
+            tbl_put(&T_booking, &b);
+            made++;
+        }
+        if (changed) tbl_put(&T_book_series, &s);
+    }
+    return made;
+}
+
 /* Someone else cancelled or moved a booking (issue #43): the person it was for and whoever made it
    hear about it - a toast now, and a line that waits on their Bookings page and home card. Who was
    told this way is in *told (0 = nobody), so the household's toast leaves them out. */
@@ -433,6 +534,11 @@ static void announce(Ctx *c, const char *verb, const Resource *r, const Booking 
     Person *who = person_get(b->who);
     Buf span = {0}, link = {0};
     book_span_text(r, b->start, b->end, c->now, &span);
+    const BookSeries *series = book_series_of(b);
+    if (series && str_eq(verb, "booked")) {
+        buf_puts(&span, ", ");
+        book_series_label(&span, series);
+    }
     buf_printf(&link, "/book/%d?w=", r->id);
     char ymd[11];
     fmt_ymd(b->start, ymd);
@@ -459,7 +565,8 @@ static bool may_change_or_say(Ctx *c, const Resource *r, const Booking *b, const
     return false;
 }
 
-static bool save_booking(Ctx *c, Resource *r, int id, int who, int64_t s, int64_t e, const char *note) {
+static bool save_booking(Ctx *c, Resource *r, int id, int who, int64_t s, int64_t e, const char *note, int repeat,
+                         int64_t until) {
     const char *why = book_check(r, s, e, id, c->now);
     if (why) {
         ctx_fail(c, "%s", why);
@@ -484,10 +591,27 @@ static bool save_booking(Ctx *c, Resource *r, int id, int who, int64_t s, int64_
     b.end = e;
     str_copy(b.note, sizeof b.note, note ? note : "");
     str_trim(b.note);
+    if (!id && repeat) { /* issue #47: this one first, then the ones ahead */
+        BookSeries ser = {.res = r->id, .who = b.who, .by = b.by, .start = s, .end = e, .repeat = repeat,
+                          .until = until, .made = 1, .created = c->now};
+        str_copy(ser.note, sizeof ser.note, b.note);
+        tbl_put(&T_book_series, &ser);
+        b.series = ser.id;
+    }
     tbl_put(&T_booking, &b);
+    if (b.series) book_series_fill(c->now);
     Buf span = {0};
     book_span_text(r, s, e, c->now, &span);
-    ctx_ok(c, "%s %s · %s", id ? "Moved" : "Booked", r->name, buf_cstr(&span));
+    const BookSeries *ser = book_series_of(&b);
+    if (ser) {
+        Buf rep = {0};
+        book_series_label(&rep, ser);
+        ctx_ok(c, "Booked %s · %s, %s - the next %d weeks are booked, later ones as they come", r->name, buf_cstr(&span),
+               buf_cstr(&rep), SERIES_AHEAD_DAYS / 7);
+        buf_free(&rep);
+    } else {
+        ctx_ok(c, "%s %s · %s", id ? "Moved" : "Booked", r->name, buf_cstr(&span));
+    }
     buf_free(&span);
     int told[2] = {0, 0};
     if (id && (was.start != b.start || was.end != b.end || was.res != b.res)) tell(c, "moved", r, &was, &b, told);
@@ -508,7 +632,7 @@ static void act_quick(Ctx *c, Fields *f) {
         ctx_fail(c, "%s", q.problem);
         return;
     }
-    if (save_booking(c, res_get(q.res), 0, q.who, q.start, q.end, q.note)) ctx_set_live(c, "book.q", "");
+    if (save_booking(c, res_get(q.res), 0, q.who, q.start, q.end, q.note, q.repeat, 0)) ctx_set_live(c, "book.q", "");
 }
 
 /* Accepts either explicit epochs (start/end) or form fields:
@@ -561,7 +685,17 @@ static void act_create(Ctx *c, Fields *f) {
     int64_t s, e;
     if (!read_span(c, f, r, &s, &e)) return;
     int id = (int)fields_int(f, "id", 0);
-    if (save_booking(c, r, id, (int)fields_int(f, "who", 0), s, e, fields_str(f, "note"))) {
+    int rep = id ? 0 : (int)CLAMP(fields_int(f, "rep", 0), REPEAT_NONE, REPEAT_MONTHLY);
+    int64_t until = 0;
+    if (rep && fields_str(f, "rep_until")[0]) {
+        int y, m, d;
+        if (!parse_ymd(fields_str(f, "rep_until"), &y, &m, &d) || dt_make(y, m, d, 0, 0) < day_start(s)) {
+            ctx_fail_at(c, "rep_until", "Repeat until a day on or after the first one");
+            return;
+        }
+        until = dt_make(y, m, d, 0, 0);
+    }
+    if (save_booking(c, r, id, (int)fields_int(f, "who", 0), s, e, fields_str(f, "note"), rep, until)) {
         char ymd[11];
         fmt_ymd(s, ymd);
         ctx_redirect(c, "/book/%d?w=%s", r->id, ymd);
@@ -578,12 +712,28 @@ static void act_cancel(Ctx *c, Fields *f) {
     Booking copy = *b;
     Resource *r = res_get(copy.res);
     if (!may_change_or_say(c, r, &copy, "cancel")) return;
-    tbl_del(&T_booking, copy.id);
-    ctx_ok(c, "Cancelled");
+    BookSeries *sp = copy.series ? tbl_get(&T_book_series, copy.series) : NULL;
+    bool later = sp && str_eq(fields_str(f, "later"), "1");
+    if (later) { /* stop repeating: this one and every later one go */
+        BookSeries s = *sp;
+        s.stopped = true;
+        tbl_put(&T_book_series, &s);
+        int n = 0;
+        for (int i = tbl_count(&T_booking) - 1; i >= 0; i--) {
+            const Booking *x = tbl_at(&T_booking, i);
+            if (x->series != copy.series || x->start < copy.start) continue;
+            tbl_del(&T_booking, x->id);
+            n++;
+        }
+        ctx_ok(c, "Stopped repeating: %d %s booking%s cancelled", n, r ? r->name : "", n == 1 ? "" : "s");
+    } else {
+        tbl_del(&T_booking, copy.id);
+        ctx_ok(c, "Cancelled");
+    }
     if (r) {
         int told[2];
-        tell(c, "cancelled", r, &copy, NULL, told);
-        announce(c, "cancelled", r, &copy, told);
+        tell(c, later ? "stopped repeating" : "cancelled", r, &copy, NULL, told);
+        announce(c, later ? "stopped repeating" : "cancelled", r, &copy, told);
         char ymd[11];
         fmt_ymd(copy.start, ymd);
         ctx_redirect(c, "/book/%d?w=%s", r->id, ymd);
@@ -717,6 +867,24 @@ static void init(void) {
     T_book_news.what = "booking changes to tell";
     T_book_news.api_owner = "person";
     store_register(&T_book_news);
+    T_book_series.what = "repeating bookings";
+    store_register(&T_book_series);
+}
+
+static void start(void) {
+    db_begin();
+    book_series_fill(now_sec()); /* (the days that passed while Hemma was off) */
+    db_commit();
+}
+
+/* repeating bookings: topped up an hour at a time */
+static int64_t g_filled_ms;
+static void tick(int64_t now_ms) {
+    if (g_filled_ms && now_ms - g_filled_ms < 3600 * 1000) return;
+    g_filled_ms = now_ms;
+    db_begin();
+    if (book_series_fill(now_sec())) app_changed();
+    db_commit();
 }
 
 static void widget(Ctx *c, Buf *b, int where) { book_widget(c, b, where); }
@@ -773,10 +941,21 @@ static int rezone(Rezone *z) {
         Booking bk = *(Booking *)tbl_at(&T_booking, i);
         const Resource *r = res_get(bk.res);
         int64_t was = bk.start;
-        if (!rezone_span(z, r && res_daily(r), bk.created, &bk.start, &bk.end)) continue;
+        /* one a series made counts as typed when the series was: made at a start after the change, from its
+           times as they were typed */
+        const BookSeries *from = book_series_of(&bk);
+        int64_t typed = from && from->created < bk.created ? from->created : bk.created;
+        if (!rezone_span(z, r && res_daily(r), typed, &bk.start, &bk.end)) continue;
         n++;
         if (z->apply) tbl_put(&T_booking, &bk);
         else if (!z->days) rezone_note(z, r ? r->name : "A booking", was, bk.start);
+    }
+    for (int i = 0; i < tbl_count(&T_book_series); i++) { /* what the bookings still to be made follow (#47) */
+        BookSeries s = *(BookSeries *)tbl_at(&T_book_series, i);
+        const Resource *r = res_get(s.res);
+        bool moved = rezone_span(z, r && res_daily(r), s.created, &s.start, &s.end);
+        moved |= z->days && rezone_day(z, &s.until);
+        if (moved && z->apply) tbl_put(&T_book_series, &s); /* (not counted: no booking of its own) */
     }
     return n;
 }
@@ -787,6 +966,8 @@ static const Module book = {
     .icon = "calendar",
     .nav = 2,
     .init = init,
+    .start = start,
+    .tick = tick,
     .page = book_page,
     .actions = actions,
     .widget = widget,

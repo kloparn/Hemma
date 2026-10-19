@@ -35,7 +35,26 @@ typedef struct {
     int64_t start, end;
     char note[120];
     int64_t created;
+    int series; /* made by a repeating booking (BookSeries), 0 = a one-off */
 } Booking;
+
+/* A repeating booking (issue #47: "laundry every Tuesday 18-21"): its bookings are made ahead,
+   SERIES_AHEAD_DAYS at a time (topped up hourly), so every view, clash check and calendar sees them as
+   bookings - and each can be moved or cancelled on its own. One that's taken by then is left out, and
+   whoever it's for is told. */
+typedef struct {
+    int id;
+    int res, who, by;
+    int64_t start, end; /* the first one */
+    int repeat;         /* REPEAT_* (when.h) */
+    int64_t until;      /* the last day one may start on (a local midnight); 0 = until stopped */
+    int made;           /* bookings 0..made-1 are made (or were left out: taken) */
+    char note[120];
+    int64_t created;
+    bool stopped;
+} BookSeries;
+
+#define SERIES_AHEAD_DAYS 56 /* eight weeks */
 
 /* What happened to someone's booking while someone else had it in hand (issue #43: "someone cancelled
    my laundry slot and I never knew"): shown on their Bookings page and home card until "Got it". */
@@ -47,7 +66,12 @@ typedef struct {
     char link[160];
 } BookNews;
 
-extern Table T_resource, T_booking, T_book_news;
+extern Table T_resource, T_booking, T_book_news, T_book_series;
+
+int64_t book_series_at(const BookSeries *s, int k, int64_t *end); /* booking k's start (and end) */
+int book_series_fill(int64_t now);                                /* makes what's due; returns how many */
+void book_series_label(Buf *b, const BookSeries *s);              /* "every Tuesday, until 20 Dec" */
+const BookSeries *book_series_of(const Booking *b);               /* NULL for a one-off */
 
 Resource *res_get(int id);
 /* May the one signed in on c cancel or move b? Everyone (not a display account), unless r is own_only:
@@ -83,6 +107,7 @@ typedef struct {
     char problem[200]; /* why it can't be booked as typed ("" = fine) */
     bool has_alt;      /* a free alternative when there is a clash */
     int64_t alt_start, alt_end;
+    int repeat; /* "every tuesday": REPEAT_* (the first one is start..end) */
 } Quick;
 void book_quick_parse(const char *q, int default_res, int64_t now, Quick *out);
 
