@@ -167,3 +167,7 @@ a.book-up-row:hover { background: var(--panel-2); } /* (a wall's rows aren't lin
 }
 .book-news ul { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .book-news a { color: inherit; }
+
+/* repeating bookings (issue #47) */
+.book-rep { color: var(--muted); }
+.book-bk-rep { margin: 0 0 6px; color: var(--muted); }

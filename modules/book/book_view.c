@@ -77,9 +77,17 @@ static void quick_bar(Ctx *c, Buf *b, int res) {
                 ui_person(b, who ? who : c->me);
             }
             if (k.note[0]) H(b, " · <i>%s</i>", k.note);
+            if (k.repeat) { /* (issue #47) */
+                BookSeries s = {.start = k.start, .repeat = k.repeat};
+                buf_puts(b, " · ↻ ");
+                book_series_label(b, &s);
+            }
         }
         if (r && k.has_when && k.start) buf_puts(b, "<span class=\"sr-only\">. </span>"); /* (read as a pause: #69) */
         if (k.problem[0]) H(b, "<span class=\"book-why\">%s</span>", k.problem);
+        else if (k.repeat)
+            H(b, "<span class=\"book-why ok\">The first one is free — press Enter to book it and the next %d weeks</span>",
+              SERIES_AHEAD_DAYS / 7);
         else buf_puts(b, "<span class=\"book-why ok\">Free — press Enter to book</span>");
         buf_puts(b, "</div>");
     }
@@ -159,6 +167,13 @@ static void booking_form(Ctx *c, Buf *b, Resource *r, Booking *edit, int64_t at)
       "</label><label class=\"field\"><span>Note</span><input name=\"note\" maxlength=\"100\" value=\"%s\" "
       "placeholder=\"Optional — where, why…\"></label>",
       edit ? edit->note : "");
+    if (!edit) { /* (issue #47; one of a series is moved on its own) */
+        buf_puts(b, "<div class=\"field-row\"><label class=\"field\"><span>Repeat</span><select name=\"rep\">");
+        static const char *const reps[] = {"Never", "Every day", "Every week", "Every 2 weeks", "Every month"};
+        for (int i = 0; i < countof(reps); i++) H(b, "<option value=\"%d\">%s</option>", i, reps[i]);
+        buf_puts(b, "</select></label><label class=\"field\"><span>Repeat until</span><input type=\"date\" "
+                    "name=\"rep_until\"></label></div>");
+    }
     if (r->rules[0]) H(b, "<p class=\"book-rules\">%s</p>", r->rules);
     buf_puts(b, "<div class=\"modal-f\"><button class=\"btn primary\">");
     buf_puts(b, edit ? "Save changes" : "Book it");
@@ -183,6 +198,12 @@ static void booking_modal(Ctx *c, Buf *b, Booking *bk, const char *close) {
     book_span_text(r, bk->start, bk->end, c->now, b);
     buf_puts(b, "</div>");
     if (bk->note[0]) H(b, "<p class=\"book-bk-note\">%s</p>", bk->note);
+    const BookSeries *series = book_series_of(bk);
+    if (series) {
+        buf_puts(b, "<p class=\"book-bk-rep\">↻ Repeats ");
+        book_series_label(b, series);
+        buf_puts(b, "</p>");
+    }
     buf_puts(b, "<small class=\"muted\">Booked ");
     if (by && by != who) H(b, "by %s ", by->name);
     ui_ago(b, bk->created, c->now);
@@ -200,8 +221,15 @@ static void booking_modal(Ctx *c, Buf *b, Booking *bk, const char *close) {
     buf_puts(b, "<div class=\"modal-f spread\">");
     ui_form(b, "book.cancel", "inline");
     ui_hidden_int(b, "id", bk->id);
-    buf_puts(b, "<button class=\"btn danger\">Cancel booking</button>");
+    H(b, "<button class=\"btn danger\">%s</button>", series ? "Cancel this one" : "Cancel booking");
     ui_form_end(b);
+    if (series && !series->stopped) { /* the rest of a repeating booking: asked first (more than one) */
+        ui_form_confirm(b, "book.cancel", "inline", "Cancel this one and every later one, and stop repeating?");
+        ui_hidden_int(b, "id", bk->id);
+        ui_hidden(b, "later", "1");
+        buf_puts(b, "<button class=\"btn danger\">Stop repeating</button>");
+        ui_form_end(b);
+    }
     Buf u = {0};
     ctx_url(c, &u, "edit", "1", NULL);
     H(b, "<a class=\"btn\" href=\"%s\">Change</a></div>", buf_cstr(&u));
@@ -520,6 +548,7 @@ static void upcoming(Ctx *c, Buf *b, int only_res, int max, bool links) {
         else ui_span(b, bk->start, bk->end);
         buf_puts(b, "</span><span class=\"book-up-r\">");
         res_title(b, r);
+        if (bk->series) buf_puts(b, " <span class=\"book-rep\" aria-hidden=\"true\">↻</span><span class=\"sr-only\">, repeats</span>");
         if (bk->note[0]) H(b, " <small>· %s</small>", bk->note);
         buf_puts(b, "</span>");
         ui_person(b, p);

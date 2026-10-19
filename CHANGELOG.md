@@ -4,6 +4,39 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 0.16.0 (2026-10-19)
+
+Chores that take turns, and bookings and events that repeat (#47, the first two of its three).
+
+### New
+
+- **Chores that take turns.** Name more than one person on a chore that repeats -
+  *"vacuum every week @anna,@erik"* - and each time it's ticked off, the next one in line gets it,
+  who hears so ("Your turn next: Vacuum · Fri"). The list says whose turn is next ("next: Erik"),
+  and a turn can be swapped in the chore's dialog ("Swap: Erik does this one, Anna the next"). The
+  dialog's **Taking turns** field sets the line by name; someone who moved out is skipped.
+- **Repeating bookings.** *"laundry every tuesday 18-21"*, or **Repeat** in the booking dialog
+  (every day, week, 2 weeks or month, until a day if you like). The next eight weeks are booked
+  at once and later ones as the weeks go, so they show and block like any booking. One already
+  taken is left out, and whoever it's for is told. A booking's dialog offers **Cancel this one**
+  or **Stop repeating** (this one and every later one).
+- **Repeating events.** *"football practice every wednesday 17:30-19"*, or **Repeat** in the
+  event dialog: made a year ahead, so the wall, the calendar and your phone's calendar show them.
+  One changes or goes on its own; **Delete this and later ones** stops the rest. Every month on
+  the 31st falls on the last day of the shorter months.
+- The demo household (`hemma --demo`) takes turns vacuuming, and has a football practice and a
+  sauna that repeat.
+
+### For developers
+
+- A repeating booking or event is a series (`booking_series`, `plan_event_series`) that makes real
+  rows ahead (`book_series_fill`, `plan_series_fill`: at the start, after creating one, and hourly
+  from the tick); occurrence k is counted from the first, so a month on the 31st never drifts. A
+  series' rows carry its id (`Booking.series`, `Event.series`). Taking turns lives on the chore:
+  `Task.turns` (ids in order), `.turn` (whose place this time is) and `.swap` (who gave this one away).
+- The time zone (#39) knows series: their first times move with the days or the typed times, and a
+  row a series made at the start after a change counts as typed when its series was.
+
 ## 0.15.0 (2026-10-19)
 
 Your calendar on your phone, and a change of time zone that no longer moves things.

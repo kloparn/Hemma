@@ -57,6 +57,7 @@ static void event_row(Ctx *c, Buf *b, const Event *e, int64_t day, const char *h
     if (href) H(b, "<a class=\"plan-ev-main\" href=\"%s\">", href);
     else buf_puts(b, "<div class=\"plan-ev-main\">");
     H(b, "<b>%s%r%s</b>", icon, icon[0] ? " " : "", e->title);
+    if (e->series) buf_puts(b, " <span class=\"plan-rep\" aria-hidden=\"true\">↻</span><span class=\"sr-only\">, repeats</span>");
     if (e->note[0]) H(b, "<small>%s</small>", e->note);
     buf_puts(b, href ? "</a>" : "</div>");
     if (p) {
@@ -128,6 +129,11 @@ static void preview(Ctx *c, Buf *b) {
     if (p) {
         sep(b);
         ui_person(b, p);
+    }
+    if (d.repeat) {
+        sep(b);
+        buf_puts(b, "↻ ");
+        plan_repeat_label(b, d.repeat, dt_local(d.start).wday + 1);
     }
     buf_puts(b, "</div>");
 }
@@ -228,16 +234,37 @@ static void event_modal(Ctx *c, Buf *b, const Event *e, int64_t day) {
     ui_person_select(b, "who", e ? e->who : 0, "Everyone");
     H(b,
       "</label><label class=\"field\"><span>Note</span><textarea name=\"note\" maxlength=\"190\" rows=\"2\">%s"
-      "</textarea></label><div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>",
+      "</textarea></label>",
       e ? e->note : "");
+    const EventSeries *s = e && e->series ? tbl_get(&T_event_series, e->series) : NULL;
+    if (!e) { /* a new one may repeat (issue #47); one of a series changes on its own */
+        buf_puts(b, "<div class=\"field-row\"><label class=\"field\"><span>Repeat</span><select name=\"rep\">");
+        static const char *const reps[] = {"Never", "Every day", "Every week", "Every 2 weeks", "Every month"};
+        for (int i = 0; i < countof(reps); i++) H(b, "<option value=\"%d\">%s</option>", i, reps[i]);
+        buf_puts(b, "</select></label><label class=\"field\"><span>Repeat until</span><input type=\"date\" "
+                    "name=\"rep_until\"></label></div>");
+    } else if (s) {
+        Buf lab = {0};
+        plan_series_label(&lab, s);
+        H(b, "<p class=\"muted small plan-series\">↻ Repeats %s. Saving changes this one only.</p>", buf_cstr(&lab));
+        buf_free(&lab);
+    }
+    buf_puts(b, "<div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>");
     ui_form_end(b);
     if (e) {
         ui_form(b, "plan.event_delete", "danger-zone"); /* no "Delete ...?": the toast offers Undo (issue #60) */
         ui_hidden_int(b, "id", e->id);
         buf_puts(b, "<button class=\"btn danger\">");
         ui_icon(b, "trash");
-        buf_puts(b, "<span>Delete</span></button>");
+        H(b, "<span>%s</span></button>", s ? "Delete this one" : "Delete");
         ui_form_end(b);
+        if (s && !s->stopped) { /* the rest of a series: more than Undo can bring back, so asked first */
+            ui_form_confirm(b, "plan.event_delete", "danger-zone", "Delete this one and every later one?");
+            ui_hidden_int(b, "id", e->id);
+            ui_hidden(b, "later", "1");
+            buf_puts(b, "<button class=\"btn danger\"><span>Delete this and later ones</span></button>");
+            ui_form_end(b);
+        }
     }
     ui_modal_end(b);
     buf_free(&close);
@@ -459,9 +486,29 @@ static void close_modal(Ctx *c) {
 static void announce(Ctx *c, const Event *e) {
     char when[96];
     when_describe(e->start, e->end, c->now, when, sizeof when);
+    Buf rep = {0};
+    const EventSeries *s = e->series ? tbl_get(&T_event_series, e->series) : NULL;
+    if (s) {
+        buf_puts(&rep, ", ");
+        plan_series_label(&rep, s);
+    }
     const char *icon = plan_task_icon(e->title);
-    activity_add(c->me->id, icon[0] ? icon : "📅", "/plan/cal", "%s added %s · %s", c->me->name, e->title, when);
-    app_notify(c, TOAST_INFO, "%s added %s · %s", c->me->name, e->title, when);
+    activity_add(c->me->id, icon[0] ? icon : "📅", "/plan/cal", "%s added %s · %s%s", c->me->name, e->title, when,
+                 buf_cstr(&rep));
+    app_notify(c, TOAST_INFO, "%s added %s · %s%s", c->me->name, e->title, when, buf_cstr(&rep));
+    buf_free(&rep);
+}
+
+/* A repeating event (issue #47): the series, its first event (e, put here) and the ones ahead */
+static void start_series(Ctx *c, Event *e, int repeat, int64_t until) {
+    EventSeries s = {.start = e->start, .end = e->end, .allday = e->allday, .who = e->who, .repeat = repeat,
+                     .until = until, .made = 1, .by = e->by, .created = c->now};
+    str_copy(s.title, sizeof s.title, e->title);
+    str_copy(s.note, sizeof s.note, e->note);
+    tbl_put(&T_event_series, &s);
+    e->series = s.id;
+    tbl_put(&T_event, e);
+    plan_series_fill(c->now);
 }
 
 void plan_act_event_preview(Ctx *c, Fields *f) { ctx_set_live(c, "plan.eq", fields_str(f, "q")); }
@@ -481,11 +528,19 @@ void plan_act_event_add(Ctx *c, Fields *f) {
     e.who = d.who;
     e.by = c->me->id;
     e.created = c->now;
-    tbl_put(&T_event, &e);
+    if (d.repeat) start_series(c, &e, d.repeat, 0);
+    else tbl_put(&T_event, &e);
     ctx_set_live(c, "plan.eq", "");
     char when[96];
     when_describe(e.start, e.end, c->now, when, sizeof when);
-    ctx_ok(c, "Added · %s", when);
+    if (d.repeat) {
+        Buf rep = {0};
+        plan_repeat_label(&rep, d.repeat, dt_local(e.start).wday + 1);
+        ctx_ok(c, "Added · %s, %s", when, buf_cstr(&rep));
+        buf_free(&rep);
+    } else {
+        ctx_ok(c, "Added · %s", when);
+    }
     announce(c, &e);
 }
 
@@ -551,7 +606,18 @@ void plan_act_event_save(Ctx *c, Fields *f) {
     e.who = person_real(who) ? who : 0; /* pickers list real people only */
     str_copy(e.note, sizeof e.note, fields_str(f, "note"));
     str_trim(e.note);
-    tbl_put(&T_event, &e);
+    int rep = id ? 0 : (int)CLAMP(fields_int(f, "rep", 0), REPEAT_NONE, REPEAT_MONTHLY);
+    int64_t rep_until = 0;
+    if (rep && fields_str(f, "rep_until")[0]) {
+        int ry, rm, rd;
+        if (!parse_ymd(fields_str(f, "rep_until"), &ry, &rm, &rd) || dt_make(ry, rm, rd, 0, 0) < day_start(e.start)) {
+            ctx_fail_at(c, "rep_until", "Repeat until a day on or after the first one");
+            return;
+        }
+        rep_until = dt_make(ry, rm, rd, 0, 0);
+    }
+    if (rep) start_series(c, &e, rep, rep_until);
+    else tbl_put(&T_event, &e);
     ctx_ok(c, id ? "Saved" : "Added");
     if (!id) announce(c, &e);
     close_modal(c);
@@ -559,6 +625,29 @@ void plan_act_event_save(Ctx *c, Fields *f) {
 
 void plan_act_event_delete(Ctx *c, Fields *f) {
     int id = (int)fields_int(f, "id", 0);
+    Event *row = tbl_get(&T_event, id);
+    if (row && row->series && str_eq(fields_str(f, "later"), "1")) { /* the rest of a repeating event */
+        Event first = *row;
+        EventSeries *sp = tbl_get(&T_event_series, first.series);
+        int n = 0;
+        for (int i = tbl_count(&T_event) - 1; i >= 0; i--) {
+            const Event *x = tbl_at(&T_event, i);
+            if (x->series != first.series || x->start < first.start) continue;
+            tbl_del(&T_event, x->id);
+            n++;
+        }
+        if (sp) {
+            EventSeries s = *sp;
+            s.stopped = true;
+            tbl_put(&T_event_series, &s);
+        }
+        char when[96];
+        when_describe(first.start, first.end, c->now, when, sizeof when);
+        ctx_ok(c, "Deleted %s from %s on (%d)", first.title, when, n);
+        activity_add(c->me->id, "🗓️", "/plan/cal", "%s stopped %s from %s on", c->me->name, first.title, when);
+        close_modal(c);
+        return;
+    }
     ctx_undo(c, &T_event, id); /* Undo rather than "Delete ...?" (issue #60) */
     if (!tbl_del(&T_event, id)) {
         ctx_fail(c, "That event is gone");

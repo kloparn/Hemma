@@ -39,6 +39,7 @@ TEST(demo_fills_a_made_up_household) {
     }
     if (module_find("plan")) {
         CHECK_HAS(th_page(anna, "/plan"), "Vacuum");
+        CHECK_HAS(th_page(anna, "/plan"), "next: Maja"); /* (taking turns) */
         CHECK_HAS(th_page(anna, "/plan/shop"), "Coffee");
         CHECK_HAS(th_page(anna, "/plan/cal"), "Dentist");
     }

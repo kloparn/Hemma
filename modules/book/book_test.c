@@ -584,21 +584,152 @@ TEST(book_keeps_days_when_the_zone_changes) {
     drive.start = dt_make(2026, 10, 13, 14, 0);
     drive.end = dt_make(2026, 10, 13, 17, 0);
     tbl_put(&T_booking, &drive);
+    /* repeating ones (issue #47): what the bookings still to come are made from moves the same way */
+    BookSeries weekend = {.res = room, .who = adam, .by = adam, .repeat = REPEAT_WEEKLY, .made = 1, .created = g_fake_now};
+    weekend.start = dt_make(2026, 10, 31, 0, 0);
+    weekend.end = dt_make(2026, 11, 1, 0, 0);
+    weekend.until = dt_make(2026, 12, 26, 0, 0);
+    tbl_put(&T_book_series, &weekend);
+    BookSeries commute = {.res = car, .who = adam, .by = adam, .repeat = REPEAT_DAILY, .made = 1, .created = g_fake_now};
+    commute.start = dt_make(2026, 10, 13, 8, 0);
+    commute.end = dt_make(2026, 10, 13, 9, 0);
+    commute.until = dt_make(2026, 10, 15, 0, 0);
+    tbl_put(&T_book_series, &commute);
     th_halt();
     plat_set_tz("XXX-2");
     g_fake_now += 86400;
     th_boot_in(dir);
+    const BookSeries *ws = tbl_get(&T_book_series, weekend.id);
+    CHECK(ws && ws->start == dt_make(2026, 10, 31, 0, 0) && ws->end == dt_make(2026, 11, 1, 0, 0));
+    CHECK(ws && ws->until == dt_make(2026, 12, 26, 0, 0));
     const Booking *s = book_get(stay.id);
     CHECK(s && s->start == dt_make(2026, 10, 24, 0, 0) && s->end == dt_make(2026, 10, 27, 0, 0));
     const Booking *dr = book_get(drive.id);
     CHECK(dr && at(dr->start).hour == 16 && at(dr->end).hour == 19);
+    /* the commute's 14 and 15 Oct were made at this start - from its times as typed under UTC */
+    int made14 = 0, made15 = 0;
+    for (int i = 0; i < tbl_count(&T_booking); i++) {
+        const Booking *x = tbl_at(&T_booking, i);
+        if (x->series == commute.id && at(x->start).day == 14) made14 = x->id;
+        if (x->series == commute.id && at(x->start).day == 15) made15 = x->id;
+    }
+    CHECK(made14 && made15 && at(book_get(made14)->start).hour == 10);
     Rezone z;
-    CHECK_INT(zone_retime(false, &z), 1);
+    CHECK_INT(zone_retime(false, &z), 3); /* the car on the 13th, and the two the series made */
     CHECK_STR(z.note[0], "Car · Tue 13 Oct 16:00 → 14:00");
-    CHECK_INT(zone_retime(true, &z), 1);
+    CHECK_STR(z.note[1], "Car · Wed 14 Oct 10:00 → 08:00");
+    CHECK_INT(zone_retime(true, &z), 3);
     dr = book_get(drive.id);
     CHECK(dr && at(dr->start).hour == 14 && at(dr->end).hour == 17);
+    CHECK(made15 && at(book_get(made15)->start).hour == 8);
+    CHECK(at(((const BookSeries *)tbl_get(&T_book_series, commute.id))->start).hour == 8);
     g_fake_now = 0;
     plat_set_tz(NULL);
+    th_halt();
+}
+
+/* ------------------------------------------ repeating bookings (issue #47) */
+
+static int series_bookings(int series) {
+    int n = 0;
+    for (int i = 0; i < tbl_count(&T_booking); i++) n += ((Booking *)tbl_at(&T_booking, i))->series == series;
+    return n;
+}
+
+static Booking *booking_at(int res, int64_t start) {
+    for (int i = 0; i < tbl_count(&T_booking); i++) {
+        Booking *b = tbl_at(&T_booking, i);
+        if (b->res == res && b->start == start) return b;
+    }
+    return NULL;
+}
+
+TEST(book_repeats_every_week) {
+    setup(); /* Wednesday 7 October */
+    int laundry = add_res("Laundry", "🧺", 60, 7 * 60, 22 * 60, 180, 240);
+    Booking taken = {.res = laundry, .who = eva, .by = eva, .created = g_fake_now}; /* Eva has Tuesday 3 Nov */
+    taken.start = dt_make(2026, 11, 3, 18, 0);
+    taken.end = dt_make(2026, 11, 3, 21, 0);
+    tbl_put(&T_booking, &taken);
+    Quick q;
+    book_quick_parse("laundry every tuesday 18-21", 0, g_fake_now, &q);
+    CHECK(q.res == laundry && q.repeat == REPEAT_WEEKLY && !q.problem[0]);
+    CHECK(q.start == dt_make(2026, 10, 13, 18, 0) && q.end == dt_make(2026, 10, 13, 21, 0));
+    Buf lab = {0};
+    BookSeries probe = {.start = q.start, .repeat = q.repeat};
+    book_series_label(&lab, &probe);
+    CHECK_STR(lab.p, "every Tuesday");
+    buf_free(&lab);
+    const char *h;
+    ThResult r = th_act(adam, "book.quick", "q=laundry+every+tuesday+18-21");
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "every Tuesday - the next 8 weeks are booked");
+    CHECK_INT(tbl_count(&T_book_series), 1);
+    int sid = ((BookSeries *)tbl_at(&T_book_series, 0))->id;
+    /* 13, 20, 27 Oct, 10, 17, 24 Nov, 1 Dec - 3 Nov was Eva's: left out, and Adam is told */
+    CHECK_INT(series_bookings(sid), 7);
+    Booking *nov3 = booking_at(laundry, dt_make(2026, 11, 3, 18, 0));
+    CHECK(nov3 && nov3->who == eva);
+    CHECK_INT(tbl_count(&T_book_news), 1);
+    const BookNews *told = tbl_count(&T_book_news) ? tbl_at(&T_book_news, 0) : NULL;
+    CHECK(told && told->person == adam);
+    CHECK_HAS(told ? told->text : "", "Your Laundry every Tuesday: Tue 3 Nov 18:00–21:00 isn't booked");
+    h = th_page(adam, "/book");
+    CHECK_HAS(h, "Your Laundry every Tuesday: Tue 3 Nov");
+    CHECK_HAS(h, "book-rep");
+    /* a week on: one more */
+    g_fake_now += 7 * 86400;
+    CHECK_INT(book_series_fill(g_fake_now), 1);
+    CHECK(booking_at(laundry, dt_make(2026, 12, 8, 18, 0)) != NULL);
+    /* one cancelled on its own; the series goes on */
+    Booking *oct20 = booking_at(laundry, dt_make(2026, 10, 20, 18, 0));
+    CHECK(oct20 != NULL);
+    int oct20_id = oct20 ? oct20->id : 0;
+    char form[40], url[60];
+    snprintf(url, sizeof url, "/book/%d?w=2026-10-20&b=%d", laundry, oct20_id);
+    h = th_page(adam, url);
+    CHECK_HAS(h, "Repeats every Tuesday");
+    CHECK_HAS(h, "Cancel this one");
+    CHECK_HAS(h, "Stop repeating");
+    snprintf(form, sizeof form, "id=%d", oct20_id);
+    CHECK(th_act(adam, "book.cancel", form).ok);
+    CHECK(booking_at(laundry, dt_make(2026, 10, 20, 18, 0)) == NULL);
+    CHECK(booking_at(laundry, dt_make(2026, 10, 27, 18, 0)) != NULL);
+    /* stopped from 17 Nov: that one and the later ones go, the earlier stay */
+    Booking *nov17 = booking_at(laundry, dt_make(2026, 11, 17, 18, 0));
+    snprintf(form, sizeof form, "id=%d&later=1", nov17 ? nov17->id : 0);
+    r = th_act(eva, "book.cancel", form);
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "Stopped repeating: 4 Laundry bookings cancelled");
+    CHECK(booking_at(laundry, dt_make(2026, 11, 10, 18, 0)) != NULL);
+    CHECK(booking_at(laundry, dt_make(2026, 11, 24, 18, 0)) == NULL);
+    CHECK(((BookSeries *)tbl_get(&T_book_series, sid))->stopped);
+    g_fake_now += 30 * 86400;
+    CHECK_INT(book_series_fill(g_fake_now), 0);
+    g_fake_now = 0;
+    th_halt();
+}
+
+TEST(book_repeats_from_the_form_until_a_day) {
+    setup();
+    int car = add_res("Car", "🚗", 30, 0, 1440, 60, 0);
+    char form[200];
+    snprintf(form, sizeof form, "res=%d&date=2026-10-12&from=08%%3A00&to=09%%3A00&rep=1&rep_until=2026-10-16", car);
+    CHECK(th_act(adam, "book.create", form).ok);
+    int sid = ((BookSeries *)tbl_at(&T_book_series, 0))->id;
+    CHECK_INT(series_bookings(sid), 5); /* Monday to Friday, and that's it */
+    CHECK(((BookSeries *)tbl_get(&T_book_series, sid))->stopped);
+    snprintf(form, sizeof form, "res=%d&date=2026-10-20&from=08%%3A00&to=09%%3A00&rep=1&rep_until=2026-10-19", car);
+    ThResult r = th_act(adam, "book.create", form);
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Repeat until a day on or after the first one");
+    /* every month on the 31st: 30 November - and 31 December again (counted from the first) */
+    snprintf(form, sizeof form, "res=%d&date=2026-10-31&from=10%%3A00&to=12%%3A00&rep=4", car);
+    CHECK(th_act(adam, "book.create", form).ok);
+    CHECK(booking_at(car, dt_make(2026, 11, 30, 10, 0)) != NULL);
+    g_fake_now = dt_make(2026, 11, 20, 10, 0);
+    book_series_fill(g_fake_now);
+    CHECK(booking_at(car, dt_make(2026, 12, 31, 10, 0)) != NULL);
+    g_fake_now = 0;
     th_halt();
 }

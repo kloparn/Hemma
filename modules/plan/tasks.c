@@ -73,6 +73,12 @@ static void task_row(Ctx *c, Buf *b, const Task *t, const char *idp, const char 
             buf_puts(b, "↻ ");
             plan_repeat_label(b, t->repeat, t->rep_day);
             any = true;
+            int place;
+            Person *next = person_get(plan_next_turn(t, &place));
+            if (next) {
+                sep(b);
+                H(b, "next: %s", next->name);
+            }
         }
         if (!any) buf_puts(b, "No date");
     }
@@ -111,6 +117,18 @@ static void preview(Ctx *c, Buf *b) {
         sep(b);
         ui_person(b, p);
     }
+    if (d.nturns > 1) { /* "@anna,@erik": taking turns - when it repeats */
+        if (d.repeat) {
+            buf_puts(b, ", then ");
+            for (int k = 1; k < d.nturns; k++) {
+                Person *q = person_get(d.turns[k]);
+                if (q) H(b, "%r%s", k > 1 ? ", " : "", q->name);
+            }
+            buf_puts(b, " (taking turns)");
+        } else {
+            buf_puts(b, " <span class=\"muted\">(to take turns it needs to repeat, like “every week”)</span>");
+        }
+    }
     sep(b);
     if (d.due) ui_day(b, d.due, c->now);
     else buf_puts(b, "no date");
@@ -143,8 +161,33 @@ static void task_modal(Ctx *c, Buf *b, const Task *t) {
     buf_puts(b, "<label class=\"field\"><span>Repeat</span><select name=\"repeat\">");
     for (int i = 0; i < countof(reps); i++)
         H(b, "<option value=\"%d\"%r>%s</option>", i, t && t->repeat == i ? " selected" : "", reps[i]);
-    buf_puts(b, "</select></label><div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>");
+    buf_puts(b, "</select></label>");
+    Buf names = {0};
+    if (t) plan_turn_names(&names, t);
+    H(b,
+      "<label class=\"field\"><span>Taking turns</span><input name=\"turns\" maxlength=\"200\" autocomplete=\"off\" "
+      "value=\"%s\" placeholder=\"Names in turn order, like Anna, Erik\" aria-describedby=\"plan-turns-h\"></label>"
+      "<p class=\"muted small\" id=\"plan-turns-h\">For something that repeats: each time it's done, the next one in "
+      "line gets it. Leave it empty for one person.</p>",
+      buf_cstr(&names));
+    buf_free(&names);
+    buf_puts(b, "<div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>");
     ui_form_end(b);
+    int place;
+    Person *next = t && !t->done_at ? person_get(plan_next_turn(t, &place)) : NULL;
+    Person *now_p = t ? person_get(t->who) : NULL;
+    if (next && now_p && next != now_p && !t->swap) { /* this time to the next one, who's then followed by them */
+        ui_form(b, "plan.task_swap", "plan-swap");
+        ui_hidden_int(b, "id", t->id);
+        H(b, "<button class=\"btn\">Swap: %s does this one, %s the next</button>", next->name, now_p->name);
+        ui_form_end(b);
+    } else if (t && t->swap && !t->done_at) {
+        Person *gave = person_get(t->swap);
+        ui_form(b, "plan.task_swap", "plan-swap");
+        ui_hidden_int(b, "id", t->id);
+        H(b, "<button class=\"btn\">Swap back: %s does this one</button>", gave ? gave->name : "the one in line");
+        ui_form_end(b);
+    }
     if (t) {
         ui_form(b, "plan.task_delete", "danger-zone"); /* no "Delete ...?": the toast offers Undo (issue #60) */
         ui_hidden_int(b, "id", t->id);
@@ -296,6 +339,43 @@ int plan_today_tasks(Ctx *c, Buf *b, bool wall) {
 
 /* ---------------------------------------------------------------- actions */
 
+/* The line for taking turns, as ids "3,5,9"; this time is the first one's. */
+static void set_turns(Task *t, const int *ids, int n) {
+    Buf b = {0};
+    for (int k = 0; k < n; k++) buf_printf(&b, "%s%d", k ? "," : "", ids[k]);
+    str_copy(t->turns, sizeof t->turns, buf_cstr(&b));
+    buf_free(&b);
+    t->who = ids[0];
+    t->turn = 0;
+    t->swap = 0;
+}
+
+/* "Anna, Erik" -> their ids, in that order; false (said beside the field) for a name nobody has */
+static bool read_turns(Ctx *c, const char *text, int out[PLAN_TURNS], int *n) {
+    char copy[256];
+    str_copy(copy, sizeof copy, text);
+    *n = 0;
+    for (char *name = strtok(copy, ",;"); name; name = strtok(NULL, ",;")) {
+        str_trim(name);
+        while (*name == '@') name++;
+        if (!*name) continue;
+        Person *p = person_find(name);
+        if (!p || !person_real(p->id)) {
+            ctx_fail_at(c, "turns", "Who's “%s”? Use the names in the household", name);
+            return false;
+        }
+        bool dup = false;
+        for (int k = 0; k < *n; k++) dup |= out[k] == p->id;
+        if (dup) continue;
+        if (*n == PLAN_TURNS) {
+            ctx_fail_at(c, "turns", "At most %d people can take turns", PLAN_TURNS);
+            return false;
+        }
+        out[(*n)++] = p->id;
+    }
+    return true;
+}
+
 static void close_modal(Ctx *c) {
     Buf u = {0};
     ctx_url(c, &u, "edit", NULL, "new", NULL, NULL);
@@ -318,6 +398,7 @@ void plan_act_task_add(Ctx *c, Fields *f) {
     t.due = d.due;
     t.repeat = d.repeat;
     t.rep_day = d.rep_day;
+    if (d.repeat && d.nturns > 1) set_turns(&t, d.turns, d.nturns);
     t.by = c->me->id;
     t.created = c->now;
     tbl_put(&T_task, &t);
@@ -361,18 +442,34 @@ void plan_act_task_done(Ctx *c, Fields *f) {
         next.spawned = 0;
         next.created = c->now;
         next.due = plan_next_due(&t, c->now);
+        int place, turn = plan_next_turn(&t, &place); /* taking turns: the next one in line (issue #47) */
+        if (turn) {
+            next.who = turn;
+            next.turn = place;
+            next.swap = 0;
+        }
         tbl_put(&T_task, &next);
         t.spawned = next.id;
         tbl_put(&T_task, &t);
         Buf day = {0};
         ui_day(&day, next.due, c->now);
-        ctx_ok(c, "Done! Next time: %s", buf_cstr(&day));
+        Person *p = turn ? person_get(turn) : NULL;
+        if (p && p->id != c->me->id) {
+            ctx_ok(c, "Done! %s's turn next: %s", p->name, buf_cstr(&day));
+            app_notify_person(p->id, TOAST_INFO, "Your turn next: %s · %s", t.title, buf_cstr(&day));
+        } else if (p) {
+            ctx_ok(c, "Done! Your turn again next: %s", buf_cstr(&day));
+        } else {
+            ctx_ok(c, "Done! Next time: %s", buf_cstr(&day));
+        }
         buf_free(&day);
+        if (p) activity_add(c->me->id, "✅", "/plan", "%s ticked off %s · %s's turn next", c->me->name, t.title, p->name);
+        else activity_add(c->me->id, "✅", "/plan", "%s ticked off %s", c->me->name, t.title);
     } else {
         tbl_put(&T_task, &t);
         ctx_ok(c, "Done!");
+        activity_add(c->me->id, "✅", "/plan", "%s ticked off %s", c->me->name, t.title);
     }
-    activity_add(c->me->id, "✅", "/plan", "%s ticked off %s", c->me->name, t.title);
 }
 
 void plan_act_task_save(Ctx *c, Fields *f) {
@@ -412,8 +509,61 @@ void plan_act_task_save(Ctx *c, Fields *f) {
     t.rep_day = 0;
     if (t.repeat == REPEAT_WEEKLY || t.repeat == REPEAT_BIWEEKLY) t.rep_day = dt_local(t.due).wday + 1;
     if (t.repeat == REPEAT_MONTHLY) t.rep_day = dt_local(t.due).day;
+    int line[PLAN_TURNS], n = 0;
+    if (!read_turns(c, fields_str(f, "turns"), line, &n)) return;
+    if (n > 1 && !t.repeat) {
+        ctx_fail_at(c, "turns", "Taking turns needs it to repeat - pick how often above");
+        return;
+    }
+    char was[sizeof t.turns];
+    str_copy(was, sizeof was, t.turns);
+    if (n > 1) {
+        int now_who = t.who;
+        set_turns(&t, line, n);
+        for (int k = 0; k < n; k++) /* whoever was picked above does this one, if they're in the line */
+            if (line[k] == now_who) t.who = now_who, t.turn = k;
+        if (str_eq(was, t.turns) && t.swap) t.swap = 0;
+    } else {
+        t.turns[0] = '\0';
+        t.turn = t.swap = 0;
+        if (n == 1) t.who = line[0];
+    }
     tbl_put(&T_task, &t);
     ctx_ok(c, id ? "Saved" : "Added");
+    close_modal(c);
+}
+
+/* Taking turns: this time goes to the next one in line, and the one whose turn it was takes the next -
+   or, swapped already, back again (issue #47). */
+void plan_act_task_swap(Ctx *c, Fields *f) {
+    Task *row = tbl_get(&T_task, (int)fields_int(f, "id", 0));
+    if (!row || row->done_at) {
+        ctx_fail(c, "That to-do is gone or done");
+        return;
+    }
+    Task t = *row;
+    int place;
+    if (t.swap) {
+        Person *gave = person_real(t.swap);
+        t.who = gave ? gave->id : t.who;
+        t.swap = 0;
+        tbl_put(&T_task, &t);
+        ctx_ok(c, "Swapped back: %s's turn", gave ? gave->name : "theirs");
+        return;
+    }
+    int next = plan_next_turn(&t, &place);
+    Person *to = person_real(next), *from = person_get(t.who);
+    if (!to || to->id == t.who) {
+        ctx_fail(c, "There's nobody else in line to swap with");
+        return;
+    }
+    t.swap = t.who;
+    t.who = to->id;
+    tbl_put(&T_task, &t);
+    ctx_ok(c, "Swapped: %s does this one, %s the next", to->name, from ? from->name : "the one in line");
+    if (to->id != c->me->id)
+        app_notify_person(to->id, TOAST_INFO, "%s swapped %s with you: it's your turn now", c->me->name, t.title);
+    activity_add(c->me->id, "🔁", "/plan", "%s swapped turns: %s does %s this time", c->me->name, to->name, t.title);
     close_modal(c);
 }
 
