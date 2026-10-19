@@ -343,7 +343,9 @@ TEST(system_checks_say_what_works_and_what_doesnt) {
     const char *html = th_page(adam, "/system");
     CHECK_HAS(html, "Everything works");
     CHECK_HAS(html, "http://192.168.1.50:8080");
-    CHECK_HAS(html, "Version " HEMMA_VERSION);
+    char version[64];
+    snprintf(version, sizeof version, "Version %s", HEMMA_VERSION);
+    CHECK_HAS(html, version);
     CHECK_HAS(html, "1 account can sign in, 1 of them admin.");
 
     /* started with another secret than the passwords were made with */
@@ -576,7 +578,9 @@ TEST(system_help_says_where_this_hemma_keeps_things) {
     CHECK_HAS(html, "/hemma.log");
     CHECK_HAS(html, "Where things are");
     CHECK_HAS(html, "Download the log");
-    CHECK_HAS(html, "Hemma " HEMMA_VERSION);
+    char hemma[64];
+    snprintf(hemma, sizeof hemma, "Hemma %s", HEMMA_VERSION);
+    CHECK_HAS(html, hemma);
     CHECK_HAS(html, "http://192.168.1.50:8080/healthz");
     th_halt();
 }

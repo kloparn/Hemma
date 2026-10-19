@@ -42,7 +42,9 @@ TEST(app_a_start_refused_over_the_data_says_so_in_the_log_file) {
     snprintf(path, sizeof path, "%s/hemma.log", dir);
     Buf log = {0};
     CHECK(file_read_all(path, &log, 1 << 20));
-    CHECK_HAS(log.p, " - Hemma " HEMMA_VERSION);
+    char started[64];
+    snprintf(started, sizeof started, " - Hemma %s", HEMMA_VERSION);
+    CHECK_HAS(log.p, started);
     CHECK_HAS(log.p, " started\n");
     CHECK_HAS(log.p, " E Hemma's data in ");
     CHECK_HAS(log.p, "a rescue got nothing back (0 rows). Hemma won't start on it and changed nothing");

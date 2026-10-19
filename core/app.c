@@ -73,6 +73,9 @@ void app_set_testing(bool on) { g_testing = on; }
 const char *app_name(void) { return setting("household.name", "Hemma"); }
 const char *app_asset_version(void) { return g_asset_ver; }
 bool app_dev_mode(void) { return g_cfg.web_dir != NULL; }
+bool app_demo(void) { return g_cfg.demo_password != NULL; }
+const char *app_demo_password(void) { return g_cfg.demo_password ? g_cfg.demo_password : ""; }
+void app_test_demo(const char *password) { g_cfg.demo_password = password; }
 const AppConfig *app_config(void) { return &g_cfg; }
 
 int app_addresses(char out[][96], int max) {
@@ -1996,6 +1999,7 @@ bool app_boot(const char *data_dir) {
     prune_sessions();
     for (int i = 0; i < nmods; i++)
         if (mods[i]->start) mods[i]->start();
+    if (app_demo()) app_demo_seed(g_cfg.demo_password); /* (a new demo folder: its made-up household) */
     return true;
 }
 
@@ -2041,6 +2045,10 @@ static void startup_banner(const char *where) {
     static const char rule[] = "------------------------------------------------------------";
     log_info("%s", rule);
     log_info("Hemma %s is running.", HEMMA_VERSION_FULL);
+    if (app_demo()) {
+        log_info("  A DEMO: a made-up household, in a folder of its own (%s) - nothing here is real.", g_cfg.data_dir);
+        log_info("  Sign in as anna (an admin) or jonas, password %s", g_cfg.demo_password);
+    }
     if (local_only) log_info("  Open it on this computer: %s  (other devices can't: it listens on %s only)",
                              na ? addr[0] : where, g_cfg.host);
     else if (na) {

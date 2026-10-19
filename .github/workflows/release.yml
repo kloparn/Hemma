@@ -1,0 +1,105 @@
+# Publishes a release when main gets a version that hasn't been released (issues #19, #52): every PR
+# raises the version in the VERSION file, so merging one releases it - this workflow makes the tag
+# (vX.Y.Z, on the merged commit) itself. The notes are that version's CHANGELOG.md section (which
+# must exist) and the commits since the last release. Windows runs the suite and builds the programs
+# the way build.ps1 does on a PC - with the in-browser converter (av.wasm) - and Linux packs the
+# downloads (tools/ci/bundle.sh): a Pi or Linux one holds the program, the installer and the service
+# file. No Windows program yet (owner, 2026-10-19): Windows Defender's machine learning calls hemma.exe
+# a trojan (a false positive) - it comes back once it's signed or cleared with Microsoft. "Run workflow"
+# (by hand, any branch) builds the same downloads without publishing them: a dry run, kept as an
+# artifact of the run.
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths: ['VERSION', 'CHANGELOG.md']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release # (one at a time: a second merge waits, then finds its version released or not)
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: A version without a release yet?
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver=$(tr -d ' \r\n' < VERSION)
+          echo "$ver" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' || { echo "VERSION must hold MAJOR.MINOR.PATCH: $ver"; exit 1; }
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" != push ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"; echo "$ver: a dry run"
+          elif gh release view "v$ver" > /dev/null 2>&1 || git ls-remote --exit-code --tags origin "v$ver" > /dev/null; then
+            echo "publish=skip" >> "$GITHUB_OUTPUT"; echo "$ver is out already: nothing to do"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"; echo "$ver: releasing it"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.publish != 'skip'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Test, then build the programs (no Windows one yet)
+        shell: powershell
+        run: |
+          foreach ($t in 'test', 'pi', 'pi32', 'linux', 'mac') {
+            ./build.ps1 $t
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: programs
+          if-no-files-found: error
+          path: |
+            build/hemma-pi64
+            build/hemma-pi32
+            build/hemma-linux
+            build/hemma-mac-arm64
+            build/hemma-mac-x64
+
+  publish:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # (every commit and tag: the notes list the commits since the last release)
+      - uses: actions/download-artifact@v4
+        with:
+          name: programs
+          path: programs
+      - name: Downloads, checksums and notes
+        run: sh tools/ci/bundle.sh programs dist notes.md
+      - name: Publish the release (and its tag)
+        if: needs.check.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ needs.check.outputs.version }}
+        run: gh release create "v$VER" dist/* --target "$GITHUB_SHA" --title "Hemma $VER" --notes-file notes.md
+      - name: Keep the downloads (a dry run)
+        if: needs.check.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloads
+          path: |
+            dist/
+            notes.md

@@ -18,6 +18,8 @@ static void usage(void) {
             "  --env FILE     settings file to load (default ./.env, optional)\n"
             "  --web DIR      serve web assets from DIR instead of the embedded copy\n"
             "                 (dev mode: CSS/JS edits reload open screens automatically)\n"
+            "  --demo         try Hemma on a made-up household, in a throwaway folder of its own (the\n"
+            "                 login is in this window and on the sign-in page; your data isn't touched)\n"
             "  --gen-salt     print a fresh random value for HEMMA_AUTH_SALT and exit\n"
             "  --gen-setup-code\n"
             "                 print a fresh one-time code for HEMMA_SETUP_CODE (the welcome page's) and exit\n"
@@ -62,6 +64,29 @@ static int restore_cli(const char *file, const char *data_dir, const char *env_f
     return 0;
 }
 
+/* hemma --demo (issue #31): a fresh folder under the temporary folder, with a settings file that
+   makes the admin "anna" (and a random password) - app_demo_seed fills in the rest at the first boot.
+   Nothing of the household's: no --data, no --env, no .env read. */
+static bool make_demo(char *dir, size_t dcap, char *env_file, size_t ecap, char *password, size_t pcap) {
+    const char *tmp = plat_getenv("TMPDIR");
+    if (!tmp || !*tmp) tmp = plat_getenv("TEMP");
+    if (!tmp || !*tmp) tmp = plat_getenv("TMP");
+    if (!tmp || !*tmp) tmp = "/tmp";
+    char rnd[9], pw[9];
+    rand_hex(rnd, 4);
+    rand_hex(pw, 4);
+    snprintf(dir, dcap, "%s/hemma-demo-%s", tmp, rnd);
+    snprintf(env_file, ecap, "%s/demo.env", dir);
+    snprintf(password, pcap, "demo-%s", pw);
+    if (!dir_make(dir)) return false;
+    FILE *f = file_open(env_file, "wb");
+    if (!f) return false;
+    fprintf(f, "# hemma --demo: a made-up household (this folder is a throwaway)\nHEMMA_ADMIN_USER=anna\n"
+               "HEMMA_ADMIN_NAME=Anna\nHEMMA_ADMIN_PASSWORD=%s\n", password);
+    fclose(f);
+    return true;
+}
+
 int main(int argc, char **argv) {
     if (!plat_init()) {
         fprintf(stderr, "platform init failed\n");
@@ -69,7 +94,10 @@ int main(int argc, char **argv) {
     }
     /* first pass: things that must happen before reading the environment */
     const char *env_file = ".env";
+    bool demo = false, other_place = false;
     for (int i = 1; i < argc; i++) {
+        if (str_eq(argv[i], "--demo")) demo = true;
+        else if ((str_eq(argv[i], "--data") || str_eq(argv[i], "--env")) && i + 1 < argc) other_place = true;
         if (str_eq(argv[i], "--env") && i + 1 < argc) env_file = argv[++i];
         else if (str_eq(argv[i], "--gen-salt")) {
             char hex[65];
@@ -86,6 +114,19 @@ int main(int argc, char **argv) {
             return 0;
         }
     }
+    static char demo_dir[400], demo_env[440], demo_pw[16], demo_data[420];
+    if (demo) {
+        if (other_place) {
+            fprintf(stderr, "--demo keeps its own throwaway folder: leave out --data and --env\n");
+            return 2;
+        }
+        if (!make_demo(demo_dir, sizeof demo_dir, demo_env, sizeof demo_env, demo_pw, sizeof demo_pw)) {
+            fprintf(stderr, "couldn't make a folder for the demo in %s\n", demo_dir);
+            return 1;
+        }
+        env_file = demo_env;
+        snprintf(demo_data, sizeof demo_data, "%s/data", demo_dir);
+    }
     int loaded = env_load(env_file);
 
     AppConfig cfg = {
@@ -94,7 +135,9 @@ int main(int argc, char **argv) {
         .data_dir = env("HEMMA_DATA", "data"),
         .web_dir = NULL,
         .env_file = env_file,
+        .demo_password = demo ? demo_pw : NULL,
     };
+    if (demo) cfg.data_dir = demo_data;
     const char *reset_user = NULL, *restore_file = NULL;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -106,6 +149,7 @@ int main(int argc, char **argv) {
         else if (str_eq(a, "--reset-password") && next) reset_user = argv[++i];
         else if (str_eq(a, "--restore") && next) restore_file = argv[++i];
         else if (str_eq(a, "--env") && next) i++; /* handled above */
+        else if (str_eq(a, "--demo")) continue;        /* (also above) */
         else if (str_eq(a, "--verbose")) g_log_level = LOG_DEBUG;
         else if (str_eq(a, "--quiet")) g_log_level = LOG_WARN;
         else {

@@ -25,6 +25,11 @@ CPPFLAGS += -Icore -Ithird_party/sqlite -D_FILE_OFFSET_BITS=64 -D_TIME_BITS=64
 # The commit a binary is built from, for `hemma --version` ("-dirty": with uncommitted changes).
 # Nothing outside a git checkout.
 HEMMA_COMMIT := $(shell git rev-parse --short=12 HEAD 2>/dev/null)$(shell git status --porcelain --untracked-files=no 2>/dev/null | grep -q . && echo -dirty)
+# The version: the VERSION file, MAJOR.MINOR.PATCH (semver.org)
+HEMMA_VER := $(shell tr -d ' \r\n' < VERSION 2>/dev/null)
+ifeq ($(shell printf '%s' '$(HEMMA_VER)' | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' && echo ok),)
+$(error VERSION must hold MAJOR.MINOR.PATCH (semver.org), like 0.14.0 - it says '$(HEMMA_VER)')
+endif
 LDLIBS   += -lpthread -lm
 # SQLite for size: its data is read into memory once, so -Os costs nothing you'd notice
 SQLITE_FLAGS = -Os -w -DSQLITE_DQS=0 -DSQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_MEMSTATUS=0 \
@@ -95,7 +100,8 @@ build/obj/recover.o: third_party/sqlite/recover.c third_party/sqlite/dbdata.c th
 # One object per source file: Hemma's in build/obj/h (LEAN), the test program's in build/obj/t
 # (-Itests). -MMD: each object knows the headers it read, so a change compiles again only the files it
 # touches. A different compiler or flags since the last build (the .flags stamps) compiles them all
-# again; a new commit, only core/version.o (the one file that gets -DHEMMA_COMMIT).
+# again; a new version or commit, only core/version.o (the one file that gets -DHEMMA_VER and
+# -DHEMMA_COMMIT).
 OBJ_H   := $(patsubst %.c,build/obj/h/%.o,$(SRC)) build/obj/h/assets.o
 OBJ_T   := $(patsubst %.c,build/obj/t/%.o,$(TEST_SRC)) build/obj/t/assets.o
 FLAGS_H  = $(CC) $(CPPFLAGS) $(WARN) $(LEAN) $(CFLAGS)
@@ -118,8 +124,9 @@ build/obj/h/assets.o: build/assets.c build/obj/h.flags
 	$(FLAGS_H) -c -o $@ build/assets.c
 build/obj/t/assets.o: build/assets.c build/obj/t.flags
 	$(FLAGS_T) -c -o $@ build/assets.c
-build/obj/h/core/version.o build/obj/t/core/version.o: build/obj/commit
-build/obj/h/core/version.o build/obj/t/core/version.o: CPPFLAGS += $(if $(HEMMA_COMMIT),-DHEMMA_COMMIT=$(HEMMA_COMMIT))
+build/obj/h/core/version.o build/obj/t/core/version.o: build/obj/commit VERSION
+build/obj/h/core/version.o build/obj/t/core/version.o: CPPFLAGS += -DHEMMA_VER=$(HEMMA_VER) \
+  $(if $(HEMMA_COMMIT),-DHEMMA_COMMIT=$(HEMMA_COMMIT))
 -include $(OBJ_H:.o=.d) $(OBJ_T:.o=.d)
 
 build/hemma: $(OBJ_H) $(SQLITE_OBJ)

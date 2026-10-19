@@ -108,18 +108,46 @@ They don't get in each other's way: Hemma happily runs next to any of them.
 - **About 20 minutes** for the first setup. You'll copy a few commands; the guides explain
   every step.
 
+## Try it on your laptop first (2 minutes)
+
+Download Hemma for your computer from the [latest release](https://github.com/kloparn/Hemma/releases/latest):
+`hemma-mac-arm64.tar.gz` (a Mac with Apple silicon), `hemma-mac-x64.tar.gz` (an Intel Mac) or
+`hemma-linux-x64.tar.gz`. Unpack it and start it with `--demo`, in Terminal in the unpacked folder:
+
+```sh
+./hemma-mac-arm64 --demo
+```
+
+On Windows there's no ready-made program yet: [build it](docs/windows.md) (a few minutes),
+then start `.\build\hemma.exe --demo`.
+
+Then open `http://localhost:8080`. A made-up household is waiting there, with people,
+bookings, chores, a shopping list and notes; the login shows in Hemma's window and on the
+sign-in page. Nothing is kept: the next `--demo` starts afresh, and it never touches real data.
+
+The programs aren't signed, so on a Mac the first start needs one click-through: run
+`xattr -d com.apple.quarantine hemma-mac-arm64` once in Terminal, or right-click the file in
+Finder and choose **Open**.
+
+Like it? Start it without `--demo` for your own household (the setup code shows in its
+window), or put it on a Pi with the quick start below.
+
 ## Quick start
 
 The usual setup is a Raspberry Pi in a cupboard, plugged into the router:
 
 1. **Prepare the Pi.** Put Raspberry Pi OS Lite on a memory card with Raspberry Pi Imager,
    naming the Pi `hemma` and turning on SSH.
-2. **Get Hemma onto it.** Either build it on the Pi (`git clone
-   https://github.com/kloparn/Hemma.git hemma`, then `make`) or build it on a PC and copy
-   the file over.
-3. **Install it.** `sudo sh install-pi.sh ./hemma-pi64` sets Hemma up as a service, and
-   `sudo systemctl enable --now hemma` starts it. From then on it starts by itself. The
-   installer's last lines show your **setup code**, for example `7KQ4-M2XP`.
+2. **Get Hemma onto it.** On the Pi, download the latest release and unpack it:
+   ```sh
+   wget https://github.com/kloparn/Hemma/releases/latest/download/hemma-pi64.tar.gz
+   tar xzf hemma-pi64.tar.gz && cd hemma-pi64
+   ```
+   (`hemma-pi32` for a 32-bit system. To build it yourself instead, see
+   [docs/raspberry-pi.md](docs/raspberry-pi.md).)
+3. **Install it.** `sudo sh install-pi.sh ./hemma-pi64` sets Hemma up as a service and
+   starts it. From then on it starts by itself. The installer's last lines show your
+   **setup code**, for example `7KQ4-M2XP`.
 4. **Open `http://hemma.local`** in a browser, type the setup code and create the admin
    account. Then add the rest of the household under **Household**.
 

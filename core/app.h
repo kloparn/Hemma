@@ -17,10 +17,13 @@
 #include "server.h"
 #include "store.h"
 
-#define HEMMA_VERSION "0.13.1" /* raised for every release (SECURITY.md, CHANGELOG.md) */
-/* With the commit the binary was built from: "0.6.0 (8242ca8f1a2b)", "-dirty" with uncommitted
-   changes; just the version outside git. core/version.c is the one file the build hands
-   -DHEMMA_COMMIT=..., so a new commit (or an edit that makes it "-dirty") recompiles that file only. */
+/* The version: the VERSION file at the top of the repo ("0.14.0"; every PR raises it, merging releases
+   it - docs/development.md). HEMMA_VERSION_FULL adds the commit the binary was built from: "0.6.0
+   (8242ca8f1a2b)", "-dirty" with uncommitted changes; just the version outside git. core/version.c is
+   the one file the build hands -DHEMMA_VER and -DHEMMA_COMMIT, so a new version or commit (or an edit
+   that makes it "-dirty") recompiles that file only. */
+const char *hemma_version(void);
+#define HEMMA_VERSION hemma_version()
 const char *hemma_version_full(void);
 #define HEMMA_VERSION_FULL hemma_version_full()
 
@@ -385,8 +388,16 @@ typedef struct {
     const char *data_dir;
     const char *web_dir; /* serve web/ from disk (live CSS/JS editing + auto-reload); NULL = embedded */
     const char *env_file; /* the settings file (--env, default ".env"): a new install's secret goes there */
+    const char *demo_password; /* hemma --demo: anna's (and jonas's) password; NULL = no demo */
 } AppConfig;
 int app_main(const AppConfig *cfg);
+/* hemma --demo (issue #31; main.c makes the throwaway folder and its settings file): every page says
+   it's a demo, the sign-in page gives the login, and the first boot fills a made-up household
+   (core/demo.c: app_demo_seed, through the modules' own actions). */
+bool app_demo(void);
+const char *app_demo_password(void);
+void app_demo_seed(const char *password); /* once per data folder (setting demo.seeded); needs "anna" */
+void app_test_demo(const char *password); /* tests: as if started with --demo (NULL: not) */
 /* app_main's exit code for a start refused over the data (store_refused: a newer Hemma's format, a
    rescue that got next to nothing back) - starting again won't change it, so deploy/hemma.service
    doesn't restart on it (RestartPreventExitStatus=78; 78 = EX_CONFIG in sysexits.h). */

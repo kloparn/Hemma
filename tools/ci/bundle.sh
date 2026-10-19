@@ -1,0 +1,104 @@
+#!/bin/sh
+# tools/ci/bundle.sh — the downloads of a release (.github/workflows/release.yml; issue #19): a bundle
+# per platform - a Pi or Linux one holds the installer and the service file the installer copies from
+# its own folder, and a tarball keeps the program executable. No Windows download yet (Defender's
+# machine learning flags hemma.exe: release.yml). Plus SHA256SUMS over all of them, and the release
+# notes (this version's CHANGELOG.md section, which must be there, how to start each download, and
+# the commits since the previous release - the newest v* tag before HEAD, or HEMMA_PREV).
+#   sh tools/ci/bundle.sh PROGRAMS_DIR OUT_DIR [NOTES]   (PROGRAMS_DIR: what ./build.ps1 pi, pi32,
+#                                                       linux and mac made;
+#                                                       NOTES: where the release notes go, notes.md)
+set -eu
+in=${1:?programs folder}
+out=${2:?output folder}
+notes=${3:-notes.md}
+ver=$(tr -d ' \r\n' < VERSION)
+echo "$ver" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' || { echo "VERSION must hold MAJOR.MINOR.PATCH: $ver"; exit 1; }
+repo=https://github.com/kloparn/Hemma
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+work=$(mktemp -d) # (a runner's, gone with it)
+
+# this version's section of CHANGELOG.md: what the release says changed
+awk -v v="$ver" '
+    /^## / { if (on) exit; if ($2 == v) { on = 1; next } }
+    on' CHANGELOG.md > "$work/changes.md"
+grep -q '[^[:space:]]' "$work/changes.md" || { echo "CHANGELOG.md has no section for $ver"; exit 1; }
+
+# name, program, what goes with it, and the few lines that say how to start it
+pack() {
+    name=$1 prog=$2 how=$3
+    shift 3
+    d=$work/$name
+    mkdir -p "$d"
+    cp "$in/$prog" "$d/$prog"
+    for f in "$@"; do cp "$f" "$d/"; done
+    cp LICENSE "$d/"
+    chmod 644 "$d"/* # (whatever the checkout says - a Windows drive calls everything executable)
+    chmod 755 "$d/$prog"
+    if [ -f "$d/install-pi.sh" ]; then chmod 755 "$d/install-pi.sh"; fi
+    printf 'Hemma %s - %s\n\n%s\n\nGuides: %s/tree/v%s/docs\n' "$ver" "$name" "$how" "$repo" "$ver" > "$d/README.txt"
+    (cd "$d" && sha256sum -- * > SHA256SUMS)
+    tar -C "$work" -czf "$out/$name.tar.gz" "$name"
+}
+
+pi='Install (on the Pi):  sudo sh install-pi.sh ./PROG
+Media folders the uploads may write to can follow: sudo sh install-pi.sh ./PROG /srv/media
+It keeps the program it replaces as /opt/hemma/hemma.prev (going back: docs/raspberry-pi.md).'
+pack hemma-pi64 hemma-pi64 "$(echo "$pi" | sed 's/PROG/hemma-pi64/g')" deploy/install-pi.sh deploy/hemma.service
+pack hemma-pi32 hemma-pi32 "$(echo "$pi" | sed 's/PROG/hemma-pi32/g')" deploy/install-pi.sh deploy/hemma.service
+pack hemma-linux-x64 hemma-linux "$(echo "$pi" | sed 's/PROG/hemma-linux/g; s/on the Pi/any systemd Linux/')" \
+    deploy/install-pi.sh deploy/hemma.service
+mac='Try it:  ./PROG --demo   (a made-up household), or just ./PROG and open http://localhost:8080
+macOS blocks programs from the internet that Apple has not checked. Once:
+  xattr -d com.apple.quarantine PROG      (or right-click it in Finder -> Open)
+To keep it running: docs/macos.md (local.hemma.plist is here).'
+pack hemma-mac-arm64 hemma-mac-arm64 "$(echo "$mac" | sed 's/PROG/hemma-mac-arm64/g')" deploy/local.hemma.plist
+pack hemma-mac-x64 hemma-mac-x64 "$(echo "$mac" | sed 's/PROG/hemma-mac-x64/g')" deploy/local.hemma.plist
+
+(cd "$out" && sha256sum -- * > SHA256SUMS)
+
+# the notes: what changed, then the downloads
+{
+    cat "$work/changes.md"
+    cat <<EOF
+
+## Downloads
+
+| | |
+|---|---|
+| Raspberry Pi, 64-bit OS (Pi 3, 4, 5, Zero 2) | \`hemma-pi64.tar.gz\` |
+| Raspberry Pi, 32-bit OS (every Pi) | \`hemma-pi32.tar.gz\` |
+| Linux PC or server (x86-64) | \`hemma-linux-x64.tar.gz\` |
+| Mac with Apple silicon / Intel | \`hemma-mac-arm64.tar.gz\` / \`hemma-mac-x64.tar.gz\` |
+
+**On a Pi:**
+\`\`\`sh
+wget $repo/releases/download/v$ver/hemma-pi64.tar.gz
+tar xzf hemma-pi64.tar.gz && cd hemma-pi64
+sudo sh install-pi.sh ./hemma-pi64
+\`\`\`
+
+**Try it on a laptop first:** unpack it and start it with \`--demo\` for a made-up household
+(\`./hemma-mac-arm64 --demo\`), then open http://localhost:8080 - the login shows in its window.
+The programs aren't signed: on a Mac run \`xattr -d com.apple.quarantine hemma-mac-arm64\` once (or
+right-click it in Finder, then Open).
+
+**Windows:** no ready-made program yet - build it from the source in a few minutes:
+[docs/windows.md]($repo/blob/v$ver/docs/windows.md).
+
+Each download has a \`SHA256SUMS\` inside, and the release's own covers them all. The programs say
+which commit they were built from: \`hemma --version\`. What changed in every version:
+[CHANGELOG.md]($repo/blob/v$ver/CHANGELOG.md).
+EOF
+    # every commit since the previous release (HEMMA_PREV: from another tag or commit instead)
+    prev=${HEMMA_PREV:-$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)}
+    if [ -n "$prev" ] && [ "$prev" != "v$ver" ]; then
+        printf '\n## Commits since %s\n\n' "$prev"
+        git log --no-merges --format='- %s (%h)' "$prev..HEAD"
+        printf '\nSide by side: %s/compare/%s...v%s\n' "$repo" "$prev" "$ver"
+    else
+        printf '\nThe first release: the versions before it are in CHANGELOG.md, every commit in\n%s/commits/v%s\n' "$repo" "$ver"
+    fi
+} > "$notes"
+ls -l "$out"

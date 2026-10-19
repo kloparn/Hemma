@@ -12,7 +12,29 @@ screen.
 
 Hemma is one file. Pick the way that suits you.
 
-### Ready-built (cross-compiled on a Windows PC)
+### Download it (the quickest way)
+
+The [latest release](https://github.com/kloparn/Hemma/releases/latest) has static programs with no dependencies; they run on
+any distribution:
+
+| Computer (`uname -m` says) | Download |
+|---|---|
+| Intel/AMD 64-bit (`x86_64`) | `hemma-linux-x64.tar.gz` |
+| 64-bit ARM (`aarch64`) | `hemma-pi64.tar.gz` |
+| 32-bit ARM (`armv7l`, `armv6l`) | `hemma-pi32.tar.gz` |
+
+The "pi" ones are ordinary ARM Linux programs and work on any ARM board, not just a Pi. On the
+server:
+
+```sh
+wget https://github.com/kloparn/Hemma/releases/latest/download/hemma-linux-x64.tar.gz
+tar xzf hemma-linux-x64.tar.gz && cd hemma-linux-x64
+```
+
+The folder holds the program, the installer and the service file it needs. To try it first:
+`./hemma-linux --demo` (a made-up household in a throwaway folder; the login shows in its output).
+
+### Cross-compiled on a Windows PC
 
 On a Windows PC with zig (see [windows.md](windows.md#1-install-zig)), `build.ps1` makes
 static Linux programs. They have no dependencies and run on any distribution:

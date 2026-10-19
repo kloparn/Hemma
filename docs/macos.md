@@ -12,7 +12,22 @@ Commands are for the **Terminal** app (Applications → Utilities → Terminal).
 
 ## 1. Get the program
 
-### Build it on the Mac (recommended)
+### Download it (the quickest way)
+
+From the [latest release](https://github.com/kloparn/Hemma/releases/latest), download `hemma-mac-arm64.tar.gz` for a Mac with
+Apple silicon (M1 and later; Apple menu → About This Mac says "Chip"), or `hemma-mac-x64.tar.gz`
+for an Intel Mac. Unpack it (double-click) and rename the program in it to `hemma`, so the steps
+below fit. macOS blocks programs from the internet that Apple hasn't checked; once, in Terminal:
+
+```sh
+xattr -d com.apple.quarantine hemma
+```
+
+(Or right-click the file in Finder and choose **Open**.) To try it first: `./hemma --demo`
+starts a made-up household in a throwaway folder; the login shows in the window, and
+`http://localhost:8080` opens it.
+
+### Or build it on the Mac
 
 Install Apple's command-line tools (the compiler, `make` and `git`) once:
 
@@ -56,7 +71,7 @@ Keep the program, its settings and its database together in `~/Hemma`:
 
 ```sh
 mkdir -p ~/Hemma
-cp build/hemma ~/Hemma/          # or the file you copied over
+cp build/hemma ~/Hemma/          # or the file you downloaded or copied over
 cd ~/Hemma
 ```
 

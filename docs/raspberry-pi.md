@@ -71,9 +71,23 @@ sudo apt update && sudo apt full-upgrade -y
 
 ## 3. Get Hemma onto the Pi
 
-There are two ways. Pick one.
+There are three ways. Pick one.
 
-### A. Build it on a PC and copy one file (fastest)
+### A. Download it (simplest)
+
+On the Pi, fetch the latest release and unpack it:
+
+```sh
+wget https://github.com/kloparn/Hemma/releases/latest/download/hemma-pi64.tar.gz
+tar xzf hemma-pi64.tar.gz && cd hemma-pi64
+```
+
+For a 32-bit Raspberry Pi OS (and on a Pi 1, Zero or Zero W) use `hemma-pi32.tar.gz` instead.
+The folder holds the program, the installer and the service file it needs, a `README.txt`
+and `SHA256SUMS` (`sha256sum -c SHA256SUMS` checks the files). These downloads include
+the in-browser video converter. Go on with step 4.
+
+### B. Build it on a PC and copy one file
 
 On a **Windows** PC with the Hemma source code and [zig](https://ziglang.org) installed
 (see [windows.md](windows.md#1-install-zig)):
@@ -91,9 +105,9 @@ scp build/hemma-pi64 deploy/hemma.service deploy/install-pi.sh you@hemma.local:
 ```
 
 (The `:` at the end means "into my home folder on the Pi".) From a Mac or Linux PC,
-option B is the simplest.
+option A or C is the simplest.
 
-### B. Build it on the Pi itself
+### C. Build it on the Pi itself
 
 On the Pi:
 
@@ -106,7 +120,7 @@ make
 
 The first build takes a few minutes, because the database engine (SQLite) is compiled
 once. On a Pi with only 512 MB of memory (Zero, Zero 2) the build can run out of memory.
-If it stops with `Killed`, use option A instead. The result is `build/hemma`. If you also
+If it stops with `Killed`, use option A or B instead. The result is `build/hemma`. If you also
 install [zig](https://ziglang.org), `make` includes the in-browser video converter;
 without it, uploads simply send the original files.
 
@@ -116,8 +130,8 @@ The installer sets Hemma up to start whenever the Pi starts, as a locked-down ba
 service. On the Pi, in the folder with the files from step 3:
 
 ```sh
-sudo sh install-pi.sh ./hemma-pi64                 # option A
-sudo sh deploy/install-pi.sh build/hemma           # option B (from the hemma folder)
+sudo sh install-pi.sh ./hemma-pi64                 # options A and B
+sudo sh deploy/install-pi.sh build/hemma           # option C (from the hemma folder)
 ```
 
 Add the folders that hold your movies after the program file if you already have them
@@ -184,14 +198,19 @@ Hemma also keeps its own log in `/var/lib/hemma/hemma.log`. More in
 
 **Restart it:** `sudo systemctl restart hemma`
 
-**Update Hemma.** Copy the new `hemma-pi64` over (step 3A), then run the installer
-again. It keeps your settings, database and media folders, and restarts the service:
+**Update Hemma.** Download the new release the way you did in step 3A and run its installer.
+It keeps your settings, database and media folders, keeps the program it replaces for
+[going back](#going-back), and restarts the service:
 
 ```sh
+wget https://github.com/kloparn/Hemma/releases/latest/download/hemma-pi64.tar.gz
+tar xzf hemma-pi64.tar.gz && cd hemma-pi64
 sudo sh install-pi.sh ./hemma-pi64
 ```
 
-If you built on the Pi (option B in step 3): `cd hemma && git pull && make && sudo make install`.
+(Unpacking over last time's folder is fine.) Built it on a PC (option B)? Copy the new
+`hemma-pi64` over and run the installer the same way. Built it on the Pi (option C):
+`cd hemma && git pull && make && sudo make install`.
 
 **Go back to the version before**: see [Going back](#going-back), below.
 

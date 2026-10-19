@@ -141,6 +141,35 @@ library reads that folder; `HEMMA_TEST_MKV=<file.mkv>`, `HEMMA_TEST_AC3=<file>` 
 first 30 s) over a real file. `AAC_VERBOSE=1` / `AC3_VERBOSE=1` print codec details in
 the codec tests.
 
+## Versions and releases
+
+Every pull request raises the version: the [VERSION](../VERSION) file at the top of the repo,
+just `MAJOR.MINOR.PATCH` as [semver.org](https://semver.org) describes it. The patch number for
+fixes only, the minor one for something new or changed, the major one for a big change in how
+things work. The builds read it (into `core/version.c` alone, so a new version recompiles one
+file). Each version gets its own section at the top of [CHANGELOG.md](../CHANGELOG.md), headed
+with the version and the day, `## 0.14.0 (2026-10-19)`: that section is what the release says
+changed, and a test fails until it's there.
+
+**Merging releases it.** When main gets a version that has no release yet,
+`.github/workflows/release.yml` runs the suite and builds the programs on Windows
+(`.\build.ps1`, so every download has the in-browser converter), packs the downloads
+(`tools/ci/bundle.sh`), tags the merged commit `vX.Y.Z` and publishes the release on the
+[releases page](https://github.com/kloparn/Hemma/releases). Its notes are that version's
+CHANGELOG section, then every commit since the previous release. Nothing to tag by hand; a
+version without a CHANGELOG section stops it.
+
+A Mac, Linux or Pi download is a `.tar.gz` (it keeps the program executable), and a Linux or Pi
+one holds the installer and the service file too. Every download has a `SHA256SUMS` inside, and
+the release's own covers them all. There's no Windows download yet: Windows Defender's machine
+learning calls `hemma.exe` a trojan (a false positive), so it waits until the program is signed
+or cleared with Microsoft.
+
+To see what a release would hold without publishing anything, start the workflow by hand
+(Actions → release → Run workflow): the downloads are kept as an artifact of that run. Or pack
+them locally after `.\build.ps1 pi`, `pi32`, `linux` and `mac`, on Linux or in WSL:
+`sh tools/ci/bundle.sh build <output folder>`.
+
 ## Project layout (short)
 
 ```
@@ -150,10 +179,11 @@ modules/    one folder per feature: home book plan media tv board net people scr
             plus av (a pure-C video/audio codec library used by media)
 web/        app.css, wire.js (the generic transport), conv.js (upload converter worker), icons, manifest
 deploy/     hemma.service + install-pi.sh (systemd Linux), local.hemma.plist (macOS)
+.github/    CI (build.yml: every push) and releases (release.yml: a version tag)
 docs/       these guides
 tests/      test framework, runner, harness
 tools/      embed.c (bakes web/ into the binary), pisim.c (Pi-like CPU/memory limits on
-            Windows), and dev tools for the codecs
+            Windows), ci/ (CI's jobs locally, the release bundles), and dev tools for the codecs
 third_party/sqlite/   SQLite amalgamation (public domain)
 ```
 
@@ -173,8 +203,8 @@ Hemma lives on GitHub: [kloparn/Hemma](https://github.com/kloparn/Hemma).
 - **Found a security problem?** Please don't open a public issue: [SECURITY.md](../SECURITY.md)
   says how to report it privately.
 - **Sending a change?** Open a pull request. Every pull request raises the version
-  (`HEMMA_VERSION` in `core/app.h`: the last number for fixes, the middle one for something
-  new or changed) and adds its own section to [CHANGELOG.md](../CHANGELOG.md). The CI run
+  ([VERSION](../VERSION): the last number for fixes, the middle one for something new or
+  changed) and adds its own section to [CHANGELOG.md](../CHANGELOG.md). The CI run
   must be green. Contributions are under the project's license, Apache 2.0
   ([LICENSE](../LICENSE)).
 

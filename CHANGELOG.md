@@ -1,9 +1,43 @@
 # Changelog
 
-What changed in each release of Hemma. `hemma --version` says which one you run (and the
-commit it was built from).
+What changed in each version of Hemma. `hemma --version` says which one you run (and the
+commit it was built from). Downloads, from 0.14.0 on:
+[github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
-## 0.13.1 (not released yet)
+## 0.14.0 (2026-10-19)
+
+Downloads, and a demo to try Hemma before setting it up.
+
+### New
+
+- **Ready-made downloads** for a Raspberry Pi (64- and 32-bit), Linux and a Mac (Apple silicon
+  and Intel), on the [releases page](https://github.com/kloparn/Hemma/releases). A Pi or Linux
+  download holds the program, the installer and the service file, so installing on a Pi is now
+  download, unpack, `sudo sh install-pi.sh ./hemma-pi64` - and updating is the same. Every
+  download comes with checksums (`SHA256SUMS`) and has the in-browser video converter. No Windows
+  download yet: Windows Defender's machine learning calls `hemma.exe` a trojan (a false
+  positive), so Windows keeps building it from the source for now; the guide says what to do if
+  Defender removes the program you built.
+- **`hemma --demo`** starts a made-up household in a throwaway folder of its own: four people,
+  things to book with bookings on them, chores, a shopping list, events and notes. The login
+  shows in Hemma's window and on the sign-in page, and every page says it's a demo. It never
+  touches real data, and the next `--demo` starts afresh.
+- **"Try it on your laptop first"** in the README, and a "download it" way at the top of the Pi,
+  Linux and Mac guides, with the one click-through an unsigned program needs on a Mac.
+
+### For developers
+
+- **The version lives in the [VERSION](VERSION) file** (`MAJOR.MINOR.PATCH`, semver.org), easy to
+  find: the builds read it into `core/version.c` alone, and a test fails until this file has a
+  section for it.
+- **Merging a new version releases it**: every PR still raises the version, and when main gets
+  one without a release, `.github/workflows/release.yml` runs the suite, builds the programs,
+  packs the downloads (`tools/ci/bundle.sh`), tags the commit `vX.Y.Z` and publishes the
+  release with that version's section of this file as its notes, plus the commits since the
+  previous release (no section: no release). Run by hand, the workflow is a dry run. See
+  [docs/development.md](docs/development.md#versions-and-releases).
+
+## 0.13.1 (2026-10-19)
 
 Faster builds and tests for whoever works on Hemma, and one small upload fix.
 
