@@ -919,3 +919,113 @@ TEST(app_calendar_feed_answers_its_own_key_only) {
     buf_free(&r);
     th_halt();
 }
+
+TEST(app_board_photos_are_for_the_household) {
+    /* issue #47: a note's photo is served to people signed in, kept for good by the browser, and to
+       nobody else; a made-up name gets nothing */
+    th_boot();
+    auth_configure("e2e-salt", 1000);
+    int adam = account("Adam", "adam", "correct horse", ROLE_ADMIN);
+    static const uint8_t jpg[] = {0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x0A, 0x00, 0x14, 0x03, 0x01,
+                                  0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xFF, 0xD9};
+    char enc[64];
+    base64_encode(jpg, sizeof jpg, enc);
+    Buf form = {0}, url = {0};
+    buf_printf(&url, "data:image/jpeg;base64,%s", enc);
+    buf_puts(&form, "text=Permit&photo=");
+    url_encode(&form, url.p, false);
+    CHECK(th_act(adam, "board.post", form.p).ok);
+    const char *page = th_page(adam, "/board"), *at = strstr(page, "/board/photo/");
+    char path[64] = "";
+    if (at) snprintf(path, sizeof path, "%.33s", at);
+    CHECK_INT((int)strlen(path), 33);
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char cookie[64], req[400];
+    sign_in(port, "username=adam&password=correct+horse", cookie, sizeof cookie);
+    Buf r = {0};
+    snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nConnection: close\r\n\r\n", path, cookie);
+    request(port, req, &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 200 OK\r\n"));
+    CHECK_HAS(buf_cstr(&r), "Content-Type: image/jpeg\r\n");
+    CHECK_HAS(buf_cstr(&r), "immutable");
+    const char *body = strstr(buf_cstr(&r), "\r\n\r\n");
+    CHECK(body && r.len - (size_t)(body + 4 - r.p) == sizeof jpg && memcmp(body + 4, jpg, sizeof jpg) == 0);
+    /* signed out: not the photo */
+    snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", path);
+    request(port, req, &r);
+    CHECK(!strstr(buf_cstr(&r), "image/jpeg"));
+    /* a name read_photo never makes */
+    snprintf(req, sizeof req, "GET /board/photo/..%%2Fhemma.db HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\nConnection: close\r\n\r\n",
+             cookie);
+    request(port, req, &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 404 "));
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    buf_free(&form);
+    buf_free(&url);
+    th_halt();
+}
+
+TEST(app_wire_fields_keep_their_whole_length) {
+    /* issue #47: a form field over the socket was cut at 4 KB without a word - a note's photo (~800 KB of
+       base64) came out as its first 3 KB. Here: a JPEG with 6 KB of padding, 8 KB as base64. */
+    if (!module_find("board")) return;
+    th_boot();
+    auth_configure("e2e-salt", 1000);
+    account("Adam", "adam", "correct horse", ROLE_ADMIN);
+    size_t pad = 6000, n = 2 + 4 + pad + 19 + 2;
+    uint8_t *jpg = xmalloc(n);
+    size_t o = 0;
+    jpg[o++] = 0xFF, jpg[o++] = 0xD8;
+    jpg[o++] = 0xFF, jpg[o++] = 0xE1, jpg[o++] = (uint8_t)((pad + 2) >> 8), jpg[o++] = (uint8_t)(pad + 2);
+    for (size_t i = 0; i < pad; i++) jpg[o++] = (uint8_t)(i * 7);
+    static const uint8_t sof[] = {0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x0A, 0x00, 0x14, 0x03,
+                                  0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01};
+    memcpy(jpg + o, sof, sizeof sof);
+    o += sizeof sof;
+    jpg[o++] = 0xFF, jpg[o++] = 0xD9;
+    char *enc = xmalloc(4 * ((n + 2) / 3) + 1);
+    base64_encode(jpg, n, enc);
+    Buf msg = {0};
+    buf_printf(&msg, "{\"t\":\"act\",\"a\":\"board.post\",\"id\":11,\"url\":\"/board\",\"f\":[[\"text\",\"Long\"],"
+                     "[\"photo\",\"data:image/jpeg;base64,%s\"]]}",
+               enc);
+    CHECK(msg.len > 8000);
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char cookie[64];
+    sign_in(port, "username=adam&password=correct+horse", cookie, sizeof cookie);
+    sock_t s = ws_open(port, cookie);
+    uint8_t *frame = xmalloc(msg.len + 16);
+    size_t fn = client_frame(frame, msg.p, msg.len);
+    send_all(s, (const char *)frame, fn);
+    Buf r = {0};
+    CHECK(ws_wait(s, &r, "\"ack\",11,true", 3000));
+    sock_close(s);
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    /* the whole photo was kept */
+    const char *page = th_page(1, "/board"), *at = strstr(page, "/board/photo/");
+    char path[700] = "";
+    if (at) snprintf(path, sizeof path, "%s/board/%.20s", app_config()->data_dir, at + strlen("/board/photo/"));
+    int64_t size = 0, mtime = 0;
+    bool dir = false;
+    CHECK(path[0] && path_stat(path, &size, &mtime, &dir));
+    CHECK(size == (int64_t)n);
+    free(jpg);
+    free(enc);
+    free(frame);
+    buf_free(&msg);
+    buf_free(&r);
+    th_halt();
+}

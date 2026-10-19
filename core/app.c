@@ -1347,6 +1347,18 @@ static void browser_log_reset(void) {
     g_ua_next = 0;
 }
 
+/* A form field sent as JSON, as long as it came - a string unescaped, else its literal (a number) - for
+   fields_add (which copies it); NULL for none. (A note's photo is ~800 KB of it: issue #47 - a 4 KB
+   buffer here cut every longer field short without a word. The message size bounds it.) */
+static char *json_value(const Json *j, int t) {
+    if (t < 0 || t >= j->n) return NULL;
+    const JsonTok *tk = &j->tok[t];
+    char *out = xmalloc((size_t)tk->len + 1);
+    if (tk->type == JSON_STRING) json_string(j, t, out, (size_t)tk->len + 1);
+    else str_ncopy(out, (size_t)tk->len + 1, j->src + tk->start, (size_t)tk->len);
+    return out;
+}
+
 static void on_ws_message(Conn *conn, const char *msg, size_t n) {
     Client *cl = conn->user;
     if (!cl) return;
@@ -1434,10 +1446,10 @@ static void on_ws_message(Conn *conn, const char *msg, size_t n) {
         Fields f = {0};
         int arr = json_get(&j, 0, "f");
         for (int k = json_child(&j, arr); k >= 0; k = json_next(&j, arr, k)) {
-            char key[64], val[4096];
-            if (json_string(&j, json_index(&j, k, 0), key, sizeof key) &&
-                json_string(&j, json_index(&j, k, 1), val, sizeof val))
-                fields_add(&f, utf8_scrub(key), utf8_scrub(val));
+            char key[64];
+            char *val = json_value(&j, json_index(&j, k, 1));
+            if (val && json_string(&j, json_index(&j, k, 0), key, sizeof key)) fields_add(&f, utf8_scrub(key), utf8_scrub(val));
+            free(val);
         }
         str_copy(cl->url, sizeof cl->url, url);
         ws_action(cl, a, &f, id, str_eq(t, "live"));
@@ -1645,11 +1657,11 @@ static void api(Ctx *c, Conn *conn, HttpReq *r) {
             Json j;
             if (json_parse(&j, r->body, r->body_len, tok, countof(tok)) && json_type(&j, 0) == JSON_OBJECT) {
                 for (int k = json_child(&j, 0); k >= 0; k = json_next(&j, 0, k)) {
-                    char key[64], val[4096];
+                    char key[64];
+                    char *val = json_value(&j, k + 1);
                     json_string(&j, k, key, sizeof key);
-                    if (json_type(&j, k + 1) == JSON_STRING) json_string(&j, k + 1, val, sizeof val);
-                    else str_ncopy(val, sizeof val, j.src + j.tok[k + 1].start, (size_t)j.tok[k + 1].len);
-                    fields_add(&f, utf8_scrub(key), utf8_scrub(val));
+                    if (val) fields_add(&f, utf8_scrub(key), utf8_scrub(val));
+                    free(val);
                 }
             }
         } else {

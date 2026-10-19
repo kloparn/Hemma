@@ -238,6 +238,36 @@ size_t base64_encode(const void *data, size_t n, char *out) {
     return o;
 }
 
+static int b64val(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+long base64_decode(const char *in, size_t n, uint8_t *out, size_t cap) {
+    while (n && (in[n - 1] == '=' || in[n - 1] == '\n' || in[n - 1] == '\r')) n--; /* (padding is optional) */
+    if (n % 4 == 1) return -1;
+    size_t o = 0;
+    uint32_t v = 0;
+    int bits = 0;
+    for (size_t i = 0; i < n; i++) {
+        int d = b64val(in[i]);
+        if (d < 0) return -1;
+        v = (v << 6) | (uint32_t)d;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (o == cap) return -1;
+            out[o++] = (uint8_t)(v >> bits);
+            v &= (1u << bits) - 1;
+        }
+    }
+    return (long)o;
+}
+
 /* -------------------------------------------------------------------- URL */
 
 static int hexval(char c) {

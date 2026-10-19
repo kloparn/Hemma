@@ -13,6 +13,7 @@
 //               form[data-upload] send the chosen files (see upload() below); with
 //               data-convert/data-wasm the server's converter (C, as WebAssembly) can make
 //               play-everywhere copies first, in Workers (web/conv.js)
+//               input[type=file][data-shrink="N"] a photo goes in its form shrunk (N px, a JPEG data: URL)
 //               [data-start="id"] open a horizontal scroller at that child
 //               video[data-onair] live: plays at "now", no pausing or winding
 //               [data-player="<video id>"] a video's own controls (play, seek, time, subtitles,
@@ -179,17 +180,65 @@
     // ask first, whichever way the form then travels (socket or plain POST)
     if (f.dataset.confirm && !confirm(f.dataset.confirm)) { e.preventDefault(); return; }
     if (f.dataset.upload) { e.preventDefault(); upload(f); return; }
+    const shots = [...f.querySelectorAll('input[type=file][data-shrink]')].filter((x) => x.files && x.files.length);
+    if (shots.length && !(a && open)) { // a plain POST can't carry it: say so instead of losing it
+      e.preventDefault();
+      toast(2, 'Photos need the connection to Hemma - wait a moment and send it again');
+      return;
+    }
     if (!a || !open) { if (!e.defaultPrevented) leave(); return; } // a plain POST: the page is leaving
     e.preventDefault();
     const fd = new FormData(f);
     const sub = e.submitter || (pressed && pressed.form === f ? pressed : null);
     if (sub && sub.name) fd.append(sub.name, sub.value);
-    const id = ++seq;
-    pending.set(id, f);
+    const go = () => {
+      const id = ++seq;
+      pending.set(id, f);
+      busy(f, true);
+      errsOff(f);
+      send({ t: 'act', a, id, url: here(), f: pairs(fd) });
+    };
+    if (!shots.length) { go(); return; }
     busy(f, true);
-    errsOff(f);
-    send({ t: 'act', a, id, url: here(), f: pairs(fd) });
+    Promise.all(shots.map((x) => shrink(x.files[0], +x.dataset.shrink || 1600).then((u) => fd.set(x.name, u))))
+      .then(go, (err) => { busy(f, false); toast(2, err.message); });
   });
+
+  // input[type=file][data-shrink="1600"] (a photo for a note): the picture goes in the form shrunk to at
+  // most that many pixels on its longest side, as a JPEG data: URL small enough for one socket message
+  // (under 600 KB). The photo's own orientation is applied; the rest of its EXIF (where it was taken)
+  // stays behind. The server checks it's a JPEG and keeps it.
+  const PHOTO_BYTES = 600 * 1024;
+  function picture(file) {
+    const viaImg = () => new Promise((ok, no) => {
+      const u = URL.createObjectURL(file), i = new Image();
+      i.onload = () => { URL.revokeObjectURL(u); ok(i); };
+      i.onerror = () => { URL.revokeObjectURL(u); no(new Error("That doesn't look like a photo")); };
+      i.src = u;
+    });
+    return self.createImageBitmap ? createImageBitmap(file, { imageOrientation: 'from-image' }).catch(viaImg) : viaImg();
+  }
+  async function shrink(file, max) {
+    const img = await picture(file);
+    for (const [side, q] of [[max, 0.85], [max, 0.7], [Math.round(max * 0.8), 0.7], [Math.round(max * 0.6), 0.6]]) {
+      const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+      const k = Math.min(1, side / Math.max(w, h));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(w * k));
+      c.height = Math.max(1, Math.round(h * k));
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      const blob = await new Promise((ok) => c.toBlob(ok, 'image/jpeg', q));
+      if (blob && blob.size <= PHOTO_BYTES) {
+        return new Promise((ok, no) => {
+          const r = new FileReader();
+          r.onload = () => ok(r.result);
+          r.onerror = () => no(new Error("The photo couldn't be read"));
+          r.readAsDataURL(blob);
+        });
+      }
+    }
+    throw new Error('That photo is too big to send - try another');
+  }
 
   // An error stays by its field until the field changes; a form's own error until any field does.
   const errEdit = (e) => {

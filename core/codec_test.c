@@ -109,7 +109,22 @@ TEST(base64_rfc4648_vectors) {
         char b[16];
         base64_encode(in[i], strlen(in[i]), b);
         CHECK_STR(b, out[i]);
+        uint8_t back[16];
+        long n = base64_decode(out[i], strlen(out[i]), back, sizeof back);
+        CHECK_INT((int)n, (int)strlen(in[i]));
+        CHECK(n >= 0 && memcmp(back, in[i], (size_t)n) == 0);
     }
+    uint8_t x[8];
+    CHECK_INT((int)base64_decode("Zm9vYg", 6, x, sizeof x), 4); /* (padding left off) */
+    CHECK_INT((int)base64_decode("Zm9v!g==", 8, x, sizeof x), -1);
+    CHECK_INT((int)base64_decode("Z", 1, x, sizeof x), -1);
+    CHECK_INT((int)base64_decode("Zm9vYmFy", 8, x, 5), -1); /* doesn't fit */
+    uint8_t all[256], round[256];
+    char enc[400];
+    for (int i = 0; i < 256; i++) all[i] = (uint8_t)i;
+    base64_encode(all, sizeof all, enc);
+    CHECK_INT((int)base64_decode(enc, strlen(enc), round, sizeof round), 256);
+    CHECK(memcmp(all, round, sizeof all) == 0);
 }
 
 TEST(url_decode_and_encode) {
