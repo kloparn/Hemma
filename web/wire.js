@@ -265,6 +265,15 @@
     if (el && el.form) submit(el.form);
   });
 
+  // input[data-show="id"]: #id shows the field's value - a slider's number as it's dragged, and
+  // again after every morph (the server draws the value it last saw)
+  const showValue = (el) => {
+    const out = document.getElementById(el.dataset.show);
+    if (out && out.textContent !== el.value) out.textContent = el.value;
+  };
+  const showValues = () => { for (const el of document.querySelectorAll('input[data-show]')) showValue(el); };
+  document.addEventListener('input', (e) => { if (e.target.dataset && e.target.dataset.show) showValue(e.target); });
+
   // A TV remote's Back key (issue #57: remotes rarely send Escape): Samsung's says 10009, LG's 461,
   // others BrowserBack / GoBack; Backspace too, outside a text field. On a page with [data-back]
   // (TV mode's Back) it goes there - through goBack(), which keeps a TV browser that also goes back
@@ -540,13 +549,18 @@
       // [i, at] = file i from byte `at`; [i, at, end] = only up to `end` (the server needs no more);
       // {i, f} = convert file f here first, then send the copy as entry i (the server says how)
       const copies = plan.todo.filter((t) => !Array.isArray(t));
-      made = converter(base, plan.batch, files, copies, use);
+      const room = Math.min(32, Math.max(2, Number(body.room) || 8)) * 2 ** 30; // the form's "room" (GB)
+      made = converter(base, plan.batch, files, copies, use, room);
       for (const t of plan.todo) {
         if (Array.isArray(t)) { await put(`${base}/${plan.batch}/${t[0]}`, files[t[0]], t[1], t[2]); continue; }
         const url = `${base}/${plan.batch}/${t.i}`, m = await made.take(copies.indexOf(t));
         if (m.stop) throw new Error(m.stop);
-        const s = await ask(url, m.blob ? `size=${m.blob.size}` : `original=1&why=${encodeURIComponent(m.error || '')}`);
-        if (!s.skip) await put(url, m.blob || files[t.f], s.at || 0);
+        try {
+          const s = await ask(url, m.send ? `size=${m.size}` : `original=1&why=${encodeURIComponent(m.error || '')}`);
+          if (!s.skip) await put(url, m.send ? m : files[t.f], s.at || 0);
+        } finally {
+          if (m.drop) m.drop(); // sent (or not needed): the browser lets go of the copy now
+        }
       }
     } catch (err) {
       toast(2, err.message || 'The upload stopped');
@@ -558,14 +572,33 @@
   }
 
   // Copies made here, a few at a time (half the cores, at most 8; a phone one) and only a few
-  // ahead of the one being sent, so finished copies never pile up in memory. Progress goes to
-  // the server (?pm=), which renders it like everything else; when it says stop, everything stops.
-  function converter(base, batch, files, jobs, use) {
+  // ahead of the one being sent: what's being made and what waits to be sent come from originals
+  // of `room` bytes at most (the form's choice; one always may) - copies are no bigger, so that's
+  // what this device's disk may hold of them. A finished copy stays in its worker, which sends it
+  // (take(k).send) and is ended once it's sent (.drop): the browser lets go of it right then - a copy
+  // handed to the page stayed until the page's memory was next tidied, and a long upload filled the
+  // browser's disk with them. Progress goes to the server (?pm=), which renders it like everything
+  // else; when it says stop, everything stops.
+  function converter(base, batch, files, jobs, use, room) {
     const phone = /Mobi|Android|iPhone|iPad/.test(navigator.userAgent);
     const width = phone ? 1 : Math.max(1, Math.min(8, Math.floor((navigator.hardwareConcurrency || 2) / 2)));
-    const results = new Map(), done = new Map(), workers = new Map(); // a copy is let go once it's taken
+    const results = new Map(), done = new Map(), workers = new Map(); // a result is let go once it's taken
+    const ready = new Map(); // job -> the worker holding its finished copy, until it's sent
     const seen = new Map(); // job -> [progress, when the server last heard it]
     let next = 0, sending = 0, halted = '';
+    const source = (k) => files[jobs[k].f].size;
+    const ahead = () => [...workers.keys(), ...ready.keys()].reduce((n, k) => n + source(k), 0);
+    // the worker sends from its copy; one PUT at a time (put() waits for each)
+    const sender = (w) => (url, at) => new Promise((ok) => {
+      w.onmessage = (e) => ok(e.data);
+      w.onerror = (e) => { e.preventDefault(); ok({ status: 0 }); };
+      w.postMessage({ put: url, at });
+    });
+    const drop = (k) => {
+      const w = ready.get(k);
+      if (w) { w.terminate(); ready.delete(k); }
+      pump();
+    };
     const tell = (k, pm) => {
       seen.set(k, [pm, Date.now()]);
       fetch(`${base}/${batch}/${jobs[k].i}?pm=${pm}`, { method: 'POST' }).then(json)
@@ -580,8 +613,14 @@
     }, 5000);
     const finish = (k, m) => {
       const w = workers.get(k);
-      if (w) { w.terminate(); workers.delete(k); }
+      workers.delete(k);
       seen.delete(k);
+      if (w && m.size !== undefined && !halted) { // made: it waits in its worker to be sent
+        ready.set(k, w);
+        m = { size: m.size, send: sender(w), drop: () => drop(k) };
+      } else if (w) {
+        w.terminate();
+      }
       if (done.has(k)) { done.get(k)(m); done.delete(k); }
       pump();
     };
@@ -601,13 +640,16 @@
       w.postMessage({ file: files[job.f], wasm: use.wasm });
     }
     function pump() {
-      while (!halted && workers.size < width && next < jobs.length && next <= sending + width + 1) start(next++);
+      while (!halted && workers.size < width && next < jobs.length && next <= sending + width + 1 &&
+             ((!workers.size && !ready.size) || ahead() + source(next) <= room)) start(next++);
     }
     function halt(why) {
       halted = why || 'The upload was stopped';
       clearInterval(beat);
       for (const w of workers.values()) w.terminate();
       workers.clear();
+      for (const w of ready.values()) w.terminate();
+      ready.clear();
       for (const ok of done.values()) ok({ stop: halted });
       done.clear();
     }
@@ -635,15 +677,26 @@
     }
   }
 
-  // One file; after a dropped connection, ask the server how far it got and go on from there.
-  async function put(url, file, at, end) {
+  // One file - or a copy its converter holds (src.send) - after a dropped connection, ask the server
+  // how far it got and go on from there.
+  const LOST = 'The browser lost the copy it made - is its disk full? Make room and start the upload again: ' +
+    'what was sent stays';
+  async function put(url, src, at, end) {
+    const send = src.send
+      ? (a) => src.send(url, a).then((x) => {
+          if (x.lost) throw new Error(LOST);
+          return x.status ? new Response([204, 205, 304].includes(x.status) ? null : x.body, { status: x.status }) : null;
+        })
+      : (a) => fetch(`${url}?at=${a}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: src.slice(a, end),
+        });
     for (let tries = 0; ; tries++) {
       let r = null;
       try {
-        r = await fetch(`${url}?at=${at}`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: file.slice(at, end),
-        });
-      } catch (_) { /* network hiccup */ }
+        r = await send(at);
+      } catch (err) {
+        if (err && err.message === LOST) throw err; /* else a network hiccup */
+      }
       if (r && r.ok) return;
       const s = r ? await json(r) : {};
       if (s.stop) throw new Error(s.error); // stopped, not allowed, disk full: no point retrying
@@ -672,6 +725,7 @@
         if (next && app) {
           const was = focusSpot(), kept = keepSpot(), opener = dlg ? null : { el: document.activeElement, keep: kept };
           morph(app, next); settle(); starts(); gaps(); fits(); arrowsSettle(was); keepSettle(kept); dialogs(opener); says();
+          showValues();
           pageUrl = here();
         }
         break;

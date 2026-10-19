@@ -4,6 +4,38 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 0.19.0 (2026-10-19)
+
+Uploads that convert on your computer no longer fill its disk.
+
+### Fixes
+
+- **A long upload filled the sending computer's disk, then stopped with "The connection keeps
+  dropping".** Every copy the browser made stayed with it after it was sent - the browser only lets
+  go of such things when the page's memory is next tidied, which a page this small hardly ever
+  needs - so after a few dozen 1080p episodes it held 28 GB of them on its own disk (in its profile,
+  on the system drive). When that was full the next copy broke, and the page read the failed send
+  as a dropped connection, again and again. Now each copy stays inside the converter that made it,
+  is sent from there, and goes the moment the server has it: checked with the same four episodes,
+  the browser held 700 MB after the old way's upload had finished, and was back where it started
+  with the new one. Should the browser ever lose a copy anyway, the upload stops and says so ("is
+  its disk full?") instead of retrying forever.
+
+### New
+
+- **Room on this device for copies waiting to be sent**, a slider on the upload form (2-32 GB, 8 to
+  start with; remembered per person). Copies are made only so far ahead of the one being sent:
+  more room lets more slow conversions - DVD rips take minutes each - run side by side (still at
+  most half the computer's cores). It used to be up to nine copies, however big.
+
+### For developers
+
+- web/conv.js keeps its finished copy (`{size}` out) and sends it itself on `{put, at}` (answers
+  `{status, body}`, `{lost}`); wire.js's converter holds such workers in `ready` and ends them
+  (`drop`) once sent or skipped; `put(url, src, ...)` sends a File or through `src.send`. Jobs start
+  while the originals of those running and waiting add up to the form's `room` at most (one always
+  may). New generic hook `input[data-show="id"]`: #id shows the field's value, also after a morph.
+
 ## 0.18.0 (2026-10-19)
 
 People and privacy: children and guests (#44), someone moving out (#45), and what everyone else sees
