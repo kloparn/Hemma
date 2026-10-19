@@ -96,7 +96,7 @@ static void people_card(Ctx *c, Buf *b) {
     for (int i = 0; i < account_count(); i++) {
         Person *p = account_at(i);
         buf_puts(b, "<li class=\"row\">");
-        ui_avatar(b, p, "md");
+        ui_avatar_deco(b, p, "md");
         H(b, "<div class=\"row-main\"><b>%s%r</b><small>", p->name, p->id == c->me->id ? " <span class=\"muted\">(you)</span>" : "");
         if (p->username[0]) {
             H(b, "@%s", p->username);
@@ -159,7 +159,7 @@ static void codes_page(Ctx *c, Buf *b) {
     ctx_title(c, "Recovery codes");
     char codes[AUTH_CODES][AUTH_CODE_LEN];
     int n = auth_codes_fresh(c->sess, codes);
-    buf_puts(b, "<div class=\"center-page\"><div class=\"welcome card people-codes-card\"><div class=\"welcome-logo\">");
+    buf_puts(b, "<main class=\"center-page\" id=\"main\"><div class=\"welcome card people-codes-card\"><div class=\"welcome-logo\">");
     ui_icon(b, "logo");
     buf_puts(b, "</div>");
     if (!n) {
@@ -167,7 +167,7 @@ static void codes_page(Ctx *c, Buf *b) {
         H(b,
           "<h1>Recovery codes</h1><p class=\"sub\">Codes are only shown right after they're made. You have %d left; "
           "you can make new ones under Household.</p><a class=\"btn primary big\" href=\"/people\">Back to Household"
-          "</a></div></div>",
+          "</a></div></main>",
           left);
         return;
     }
@@ -186,7 +186,7 @@ static void codes_page(Ctx *c, Buf *b) {
     ui_form(b, "people.codes_saved", "people-codes-done");
     buf_puts(b, "<button class=\"btn primary big\">I've saved them</button>");
     ui_form_end(b);
-    buf_puts(b, "</div></div>");
+    buf_puts(b, "</div></main>");
 }
 
 /* GET /people/codes.txt: the same codes as a file to keep. */
@@ -217,7 +217,7 @@ static bool http(Ctx *c, Conn *conn, HttpReq *r) {
 static void account_card(Ctx *c, Buf *b) {
     ui_card(b, "Your account", NULL, NULL);
     buf_puts(b, "<div class=\"device-me\">");
-    ui_avatar(b, c->me, "lg");
+    ui_avatar_deco(b, c->me, "lg");
     H(b, "<div><b>%s</b><p class=\"muted\">", c->me->name);
     if (c->me->username[0]) H(b, "Signed in as @%s", c->me->username);
     buf_puts(b, "</p></div></div>");

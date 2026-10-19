@@ -104,12 +104,16 @@ static void initials(const char *name, char *out, size_t cap) {
 
 void ui_hue_style(Buf *b, int hue) { H(b, " style=\"--h:%d\"", ((hue % 360) + 360) % 360); }
 
-void ui_avatar(Buf *b, const Person *p, const char *size) {
+/* named: the avatar alone says who (issue #69: a to-do's 🐻 was read as nothing); decorative: the
+   name is printed right beside it, so a screen reader skips the picture */
+static void avatar(Buf *b, const Person *p, const char *size, bool named) {
     if (!p) {
-        H(b, "<span class=\"av av-%s av-none\">?</span>", size);
+        H(b, "<span class=\"av av-%s av-none\" %r>?</span>", size, named ? "role=\"img\" aria-label=\"Someone\"" : "aria-hidden=\"true\"");
         return;
     }
     H(b, "<span class=\"av av-%s\" title=\"%s\"", size, p->name);
+    if (named) H(b, " role=\"img\" aria-label=\"%s\"", p->name);
+    else buf_puts(b, " aria-hidden=\"true\"");
     ui_hue_style(b, p->hue);
     buf_putc(b, '>');
     if (p->emoji[0]) {
@@ -122,9 +126,12 @@ void ui_avatar(Buf *b, const Person *p, const char *size) {
     buf_puts(b, "</span>");
 }
 
+void ui_avatar(Buf *b, const Person *p, const char *size) { avatar(b, p, size, true); }
+void ui_avatar_deco(Buf *b, const Person *p, const char *size) { avatar(b, p, size, false); }
+
 void ui_person(Buf *b, const Person *p) {
     H(b, "<span class=\"who\">");
-    ui_avatar(b, p, "xs");
+    ui_avatar_deco(b, p, "xs");
     H(b, "<span>%s</span></span>", p ? p->name : "Someone");
 }
 
@@ -222,7 +229,7 @@ void ui_player(Buf *b, const UiPlayer *p) {
     if (p->live) {
         buf_puts(b, "<span class=\"pl-onair\">Live</span>");
     } else {
-        pl_button(b, "play", "Play or pause (Space)", "go", "pause");
+        pl_button(b, "play", "Play (Space)", "go", "pause"); /* wire.js: "Pause (Space)" while playing (#64) */
         pl_button(b, "back", "Back 10 seconds (Left)", "back10", NULL);
         pl_button(b, "fwd", "Forward 10 seconds (Right)", "fwd10", NULL);
         buf_puts(b, "<span class=\"pl-time\"><span data-p=\"at\">0:00</span> / <span data-p=\"dur\">");
@@ -246,7 +253,8 @@ void ui_player(Buf *b, const UiPlayer *p) {
     }
     /* the sound: muted swaps the icon; on a live channel it also says so in words (a TV that won't
        start with sound starts it muted) */
-    H(b, "<button type=\"button\" class=\"pl-mute\" data-p=\"mute\" aria-label=\"Sound (M)\" title=\"Sound (M)\"%r>"
+    H(b, "<button type=\"button\" class=\"pl-mute\" data-p=\"mute\" aria-label=\"Mute (M)\" aria-pressed=\"false\" "
+         "title=\"Sound (M)\"%r>"
          "<span class=\"pl-a\">",
       p->focus_sound ? " autofocus" : "");
     ui_icon(b, "sound");
@@ -378,10 +386,10 @@ void ui_modal(Buf *b, const char *title, const char *close_href) {
         g_modal.cut = false;
     }
     H(b,
-      "<div class=\"modal\" role=\"dialog\" aria-modal=\"true\" aria-label=\"%s\">"
-      "<a class=\"modal-bg\" href=\"%s\" data-esc aria-label=\"Close\"></a><div class=\"modal-card\">"
-      "<header class=\"modal-h\"><h2>%s</h2><a class=\"icon-btn\" href=\"%s\" aria-label=\"Close\">",
-      title, close_href, title, close_href);
+      "<div class=\"modal\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"modal-t\">"
+      "<a class=\"modal-bg\" href=\"%s\" data-esc tabindex=\"-1\" aria-hidden=\"true\"></a><div class=\"modal-card\">"
+      "<header class=\"modal-h\"><h2 id=\"modal-t\">%s</h2><a class=\"icon-btn\" href=\"%s\" aria-label=\"Close\">",
+      close_href, title, close_href); /* (wire.js moves the focus in and keeps it there: issue #63) */
     ui_icon(b, "x");
     buf_puts(b, "</a></header><div class=\"modal-b\">");
 }
@@ -514,7 +522,8 @@ void ui_more_page(Ctx *c, Buf *b) {
 }
 
 void ui_shell(Ctx *c, Buf *b, const Module *active, const char *page, size_t page_len) {
-    buf_puts(b, "<aside class=\"side\"><a class=\"brand\" href=\"/\"><span class=\"logo\">");
+    /* the first thing Tab reaches, past the sidebar's dozen links (issue #68) */
+    buf_puts(b, "<a class=\"skip\" href=\"#main\">Skip to content</a><aside class=\"side\"><a class=\"brand\" href=\"/\"><span class=\"logo\">");
     ui_icon(b, "logo");
     H(b, "</span><b>%s</b></a><nav class=\"nav\">", app_name());
     nav_links(c, b, active, false);
@@ -536,10 +545,10 @@ void ui_shell(Ctx *c, Buf *b, const Module *active, const char *page, size_t pag
         if (module_at(i)->side && module_visible(module_at(i), c)) module_at(i)->side(c, b);
     if (c->me) {
         buf_puts(b, "<a class=\"me\" href=\"/people\">");
-        ui_avatar(b, c->me, "sm");
+        ui_avatar_deco(b, c->me, "sm");
         H(b, "<span>%s</span></a>", c->me->name);
     }
-    buf_puts(b, "</div></aside><main class=\"main\" id=\"main\">");
+    buf_puts(b, "</div></aside><main class=\"main\" id=\"main\" tabindex=\"-1\">");
     buf_put(b, page, page_len);
     buf_puts(b, "</main><nav class=\"tabbar\">");
     nav_links(c, b, active, true);

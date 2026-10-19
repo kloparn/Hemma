@@ -775,6 +775,7 @@ TEST(media_keeps_only_the_most_compatible_version) {
     if (hev) {
         page = th_page(adam, url("/media/watch/%s", hev->id));
         CHECK_HAS(page, ">Plays on newer devices</span>");
+        CHECK_HAS(page, "data-p=\"play\" aria-label=\"Play (Space)\""); /* wire.js: "Pause (Space)" while playing (#64) */
         CHECK_HAS(page, "Converted copy · HEVC video: Safari on iPhone, iPad and Mac");
         /* the file's codecs by the names people know, folded away (issue #62: "MP4 · H264 · AAC") */
         CHECK_HAS(page, "<details class=\"media-tech\"><summary>File details</summary><span>MP4 file · HEVC (H.265) "

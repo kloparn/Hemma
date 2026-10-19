@@ -297,7 +297,7 @@ static void watching_as(const Ctx *c, Buf *b) {
     const Person *p = person_get(ctx_viewer(c));
     if (!p) return;
     buf_puts(b, "<p class=\"media-tv-who\">");
-    ui_avatar(b, p, "sm");
+    ui_avatar_deco(b, p, "sm");
     H(b, "<span>Watching as %s</span></p>", p->name);
 }
 

@@ -18,7 +18,7 @@ static void people_strip(Ctx *c, Buf *b) {
         int screens = presence_screens(p->id);
         const char *state = home ? "home" : screens ? "online" : known ? "away" : "";
         H(b, "<a class=\"strip-p %s\" href=\"/people\">", state);
-        ui_avatar(b, p, "md");
+        ui_avatar_deco(b, p, "md");
         H(b, "<span><b>%s</b><small>", p->name);
         if (home) buf_puts(b, "home");
         else if (screens) {

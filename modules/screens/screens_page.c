@@ -193,7 +193,7 @@ static void top_bar(Ctx *c, Buf *b, const Screen *s, int viewer) {
       app_name(), hm, hm);
     Person *p = tv ? person_get(viewer) : NULL;
     if (p) {
-        ui_avatar(b, p, "md");
+        ui_avatar_deco(b, p, "md");
         H(b, "<b>%s</b>", p->name);
     }
     if (display && tv && screens_drives_tv(c->me->id)) { /* someone else's turn: back to "Who's watching?" */
@@ -243,14 +243,14 @@ static void picker(Ctx *c, Buf *b) {
         if (screens_has_pin(p->id)) { /* (asks for it first) */
             H(b, "<a class=\"screens-person\" id=\"screens-p%d\" href=\"%s?pin=%d\"%r>", p->id, c->path, p->id,
               k++ == 0 ? " autofocus" : "");
-            ui_avatar(b, p, "xl");
+            ui_avatar_deco(b, p, "xl");
             H(b, "<b>%s</b></a>", p->name);
             continue;
         }
         H(b, "<form method=\"post\" action=\"/a/screens.viewer\" data-a=\"screens.viewer\" class=\"inline\" "
              "id=\"screens-p%d\"><input type=\"hidden\" name=\"who\" value=\"%d\"><button class=\"screens-person\"%r>",
           p->id, p->id, k++ == 0 ? " autofocus" : "");
-        ui_avatar(b, p, "xl");
+        ui_avatar_deco(b, p, "xl");
         H(b, "<b>%s</b></button></form>", p->name);
     }
     buf_puts(b, "</div></div></div>");
@@ -326,7 +326,7 @@ static void wall_people(Buf *b) {
         bool home = presence_is_home(p->id, NULL);
         const char *state = home ? "home" : tracking && presence_known(p->id) ? "away" : presence_screens(p->id) ? "online" : "";
         H(b, "<div class=\"screens-wp %s\">", state);
-        ui_avatar(b, p, "lg");
+        ui_avatar_deco(b, p, "lg");
         H(b, "<b>%s</b><small>%s</small></div>", p->name, *state ? state : "\xC2\xA0");
     }
     buf_puts(b, "</div>");
@@ -402,12 +402,12 @@ static void view_page(Ctx *c, Buf *b, const Screen *s) {
 
 /* ============================================================ the builder */
 
-static void move_btn(Buf *b, int row, const char *dir, bool off) {
+static void move_btn(Buf *b, int row, const char *dir, bool off, const char *what) {
     bool up = str_eq(dir, "up");
     H(b, "<form method=\"post\" action=\"/a/screens.row_move\" data-a=\"screens.row_move\" class=\"inline\"><input "
          "type=\"hidden\" name=\"row\" value=\"%d\"><input type=\"hidden\" name=\"dir\" value=\"%s\"><button "
-         "class=\"icon-btn\" title=\"Move %s\" aria-label=\"Move %s\"%r>%r</button></form>",
-      row, dir, dir, dir, off ? " disabled" : "", up ? ICON_UP : ICON_DOWN);
+         "class=\"icon-btn\" title=\"Move %s\" aria-label=\"Move %s %s\"%r>%r</button></form>",
+      row, dir, dir, what, dir, off ? " disabled" : "", up ? ICON_UP : ICON_DOWN);
 }
 
 /* <select name="arg"> with what the block offers, `cur` selected (one that's gone stays visible,
@@ -458,11 +458,13 @@ static void rows_card(Ctx *c, Buf *b, const Screen *s) {
                  "remove it, or leave it for when it's back</small>",
               r->title[0] ? r->title : r->block, r->block);
         buf_puts(b, "</div><div class=\"screens-ed-btns\">");
-        move_btn(b, r->id, "up", i == 0);
-        move_btn(b, r->id, "down", i == n - 1);
-        char id[16];
+        const char *what = r->title[0] ? r->title : usable ? bl->title : r->block; /* (which row: issue #69) */
+        move_btn(b, r->id, "up", i == 0, what);
+        move_btn(b, r->id, "down", i == n - 1, what);
+        char id[16], label[120];
         snprintf(id, sizeof id, "%d", r->id);
-        ui_act(b, "screens.row_remove", "icon-btn", buf_cstr(&trash), "row", id, "Remove");
+        snprintf(label, sizeof label, "Remove %s", what);
+        ui_act(b, "screens.row_remove", "icon-btn", buf_cstr(&trash), "row", id, label);
         buf_puts(b, "</div></div>");
         if (usable) {
             ui_form(b, "screens.row_save", "screens-ed-form");

@@ -710,7 +710,7 @@ TEST(tv_channel_full_screen_for_the_tv) {
     CHECK_HAS(h, "data-resume=\"125\"");
     CHECK_HAS(h, "data-next=\"/tv/1?tv=1&amp;back=%2Fscreens%2F2\"");
     CHECK_HAS(h, "autoplay");
-    CHECK_HAS(h, "data-p=\"mute\" aria-label=\"Sound (M)\" title=\"Sound (M)\" autofocus>"); /* OK on the remote: the sound */
+    CHECK_HAS(h, "data-p=\"mute\" aria-label=\"Mute (M)\" aria-pressed=\"false\" title=\"Sound (M)\" autofocus>"); /* OK on the remote: the sound */
     CHECK(!strstr(h, " controls"));
     CHECK_HAS(h, "data-fullscreen=\"tv-screen\""); /* the TV's browser can drop its own bars too */
     CHECK_HAS(h, "href=\"/tv/2?tv=1&amp;back=%2Fscreens%2F2\" data-key=\"ArrowUp\""); /* the remote's channel keys */

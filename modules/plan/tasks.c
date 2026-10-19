@@ -80,7 +80,7 @@ static void task_row(Ctx *c, Buf *b, const Task *t, const char *idp, const char 
     buf_puts(b, href ? "</a>" : "</div>");
     Person *who = person_get(t->who);
     if (who) {
-        buf_puts(b, "<span class=\"plan-task-who\">");
+        buf_puts(b, "<span class=\"plan-task-who\"><span class=\"sr-only\">for </span>"); /* (issue #69) */
         ui_avatar(b, who, "sm");
         buf_puts(b, "</span>");
     }
@@ -101,11 +101,11 @@ static void preview(Ctx *c, Buf *b) {
     TaskDraft d;
     char err[120];
     if (!plan_parse_task(q, c->now, &d, err, sizeof err)) {
-        H(b, "<div class=\"preview bad\">%s</div>", err);
+        H(b, "<div class=\"preview bad\" data-say>%s</div>", err);
         return;
     }
     const char *icon = plan_task_icon(d.title);
-    H(b, "<div class=\"preview ok\">%s%r<b>%s</b>", icon, icon[0] ? " " : "", d.title);
+    H(b, "<div class=\"preview ok\" data-say>%s%r<b>%s</b>", icon, icon[0] ? " " : "", d.title);
     Person *p = person_get(d.who);
     if (p) {
         sep(b);
@@ -182,7 +182,7 @@ static void filter_chips(Ctx *c, Buf *b) {
         snprintf(ids, sizeof ids, "%d", p->id);
         int n = plan_open_tasks(p->id);
         H(b, "<a class=\"chip%r\" href=\"/plan?who=%d\">", str_eq(w, ids) ? " on" : "", p->id);
-        ui_avatar(b, p, "xs");
+        ui_avatar_deco(b, p, "xs");
         H(b, "%s", p->name);
         if (n) H(b, " <span class=\"plan-n\">%d</span>", n);
         buf_puts(b, "</a>");
@@ -202,7 +202,8 @@ void plan_tasks_page(Ctx *c, Buf *b) {
     ui_form(b, "plan.task_add", "quick plan-quick");
     buf_puts(b, "<div class=\"quick-row\"><input name=\"q\" required maxlength=\"200\" autocomplete=\"off\" "
                 "enterkeyhint=\"done\" data-live=\"plan.task_preview\" data-key=\"/\" aria-label=\"New to-do\" "
-                "placeholder=\"Add a to-do — “vacuum @eva fri every week”\"><button class=\"btn primary\">");
+                "placeholder=\"Add a to-do — “vacuum @eva fri every week”\"><button class=\"btn primary\" "
+                "aria-label=\"Add to-do\">"); /* (on phones only the + shows: issue #65) */
     ui_icon(b, "plus");
     buf_puts(b, "<span>Add</span></button></div>");
     preview(c, b);

@@ -204,3 +204,17 @@ TEST(board_empty_states) {
     app_ctx_free(&c);
     th_halt();
 }
+
+/* Issue #69: a list of notes' buttons says which note each is for (it was "Pin to the top",
+   "Edit", "Remove" over and over); and issue #60: no "Remove this note?" - Undo instead. */
+TEST(board_note_buttons_name_their_note) {
+    th_boot();
+    int adam = th_person("Adam");
+    CHECK(th_act(adam, "board.post", "text=Milk+is+in+the+fridge&hue=45").ok);
+    const char *h = th_page(adam, "/board");
+    CHECK_HAS(h, "aria-label=\"Pin “Milk is in the fridge” to the top\"");
+    CHECK_HAS(h, "aria-label=\"Edit “Milk is in the fridge”\"");
+    CHECK_HAS(h, "aria-label=\"Remove “Milk is in the fridge”\"");
+    CHECK(!strstr(h, "Remove this note?"));
+    th_halt();
+}

@@ -511,3 +511,20 @@ TEST(plan_display_accounts_see_tasks_without_tick_buttons) {
     CHECK_INT(((Task *)tbl_get(&T_task, 1))->who, adam);
     th_halt();
 }
+
+/* Issues #65 #69: the Add buttons say what they add (on a phone only their + shows), and who a
+   to-do is for is read out, not just shown as an emoji. */
+TEST(plan_reads_out_what_and_who) {
+    g_fake_now = NOW;
+    th_boot();
+    int adam = th_person("Adam");
+    th_person("Eva");
+    CHECK(th_act(adam, "plan.task_add", "q=vacuum+%40eva+fri").ok);
+    const char *h = th_page(adam, "/plan");
+    CHECK_HAS(h, "aria-label=\"Add to-do\"");
+    CHECK_HAS(h, "<span class=\"sr-only\">for </span><span class=\"av av-sm\" title=\"Eva\" role=\"img\" "
+                 "aria-label=\"Eva\"");
+    CHECK_HAS(th_page(adam, "/plan/shop"), "aria-label=\"Add items\"");
+    CHECK_HAS(th_page(adam, "/plan/cal"), "aria-label=\"Add event\"");
+    th_halt();
+}
