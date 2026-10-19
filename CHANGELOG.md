@@ -4,6 +4,35 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 0.17.0 (2026-10-19)
+
+Photos on notes - the last part of #47.
+
+### New
+
+- **A photo on a note.** The board's note box and a note's dialog have a **Photo** field: the school
+  letter, the parking permit, a drawing for the fridge. The phone or computer shrinks the photo
+  first (1600 pixels on its longest side, a few hundred KB), so it's quick to send and light on the
+  Pi's disk, and leaves the rest of the photo's details (like where it was taken) behind. A photo
+  alone will do as a note. It shows on the board, on the home card and on the wall; on the board it
+  opens full size. A note's dialog can take the photo away or put another in; photos no note has
+  any more are cleaned up (a deleted note's Undo still brings its photo back).
+
+### Fixes
+
+- **A long form field over the connection kept only its first 4 KB.** Nothing in Hemma sent one
+  that long until photos, but it was cut without a word; it now arrives whole (the connection's own
+  1 MB per message is the limit), and so does the JSON API's.
+
+### For developers
+
+- `input[type=file][data-shrink="N"]` (wire.js): the form sends the picked picture shrunk to N px, as a
+  JPEG data: URL under 600 KB (quality, then size, step down until it fits), and refuses with a
+  toast while the socket is down (a plain POST can't carry it). `base64_decode` in core/codec.
+- Board photos are `<data>/board/<16 hex>.jpg` (checked to be a JPEG, its size read from the frame
+  header so pages give width and height), served at `/board/photo/<name>` to the signed-in, cached
+  for good; swept at the start and hourly once nothing has them for an hour.
+
 ## 0.16.0 (2026-10-19)
 
 Chores that take turns, and bookings and events that repeat (#47, the first two of its three).

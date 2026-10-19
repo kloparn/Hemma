@@ -3,8 +3,12 @@
  * Notes can be pinned, coloured and set to disappear after a while ("the
  * plumber comes Tuesday"). Expired notes are hidden but kept for 60 days in
  * case someone wants them back, then cleaned up on start. Anyone in the
- * household may edit or remove any note; the activity feed records who did. */
+ * household may edit or remove any note; the activity feed records who did.
+ * A note may hold a photo (issue #47: the school letter, the parking permit): the browser shrinks it
+ * (wire.js [data-shrink]) and it travels in the form as a data: URL of a JPEG; it's kept as
+ * <data>/board/<random>.jpg, served at /board/photo/<name>, and swept once no note has it. */
 #include "../../core/app.h"
+#include "../../core/codec.h"
 #include "../../core/ui.h"
 
 #include <ctype.h>
@@ -12,6 +16,9 @@
 #define NOTE_MAX_CHARS 600
 #define DAY 86400
 #define KEEP_EXPIRED_DAYS 60
+#define PHOTO_MAX (700 * 1024) /* the browser keeps a photo under 600 KB (it rides one socket message) */
+#define PHOTO_SIDE 4096         /* (the browser makes it 1600 px at most; a hand-made request no more than this) */
+#define PHOTO_SHRINK "1600"     /* what the browser shrinks a photo to, its longest side */
 
 typedef struct {
     int id;
@@ -22,12 +29,15 @@ typedef struct {
     int edited_by; /* last editor, 0 = never edited */
     int64_t created, updated;
     int64_t expires; /* 0 = keep; hidden from this moment on */
+    char photo[24];  /* "<16 hex>.jpg" in <data>/board, "" = none */
+    int photo_w, photo_h;
 } Note;
 
 static const FieldDef note_fields[] = {
     FIELD(Note, id, F_INT),        FIELD(Note, text, F_STR),      FIELD(Note, hue, F_INT),
     FIELD(Note, pinned, F_BOOL),   FIELD(Note, by, F_INT),        FIELD(Note, edited_by, F_INT),
     FIELD(Note, created, F_I64),   FIELD(Note, updated, F_I64),   FIELD(Note, expires, F_I64),
+    FIELD(Note, photo, F_STR),     FIELD(Note, photo_w, F_INT),   FIELD(Note, photo_h, F_INT),
 };
 static Table T_note = TABLE("board_note", Note, note_fields);
 
@@ -75,8 +85,12 @@ static void clean_text(const char *in, char *out) {
     out[o] = '\0';
 }
 
-/* First `max` characters on one line, with an ellipsis when cut. */
+/* First `max` characters on one line, with an ellipsis when cut. (No text: a photo's note - "the photo".) */
 static void snippet(const char *text, char *out, size_t cap, int max) {
+    if (!*text) {
+        str_copy(out, cap, "the photo");
+        return;
+    }
     size_t o = 0, left = strlen(text);
     int chars = 0;
     const char *p = text;
@@ -155,14 +169,14 @@ static bool checked(const Fields *f, const char *key) {
     return v && *v && !str_eq(v, "0");
 }
 
-static bool read_text(Ctx *c, Fields *f, char *dst, size_t cap) {
+static bool read_text(Ctx *c, Fields *f, char *dst, size_t cap, bool photo) {
     const char *raw = fields_str(f, "text");
     char *t = xmalloc(strlen(raw) + 1);
     clean_text(raw, t);
     size_t chars = utf8_count(t);
     bool ok = false;
-    if (!t[0]) {
-        ctx_fail_at(c, "text", "Write something first");
+    if (!t[0] && !photo) { /* (a photo can say it all) */
+        ctx_fail_at(c, "text", "Write something first, or add a photo");
     } else if (chars > NOTE_MAX_CHARS) {
         ctx_fail_at(c, "text", "Keep it under %d characters (that one has %zu)", NOTE_MAX_CHARS, chars);
     } else {
@@ -171,6 +185,122 @@ static bool read_text(Ctx *c, Fields *f, char *dst, size_t cap) {
     }
     free(t);
     return ok;
+}
+
+/* ----------------------------------------------------------------- photos */
+
+static void photo_path(const char *name, char *out, size_t cap) {
+    snprintf(out, cap, "%s/board/%s", app_config()->data_dir, name);
+}
+
+static bool photo_name_ok(const char *s) { /* <16 hex>.jpg: what read_photo names them, nothing else */
+    for (int i = 0; i < 16; i++)
+        if (!isxdigit((unsigned char)s[i]) || isupper((unsigned char)s[i])) return false;
+    return str_eq(s + 16, ".jpg");
+}
+
+/* A JPEG's size, from its first frame header (SOFn) */
+static bool jpeg_size(const uint8_t *p, size_t n, int *w, int *h) {
+    if (n < 4 || p[0] != 0xFF || p[1] != 0xD8 || p[2] != 0xFF) return false;
+    size_t i = 2;
+    while (i + 9 <= n) {
+        if (p[i] != 0xFF) return false;
+        uint8_t m = p[i + 1];
+        if (m == 0xFF) { /* fill */
+            i++;
+            continue;
+        }
+        if (m == 0x01 || (m >= 0xD0 && m <= 0xD8)) { /* markers without a length */
+            i += 2;
+            continue;
+        }
+        size_t len = (size_t)p[i + 2] << 8 | p[i + 3];
+        if (len < 2) return false;
+        if (m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC) {
+            *h = p[i + 5] << 8 | p[i + 6];
+            *w = p[i + 7] << 8 | p[i + 8];
+            return *w > 0 && *h > 0;
+        }
+        i += 2 + len;
+    }
+    return false;
+}
+
+/* The photo in the form ("photo": a data: URL of a JPEG the browser made), saved under a new name; and
+   "photo_off" takes the note's photo away. false (said beside the field) for something that isn't one. */
+static bool read_photo(Ctx *c, Fields *f, Note *n) {
+    if (checked(f, "photo_off")) {
+        n->photo[0] = '\0';
+        n->photo_w = n->photo_h = 0;
+    }
+    const char *v = fields_str(f, "photo");
+    if (!v[0]) return true;
+    static const char pre[] = "data:image/jpeg;base64,";
+    if (!str_starts(v, pre)) {
+        ctx_fail_at(c, "photo", "That isn't a photo Hemma can keep - try another");
+        return false;
+    }
+    const char *b64 = v + sizeof pre - 1;
+    uint8_t *jpg = xmalloc(PHOTO_MAX);
+    long len = base64_decode(b64, strlen(b64), jpg, PHOTO_MAX);
+    int w = 0, h = 0;
+    if (len <= 0 || !jpeg_size(jpg, (size_t)len, &w, &h) || w > PHOTO_SIDE || h > PHOTO_SIDE) {
+        free(jpg);
+        ctx_fail_at(c, "photo", "That photo couldn't be read - try another");
+        return false;
+    }
+    char name[24], dir[600], path[640];
+    rand_hex(name, 8);
+    strcat(name, ".jpg");
+    snprintf(dir, sizeof dir, "%s/board", app_config()->data_dir);
+    photo_path(name, path, sizeof path);
+    bool saved = dir_make(dir) && file_write_atomic(path, jpg, (size_t)len);
+    free(jpg);
+    if (!saved) {
+        ctx_fail_at(c, "photo", "The photo couldn't be saved - is the disk full?");
+        return false;
+    }
+    str_copy(n->photo, sizeof n->photo, name);
+    n->photo_w = w;
+    n->photo_h = h;
+    return true;
+}
+
+/* Photos no note has any more (deleted, replaced, cleaned up) go: at the start, and on the hour once
+   they're an hour old - a deleted note's Undo (UNDO_S) brings its photo back meanwhile. */
+static void photo_sweep(int64_t older_than) {
+    char dir[600];
+    snprintf(dir, sizeof dir, "%s/board", app_config()->data_dir);
+    DirIter *it = dir_open(dir);
+    if (!it) return;
+    DirEntry e;
+    while (dir_next(it, &e)) {
+        if (e.is_dir || !photo_name_ok(e.name) || e.mtime >= older_than) continue;
+        bool kept = false;
+        for (int i = 0; i < tbl_count(&T_note) && !kept; i++) kept = str_eq(((Note *)tbl_at(&T_note, i))->photo, e.name);
+        if (kept) continue;
+        char path[640];
+        photo_path(e.name, path, sizeof path);
+        file_remove(path);
+    }
+    dir_close(it);
+}
+
+static void photo_img(Buf *b, const Note *n, bool link) {
+    if (!n->photo[0]) return;
+    if (link) H(b, "<a class=\"board-photo\" href=\"/board/photo/%s\" data-native target=\"_blank\" rel=\"noopener\">", n->photo);
+    else buf_puts(b, "<div class=\"board-photo\">");
+    H(b, "<img src=\"/board/photo/%s\" width=\"%d\" height=\"%d\" alt=\"%s\" loading=\"lazy\">", n->photo, n->photo_w,
+      n->photo_h, link ? "Photo - open it full size" : "Photo");
+    buf_puts(b, link ? "</a>" : "</div>");
+}
+
+/* the form's photo field: wire.js shrinks what's picked; it only shows while the socket is up (a plain
+   POST can't carry it) */
+static void photo_field(Buf *b, const char *label) {
+    H(b, "<label class=\"board-photo-f\"><span>%s</span><input type=\"file\" name=\"photo\" accept=\"image/*\" "
+         "data-shrink=\"" PHOTO_SHRINK "\"></label>",
+      label);
 }
 
 /* until=YYYY-MM-DD wins when filled in (visible through that day); otherwise
@@ -258,9 +388,12 @@ static void note_card(Ctx *c, Buf *b, const Note *n, bool expired_view) {
     ui_hue_style(b, n->hue);
     buf_putc(b, '>');
     if (n->pinned) buf_puts(b, "<span class=\"board-note-pin\" title=\"Pinned\"></span>");
-    buf_puts(b, "<div class=\"board-note-text\">");
-    render_text(b, n->text, true);
-    buf_puts(b, "</div>");
+    photo_img(b, n, true);
+    if (n->text[0]) {
+        buf_puts(b, "<div class=\"board-note-text\">");
+        render_text(b, n->text, true);
+        buf_puts(b, "</div>");
+    }
     if (n->expires) {
         buf_puts(b, "<div class=\"board-note-exp\">");
         ui_icon(b, "clock");
@@ -289,7 +422,7 @@ static void keep_radio(Buf *b, const char *value, const char *label, bool on) {
 static void post_box(Buf *b) {
     buf_puts(b, "<section class=\"card board-post\">");
     ui_form(b, "board.post", "board-post-f");
-    H(b, "<textarea name=\"text\" rows=\"3\" maxlength=\"%d\" required aria-label=\"Note\" "
+    H(b, "<textarea name=\"text\" rows=\"3\" maxlength=\"%d\" aria-label=\"Note\" "
          "placeholder=\"Leave a note for everyone… reminders, the Wi-Fi password for guests, who picks up whom\">"
          "</textarea><div class=\"board-post-o\">",
       NOTE_MAX_CHARS);
@@ -300,7 +433,9 @@ static void post_box(Buf *b) {
     keep_radio(b, "0", "Keep", true);
     keep_radio(b, "1d", "1 day", false);
     keep_radio(b, "7d", "1 week", false);
-    buf_puts(b, "</div><button class=\"btn primary board-post-go\">Post</button></div>");
+    buf_puts(b, "</div>");
+    photo_field(b, "📷 Photo");
+    buf_puts(b, "<button class=\"btn primary board-post-go\">Post</button></div>");
     ui_form_end(b);
     buf_puts(b, "</section>");
 }
@@ -310,8 +445,15 @@ static void edit_modal(Ctx *c, Buf *b, const Note *n, bool expired_view) {
     ui_modal(b, "Edit note", close);
     ui_form(b, "board.save", "stack");
     ui_hidden_int(b, "id", n->id);
-    H(b, "<textarea name=\"text\" rows=\"6\" maxlength=\"%d\" required autofocus aria-label=\"Note\">%s</textarea>",
+    H(b, "<textarea name=\"text\" rows=\"6\" maxlength=\"%d\" autofocus aria-label=\"Note\">%s</textarea>",
       NOTE_MAX_CHARS, n->text);
+    if (n->photo[0]) {
+        buf_puts(b, "<div class=\"board-photo-edit\">");
+        photo_img(b, n, false);
+        buf_puts(b, "<label class=\"check\"><input type=\"checkbox\" name=\"photo_off\" value=\"1\"> Take the photo away</label>"
+                    "</div>");
+    }
+    photo_field(b, n->photo[0] ? "Another photo" : "📷 Add a photo");
     buf_puts(b, "<div class=\"field\"><span>Colour</span>");
     ui_hue_picker(b, "hue", n->hue);
     H(b, "</div><label class=\"board-pin-toggle\"><input type=\"checkbox\" name=\"pin\" value=\"1\"%r><span>",
@@ -414,7 +556,9 @@ static void minis(Ctx *c, Buf *b, Note **v, int show, bool links) {
         Note *x = v[i];
         H(b, "<li class=\"board-mini%r\"", x->pinned ? " pinned" : "");
         ui_hue_style(b, x->hue);
-        buf_puts(b, "><p>");
+        buf_puts(b, ">");
+        photo_img(b, x, false);
+        buf_puts(b, "<p>");
         render_text(b, x->text, links);
         buf_puts(b, "</p><small>");
         if (x->pinned) ui_icon(b, "pin");
@@ -464,7 +608,9 @@ static bool known(Ctx *c) {
 static void act_post(Ctx *c, Fields *f) {
     if (!known(c)) return;
     Note n = {0};
-    if (!read_text(c, f, n.text, sizeof n.text) || !read_expiry(c, f, 0, &n.expires)) return;
+    bool photo = fields_str(f, "photo")[0] != '\0';
+    if (!read_text(c, f, n.text, sizeof n.text, photo) || !read_expiry(c, f, 0, &n.expires) || !read_photo(c, f, &n))
+        return;
     n.hue = (int)CLAMP(fields_int(f, "hue", 45), 0, 359);
     n.pinned = checked(f, "pin");
     n.by = c->me->id;
@@ -472,8 +618,11 @@ static void act_post(Ctx *c, Fields *f) {
     tbl_put(&T_note, &n);
     char snip[160];
     snippet(n.text, snip, sizeof snip, 40);
-    activity_add(c->me->id, n.pinned ? "📌" : "📝", "/board", "%s %s a note: “%s”", c->me->name,
-                 n.pinned ? "pinned" : "left", snip);
+    if (!n.text[0])
+        activity_add(c->me->id, "📷", "/board", "%s %s a photo on the board", c->me->name, n.pinned ? "pinned" : "put");
+    else
+        activity_add(c->me->id, n.pinned ? "📌" : "📝", "/board", "%s %s a note%s: “%s”", c->me->name,
+                     n.pinned ? "pinned" : "left", n.photo[0] ? " with a photo" : "", snip);
     app_notify(c, TOAST_INFO, "%s left a note on the board", c->me->name);
     ctx_ok(c, n.pinned ? "Pinned to the board" : "Posted");
 }
@@ -483,7 +632,10 @@ static void act_save(Ctx *c, Fields *f) {
     Note *cur = note_arg(c, f);
     if (!cur) return;
     Note n = *cur;
-    if (!read_text(c, f, n.text, sizeof n.text) || !read_expiry(c, f, cur->expires, &n.expires)) return;
+    bool photo = fields_str(f, "photo")[0] || (cur->photo[0] && !checked(f, "photo_off"));
+    if (!read_text(c, f, n.text, sizeof n.text, photo) || !read_expiry(c, f, cur->expires, &n.expires) ||
+        !read_photo(c, f, &n))
+        return;
     n.hue = (int)CLAMP(fields_int(f, "hue", n.hue), 0, 359);
     n.pinned = checked(f, "pin");
     n.edited_by = c->me->id;
@@ -555,6 +707,32 @@ static void start(void) {
         Note *n = tbl_at(&T_note, i);
         if (n->expires > 0 && n->expires < cutoff) tbl_del(&T_note, n->id);
     }
+    photo_sweep(INT64_MAX); /* (no Undo survives a start) */
+}
+
+static int64_t g_swept_ms;
+static void tick(int64_t now_ms) {
+    if (g_swept_ms && now_ms - g_swept_ms < 3600 * 1000) return;
+    g_swept_ms = now_ms;
+    photo_sweep(now_sec() - 3600);
+}
+
+/* GET /board/photo/<name>: for people signed in (and the wall); a name is never reused, so it keeps */
+static bool http(Ctx *c, Conn *conn, HttpReq *r) {
+    (void)c;
+    if (!str_starts(r->path, "/board/photo/")) return false;
+    const char *name = r->path + strlen("/board/photo/");
+    Buf jpg = {0};
+    char path[640];
+    if (photo_name_ok(name)) photo_path(name, path, sizeof path);
+    if (!photo_name_ok(name) || !file_read_all(path, &jpg, PHOTO_MAX)) {
+        static const char msg[] = "That photo isn't here any more.\n";
+        conn_reply(conn, 404, "text/plain; charset=utf-8", msg, sizeof msg - 1, NULL);
+    } else {
+        conn_reply(conn, 200, "image/jpeg", jpg.p, jpg.len, "Cache-Control: private, max-age=31536000, immutable\r\n");
+    }
+    buf_free(&jpg);
+    return true;
 }
 
 static const Action actions[] = {
@@ -581,8 +759,10 @@ static const Module board = {
     .nav = 5,
     .init = init,
     .start = start,
+    .tick = tick,
     .rezone = rezone,
     .page = page,
+    .http = http,
     .actions = actions,
     .widget = widget,
     .widget_order = 40,

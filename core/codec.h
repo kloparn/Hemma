@@ -36,6 +36,9 @@ void pbkdf2_sha256(const void *pass, size_t plen, const void *salt, size_t slen,
 
 /* out needs 4 * ((n + 2) / 3) + 1 bytes; returns the encoded length */
 size_t base64_encode(const void *data, size_t n, char *out);
+/* Decodes in[0..n) (padding optional) into at most cap bytes: the length, or -1 for anything that isn't
+   base64 or doesn't fit. */
+long base64_decode(const char *in, size_t n, uint8_t *out, size_t cap);
 /* Decodes exactly 2*n hex chars; false on bad input. */
 bool hex_decode(const char *hex, uint8_t *out, size_t n);
 /* Compares without leaking where the first difference is. */

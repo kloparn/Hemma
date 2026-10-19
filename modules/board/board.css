@@ -120,3 +120,14 @@
   .board-post-o .hues { gap: 5px; }
   .board-post-o .hue span { width: 20px; height: 20px; }
 }
+
+/* photos on notes (issue #47): the field only while the socket is up (wire.js shrinks the photo) */
+.board-photo-f { display: none; align-items: center; gap: 6px; font-weight: 600; font-size: 14px; color: var(--muted); }
+html[data-ws=on] .board-photo-f { display: inline-flex; }
+.board-photo-f input { max-width: 210px; font-size: 13px; }
+.board-photo { display: block; margin: -2px 0 8px; }
+.board-photo img { display: block; width: 100%; height: auto; max-height: 340px; object-fit: cover; border-radius: 8px; }
+.board-photo-edit { display: flex; flex-direction: column; gap: 6px; }
+.board-photo-edit .board-photo img { max-height: 160px; width: auto; max-width: 100%; }
+.board-mini .board-photo { margin: 0 0 6px; }
+.board-mini .board-photo img { max-height: 120px; }

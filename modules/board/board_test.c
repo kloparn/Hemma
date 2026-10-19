@@ -239,3 +239,130 @@ TEST(board_note_keeps_its_day_when_the_zone_changes) {
     plat_set_tz(NULL);
     th_halt();
 }
+
+/* ------------------------------------------------ photos on notes (issue #47) */
+
+/* a JPEG in the fewest bytes that still say its size: 20 wide, 10 high */
+static const uint8_t TINY_JPEG[] = {
+    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J',  'F',  'I',  'F',  0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+    0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x0A, 0x00, 0x14, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+    0xFF, 0xD9,
+};
+
+/* form + "&photo=" + a data: URL of the bytes, as wire.js sends it */
+static const char *with_photo(const char *form, const char *type, const uint8_t *data, size_t n) {
+    static Buf b;
+    buf_reset(&b);
+    char *enc = xmalloc(4 * ((n + 2) / 3) + 1);
+    base64_encode(data, n, enc);
+    Buf url = {0};
+    buf_printf(&url, "data:%s;base64,%s", type, enc);
+    buf_puts(&b, form);
+    buf_puts(&b, "&photo=");
+    url_encode(&b, url.p, false);
+    free(enc);
+    buf_free(&url);
+    return b.p;
+}
+
+/* the name of the first photo on a page ("" = none) */
+static void photo_on(const char *html, char out[24]) {
+    const char *p = strstr(html, "/board/photo/");
+    out[0] = '\0';
+    if (p) snprintf(out, 24, "%.20s", p + strlen("/board/photo/"));
+}
+
+static bool photo_file(const char *name) {
+    char path[700];
+    snprintf(path, sizeof path, "%s/board/%s", app_config()->data_dir, name);
+    int64_t size = 0, mtime = 0;
+    bool dir = false;
+    return path_stat(path, &size, &mtime, &dir) && size == (int64_t)sizeof TINY_JPEG;
+}
+
+TEST(board_notes_hold_a_photo) {
+    char dir[512];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    th_boot_in(dir);
+    int adam = th_person("Adam");
+    ThResult r = th_act(adam, "board.post", with_photo("text=The+school+letter&hue=45", "image/jpeg", TINY_JPEG, sizeof TINY_JPEG));
+    CHECK(r.ok);
+    const char *h = th_page(adam, "/board");
+    char name[24];
+    photo_on(h, name);
+    CHECK_INT((int)strlen(name), 20);
+    CHECK(str_ends(name, ".jpg"));
+    CHECK(photo_file(name));
+    char want[120];
+    snprintf(want, sizeof want, "<img src=\"/board/photo/%s\" width=\"20\" height=\"10\"", name);
+    CHECK_HAS(h, want);
+    CHECK_HAS(h, "The school letter");
+    CHECK_HAS(h, "data-shrink=\"1600\"");
+    CHECK_HAS(last_activity()->text, "Adam left a note with a photo: “The school letter”");
+    /* a photo alone will do; neither is nothing */
+    CHECK(th_act(adam, "board.post", with_photo("text=", "image/jpeg", TINY_JPEG, sizeof TINY_JPEG)).ok);
+    CHECK_HAS(last_activity()->text, "Adam put a photo on the board");
+    r = th_act(adam, "board.post", "text=");
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Write something first, or add a photo");
+    /* what isn't a JPEG doesn't go in */
+    r = th_act(adam, "board.post", with_photo("text=x", "image/png", TINY_JPEG, sizeof TINY_JPEG));
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "isn't a photo Hemma can keep");
+    r = th_act(adam, "board.post", with_photo("text=x", "image/jpeg", (const uint8_t *)"GIF89a not a jpeg", 17));
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "couldn't be read");
+    r = th_act(adam, "board.post", "text=x&photo=data%3Aimage%2Fjpeg%3Bbase64%2C%21%21%21");
+    CHECK(!r.ok);
+    /* the wall shows it, without a link */
+    CHECK_HAS(th_page(adam, "/"), "<div class=\"board-photo\"><img src=\"/board/photo/");
+    th_halt();
+}
+
+TEST(board_photo_is_taken_away_and_swept) {
+    char dir[512];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    th_boot_in(dir);
+    int adam = th_person("Adam");
+    CHECK(th_act(adam, "board.post", with_photo("text=Parking+permit&hue=45", "image/jpeg", TINY_JPEG, sizeof TINY_JPEG)).ok);
+    char name[24];
+    photo_on(th_page(adam, "/board"), name);
+    CHECK(photo_file(name));
+    /* edited: the photo taken away - the file stays while an Undo could want it */
+    const char *h = th_page(adam, "/board?edit=1");
+    CHECK_HAS(h, "Take the photo away");
+    CHECK_HAS(h, "Another photo");
+    CHECK(th_act(adam, "board.save", "id=1&text=Parking+permit&hue=45&keep=0&photo_off=1").ok);
+    char now[24];
+    photo_on(th_page(adam, "/board"), now);
+    CHECK(!now[0]);
+    CHECK(photo_file(name));
+    /* taken away with no text left: refused, it'd be an empty note */
+    CHECK(th_act(adam, "board.post", with_photo("text=", "image/jpeg", TINY_JPEG, sizeof TINY_JPEG)).ok);
+    char only[24];
+    photo_on(th_page(adam, "/board"), only);
+    ThResult r = th_act(adam, "board.save", "id=2&text=&hue=45&keep=0&photo_off=1");
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Write something first, or add a photo");
+    /* deleted, then Undo: the note comes back with its photo */
+    r = th_act(adam, "board.delete", "id=2");
+    CHECK(r.ok);
+    CHECK(photo_file(only));
+    char k[40];
+    snprintf(k, sizeof k, "k=%s", r.undo);
+    CHECK(th_act(adam, "core.undo", k).ok);
+    char back[24];
+    photo_on(th_page(adam, "/board"), back);
+    CHECK_STR(back, only);
+    /* deleted for good this time: the next start sweeps what no note has, and keeps the rest */
+    CHECK(th_act(adam, "board.delete", "id=2").ok);
+    CHECK(th_act(adam, "board.post", with_photo("text=Keeps", "image/jpeg", TINY_JPEG, sizeof TINY_JPEG)).ok);
+    char keeps[24];
+    photo_on(th_page(adam, "/board"), keeps);
+    th_halt();
+    th_boot_in(dir);
+    CHECK(!photo_file(name));
+    CHECK(!photo_file(only));
+    CHECK(photo_file(keeps));
+    th_halt();
+}
