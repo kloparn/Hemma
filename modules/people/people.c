@@ -1,10 +1,12 @@
 /* modules/people — the household: people, their sign-ins, your account.
  *
- * Admins add people and decide who can sign in (and as what: member, admin,
- * or a read-only display for wall tablets). Everyone manages their own
- * profile, password, recovery codes and signed-in devices. Signing in itself
- * is core (core/auth.c), so is the first admin (the welcome page, or the
- * environment). /people/codes shows freshly made recovery codes once. */
+ * Admins add people and decide who can sign in (and as what: member, child,
+ * guest until a day, admin, or a read-only display for wall tablets), and
+ * remove them - as moved out (their history stays) or erased (issue #45).
+ * Everyone manages their own profile, password, recovery codes, signed-in
+ * devices and privacy (issue #42). Signing in itself is core (core/auth.c),
+ * so is the first admin (the welcome page, or the environment).
+ * /people/codes shows freshly made recovery codes once. */
 #include "../../core/app.h"
 #include "../../core/auth.h"
 #include "../../core/qr.h"
@@ -12,7 +14,18 @@
 
 static const char *const EMOJI[] = {"🦊", "🐻", "🐼", "🐨", "🐯", "🦁", "🐸", "🐵", "🦄", "🐙",
                                     "🐝", "🦉", "🐳", "🐢", "🌻", "🍄", "⭐", "🌙", "🔥", "🎸"};
-static const char *const ROLE_NAMES[] = {"Member", "Admin", "Display"};
+static const char *const ROLE_NAMES[ROLE_COUNT] = {"Member", "Admin", "Display", "Child", "Guest"};
+/* the role picker, in this order */
+static const int ROLE_ORDER[] = {ROLE_MEMBER, ROLE_CHILD, ROLE_GUEST, ROLE_ADMIN, ROLE_DISPLAY};
+static const char *const ROLE_HINTS[ROLE_COUNT] = {
+    "use everything", "also manage people", "only look (wall tablet, TV)", "their own to-dos and the lists",
+    "signs in until a day"};
+#define GUEST_DAYS 7 /* a new guest's last day: a week from today, to change */
+
+static const char *role_name(int role) { return ROLE_NAMES[CLAMP(role, 0, ROLE_COUNT - 1)]; }
+
+/* A guest's last day: the day before Person.until (the local midnight after it) */
+static int64_t last_day(const Person *p) { return add_days(p->until, -1); }
 
 static int pick_hue(void) {
     static const int hues[] = {200, 335, 150, 25, 255, 45, 175, 310, 90, 0, 220, 280};
@@ -56,12 +69,18 @@ static void person_modal(Ctx *c, Buf *b, Person *p) {
           "maxlength=\"32\" autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\" value=\"%s\" "
           "placeholder=\"e.g. eva\"></label><label class=\"field\"><span>Can</span><select name=\"role\"%r>",
           p ? p->username : "", self ? " disabled" : "");
-        for (int r = 0; r < countof(ROLE_NAMES); r++) {
-            static const char *hints[] = {"use everything", "also manage people", "only look (wall tablet)"};
+        for (int k = 0; k < countof(ROLE_ORDER); k++) {
+            int r = ROLE_ORDER[k];
             H(b, "<option value=\"%d\"%r>%s — %s</option>", r, (p ? p->role : ROLE_MEMBER) == r ? " selected" : "",
-              ROLE_NAMES[r], hints[r]);
+              ROLE_NAMES[r], ROLE_HINTS[r]);
         }
-        buf_puts(b, "</select></label></div>");
+        char day[11];
+        fmt_ymd(p && p->until ? last_day(p) : add_days(day_start(c->now), GUEST_DAYS), day);
+        H(b,
+          "</select></label></div><label class=\"field people-until\"><span>A guest's last day</span><input "
+          "type=\"date\" name=\"until\" value=\"%s\"><small class=\"muted\">Their sign-in ends after it, by itself. "
+          "Change it to give them more days.</small></label>",
+          day);
         if (self) /* your own: under Your account, which asks for the current one first */
             buf_puts(b, "<p class=\"muted small\">Change your own password under <b>Your account</b>.</p>");
         else
@@ -82,28 +101,87 @@ static void person_modal(Ctx *c, Buf *b, Person *p) {
             H(b, "<button class=\"btn\">Sign %s out everywhere</button>", p->name);
             ui_form_end(b);
         }
-        H(b, "<form method=\"post\" action=\"/a/people.delete\" data-a=\"people.delete\" class=\"inline\" "
-             "data-confirm=\"Remove %s from the household?\">",
-          p->name);
-        ui_hidden_int(b, "id", p->id);
-        H(b, "<button class=\"btn danger\">Remove %s</button></form></div>", p->name);
+        /* what happens first, then the choice (issue #45) */
+        H(b, "<a class=\"btn danger\" href=\"/people?remove=%d\">Remove %s</a></div>", p->id, p->name);
     }
     ui_modal_end(b);
+}
+
+/* What removing p would do (person_forget without applying it): one list item per note. */
+static void will_list(Buf *b, int person, bool keep, int64_t now) {
+    Forget f = {.person = person, .keep = keep, .now = now};
+    person_forget(&f);
+    buf_puts(b, "<ul class=\"people-will\">");
+    for (int i = 0; i < f.nnotes; i++) H(b, "<li>%s</li>", f.notes[i]);
+    if (!f.nnotes) buf_puts(b, "<li>Nothing else of theirs is waiting</li>");
+    buf_puts(b, "</ul>");
+}
+
+/* /people?remove=<id>: moved out (their history stays) or erased - each with what it does, before it does it */
+static void remove_modal(Ctx *c, Buf *b, const Person *p) {
+    char title[80];
+    snprintf(title, sizeof title, p->left ? "Erase %s" : "Remove %s", p->name);
+    ui_modal(b, title, "/people");
+    ui_form(b, "people.delete", "stack");
+    ui_hidden_int(b, "id", p->id);
+    if (p->role == ROLE_DISPLAY) { /* (a TV or a tablet has no history of its own) */
+        ui_hidden(b, "how", "erase");
+        H(b, "<p>%s stops working where it's signed in, and its settings go.</p>", p->name);
+        will_list(b, p->id, false, c->now);
+    } else if (p->left) {
+        ui_hidden(b, "how", "erase");
+        H(b, "<p>Everything about %s goes: what they booked, their to-dos and notes, what they watched, their lines "
+             "in Latest. Things they added for everyone stay, without their name.</p>",
+          p->name);
+        will_list(b, p->id, false, c->now);
+    } else {
+        H(b, "<fieldset class=\"people-how\"><legend class=\"sr-only\">How %s leaves</legend><label "
+             "class=\"people-how-o\"><input type=\"radio\" name=\"how\" value=\"keep\" checked><span><b>%s moved out - "
+             "keep their history</b><small>What they did stays under their name, “%s (moved out)”: bookings that "
+             "happened, notes, Latest, what they watched. What's still ahead of them:</small>",
+          p->name, p->name, p->name);
+        will_list(b, p->id, true, c->now);
+        H(b, "</span></label><label class=\"people-how-o\"><input type=\"radio\" name=\"how\" value=\"erase\"><span>"
+             "<b>Erase everything about %s</b><small>Their bookings, to-dos, notes, watch history and lines in Latest "
+             "go too. Things they added for everyone stay, without their name:</small>",
+          p->name);
+        will_list(b, p->id, false, c->now);
+        buf_puts(b, "</span></label></fieldset>");
+    }
+    H(b, "<div class=\"modal-f\"><a class=\"btn\" href=\"/people\">Cancel</a><button class=\"btn danger\">%s</button>"
+         "</div>",
+      title);
+    ui_form_end(b);
+    ui_modal_end(b);
+}
+
+/* " · Guest until Sun" / " · Guest, ended 18 Oct" */
+static void guest_until(Ctx *c, Buf *b, const Person *p) {
+    if (p->role != ROLE_GUEST || !p->until) return;
+    buf_puts(b, p->until > c->now ? " until " : ", ended ");
+    ui_day(b, last_day(p), c->now);
 }
 
 static void people_card(Ctx *c, Buf *b) {
     ui_card(b, "People", NULL, NULL);
     buf_puts(b, "<ul class=\"rows\">");
+    int gone = 0;
     for (int i = 0; i < account_count(); i++) {
         Person *p = account_at(i);
-        buf_puts(b, "<li class=\"row\">");
+        if (p->left) {
+            gone++;
+            continue;
+        }
+        H(b, "<li class=\"row\" id=\"people-p%d\">", p->id);
         ui_avatar_deco(b, p, "md");
         H(b, "<div class=\"row-main\"><b>%s%r</b><small>", p->name, p->id == c->me->id ? " <span class=\"muted\">(you)</span>" : "");
         if (p->username[0]) {
             H(b, "@%s", p->username);
-            if (p->role != ROLE_MEMBER) H(b, " · %s", ROLE_NAMES[CLAMP(p->role, 0, 2)]);
+            if (p->role != ROLE_MEMBER) H(b, " · %s", role_name(p->role));
+            guest_until(c, b, p);
         } else {
             buf_puts(b, "no sign-in");
+            if (p->role == ROLE_CHILD) buf_puts(b, " · Child");
         }
         int screens = presence_screens(p->id);
         if (presence_is_home(p->id, NULL)) buf_puts(b, " · home");
@@ -121,12 +199,32 @@ static void people_card(Ctx *c, Buf *b) {
         buf_puts(b, "</li>");
     }
     buf_puts(b, "</ul>");
+    if (gone && is_admin(c)) { /* moved out (issue #45): their name stays on what they did */
+        buf_puts(b, "<h3 class=\"mt\" id=\"people-gone-h\">Moved out</h3><ul class=\"rows people-gone\">");
+        for (int i = 0; i < account_count(); i++) {
+            Person *p = account_at(i);
+            if (!p->left) continue;
+            H(b, "<li class=\"row\" id=\"people-p%d\">", p->id);
+            ui_avatar_deco(b, p, "md");
+            H(b, "<div class=\"row-main\"><b>%s</b><small>moved out ", p->name);
+            ui_day(b, p->left, c->now);
+            buf_puts(b, "</small></div><div class=\"people-gone-a\">");
+            char ids[16], aria[96];
+            snprintf(ids, sizeof ids, "%d", p->id);
+            snprintf(aria, sizeof aria, "%s is back in the household", p->name);
+            ui_act(b, "people.return", "btn sm", "Back in the household", "id", ids, aria);
+            H(b, "<a class=\"btn sm\" href=\"/people?remove=%d\" aria-label=\"Erase everything about %s\">Erase</a></div>"
+                 "</li>",
+              p->id, p->name);
+        }
+        buf_puts(b, "</ul>");
+    }
     ui_card_end(b);
 }
 
-/* "Recovery codes - N left - Make new codes" (not for display accounts). */
+/* "Recovery codes - N left - Make new codes" (not for display accounts, nor guests: an admin sets a new password). */
 static void codes_section(Ctx *c, Buf *b) {
-    if (c->me->role == ROLE_DISPLAY) return;
+    if (c->me->role == ROLE_DISPLAY || c->me->role == ROLE_GUEST) return;
     int left = auth_codes_left(c->me->id);
     char fresh[AUTH_CODES][AUTH_CODE_LEN];
     bool waiting = auth_codes_fresh(c->sess, fresh) > 0;
@@ -276,6 +374,10 @@ static void account_card(Ctx *c, Buf *b) {
     ui_avatar_deco(b, c->me, "lg");
     H(b, "<div><b>%s</b><p class=\"muted\">", c->me->name);
     if (c->me->username[0]) H(b, "Signed in as @%s", c->me->username);
+    if (c->me->role == ROLE_GUEST && c->me->until) { /* (it ends by itself: issue #44) */
+        buf_puts(b, " · a guest until ");
+        ui_day(b, last_day(c->me), c->now);
+    }
     buf_puts(b, "</p></div></div>");
     if (c->me->pass[0]) {
         bool temp = auth_temporary(c->me->id);
@@ -318,6 +420,43 @@ static void account_card(Ctx *c, Buf *b) {
     ui_card_end(b);
 }
 
+/* Privacy inside the household (issue #42): what others see of you. One form, sent as a whole on any change. */
+static void privacy_card(Ctx *c, Buf *b) {
+    if (c->me->role == ROLE_DISPLAY) return;
+    int me = c->me->id;
+    ui_card(b, "Privacy", NULL, NULL);
+    buf_puts(b, "<p class=\"muted\">What the rest of the household sees of you.</p>");
+    ui_form(b, "people.privacy", "stack people-privacy");
+    ui_hidden(b, "all", "1");
+    static const char *const wall[] = {"With home or away", "Just my name", "Not at all"};
+    static const char *const wall_v[] = {"", "name", "no"};
+    int w = privacy_wall(me);
+    buf_puts(b, "<label class=\"field\"><span>On the wall tablet</span><select name=\"wall\" data-auto>");
+    for (int i = 0; i < countof(wall); i++)
+        H(b, "<option value=\"%s\"%r>%s</option>", wall_v[i], i == w ? " selected" : "", wall[i]);
+    buf_puts(b, "</select></label>");
+    H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"doing\" value=\"1\" data-auto%r> Others see when I have "
+         "Hemma open, and which part</label>",
+      privacy_doing(me) ? " checked" : "");
+    H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"tv\" value=\"1\" data-auto%r> On the TV's <i>Who's "
+         "watching?</i></label>",
+      privacy_on_tv(c->me) ? " checked" : "");
+    H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"home\" value=\"1\" data-auto%r> My phone and computer "
+         "may tell Hemma when I'm home</label>",
+      privacy_home(me) ? " checked" : "");
+    ui_form_end(b);
+    const Module *net = module_find("net"), *screens = module_find("screens");
+    buf_puts(b, "<p class=\"muted small\">");
+    if (screens && module_visible(screens, c))
+        buf_puts(b, "Whoever picks you on the TV sees and can clear what you're watching: a PIN for it is under "
+                    "<a href=\"/screens\">Screens</a>. ");
+    if (net && module_visible(net, c))
+        buf_puts(b, "Who's home comes from the devices an admin marked as yours, on the <a href=\"/net\">Network</a> "
+                    "page.");
+    buf_puts(b, "</p>");
+    ui_card_end(b);
+}
+
 static void home_card(Ctx *c, Buf *b) {
     ui_card(b, "Home", NULL, NULL);
     if (is_admin(c)) {
@@ -355,17 +494,25 @@ static void page(Ctx *c, Buf *b) {
              "recovery code%r left%r</p>",
           left, left == 1 ? "" : "s", left <= 2 ? " - make new ones under Recovery codes." : ".");
     }
+    bool guest = is_guest(c); /* a guest: their own account only (issue #44) */
     buf_puts(b, "<div class=\"grid2\"><div>");
-    people_card(c, b);
-    home_card(c, b);
+    if (!guest) {
+        people_card(c, b);
+        home_card(c, b);
+    } else {
+        account_card(c, b);
+    }
     buf_puts(b, "</div><div>");
-    account_card(c, b);
-    if (c->me->pass[0] && c->me->role != ROLE_DISPLAY) calendar_card(c, b);
+    if (!guest) account_card(c, b);
+    privacy_card(c, b);
+    if (c->me->pass[0] && c->me->role != ROLE_DISPLAY && !guest) calendar_card(c, b);
     buf_puts(b, "</div></div>");
 
-    int edit = (int)ctx_qint(c, "edit", 0);
+    int edit = (int)ctx_qint(c, "edit", 0), rm = (int)ctx_qint(c, "remove", 0);
+    Person *ep = person_get(edit), *rp = person_get(rm);
     if (str_eq(ctx_q(c, "add"), "1") && is_admin(c)) person_modal(c, b, NULL);
-    else if (edit && person_get(edit) && can_edit(c, person_get(edit))) person_modal(c, b, person_get(edit));
+    else if (ep && !ep->left && can_edit(c, ep)) person_modal(c, b, ep);
+    else if (rp && is_admin(c) && rp->id != c->me->id) remove_modal(c, b, rp);
 }
 
 /* ---------------------------------------------------------------- actions */
@@ -478,14 +625,29 @@ static void act_save(Ctx *c, Fields *f) {
             str_copy(p.username, sizeof p.username, user);
             if (!user[0]) p.pass[0] = '\0'; /* no username, no sign-in */
         }
-        if (set_role && !(id && id == me)) p.role = (int)CLAMP(fields_int(f, "role", ROLE_MEMBER), 0, 2);
+        if (set_role && !(id && id == me)) p.role = (int)CLAMP(fields_int(f, "role", ROLE_MEMBER), 0, ROLE_COUNT - 1);
+        const char *day = fields_str(f, "until");
+        int y, m, d;
+        if (p.role != ROLE_GUEST) {
+            p.until = 0;
+        } else if (day[0] || !p.until) { /* a guest signs in until a day (issue #44); not sent: it stays */
+            if (!parse_ymd(day, &y, &m, &d)) {
+                ctx_fail_at(c, "until", "Pick the guest's last day");
+                return;
+            }
+            if (dt_make(y, m, d, 0, 0) < day_start(c->now)) {
+                ctx_fail_at(c, "until", "Pick a day from today on");
+                return;
+            }
+            p.until = dt_make(y, m, d + 1, 0, 0);
+        }
         if (!keeps_an_admin(c, &p, 0)) return;
         if (*pw) auth_forget_failures(p.username); /* a fresh password: earlier lockouts are moot */
     }
     if (!id) p.created = c->now;
     bool signin_changed = (fields_get(f, "username") && !p.username[0]) || fields_str(f, "password")[0];
     tbl_put(&T_person, &p); /* from here on only locals: c->me may dangle */
-    if (!p.username[0] || p.role == ROLE_DISPLAY) auth_codes_drop(p.id); /* no sign-in (of their own): no codes */
+    if (!p.username[0] || p.role == ROLE_DISPLAY || p.role == ROLE_GUEST) auth_codes_drop(p.id); /* (no codes) */
     if (id && signin_changed && p.id != me)
         sessions_drop(p.id, NULL); /* new password or sign-in removed: their old sessions end */
     if (!id) activity_add(me, "👋", "/people", "%s joined the household", p.name);
@@ -493,6 +655,8 @@ static void act_save(Ctx *c, Fields *f) {
     ctx_redirect(c, "/people");
 }
 
+/* Issue #45: "keep" = they moved out (their history stays, what's ahead of them is handed on - person_forget),
+   "erase" = everything about them goes. A display account, or someone who moved out already: erased. */
 static void act_delete(Ctx *c, Fields *f) {
     if (!is_admin(c)) {
         ctx_fail(c, "Only an admin can remove people");
@@ -506,12 +670,54 @@ static void act_delete(Ctx *c, Fields *f) {
     char name[48];
     str_copy(name, sizeof name, p->name);
     int id = p->id;
+    bool keep = !str_eq(fields_str(f, "how"), "erase") && p->role != ROLE_DISPLAY && !p->left;
     if (!keeps_an_admin(c, NULL, id)) return;
-    sessions_drop(id, NULL);
-    auth_codes_drop(id);
-    tbl_del(&T_person, id);
-    ctx_ok(c, "Removed %s", name);
+    Forget fg = {.person = id, .keep = keep, .apply = true, .now = c->now};
+    person_forget(&fg); /* (p is gone or changed from here on) */
+    if (keep) {
+        activity_add(c->me->id, "👋", "/people", "%s moved out", name);
+        ctx_ok(c, "%s moved out - their history stays", name);
+    } else {
+        ctx_ok(c, "Removed %s and everything about them", name);
+    }
     ctx_redirect(c, "/people");
+}
+
+/* Someone who moved out is back (issue #45): in the household again, without a sign-in until an admin gives one. */
+static void act_return(Ctx *c, Fields *f) {
+    if (!is_admin(c)) {
+        ctx_fail(c, "Only an admin can do that");
+        return;
+    }
+    Person *p = person_get((int)fields_int(f, "id", 0));
+    if (!p || !p->left) {
+        ctx_fail(c, "They're not among those who moved out");
+        return;
+    }
+    Person rec = *p;
+    rec.left = 0;
+    tbl_put(&T_person, &rec);
+    activity_add(c->me->id, "👋", "/people", "%s is back in the household", rec.name);
+    ctx_ok(c, "%s is back - give them a sign-in under Edit if they need one", rec.name);
+}
+
+/* Your privacy (issue #42): the whole form comes each time ("all"), so an unticked box means no; without "all"
+   only the fields sent change ("tv=0"). */
+static bool said_yes(Fields *f, const char *key) { return str_eq(fields_str(f, key), "1"); }
+
+static void act_privacy(Ctx *c, Fields *f) {
+    int me = c->me->id;
+    bool all = fields_get(f, "all") != NULL;
+    const char *wall = fields_str(f, "wall");
+    if (all || fields_get(f, "wall")) pref_set(me, PREF_WALL, str_eq(wall, "name") || str_eq(wall, "no") ? wall : "");
+    if (all || fields_get(f, "doing")) pref_set(me, PREF_DOING, said_yes(f, "doing") ? "" : "no");
+    if (all || fields_get(f, "tv")) pref_set(me, PREF_ON_TV, said_yes(f, "tv") ? "1" : "0");
+    if (all || fields_get(f, "home")) {
+        bool home = said_yes(f, "home");
+        pref_set(me, PREF_NOT_HOME, home ? "" : "1");
+        if (!home) presence_forget(me); /* (unknown from now on, never "away") */
+    }
+    ctx_ok(c, "Saved");
 }
 
 static void act_password(Ctx *c, Fields *f) {
@@ -637,20 +843,36 @@ static void act_cal_all(Ctx *c, Fields *f) {
     ctx_ok(c, all ? "Every booking goes in your calendar" : "Only your own bookings go in your calendar");
 }
 
+/* Children and guests (issue #44) look after their own account: profile, password, devices, privacy - a child
+   their calendar link and recovery codes too (a guest's sign-in ends by itself). */
 static const Action actions[] = {
-    {"people.cal_make", act_cal_make},
-    {"people.cal_off", act_cal_off},
-    {"people.cal_all", act_cal_all},
-    {"people.save", act_save},
+    {"people.cal_make", act_cal_make, .may = ACT_CHILD},
+    {"people.cal_off", act_cal_off, .may = ACT_CHILD},
+    {"people.cal_all", act_cal_all, .may = ACT_CHILD},
+    {"people.save", act_save, .may = ACT_ALL},
     {"people.delete", act_delete},
-    {"people.password", act_password},
-    {"people.codes", act_codes},
-    {"people.codes_saved", act_codes_saved},
-    {"people.signout_others", act_signout_others},
+    {"people.return", act_return},
+    {"people.privacy", act_privacy, .may = ACT_ALL},
+    {"people.password", act_password, .may = ACT_ALL},
+    {"people.codes", act_codes, .may = ACT_CHILD},
+    {"people.codes_saved", act_codes_saved, .may = ACT_CHILD},
+    {"people.signout_others", act_signout_others, .may = ACT_ALL},
     {"people.signout", act_signout},
     {"household.save", act_household},
     {0},
 };
+
+/* Issue #39: a guest's sign-in ends at a local midnight (the one after their last day) */
+static int rezone(Rezone *z) {
+    int n = 0;
+    for (int i = 0; z->days && i < account_count(); i++) {
+        Person p = *account_at(i);
+        if (!p.until || !rezone_day(z, &p.until)) continue;
+        n++;
+        if (z->apply) tbl_put(&T_person, &p);
+    }
+    return n;
+}
 
 static const Module people = {
     .id = "people",
@@ -660,5 +882,6 @@ static const Module people = {
     .page = page,
     .actions = actions,
     .http = http,
+    .rezone = rezone,
 };
 MODULE(people)

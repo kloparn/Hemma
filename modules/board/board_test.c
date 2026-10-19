@@ -366,3 +366,38 @@ TEST(board_photo_is_taken_away_and_swept) {
     CHECK(photo_file(keeps));
     th_halt();
 }
+
+/* Issue #44: children and guests post, and change only their own notes. Issue #45: erasing someone takes
+   their notes down; someone who moved out leaves theirs up. */
+TEST(board_children_and_guests_change_only_their_own_notes) {
+    th_boot();
+    int anna = th_person("Anna"), leo = th_person("Leo");
+    Person p = *person_get(leo);
+    p.role = ROLE_CHILD;
+    tbl_put(&T_person, &p);
+    CHECK(th_act(anna, "board.post", "text=Dinner+at+six").ok);
+    CHECK(th_act(leo, "board.post", "text=Football+at+five").ok);
+    int annas = 1, leos = 2; /* (a new board: the notes as posted) */
+    char f[80];
+    snprintf(f, sizeof f, "id=%d", annas);
+    ThResult r = th_act(leo, "board.delete", f);
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "isn't yours");
+    snprintf(f, sizeof f, "id=%d&text=Pizza", annas);
+    CHECK(!th_act(leo, "board.save", f).ok);
+    snprintf(f, sizeof f, "id=%d&text=Football+at+half+past+five", leos);
+    CHECK(th_act(leo, "board.save", f).ok);
+    char url[40];
+    snprintf(url, sizeof url, "/board?edit=%d", annas);
+    CHECK(!strstr(th_page(leo, url), "role=\"dialog\""));
+    snprintf(f, sizeof f, "id=%d", annas);
+    CHECK(th_act(anna, "board.pin", f).ok); /* (a member: anyone's) */
+    Forget fg = {.person = leo, .keep = true, .apply = true, .now = now_sec()};
+    person_forget(&fg);
+    CHECK_HAS(th_page(anna, "/board"), "Football at half past five");
+    fg = (Forget){.person = leo, .apply = true, .now = now_sec()};
+    person_forget(&fg);
+    CHECK(!strstr(th_page(anna, "/board"), "Football"));
+    CHECK_HAS(th_page(anna, "/board"), "Dinner at six");
+    th_halt();
+}

@@ -13,6 +13,7 @@
 
 static MediaIndex g_empty;
 static MediaIndex *g_ix;      /* current index (event-loop thread) */
+static unsigned g_gen;        /* counts the indexes swapped in (media_lib_gen) */
 static Lock g_lock = LOCK_INIT;
 static MediaIndex *g_pending; /* produced by the scanner thread, swapped in by tick */
 static atomic_bool g_scanning;
@@ -40,6 +41,7 @@ static void index_free(MediaIndex *ix) {
 /* ================================================================ lookups */
 
 const MediaIndex *media_lib(void) { return g_ix ? g_ix : &g_empty; }
+unsigned media_lib_gen(void) { return g_gen; }
 
 static const MediaFile *index_find(const MediaIndex *ix, uint64_t id) {
     int lo = 0, hi = ix->nfiles;
@@ -1007,6 +1009,7 @@ static void cache_load(void) {
     index_finish(ix);
     index_free(g_ix);
     g_ix = ix;
+    g_gen++;
 }
 
 static bool same_file(const MediaFile *a, const MediaFile *b) {
@@ -1091,6 +1094,7 @@ static void swap_in(MediaIndex *nw) {
     MediaIndex *old = g_ix;
     cache_store(old ? old : &g_empty, nw);
     g_ix = nw;
+    g_gen++;
     watch_follow(nw, old);
     index_free(old);
     app_changed();
@@ -1239,6 +1243,7 @@ void media_lib_stop(void) {
     lock_give(&g_lock);
     if (!media_scanning()) index_free(g_ix); /* a running scanner still reads it: leak it rather than race */
     g_ix = NULL;                             /* (and never free it on a later start) */
+    g_gen++;
     g_rescan_again = false;
 }
 

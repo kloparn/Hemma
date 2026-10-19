@@ -399,3 +399,7 @@
 .media-formats { margin-top: 12px; font-size: 13.5px; }
 .media-formats summary { cursor: pointer; color: var(--muted); }
 .media-formats .media-tips { margin-top: 8px; }
+
+/* "Not for children" on the Folders tab (issue #44) */
+.media-kids { margin: -4px 0 14px; }
+.media-kids-on { margin: 0; color: var(--muted); font-size: 14px; }

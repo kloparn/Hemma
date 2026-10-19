@@ -23,6 +23,8 @@ typedef struct {
     char rules[160]; /* "Fill the tank below a quarter", shown when booking */
     char aliases[120]; /* other names quick booking knows it by, comma-separated ("bastu, bastun"; issue #55) */
     bool own_only; /* only the person a booking is for, whoever made it, or an admin may cancel or move it (#43) */
+    bool kids;     /* children may book it (issue #44: the TV room, not the car) - an admin's to set */
+    bool guests;   /* ... and guests (the guest room, the sauna) */
     bool archived;
     int sort;
 } Resource;
@@ -75,8 +77,12 @@ const BookSeries *book_series_of(const Booking *b);               /* NULL for a 
 
 Resource *res_get(int id);
 /* May the one signed in on c cancel or move b? Everyone (not a display account), unless r is own_only:
-   then the person it's for, whoever booked it, or an admin. */
+   then the person it's for, whoever booked it, or an admin. A child or a guest: only their own (issue #44). */
 bool book_may_change(const Ctx *c, const Resource *r, const Booking *b);
+/* May c's person book r at all? A child only what's open to children (Resource.kids), a guest what's open to
+   guests; everyone else anything (a display account looks at everything). */
+bool book_open_to(const Ctx *c, const Resource *r);
+int book_res_list(const Ctx *c, Resource **out, int max); /* res_list without archived ones, only book_open_to's */
 int res_list(Resource **out, int max, bool with_archived); /* ordered for display */
 /* The Swedish names a thing still called like its starter answers to ("Sauna": "bastu"), or "". */
 const char *book_starter_aliases(const char *name);

@@ -30,7 +30,12 @@ const char *hemma_version_full(void);
 
 /* ------------------------------------------------------------- people */
 
-enum { ROLE_MEMBER = 0, ROLE_ADMIN = 1, ROLE_DISPLAY = 2 }; /* display = read-only (wall tablets) */
+/* display = read-only (wall tablets). Issue #44: a CHILD sees their own to-dos and the shared lists, books only
+   the things an admin opened to children, and watches no folder marked "Not for children"; a GUEST signs in
+   until a day (Person.until) to book what's open to guests, shop, use the board and watch. Children and guests
+   run only the actions opened to them (Action.may), checked in the core like a display account's. */
+enum { ROLE_MEMBER = 0, ROLE_ADMIN = 1, ROLE_DISPLAY = 2, ROLE_CHILD = 3, ROLE_GUEST = 4 };
+#define ROLE_COUNT 5
 
 typedef struct {
     int id;
@@ -42,6 +47,10 @@ typedef struct {
     char pass[128];    /* password hash (core/auth.c); never leaves the server */
     int role;
     int64_t last_login;
+    int64_t until; /* the sign-in ends at this moment (a guest's: the local midnight after their last day); 0 = never */
+    /* Moved out (issue #45: "keep their history" when removed): when. The row stays so their name stays on
+       what they did - nothing else: no sign-in, in no picker, list or count (person_count), never home. */
+    int64_t left;
 } Person;
 
 #define ADMIN_SESSION_DAYS 30 /* an admin signs in again after this, however much they use the session */
@@ -64,9 +73,14 @@ int person_count(void);
 Person *person_at(int i);
 Person *person_real(int id); /* person_get, but only a real person (not a display account): pickers' ids */
 Person *person_find(const char *name); /* case-insensitive name, or unique prefix */
-/* Every account, display ones included (household admin). */
+/* Every account, display ones and people who moved out included (household admin). */
 int account_count(void);
 Person *account_at(int i);
+/* Their sign-in has ended: past Person.until (a guest's last day), or they moved out. Their sessions end and
+   signing in is refused (auth.c says why). */
+bool person_signin_over(const Person *p, int64_t now);
+/* "Eva (moved out)" for someone who left, else the name ("Someone" for NULL): into out, which it returns. */
+const char *person_label(const Person *p, char *out, size_t cap);
 
 /* ------------------------------------------------------------ context */
 
@@ -123,13 +137,18 @@ void ctx_url(const Ctx *c, Buf *out, ...);
    stored session (signed out; the test harness's pages). */
 #define CTX_KEY_LEN 64
 void ctx_url_key(const Ctx *c, const char *path, char out[CTX_KEY_LEN]);
-bool app_action_display(const char *name); /* a display account may run it (Action.display): ui_form asks */
+/* Someone with this role may run it at all: Action.display for a display account, Action.may for a child or a
+   guest, anything for members and admins (the action checks the rest). ui_form asks, so forms that would only
+   say no aren't drawn. */
+bool app_action_open(const char *name, int role);
 
 /* Sessions (core/auth.c signs people in; the household module manages them). */
 bool session_create(int person, bool remember, const char *user_agent, char sid_out[33]);
 void session_end(const char *sid);                 /* by cookie value */
 int sessions_drop(int person, const Session *keep); /* sign a person out everywhere (but `keep`) */
 static inline bool is_admin(const Ctx *c) { return c->me && c->me->role == ROLE_ADMIN; }
+static inline bool is_child(const Ctx *c) { return c->me && c->me->role == ROLE_CHILD; }
+static inline bool is_guest(const Ctx *c) { return c->me && c->me->role == ROLE_GUEST; }
 /* Per-screen scratch state for live previews (survives re-renders of that screen). */
 const char *ctx_live(const Ctx *c, const char *key);
 void ctx_set_live(Ctx *c, const char *key, const char *val);
@@ -154,7 +173,11 @@ typedef struct {
     bool display; /* a display account (a TV, a wall tablet) may run it too - watching on behalf of
                      its viewer (ctx_viewer): progress, picking who's watching. Everything else
                      stays refused for them ("This screen is view-only"). */
+    int may; /* ACT_CHILD | ACT_GUEST: children / guests may run it too (issue #44) - the action still checks
+                what's theirs; any other action the core refuses them. */
 } Action;
+enum { ACT_CHILD = 1, ACT_GUEST = 2 };
+#define ACT_ALL (ACT_CHILD | ACT_GUEST)
 
 /* Screens an admin puts together - the TV view, a wall tablet - are made of blocks that the
    modules offer; modules/screens arranges them. A block draws one row's content. */
@@ -269,8 +292,28 @@ void health_free(Health *h);
 enum { WIDGET_HOME }; /* a widget's `where`: the home dashboard (walls are screens of blocks now) */
 /* MOD_PUBLIC: usable without picking a person.
    MOD_ADMIN: only admins see it in the navigation, open its pages or reach its http hook
-   (others get "not found"); its actions still check is_admin themselves. */
-enum { MOD_PUBLIC = 1, MOD_ADMIN = 2 };
+   (others get "not found"); its actions still check is_admin themselves.
+   MOD_NO_CHILD / MOD_NO_GUEST: not there for children / guests, the same way (issue #44). */
+enum { MOD_PUBLIC = 1, MOD_ADMIN = 2, MOD_NO_CHILD = 4, MOD_NO_GUEST = 8 };
+
+/* Someone leaves the household (people.delete; issue #45). keep: they moved out - what they did stays, with
+   their name ("Eva (moved out)"): bookings that happened, notes, the Latest feed, watch history; only what's
+   AHEAD of them goes or is handed on (their future bookings, their open to-dos, their devices). Else
+   everything about them goes. apply false: only count, and say what would happen with forget_note() - the
+   remove dialog shows it before anyone confirms. Returns how many things (would) change. */
+typedef struct {
+    int person;
+    bool keep;
+    bool apply;
+    int64_t now;
+    char notes[16][160];
+    int nnotes;
+} Forget;
+void forget_note(Forget *f, const char *fmt, ...) FMT(2, 3); /* "3 future bookings are cancelled" */
+/* Every module's forget hook, in navigation order, then the core's part (people.delete): sessions, recovery
+   codes, preferences, whose TV pick they were and - erasing - their Latest lines; then the row itself, kept as
+   moved out (no sign-in) or deleted. */
+int person_forget(Forget *f);
 
 typedef struct Module {
     const char *id;    /* URL prefix "/<id>"; the module with id "home" owns "/" */
@@ -292,6 +335,7 @@ typedef struct Module {
        rezone_day(); else every time typed before z->before with rezone_time(). With z->apply false only count
        (and rezone_note() the first few). Returns how many things (would) move. */
     int (*rezone)(Rezone *z);
+    int (*forget)(Forget *f); /* someone leaves the household (above): hand on or drop what's theirs */
     /* A small block at the foot of the sidebar, above the profile (phones: on the More page).
        Every page shows it: keep it quick (cached numbers, no disk or network work). */
     void (*side)(Ctx *c, Buf *b);
@@ -304,9 +348,10 @@ typedef struct Module {
     const char *parent;
 } Module;
 
-/* MOD_ADMIN modules exist only for admins (see the flags above). */
+/* MOD_ADMIN modules exist only for admins, MOD_NO_CHILD / MOD_NO_GUEST not for children / guests (above). */
 static inline bool module_visible(const Module *m, const Ctx *c) {
-    return m && (!(m->flags & MOD_ADMIN) || is_admin(c));
+    return m && (!(m->flags & MOD_ADMIN) || is_admin(c)) && !((m->flags & MOD_NO_CHILD) && is_child(c)) &&
+           !((m->flags & MOD_NO_GUEST) && is_guest(c));
 }
 
 const Block *block_find(const char *id, const Module **owner); /* NULL when no module offers it */
@@ -351,6 +396,24 @@ bool presence_is_home(int person, int64_t *since);
 void presence_forget(int person);
 bool presence_tracking(void); /* true once a module reports home/away */
 bool presence_known(int person); /* has anyone reported home/away for this person? (e.g. they have a device) */
+
+/* ------------------------------------------------------------- privacy */
+
+/* Each person's own choices about being seen inside the household (issue #42), under Your account.
+   PREF_WALL: the wall's row of people shows them with home/away ("" = yes), by name only ("name"), or not at
+   all ("no"). PREF_DOING "no": others don't see that they're online or what they have open (presence_screens
+   and presence_page say nothing about them). PREF_ON_TV: on a TV's "Who's watching?" ("1" yes, "0" no; unset:
+   members and children yes, admins and guests no - issue #90). PREF_NOT_HOME "1": their devices never say
+   they're home (presence_set_home leaves them unknown). */
+#define PREF_WALL "privacy.wall"
+#define PREF_DOING "privacy.doing"
+#define PREF_ON_TV "screens.on_tv"
+#define PREF_NOT_HOME "privacy.not_home"
+enum { WALL_SHOW, WALL_NAME, WALL_HIDE };
+int privacy_wall(int person);        /* WALL_* */
+bool privacy_doing(int person);      /* others may see that they're online, and where */
+bool privacy_on_tv(const Person *p); /* on a TV's "Who's watching?" (display accounts and NULL: never) */
+bool privacy_home(int person);       /* their devices may say they're home */
 /* "Whose device is this?" — a module that knows devices (net) can answer. */
 void presence_set_guesser(int (*guess)(uint32_t ip));
 int presence_guess(uint32_t ip); /* person id or 0 */

@@ -324,7 +324,8 @@ int media_in_progress(const Ctx *c, const MediaFile **out, int max) {
     for (int i = 0; v && max > 0 && i < tbl_count(&T_media_watch); i++) {
         const MediaWatch *w = tbl_at(&T_media_watch, i);
         uint64_t id = 0;
-        if (w->person != v || w->done || w->pos < 10 || !media_parse_id(w->item, &id) || !media_file(id))
+        if (w->person != v || w->done || w->pos < 10 || !media_parse_id(w->item, &id) || !media_file(id) ||
+            !media_kids_ok(c, media_file(id))) /* (a child's: not what's marked - issue #44) */
             continue;
         if (n == max && keep[n - 1]->updated >= w->updated) continue;
         int k = n < max ? n++ : n - 1; /* full: the oldest falls off the end */
@@ -395,8 +396,8 @@ static void shelf_end(Buf *b) { buf_puts(b, "</div></section>"); }
    series copied in at once (their files interleaved) still make one entry each; an older batch
    of the same series is an entry of its own. */
 #define BATCH_S (7 * 86400)
-int media_recent(MediaRecent *out, int max) {
-    const MediaIndex *ix = media_lib();
+int media_recent(const Ctx *c, MediaRecent *out, int max) {
+    const MediaIndex *ix = media_lib_for(c);
     int n = 0;
     for (int i = 0; i < ix->nrecent && max > 0; i++) {
         const MediaFile *f = &ix->files[ix->recent[i]];
@@ -463,7 +464,7 @@ static bool library_empty_states(Ctx *c, Buf *b) {
 /* ---------------------------------------------------------------- search */
 
 static void search_results(Ctx *c, Buf *b, const char *q) {
-    const MediaIndex *ix = media_lib();
+    const MediaIndex *ix = media_lib_for(c);
     int shown = 0;
     buf_puts(b, "<div class=\"media-grid\">");
     for (int i = 0; i < ix->nseries && shown < 60; i++) {
@@ -486,7 +487,7 @@ static void search_results(Ctx *c, Buf *b, const char *q) {
 /* ----------------------------------------------------------------- pages */
 
 static void page_home(Ctx *c, Buf *b) {
-    const MediaIndex *ix = media_lib();
+    const MediaIndex *ix = media_lib_for(c);
     ctx_title(c, "Watch");
     char sub[120] = "";
     if (ix->nrecent)
@@ -518,7 +519,7 @@ static void page_home(Ctx *c, Buf *b) {
     }
     buf_free(&row);
     MediaRecent recent[14];
-    int nrecent = media_recent(recent, countof(recent));
+    int nrecent = media_recent(c, recent, countof(recent));
     shelf_head(b, "Recently added", NULL);
     for (int i = 0; i < nrecent; i++) {
         if (recent[i].n > 1) batch_card(b, &recent[i]);
@@ -553,7 +554,7 @@ static int by_year(const void *x, const void *y) {
 }
 
 static void page_movies(Ctx *c, Buf *b) {
-    const MediaIndex *ix = media_lib();
+    const MediaIndex *ix = media_lib_for(c);
     ctx_title(c, "Movies");
     char sub[40];
     snprintf(sub, sizeof sub, "%d movie%s", ix->nmovies, ix->nmovies == 1 ? "" : "s");
@@ -584,7 +585,7 @@ static void page_movies(Ctx *c, Buf *b) {
 }
 
 static void page_series_list(Ctx *c, Buf *b) {
-    const MediaIndex *ix = media_lib();
+    const MediaIndex *ix = media_lib_for(c);
     ctx_title(c, "Series");
     char sub[40];
     snprintf(sub, sizeof sub, "%d series", ix->nseries);
@@ -615,6 +616,7 @@ static void tick_form(Ctx *c, Buf *b, const MediaFile *f, bool done) {
 static void page_series(Ctx *c, Buf *b, const char *idhex) {
     uint64_t id = 0;
     const MediaSeries *s = media_parse_id(idhex, &id) ? media_series(id) : NULL;
+    if (!media_kids_series_ok(c, s)) s = NULL; /* (not for a child: as if it weren't there - issue #44) */
     if (!s) {
         ctx_title(c, "Series");
         if (media_tv_mode(c)) media_tv_open(c, b, NULL, NULL);
@@ -703,7 +705,7 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
     buf_puts(b, "</ol>");
 
     /* the season's bonus material from ripped discs: "play all" titles and clips (library.c) */
-    const MediaIndex *ix = media_lib();
+    const MediaIndex *ix = media_lib_for(c);
     int nx = 0;
     for (int i = 0; i < ix->nextras; i++) {
         const MediaFile *x = &ix->files[ix->extras[i]];
@@ -785,6 +787,24 @@ static void page_browse(Ctx *c, Buf *b) {
         if (*s == '/') s++;
     }
     buf_puts(b, "</nav>");
+    /* "Not for children" (issue #44): this folder and everything in it - an admin's mark */
+    const char *above = media_kids_covered(ix->roots[root], dir);
+    if (is_admin(c)) {
+        bool on = media_kids_marked(ix->roots[root], dir);
+        char p_arg[420];
+        snprintf(p_arg, sizeof p_arg, "%d:%s", root, dir);
+        ui_form(b, "media.kids", "media-kids");
+        ui_hidden(b, "p", p_arg);
+        if (above)
+            H(b, "<p class=\"media-kids-on\">Not for children: <a href=\"/media/browse?p=%d:%u\">%s</a> is marked, and "
+                 "this is in it.</p>",
+              root, above, above[0] ? above : ix->roots[root]);
+        else
+            H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"on\" value=\"1\" data-auto%r> Not for children "
+                 "<span class=\"muted media-small\">- %s and everything in it stays out of a child's Watch</span></label>",
+              on ? " checked" : "", dir[0] ? "this folder" : "the whole library folder");
+        ui_form_end(b);
+    }
 
     size_t dl = strlen(dir);
     Sub *subs = NULL;
@@ -794,6 +814,7 @@ static void page_browse(Ctx *c, Buf *b) {
         const MediaFile *f = &ix->files[i];
         /* a play-everywhere copy is shown as its original; a play-all's header isn't a video */
         if (f->root != root || f->type != MF_VIDEO || f->role == MF_WEBCOPY || media_is_playall_head(f->rel)) continue;
+        if (!media_kids_ok(c, f)) continue; /* (a child's: not what's marked - issue #44) */
         const char *rest = f->rel;
         if (dl) {
             if (strncmp(f->rel, dir, dl) != 0 || f->rel[dl] != '/') continue;
@@ -824,8 +845,9 @@ static void page_browse(Ctx *c, Buf *b) {
             snprintf(next, sizeof next, "%s%s%s", dir, dl ? "/" : "", subs[k].name);
             H(b, "<li><a href=\"/media/browse?p=%d:%u\">", root, next);
             ui_icon(b, "folder");
-            H(b, "<span>%s</span><small>%d video%s</small></a></li>", subs[k].name, subs[k].videos,
-              subs[k].videos == 1 ? "" : "s");
+            H(b, "<span>%s</span><small>%d video%s%r</small></a></li>", subs[k].name, subs[k].videos,
+              subs[k].videos == 1 ? "" : "s",
+              is_admin(c) && media_kids_marked(ix->roots[root], next) ? " · not for children" : "");
         }
         buf_puts(b, "</ul>");
     }
@@ -900,6 +922,7 @@ void media_upnext(Buf *b, const MediaFile *next, const char *href, bool tv) {
 static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     uint64_t id = 0;
     const MediaFile *f = media_parse_id(idhex, &id) ? media_file(id) : NULL;
+    if (!media_kids_ok(c, f)) f = NULL; /* (issue #44) */
     if (!f || f->type != MF_VIDEO) {
         ctx_title(c, "Watch");
         if (media_tv_mode(c)) media_tv_open(c, b, NULL, NULL);
@@ -1252,6 +1275,34 @@ static void act_history_forget(Ctx *c, Fields *f) {
     ctx_ok(c, "Forgot the history of %d video%s", n, n == 1 ? "" : "s");
 }
 
+/* Library settings: the folders marked "Not for children" (issue #44; marked on the Folders tab) */
+static void kids_card(Buf *b) {
+    ui_card(b, "Not for children", "/media/browse", "Folders");
+    int n = media_kids_count();
+    if (!n) {
+        buf_puts(b, "<p class=\"muted\">Children see the whole library. To keep a folder out of their Watch, open it "
+                    "under <a href=\"/media/browse\">Folders</a> and tick <i>Not for children</i>.</p>");
+        ui_card_end(b);
+        return;
+    }
+    buf_puts(b, "<p class=\"muted\">Left out of a child's Watch - and of the TV while a child is picked there:</p>"
+                "<ul class=\"rows media-kids-list\">");
+    for (int i = 0; i < n; i++) {
+        char root[300], dir[400];
+        if (!media_kids_at(i, root, sizeof root, dir, sizeof dir)) continue;
+        H(b, "<li class=\"row\"><div class=\"row-main\"><code class=\"media-code\">%s%r%s</code></div>", root,
+          dir[0] ? "/" : "", dir);
+        ui_form(b, "media.kids", "inline");
+        ui_hidden(b, "root", root);
+        ui_hidden(b, "dir", dir);
+        H(b, "<button class=\"btn sm\" aria-label=\"Open %s to children\">Open to children</button>", dir[0] ? dir : root);
+        ui_form_end(b);
+        buf_puts(b, "</li>");
+    }
+    buf_puts(b, "</ul>");
+    ui_card_end(b);
+}
+
 static void page_settings(Ctx *c, Buf *b) {
     const MediaIndex *ix = media_lib();
     ctx_title(c, "Library settings");
@@ -1330,6 +1381,8 @@ static void page_settings(Ctx *c, Buf *b) {
         ui_form_end(b);
         ui_card_end(b);
     }
+
+    if (is_admin(c)) kids_card(b);
 
     ui_card(b, "What plays where", NULL, NULL);
     /* plain words first, the formats folded away (issue #62) */
@@ -1412,7 +1465,7 @@ static void going_card(Ctx *c, Buf *b, const MediaFile *f, bool small) {
 }
 
 static void widget(Ctx *c, Buf *b, int where) {
-    const MediaIndex *ix = media_lib();
+    const MediaIndex *ix = media_lib_for(c);
     (void)where;
     if (ix->nroots == 0) {
         if (!is_admin(c)) { /* Library settings are an admin's: no "Set up" that leads nowhere (issue #58) */
@@ -1438,7 +1491,7 @@ static void widget(Ctx *c, Buf *b, int where) {
     for (int i = 0; i < n; i++) going_card(c, b, list[i], true);
     if (!resuming) { /* a series' new episodes as one card, as Watch has them (issue #59: one per episode) */
         MediaRecent r[4];
-        int nr = media_recent(r, countof(r));
+        int nr = media_recent(c, r, countof(r));
         for (int i = 0; i < nr; i++) {
             if (r[i].n > 1) mini_series(c, b, r[i].series, r[i].n);
             else mini(c, b, r[i].f);
@@ -1688,6 +1741,41 @@ static void act_roots(Ctx *c, Fields *f) {
     else ctx_ok(c, "Saved — no folders");
 }
 
+/* Mark a folder "Not for children", or open it to them again (issue #44): from the Folders tab (p = "<library
+   folder number>:<folder below it>", on), or Library settings' list (root + dir: a folder no longer in the
+   library can be cleared too). */
+static void act_kids(Ctx *c, Fields *f) {
+    if (!is_admin(c)) {
+        ctx_fail(c, "Only an admin can do that");
+        return;
+    }
+    const MediaIndex *ix = media_lib();
+    char root[300], dir[400];
+    bool on = str_eq(fields_str(f, "on"), "1");
+    const char *p = fields_str(f, "p");
+    if (p[0]) {
+        int r = (int)strtol(p, NULL, 10);
+        const char *colon = strchr(p, ':');
+        if (!colon || r < 0 || r >= ix->nroots) {
+            ctx_fail(c, "That folder isn't in the library");
+            return;
+        }
+        str_copy(root, sizeof root, ix->roots[r]);
+        str_copy(dir, sizeof dir, colon + 1);
+    } else {
+        str_copy(root, sizeof root, fields_str(f, "root"));
+        str_copy(dir, sizeof dir, fields_str(f, "dir"));
+        on = false;
+    }
+    if (strstr(dir, "..") || dir[0] == '/' || strchr(dir, '\\')) {
+        ctx_fail(c, "That folder isn't in the library");
+        return;
+    }
+    media_kids_set(root, dir, on);
+    const char *name = dir[0] ? strrchr(dir, '/') ? strrchr(dir, '/') + 1 : dir : root;
+    ctx_ok(c, on ? "%s is not for children now" : "%s is open to children", name);
+}
+
 static void act_prefs(Ctx *c, Fields *f) {
     char lang[16];
     str_copy(lang, sizeof lang, fields_str(f, "sublang"));
@@ -1695,13 +1783,14 @@ static void act_prefs(Ctx *c, Fields *f) {
     ctx_ok(c, *lang ? "Subtitles: %s" : "Subtitles off by default", lang_name(lang));
 }
 
+/* Watching is open to children and guests too (issue #44): searching, progress, ticks, their own prefs. */
 static const Action actions[] = {
-    {"media.search", act_search, true}, {"media.progress", act_progress, true, true},
-    {"media.watched", act_watched, false, true},
-    {"media.rescan", act_rescan}, {"media.roots", act_roots},       {"media.prefs", act_prefs},
+    {"media.search", act_search, true, .may = ACT_ALL}, {"media.progress", act_progress, true, true, ACT_ALL},
+    {"media.watched", act_watched, false, true, ACT_ALL},
+    {"media.rescan", act_rescan}, {"media.roots", act_roots},       {"media.prefs", act_prefs, .may = ACT_ALL},
     {"media.upload_stop", upload_act_stop}, {"media.art_remove", act_art_remove},
     {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove},
-    {"media.forget", act_forget, false, true},
+    {"media.forget", act_forget, false, true, ACT_ALL}, {"media.kids", act_kids},
     {"media.drop_originals", act_drop_originals}, {"media.drop_auto", act_drop_auto},
     {"media.rescanners", act_rescanners}, {"media.parts_remove", act_parts_remove},
     {"media.history_forget", act_history_forget},
@@ -1714,6 +1803,20 @@ static void init(void) {
     T_media_watch.api_owner = "person"; /* /api: watch history is for its person (and admins) */
     T_media_watch.what = "watch history";
     store_register(&T_media_watch);
+    media_kids_init();
+}
+
+/* Someone leaves (issue #45): moved out, what they watched stays with them; erased, it goes. */
+static int forget(Forget *f) {
+    int n = 0;
+    for (int i = tbl_count(&T_media_watch) - 1; i >= 0 && !f->keep; i--) {
+        const MediaWatch *w = tbl_at(&T_media_watch, i);
+        if (w->person != f->person) continue;
+        n++;
+        if (f->apply) tbl_del(&T_media_watch, w->id);
+    }
+    if (n) forget_note(f, "What they watched goes (%d video%s)", n, n == 1 ? "" : "s");
+    return n;
 }
 
 static void start(void) {
@@ -1729,6 +1832,7 @@ static void stop(void) {
     upload_stop();
     convert_stop();
     media_lib_stop();
+    media_kids_stop();
 }
 
 /* ------------------------------------------------- disk space (sidebar) */
@@ -1814,5 +1918,6 @@ static const Module media = {
     .widget_order = 50,
     .health = media_health,
     .blocks = media_blocks,
+    .forget = forget,
 };
 MODULE(media)

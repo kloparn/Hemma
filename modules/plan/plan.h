@@ -113,6 +113,9 @@ int64_t plan_next_due(const Task *t, int64_t now);
    = its place in the line. 0 = not taking turns. */
 int plan_turn_ids(const Task *t, int out[PLAN_TURNS]);
 int plan_next_turn(const Task *t, int *place);
+/* Takes `person` out of t's line (they left the household: issue #45); an open one that was their turn goes to
+   the next in line. False when they weren't in it. */
+bool plan_drop_turn(Task *t, int person);
 void plan_turn_names(Buf *b, const Task *t); /* "Anna, Erik" */
 
 /* Repeating events: occurrence k of a series (start; *end), and making what's due (a year ahead). */
@@ -128,7 +131,9 @@ int plan_task_group(const Task *t, int64_t now);
 const char *plan_task_icon(const char *title); /* 🧹 for "vacuum", 🗑️ for "trash", ... or "" */
 void plan_repeat_label(Buf *b, int repeat, int rep_day);
 void plan_capitalise(char *s);
-void plan_tabs(Buf *b, int active); /* 0 to-dos, 1 shopping, 2 calendar */
+void plan_tabs(Ctx *c, Buf *b, int active); /* 0 to-dos, 1 shopping, 2 calendar (a guest: none - only shopping) */
+/* Whose to-dos c's person sees: a child their own only (issue #44) - their id; anyone else 0 = everyone's */
+int plan_mine(const Ctx *c);
 
 /* pages + widget parts (one file each) */
 void plan_tasks_page(Ctx *c, Buf *b);
@@ -146,7 +151,7 @@ int plan_shop_items(Buf *b, int max);   /* what's still to buy (max shown, "+N m
 int plan_days(Ctx *c, Buf *b, int days, int max);
 int plan_open_tasks(int who); /* who: 0 = everyone */
 int plan_open_items(void);
-void plan_subtitle(Buf *b); /* "4 to-dos · 3 on the list · 2 events this week" */
+void plan_subtitle(Ctx *c, Buf *b); /* "4 to-dos · 3 on the list" (a child's own to-dos; a guest's: the list) */
 
 /* actions */
 void plan_act_task_preview(Ctx *c, Fields *f);

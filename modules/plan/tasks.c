@@ -148,15 +148,19 @@ static void task_modal(Ctx *c, Buf *b, const Task *t) {
     ui_modal(b, t ? "Edit to-do" : "New to-do", buf_cstr(&close));
     ui_form(b, "plan.task_save", "stack");
     if (t) ui_hidden_int(b, "id", t->id);
+    bool child = is_child(c); /* their own to-dos only (issue #44): no Who, no turns */
     H(b,
       "<label class=\"field\"><span>What</span><input name=\"title\" required maxlength=\"110\" autocomplete=\"off\" "
-      "value=\"%s\" autofocus></label><div class=\"field-row\"><label class=\"field\"><span>Who</span>",
+      "value=\"%s\" autofocus></label><div class=\"field-row\">",
       t ? t->title : "");
-    ui_person_select(b, "who", t ? t->who : 0, "Anyone");
+    if (!child) {
+        buf_puts(b, "<label class=\"field\"><span>Who</span>");
+        ui_person_select(b, "who", t ? t->who : 0, "Anyone");
+        buf_puts(b, "</label>");
+    }
     char ymd[11] = "";
     if (t && t->due) fmt_ymd(t->due, ymd);
-    H(b, "</label><label class=\"field\"><span>When</span><input type=\"date\" name=\"due\" value=\"%s\"></label></div>",
-      ymd);
+    H(b, "<label class=\"field\"><span>When</span><input type=\"date\" name=\"due\" value=\"%s\"></label></div>", ymd);
     static const char *const reps[] = {"Never", "Every day", "Every week", "Every 2 weeks", "Every month"};
     buf_puts(b, "<label class=\"field\"><span>Repeat</span><select name=\"repeat\">");
     for (int i = 0; i < countof(reps); i++)
@@ -164,12 +168,13 @@ static void task_modal(Ctx *c, Buf *b, const Task *t) {
     buf_puts(b, "</select></label>");
     Buf names = {0};
     if (t) plan_turn_names(&names, t);
-    H(b,
-      "<label class=\"field\"><span>Taking turns</span><input name=\"turns\" maxlength=\"200\" autocomplete=\"off\" "
-      "value=\"%s\" placeholder=\"Names in turn order, like Anna, Erik\" aria-describedby=\"plan-turns-h\"></label>"
-      "<p class=\"muted small\" id=\"plan-turns-h\">For something that repeats: each time it's done, the next one in "
-      "line gets it. Leave it empty for one person.</p>",
-      buf_cstr(&names));
+    if (!child)
+        H(b,
+          "<label class=\"field\"><span>Taking turns</span><input name=\"turns\" maxlength=\"200\" autocomplete=\"off\" "
+          "value=\"%s\" placeholder=\"Names in turn order, like Anna, Erik\" aria-describedby=\"plan-turns-h\"></label>"
+          "<p class=\"muted small\" id=\"plan-turns-h\">For something that repeats: each time it's done, the next one in "
+          "line gets it. Leave it empty for one person.</p>",
+          buf_cstr(&names));
     buf_free(&names);
     buf_puts(b, "<div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>");
     ui_form_end(b);
@@ -188,7 +193,7 @@ static void task_modal(Ctx *c, Buf *b, const Task *t) {
         H(b, "<button class=\"btn\">Swap back: %s does this one</button>", gave ? gave->name : "the one in line");
         ui_form_end(b);
     }
-    if (t) {
+    if (t && (!child || t->by == c->me->id)) { /* (a child takes off only what they put on) */
         ui_form(b, "plan.task_delete", "danger-zone"); /* no "Delete ...?": the toast offers Undo (issue #60) */
         ui_hidden_int(b, "id", t->id);
         buf_puts(b, "<button class=\"btn danger\">");
@@ -236,25 +241,25 @@ static void filter_chips(Ctx *c, Buf *b) {
 void plan_tasks_page(Ctx *c, Buf *b) {
     ctx_title(c, "Plan");
     Buf sub = {0};
-    plan_subtitle(&sub);
+    plan_subtitle(c, &sub);
     ui_head(b, "Plan", buf_cstr(&sub));
-    plan_tabs(b, 0);
+    plan_tabs(c, b, 0);
     ui_head_end(b);
     buf_free(&sub);
 
     ui_form(b, "plan.task_add", "quick plan-quick");
-    buf_puts(b, "<div class=\"quick-row\"><input name=\"q\" required maxlength=\"200\" autocomplete=\"off\" "
-                "enterkeyhint=\"done\" data-live=\"plan.task_preview\" data-key=\"/\" aria-label=\"New to-do\" "
-                "placeholder=\"Add a to-do — “vacuum @eva fri every week”\"><button class=\"btn primary\" "
-                "aria-label=\"Add to-do\">"); /* (on phones only the + shows: issue #65) */
+    H(b, "<div class=\"quick-row\"><input name=\"q\" required maxlength=\"200\" autocomplete=\"off\" "
+         "enterkeyhint=\"done\" data-live=\"plan.task_preview\" data-key=\"/\" aria-label=\"New to-do\" "
+         "placeholder=\"%s\"><button class=\"btn primary\" aria-label=\"Add to-do\">", /* (phones: only the +, #65) */
+      is_child(c) ? "Add a to-do for yourself — “tidy my room sat”" : "Add a to-do — “vacuum @eva fri every week”");
     ui_icon(b, "plus");
     buf_puts(b, "<span>Add</span></button></div>");
     preview(c, b);
     ui_form_end(b);
 
-    if (person_count() > 1) filter_chips(c, b);
+    if (person_count() > 1 && !is_child(c)) filter_chips(c, b);
 
-    int who = filter_person(c);
+    int who = is_child(c) ? c->me->id : filter_person(c); /* a child: their own (issue #44) */
     static int idx[MAX_LIST];
     int n = 0;
     for (int i = 0; i < tbl_count(&T_task) && n < MAX_LIST; i++) {
@@ -266,7 +271,7 @@ void plan_tasks_page(Ctx *c, Buf *b) {
     buf_puts(b, "<div class=\"plan-groups\">");
     if (!n) {
         buf_puts(b, "<section class=\"card\">");
-        ui_empty(b, "✨", who ? "Nothing on their plate" : "All done!",
+        ui_empty(b, "✨", !who ? "All done!" : c->me && who == c->me->id ? "Nothing on your plate" : "Nothing on their plate",
                  "Add chores like “water plants every sunday” or “call grandma tomorrow”.");
         buf_puts(b, "</section>");
     }
@@ -307,18 +312,19 @@ void plan_tasks_page(Ctx *c, Buf *b) {
 
     int edit = (int)ctx_qint(c, "edit", 0);
     Task *t = edit ? tbl_get(&T_task, edit) : NULL;
-    if (t || str_eq(ctx_q(c, "new"), "1")) task_modal(c, b, t);
+    if (t && is_child(c) && t->who != c->me->id) t = NULL, edit = 0; /* (someone else's: not a child's to open) */
+    if (t || (!edit && str_eq(ctx_q(c, "new"), "1"))) task_modal(c, b, t);
 }
 
 /* --------------------------------------------------------------- widget */
 
 int plan_today_tasks(Ctx *c, Buf *b, bool wall) {
     static int idx[MAX_LIST];
-    int n = 0;
+    int n = 0, mine = wall ? 0 : plan_mine(c); /* (a child's home card: their own) */
     for (int i = 0; i < tbl_count(&T_task) && n < MAX_LIST; i++) {
         Task *t = tbl_at(&T_task, i);
         int g = plan_task_group(t, c->now);
-        if (!t->done_at && (g == GRP_OVERDUE || g == GRP_TODAY)) idx[n++] = i;
+        if (!t->done_at && (g == GRP_OVERDUE || g == GRP_TODAY) && (!mine || t->who == mine)) idx[n++] = i;
     }
     if (!n) return 0;
     qsort(idx, (size_t)n, sizeof *idx, cmp_task);
@@ -348,6 +354,30 @@ static void set_turns(Task *t, const int *ids, int n) {
     t->who = ids[0];
     t->turn = 0;
     t->swap = 0;
+}
+
+bool plan_drop_turn(Task *t, int person) {
+    int ids[PLAN_TURNS], n = plan_turn_ids(t, ids), rest[PLAN_TURNS], k = 0, at = -1;
+    for (int i = 0; i < n; i++) {
+        if (ids[i] == person) at = i;
+        else rest[k++] = ids[i];
+    }
+    if (at < 0) return false;
+    int turn = t->turn - (at < t->turn); /* whose place it is follows; theirs: the one after them sits there now */
+    Buf b = {0};
+    for (int i = 0; i < k && k > 1; i++) buf_printf(&b, "%s%d", i ? "," : "", rest[i]);
+    str_copy(t->turns, sizeof t->turns, buf_cstr(&b));
+    buf_free(&b);
+    t->turn = k > 1 ? turn % k : 0;
+    if (t->who == person && !t->done_at) t->who = k > 1 ? rest[t->turn] : k ? rest[0] : 0;
+    return true;
+}
+
+/* A child's own to-do (issue #44): false, and said, for anyone else's */
+static bool childs_own(Ctx *c, const Task *t) {
+    if (!is_child(c) || t->who == c->me->id) return true;
+    ctx_fail(c, "That one isn't yours - ask a grown-up");
+    return false;
 }
 
 /* "Anna, Erik" -> their ids, in that order; false (said beside the field) for a name nobody has */
@@ -392,9 +422,13 @@ void plan_act_task_add(Ctx *c, Fields *f) {
         ctx_fail(c, "%s", err);
         return;
     }
+    if (is_child(c) && ((d.who && d.who != c->me->id) || d.nturns > 1)) { /* (their own: issue #44) */
+        ctx_fail(c, "You can add to-dos for yourself");
+        return;
+    }
     Task t = {0};
     str_copy(t.title, sizeof t.title, d.title);
-    t.who = d.who;
+    t.who = is_child(c) ? c->me->id : d.who;
     t.due = d.due;
     t.repeat = d.repeat;
     t.rep_day = d.rep_day;
@@ -420,6 +454,7 @@ void plan_act_task_done(Ctx *c, Fields *f) {
         return;
     }
     Task t = *row;
+    if (!childs_own(c, &t)) return;
     if (t.done_at) { /* undo */
         t.done_at = 0;
         t.done_by = 0;
@@ -482,6 +517,7 @@ void plan_act_task_save(Ctx *c, Fields *f) {
             return;
         }
         t = *row;
+        if (!childs_own(c, &t)) return;
     } else {
         t.by = c->me->id;
         t.created = c->now;
@@ -495,7 +531,7 @@ void plan_act_task_save(Ctx *c, Fields *f) {
     }
     plan_capitalise(title);
     str_copy(t.title, sizeof t.title, title);
-    int who = (int)fields_int(f, "who", 0);
+    int who = is_child(c) ? c->me->id : (int)fields_int(f, "who", 0); /* (a child's: their own) */
     t.who = person_real(who) ? who : 0; /* pickers list real people only */
     const char *due = fields_str(f, "due");
     int y = 0, m = 0, d = 0;
@@ -510,7 +546,7 @@ void plan_act_task_save(Ctx *c, Fields *f) {
     if (t.repeat == REPEAT_WEEKLY || t.repeat == REPEAT_BIWEEKLY) t.rep_day = dt_local(t.due).wday + 1;
     if (t.repeat == REPEAT_MONTHLY) t.rep_day = dt_local(t.due).day;
     int line[PLAN_TURNS], n = 0;
-    if (!read_turns(c, fields_str(f, "turns"), line, &n)) return;
+    if (!read_turns(c, is_child(c) ? "" : fields_str(f, "turns"), line, &n)) return;
     if (n > 1 && !t.repeat) {
         ctx_fail_at(c, "turns", "Taking turns needs it to repeat - pick how often above");
         return;
@@ -569,6 +605,11 @@ void plan_act_task_swap(Ctx *c, Fields *f) {
 
 void plan_act_task_delete(Ctx *c, Fields *f) {
     int id = (int)fields_int(f, "id", 0);
+    const Task *row = tbl_get(&T_task, id);
+    if (row && is_child(c) && row->by != c->me->id) { /* (what a grown-up gave them stays on: issue #44) */
+        ctx_fail(c, "Ask a grown-up to take that one off");
+        return;
+    }
     ctx_undo(c, &T_task, id); /* Undo rather than "Delete ...?" (issue #60) */
     if (!tbl_del(&T_task, id)) {
         ctx_fail(c, "That to-do is gone");

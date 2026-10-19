@@ -117,10 +117,13 @@ void plan_repeat_label(Buf *b, int repeat, int rep_day) {
     }
 }
 
-void plan_tabs(Buf *b, int active) {
+int plan_mine(const Ctx *c) { return is_child(c) ? c->me->id : 0; }
+
+void plan_tabs(Ctx *c, Buf *b, int active) {
     static const char *hrefs[] = {"/plan", "/plan/shop", "/plan/cal"};
     static const char *labels[] = {"To-dos", "Shopping", "Calendar"};
-    int counts[3] = {plan_open_tasks(0), plan_open_items(), 0};
+    if (is_guest(c)) return; /* (only the shopping list: issue #44) */
+    int counts[3] = {plan_open_tasks(plan_mine(c)), plan_open_items(), 0};
     buf_puts(b, "<nav class=\"seg plan-tabs\" aria-label=\"Plan sections\">");
     for (int i = 0; i < 3; i++) {
         H(b, "<a href=\"%s\"%r>%s", hrefs[i], i == active ? " class=\"on\" aria-current=\"page\"" : "", labels[i]);
@@ -130,8 +133,8 @@ void plan_tabs(Buf *b, int active) {
     buf_puts(b, "</nav>");
 }
 
-void plan_subtitle(Buf *b) {
-    int t = plan_open_tasks(0), s = plan_open_items();
+void plan_subtitle(Ctx *c, Buf *b) {
+    int t = is_guest(c) ? 0 : plan_open_tasks(plan_mine(c)), s = plan_open_items();
     if (!t && !s) {
         buf_puts(b, "All clear — nothing waiting");
         return;
@@ -485,13 +488,17 @@ static void tick(int64_t now_ms) {
 }
 
 static void page(Ctx *c, Buf *b) {
-    if (str_starts(c->path, "/plan/shop")) plan_shop_page(c, b);
+    if (str_starts(c->path, "/plan/shop") || is_guest(c)) plan_shop_page(c, b); /* (a guest: only that - #44) */
     else if (str_starts(c->path, "/plan/cal")) plan_cal_page(c, b);
     else plan_tasks_page(c, b);
 }
 
 static void widget(Ctx *c, Buf *b, int where) {
     (void)where;
+    if (is_guest(c)) { /* (the household's day isn't a guest's: the list only) */
+        plan_shop_widget(c, b);
+        return;
+    }
     buf_puts(b, "<section class=\"card plan-w\"><header class=\"card-h\"><h2>Today</h2><a class=\"more\" "
                 "href=\"/plan\">Plan</a></header>");
     int n = plan_today_events(c, b, false);
@@ -540,17 +547,99 @@ static const Block blocks[] = {
     {0},
 };
 
+/* Issue #44: a child looks after their own to-dos (tasks.c checks whose) and the shopping list; a guest the
+   shopping list. The calendar's events and swapping turns are the grown-ups'. */
 static const Action actions[] = {
-    {"plan.task_preview", plan_act_task_preview, true},   {"plan.task_add", plan_act_task_add},
-    {"plan.task_done", plan_act_task_done},         {"plan.task_save", plan_act_task_save},
-    {"plan.task_delete", plan_act_task_delete},
-    {"plan.task_swap", plan_act_task_swap},     {"plan.shop_preview", plan_act_shop_preview, true},
-    {"plan.shop_add", plan_act_shop_add},           {"plan.shop_toggle", plan_act_shop_toggle},
-    {"plan.shop_delete", plan_act_shop_delete},     {"plan.shop_clear", plan_act_shop_clear},
-    {"plan.event_preview", plan_act_event_preview, true}, {"plan.event_add", plan_act_event_add},
-    {"plan.event_save", plan_act_event_save},       {"plan.event_delete", plan_act_event_delete},
+    {"plan.task_preview", plan_act_task_preview, true, .may = ACT_CHILD},
+    {"plan.task_add", plan_act_task_add, .may = ACT_CHILD},
+    {"plan.task_done", plan_act_task_done, .may = ACT_CHILD},
+    {"plan.task_save", plan_act_task_save, .may = ACT_CHILD},
+    {"plan.task_delete", plan_act_task_delete, .may = ACT_CHILD},
+    {"plan.task_swap", plan_act_task_swap},
+    {"plan.shop_preview", plan_act_shop_preview, true, .may = ACT_ALL},
+    {"plan.shop_add", plan_act_shop_add, .may = ACT_ALL},
+    {"plan.shop_toggle", plan_act_shop_toggle, .may = ACT_ALL},
+    {"plan.shop_delete", plan_act_shop_delete, .may = ACT_ALL},
+    {"plan.shop_clear", plan_act_shop_clear, .may = ACT_ALL},
+    {"plan.event_preview", plan_act_event_preview, true},
+    {"plan.event_add", plan_act_event_add},
+    {"plan.event_save", plan_act_event_save},
+    {"plan.event_delete", plan_act_event_delete},
     {0},
 };
+
+/* Someone leaves (issue #45): their open to-dos go to the next one in line (taking turns) or to anyone, and
+   their events still to come go; erasing, their done to-dos and past events go too, and what they added for
+   everyone keeps no name. */
+static int forget(Forget *f) {
+    int anyone = 0, lines = 0, done = 0, ahead = 0, past = 0, series = 0, made = 0, n = 0;
+    for (int i = tbl_count(&T_task) - 1; i >= 0; i--) {
+        Task t = *(Task *)tbl_at(&T_task, i);
+        if (t.done_at && t.who == f->person && !f->keep) {
+            done++;
+            if (f->apply) tbl_del(&T_task, t.id);
+            continue;
+        }
+        bool changed = false;
+        if (plan_drop_turn(&t, f->person)) {
+            changed = true;
+            lines += !t.done_at;
+        }
+        if (!t.done_at && t.who == f->person) { /* (not taking turns, or nobody else left in line) */
+            t.who = 0;
+            anyone++;
+            changed = true;
+        }
+        if (t.swap == f->person) t.swap = 0, changed = true;
+        if (!f->keep && t.done_by == f->person) t.done_by = 0, changed = true;
+        if (!f->keep && t.by == f->person) t.by = 0, changed = true, made++;
+        if (changed && f->apply) tbl_put(&T_task, &t);
+        n += changed;
+    }
+    for (int i = tbl_count(&T_event) - 1; i >= 0; i--) {
+        Event e = *(Event *)tbl_at(&T_event, i);
+        bool future = e.end > f->now;
+        if (e.who == f->person && (future || !f->keep)) {
+            if (future) ahead++;
+            else past++;
+            if (f->apply) tbl_del(&T_event, e.id);
+            continue;
+        }
+        if (!f->keep && e.by == f->person) {
+            made++;
+            e.by = 0;
+            if (f->apply) tbl_put(&T_event, &e);
+        }
+    }
+    for (int i = tbl_count(&T_event_series) - 1; i >= 0; i--) {
+        EventSeries s = *(EventSeries *)tbl_at(&T_event_series, i);
+        if (s.who == f->person) {
+            series += !s.stopped;
+            s.stopped = true;
+            if (f->apply && f->keep) tbl_put(&T_event_series, &s);
+            else if (f->apply) tbl_del(&T_event_series, s.id);
+        } else if (!f->keep && s.by == f->person && f->apply) {
+            s.by = 0;
+            tbl_put(&T_event_series, &s);
+        }
+    }
+    for (int i = 0; !f->keep && i < tbl_count(&T_item); i++) {
+        Item it = *(Item *)tbl_at(&T_item, i);
+        if (it.by != f->person) continue;
+        made++;
+        it.by = 0;
+        if (f->apply) tbl_put(&T_item, &it);
+    }
+    if (anyone) forget_note(f, "%d open to-do%s of theirs go%s to anyone", anyone, anyone == 1 ? "" : "s", anyone == 1 ? "es" : "");
+    if (lines) forget_note(f, "%d chore%s taking turns go%s on without them", lines, lines == 1 ? "" : "s", lines == 1 ? "es" : "");
+    if (ahead) forget_note(f, "%d event%s of theirs still to come %s deleted", ahead, ahead == 1 ? "" : "s", ahead == 1 ? "is" : "are");
+    if (series) forget_note(f, "%d repeating event%s of theirs stop%s", series, series == 1 ? "" : "s", series == 1 ? "s" : "");
+    if (done) forget_note(f, "%d done to-do%s of theirs %s deleted", done, done == 1 ? "" : "s", done == 1 ? "is" : "are");
+    if (past) forget_note(f, "%d past event%s of theirs %s deleted", past, past == 1 ? "" : "s", past == 1 ? "is" : "are");
+    if (made) forget_note(f, "%d thing%s they added for everyone stay%s, without their name", made, made == 1 ? "" : "s",
+                          made == 1 ? "s" : "");
+    return n + done + ahead + past + series + made;
+}
 
 /* Issue #39: a chore's day and an all-day event's days are kept as local midnights; a timed event's times
    were typed. (Shopping keeps only moments.) */
@@ -596,6 +685,7 @@ static const Module plan = {
     .widget_order = 20,
     .agenda = plan_agenda,
     .rezone = rezone,
+    .forget = forget,
     .blocks = blocks,
 };
 MODULE(plan)

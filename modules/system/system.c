@@ -246,7 +246,7 @@ static void own_checks(Ctx *c, Health *h) {
         int can = 0, admins = 0;
         for (int i = 0; i < account_count(); i++) {
             const Person *p = account_at(i);
-            if (!p->username[0] || !p->pass[0]) continue;
+            if (!p->username[0] || !p->pass[0] || person_signin_over(p, now_sec())) continue; /* (a guest's ended) */
             can++;
             admins += p->role == ROLE_ADMIN;
         }

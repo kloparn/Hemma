@@ -733,3 +733,128 @@ TEST(book_repeats_from_the_form_until_a_day) {
     g_fake_now = 0;
     th_halt();
 }
+
+/* ------------------------------------------------- children, guests (issue #44) */
+
+static int with_role(int person, int role) {
+    Person p = *person_get(person);
+    p.role = role;
+    tbl_put(&T_person, &p);
+    return person;
+}
+
+TEST(book_children_and_guests_book_what_is_opened_to_them) {
+    setup();
+    int leo = with_role(th_person("Leo"), ROLE_CHILD), gun = with_role(th_person("Gun"), ROLE_GUEST);
+    CHECK(th_act(adam, "book.preset", "name=Car").ok);
+    CHECK(th_act(adam, "book.preset", "name=TV+room").ok);
+    CHECK(th_act(adam, "book.preset", "name=Guest+room").ok);
+    int car = 1, tvroom = 2, guestroom = 3;
+    CHECK(!res_get(car)->kids && !res_get(car)->guests); /* (the starters' own rules) */
+    CHECK(res_get(tvroom)->kids && res_get(tvroom)->guests);
+    CHECK(!res_get(guestroom)->kids && res_get(guestroom)->guests);
+    char f[200];
+    snprintf(f, sizeof f, "res=%d&date=2026-10-08&from=14:00&to=16:00", car);
+    ThResult r = th_act(leo, "book.create", f);
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Ask a grown-up to book the Car");
+    r = th_act(gun, "book.create", f);
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "isn't open to guests");
+    snprintf(f, sizeof f, "res=%d&date=2026-10-08&from=14:00&to=16:00&who=%d", tvroom, eva);
+    r = th_act(leo, "book.create", f); /* for themselves only */
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "for yourself");
+    snprintf(f, sizeof f, "res=%d&date=2026-10-08&from=14:00&to=16:00", tvroom);
+    CHECK(th_act(leo, "book.create", f).ok);
+    CHECK_INT(book_get(1)->who, leo);
+    CHECK(!th_act(leo, "book.quick", "q=car+fri+10-12").ok);
+    CHECK(th_act(gun, "book.quick", "q=guest+room+fri-sun").ok);
+    /* someone else's booking stays theirs to change, even where a member may change anyone's */
+    snprintf(f, sizeof f, "res=%d&date=2026-10-09&from=18:00&to=20:00", tvroom);
+    CHECK(th_act(eva, "book.create", f).ok);
+    int evas = last_booking();
+    snprintf(f, sizeof f, "id=%d", evas);
+    r = th_act(leo, "book.cancel", f);
+    CHECK_HAS(r.toast, "Only");
+    CHECK(book_get(evas) != NULL);
+    snprintf(f, sizeof f, "id=%d", 1);
+    CHECK(th_act(leo, "book.cancel", f).ok); /* their own */
+    /* what they see: only what they may book */
+    const char *h = th_page(leo, "/book");
+    CHECK_HAS(h, "TV room");
+    CHECK(!strstr(h, "Guest room"));
+    CHECK(!strstr(h, "Add a thing"));
+    snprintf(f, sizeof f, "/book/%d", car);
+    CHECK_HAS(th_page(leo, f), "Not for children");
+    CHECK_HAS(th_page(gun, f), "Not open to guests");
+    CHECK(!th_act(leo, "book.res_save", "name=Trampoline").ok); /* (an admin's or a member's) */
+    r = th_act(gun, "book.preset", "name=Sauna");
+    CHECK_HAS(r.toast, "isn't open to guests");
+    /* an admin opens the car to children */
+    with_role(adam, ROLE_ADMIN);
+    snprintf(f, sizeof f, "id=%d&name=Car&kind=hourly&slot=30&always=1&dflt=120&max=0&kids=1", car);
+    CHECK(th_act(adam, "book.res_save", f).ok);
+    CHECK(res_get(car)->kids && !res_get(car)->guests);
+    snprintf(f, sizeof f, "res=%d&date=2026-10-10&from=10:00&to=11:00", car);
+    CHECK(th_act(leo, "book.create", f).ok);
+    th_halt();
+}
+
+TEST(book_someone_who_leaves_keeps_what_happened) {
+    setup();
+    int car = add_res("Car", "🚗", 30, 0, 1440, 120, 0);
+    char f[200];
+    g_fake_now = dt_make(2026, 10, 1, 10, 0); /* a week ago: Eva drove */
+    snprintf(f, sizeof f, "res=%d&date=2026-10-02&from=10:00&to=12:00", car);
+    CHECK(th_act(eva, "book.create", f).ok);
+    g_fake_now = dt_make(2026, 10, 7, 10, 0);
+    snprintf(f, sizeof f, "res=%d&date=2026-10-09&from=10:00&to=12:00", car);
+    CHECK(th_act(eva, "book.create", f).ok);
+    CHECK(th_act(eva, "book.quick", "q=car+every+monday+18-19").ok); /* a series: the next weeks too */
+    snprintf(f, sizeof f, "res=%d&date=2026-10-10&from=10:00&to=12:00&who=%d", car, adam);
+    CHECK(th_act(eva, "book.create", f).ok); /* she booked it for Adam */
+    int n = tbl_count(&T_booking);
+    Forget fg = {.person = eva, .keep = true, .now = g_fake_now};
+    CHECK(person_forget(&fg) > 0); /* only what would happen */
+    CHECK_INT(tbl_count(&T_booking), n);
+    bool said = false;
+    for (int i = 0; i < fg.nnotes; i++) said |= strstr(fg.notes[i], "still to come") != NULL;
+    CHECK(said);
+    fg = (Forget){.person = eva, .keep = true, .apply = true, .now = g_fake_now};
+    person_forget(&fg);
+    CHECK_INT(tbl_count(&T_booking), 2); /* the one that happened, and Adam's */
+    for (int i = 0; i < tbl_count(&T_booking); i++) {
+        const Booking *b = tbl_at(&T_booking, i);
+        CHECK(b->who == adam || b->start < g_fake_now);
+    }
+    CHECK(((BookSeries *)tbl_at(&T_book_series, 0))->stopped);
+    CHECK(person_get(eva) && person_get(eva)->left); /* moved out */
+    CHECK(!person_real(eva));
+    CHECK_INT(book_series_fill(g_fake_now + 30 * 86400), 0); /* nothing more is made for her */
+    /* erasing: the rest of hers goes, and what she made for others keeps no "by" */
+    fg = (Forget){.person = eva, .apply = true, .now = g_fake_now};
+    person_forget(&fg);
+    CHECK_INT(tbl_count(&T_booking), 1);
+    CHECK_INT(((Booking *)tbl_at(&T_booking, 0))->who, adam);
+    CHECK_INT(((Booking *)tbl_at(&T_booking, 0))->by, 0);
+    CHECK_INT(tbl_count(&T_book_series), 0);
+    CHECK(person_get(eva) == NULL);
+    th_halt();
+}
+
+/* A thing open until midnight said "Until 22:00" in its dialog, and saving the dialog (to tick "Children may
+   book it", say) shortened its hours. */
+TEST(book_open_until_midnight_stays_so_when_saved) {
+    setup();
+    with_role(adam, ROLE_ADMIN);
+    CHECK(th_act(adam, "book.preset", "name=Sauna").ok); /* 06:00-24:00 */
+    CHECK_INT(res_get(1)->close_min, 1440);
+    const char *h = th_page(adam, "/book/1?res=1");
+    CHECK_HAS(h, "name=\"close\" value=\"00:00\"");
+    CHECK(th_act(adam, "book.res_save", "id=1&name=Sauna&kind=hourly&slot=30&open=06:00&close=00:00&dflt=90&max=180&kids=1").ok);
+    CHECK_INT(res_get(1)->open_min, 360);
+    CHECK_INT(res_get(1)->close_min, 1440);
+    CHECK(res_get(1)->kids);
+    th_halt();
+}

@@ -325,9 +325,16 @@ static bool read_expiry(Ctx *c, Fields *f, int64_t current, int64_t *out) {
     return true;
 }
 
+/* A child or a guest changes only their own notes (issue #44); everyone else anyone's. */
+static bool may_change(const Ctx *c, const Note *n) { return !(is_child(c) || is_guest(c)) || n->by == c->me->id; }
+
 static Note *note_arg(Ctx *c, Fields *f) {
     Note *n = tbl_get(&T_note, (int)fields_int(f, "id", 0));
     if (!n) ctx_fail(c, "That note is gone");
+    else if (!may_change(c, n)) {
+        ctx_fail(c, "That note isn't yours");
+        return NULL;
+    }
     return n;
 }
 
@@ -410,7 +417,7 @@ static void note_card(Ctx *c, Buf *b, const Note *n, bool expired_view) {
         H(b, " · <span title=\"Edited by %s\">edited</span>", e ? e->name : "someone");
     }
     buf_puts(b, "</span>");
-    if (c->me && c->me->role != ROLE_DISPLAY) note_actions(b, n, expired_view); /* (a hall tablet only reads: #54) */
+    if (c->me && c->me->role != ROLE_DISPLAY && may_change(c, n)) note_actions(b, n, expired_view); /* (#54, #44) */
     buf_puts(b, "</footer></article>");
 }
 
@@ -540,7 +547,7 @@ static void page(Ctx *c, Buf *b) {
     }
 
     Note *edit = tbl_get(&T_note, (int)ctx_qint(c, "edit", 0));
-    if (edit) edit_modal(c, b, edit, expired_view);
+    if (edit && c->me && may_change(c, edit)) edit_modal(c, b, edit, expired_view);
     free(live);
     free(old);
 }
@@ -735,10 +742,31 @@ static bool http(Ctx *c, Conn *conn, HttpReq *r) {
     return true;
 }
 
+/* Children and guests use the board too (issue #44), changing only their own notes (note_arg). */
 static const Action actions[] = {
-    {"board.post", act_post}, {"board.save", act_save},     {"board.pin", act_pin},
-    {"board.keep", act_keep}, {"board.delete", act_delete}, {0},
+    {"board.post", act_post, .may = ACT_ALL},     {"board.save", act_save, .may = ACT_ALL},
+    {"board.pin", act_pin, .may = ACT_ALL},       {"board.keep", act_keep, .may = ACT_ALL},
+    {"board.delete", act_delete, .may = ACT_ALL}, {0},
 };
+
+/* Someone leaves (issue #45): moved out, their notes stay up until they'd go anyway; erased, they go now
+   (their photos at the next hourly photo_sweep) and nobody shows as having edited one. */
+static int forget(Forget *f) {
+    int mine = 0, edited = 0;
+    for (int i = tbl_count(&T_note) - 1; i >= 0 && !f->keep; i--) {
+        Note n = *(Note *)tbl_at(&T_note, i);
+        if (n.by == f->person) {
+            mine++;
+            if (f->apply) tbl_del(&T_note, n.id);
+        } else if (n.edited_by == f->person) {
+            edited++;
+            n.edited_by = 0;
+            if (f->apply) tbl_put(&T_note, &n);
+        }
+    }
+    if (mine) forget_note(f, "%d note%s of theirs on the board %s taken down", mine, mine == 1 ? "" : "s", mine == 1 ? "is" : "are");
+    return mine + edited;
+}
 
 /* Issue #39: a note kept "until" a day disappears at the local midnight after it; the others at a moment. */
 static int rezone(Rezone *z) {
@@ -761,6 +789,7 @@ static const Module board = {
     .start = start,
     .tick = tick,
     .rezone = rezone,
+    .forget = forget,
     .page = page,
     .http = http,
     .actions = actions,

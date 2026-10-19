@@ -25,9 +25,20 @@ static int by_number(const void *a, const void *b) {
     return (*(Channel *const *)a)->number - (*(Channel *const *)b)->number;
 }
 
-static int channel_list(Channel **out, int max) {
+/* A child - or a TV with a child picked - gets only channels with nothing from a folder marked "Not for
+   children" on them (issue #44): one clock for everyone, so a channel can't skip a programme for them. */
+static bool for_kid(const Ctx *c, const Channel *ch) {
+    if (!media_kid(c)) return true;
+    const TvPlan *p = tv_channel_plan(ch);
+    for (int i = 0; i < p->n; i++)
+        if (!media_kids_ok(c, media_file(p->items[i].file))) return false;
+    return true;
+}
+
+static int channel_list(const Ctx *c, Channel **out, int max) {
     int n = 0;
-    for (int i = 0; i < tbl_count(&T_tv_channel) && n < max; i++) out[n++] = tbl_at(&T_tv_channel, i);
+    for (int i = 0; i < tbl_count(&T_tv_channel) && n < max; i++)
+        if (for_kid(c, tbl_at(&T_tv_channel, i))) out[n++] = tbl_at(&T_tv_channel, i);
     qsort(out, (size_t)n, sizeof *out, by_number);
     return n;
 }
@@ -322,7 +333,7 @@ static void guide(Ctx *c, Buf *b, Channel **chs, int n) {
 static void overview(Ctx *c, Buf *b) {
     ctx_title(c, "Live TV");
     Channel *chs[MAX_CHANNELS];
-    int n = channel_list(chs, MAX_CHANNELS);
+    int n = channel_list(c, chs, MAX_CHANNELS);
     const MediaIndex *ix = media_lib();
     bool library = ix->nseries || ix->nmovies;
     Buf add = {0};
@@ -465,7 +476,7 @@ static void channel_page(Ctx *c, Buf *b, Channel *ch) {
     ctx_title(c, "CH %02d · %s", ch->number, ch->name);
     const TvPlan *p = tv_channel_plan(ch);
     Channel *chs[MAX_CHANNELS];
-    int n = channel_list(chs, MAX_CHANNELS), at = 0;
+    int n = channel_list(c, chs, MAX_CHANNELS), at = 0;
     for (int i = 0; i < n; i++)
         if (chs[i]->id == ch->id) at = i;
     const Channel *down = chs[(at + n - 1) % n], *up = chs[(at + 1) % n];
@@ -557,7 +568,7 @@ static void channel_tv(Ctx *c, Buf *b, Channel *ch) {
     ctx_title(c, "CH %02d · %s", ch->number, ch->name);
     const TvPlan *p = tv_channel_plan(ch);
     Channel *chs[MAX_CHANNELS];
-    int n = channel_list(chs, MAX_CHANNELS), at = 0;
+    int n = channel_list(c, chs, MAX_CHANNELS), at = 0;
     for (int i = 0; i < n; i++)
         if (chs[i]->id == ch->id) at = i;
     const Channel *down = chs[(at + n - 1) % n], *up = chs[(at + 1) % n];
@@ -617,6 +628,7 @@ static void page(Ctx *c, Buf *b) {
     if (str_starts(c->path, "/tv/")) {
         long long n = str_int_or(c->path + 4, 0);
         Channel *ch = n > 0 ? tv_channel_by_number((int)n) : NULL;
+        if (ch && !for_kid(c, ch)) ch = NULL; /* (as if it weren't on the air) */
         if (ch && media_tv_mode(c)) channel_tv(c, b, ch);
         if (ch && !media_tv_mode(c)) channel_page(c, b, ch);
         if (ch) return;
@@ -740,7 +752,7 @@ static void act_quick(Ctx *c, Fields *f) {
 
 static void widget(Ctx *c, Buf *b, int where) {
     Channel *chs[MAX_CHANNELS];
-    int n = channel_list(chs, MAX_CHANNELS);
+    int n = channel_list(c, chs, MAX_CHANNELS);
     if (!n) {
         const MediaIndex *ix = media_lib();
         if (where == WIDGET_HOME && ix->nseries && c->me && c->me->role != ROLE_DISPLAY) { /* (a hint: people only) */
@@ -800,7 +812,7 @@ static void widget(Ctx *c, Buf *b, int where) {
 static bool row_onnow(Ctx *c, Buf *b, int kind, const char *arg) {
     (void)arg;
     Channel *chs[MAX_CHANNELS];
-    int n = channel_list(chs, MAX_CHANNELS), shown = 0;
+    int n = channel_list(c, chs, MAX_CHANNELS), shown = 0;
     char back[400];
     media_row_back(c, back, sizeof back);
     Buf row = {0};

@@ -194,7 +194,7 @@ TEST(app_display_pages_offer_only_what_a_display_may_do) {
             char name[64];
             size_t n = strcspn(s + 8, "\"");
             str_ncopy(name, sizeof name, s + 8, n);
-            if (!app_action_display(name)) test_fail(__FILE__, __LINE__, "%s offers %s to a display account", url, name);
+            if (!app_action_open(name, ROLE_DISPLAY)) test_fail(__FILE__, __LINE__, "%s offers %s to a display account", url, name);
         }
         if (strstr(h, "role=\"dialog\"")) test_fail(__FILE__, __LINE__, "%s opens a dialog on a display account", url);
         if (strchr(url, '?')) continue; /* (a dialog's own address, typed in: its page's links may carry it along) */
@@ -218,5 +218,73 @@ TEST(app_display_pages_offer_only_what_a_display_may_do) {
     CHECK_HAS(th_page(adam, "/plan/cal?edit=1"), "<h2 id=\"modal-t\">Edit event</h2>");
     CHECK_HAS(th_page(adam, "/book/1?b=1"), ">Change</a>");
     CHECK_HAS(th_page(adam, "/book"), "href=\"/book?res=new\"");
+    th_halt();
+}
+
+/* Issue #44: a child's and a guest's pages carry only the forms they may use (Action.may) - the core refuses
+   the rest, so a form for it would only say "Ask a grown-up" - and the sections that aren't theirs aren't
+   there at all. */
+TEST(app_child_and_guest_pages_offer_only_what_they_may_do) {
+    th_boot();
+    int adam = th_person("Adam");
+    Person p = *person_get(adam);
+    p.role = ROLE_ADMIN;
+    tbl_put(&T_person, &p);
+    int roles[] = {ROLE_CHILD, ROLE_GUEST}, who[2];
+    for (int k = 0; k < 2; k++) {
+        who[k] = th_person(k ? "Gun" : "Leo");
+        p = *person_get(who[k]);
+        p.role = roles[k];
+        tbl_put(&T_person, &p);
+    }
+    th_act(adam, "board.post", "text=Plumber+comes+Thursday&hue=45");
+    th_act(adam, "plan.task_add", "q=vacuum+today");
+    th_act(adam, "plan.task_add", "q=tidy+your+room+%40leo+today");
+    th_act(adam, "plan.shop_add", "q=milk%2C+eggs");
+    th_act(adam, "plan.event_add", "q=dentist+tomorrow+14%3A30");
+    th_act(adam, "book.preset", "name=TV+room");
+    th_act(adam, "book.quick", "q=tv+room+tomorrow+14-17");
+    th_act(who[0], "board.post", "text=Football+at+five");
+    activity_add(0, "🆕", "/net", "New device on the network: a phone"); /* (the Network page's news) */
+    static const char *const extra[] = {"/plan/cal", "/plan/shop", "/plan?edit=1", "/plan?edit=2", "/book/1",
+                                        "/book/1?b=1", "/board?edit=1", "/board?edit=2", "/people?edit=1"};
+    int nmods = module_count(), pages = 0;
+    for (int k = 0; k < 2; k++) {
+        for (int i = 0; i < nmods + countof(extra); i++) {
+            char url[64];
+            if (i < nmods) {
+                const Module *m = module_at(i);
+                if (!m->page || (m->flags & MOD_ADMIN)) continue;
+                snprintf(url, sizeof url, "/%s", m->id);
+            } else {
+                str_copy(url, sizeof url, extra[i - nmods]);
+            }
+            const char *h = th_page(who[k], url);
+            pages++;
+            for (const char *s = strstr(h, "data-a=\""); s; s = strstr(s + 1, "data-a=\"")) {
+                char name[64];
+                str_ncopy(name, sizeof name, s + 8, strcspn(s + 8, "\""));
+                if (!app_action_open(name, roles[k]))
+                    test_fail(__FILE__, __LINE__, "%s offers %s to a %s", url, name, k ? "guest" : "child");
+            }
+        }
+    }
+    CHECK(pages > 20);
+    /* what's not theirs isn't there */
+    CHECK_HAS(th_page(who[0], "/net"), "Nothing here");
+    CHECK_HAS(th_page(who[1], "/net"), "Nothing here");
+    CHECK_HAS(th_page(who[1], "/screens"), "Nothing here");
+    CHECK(!strstr(th_page(who[0], "/"), "href=\"/net\""));
+    CHECK(!strstr(th_page(who[1], "/"), "href=\"/screens\""));
+    CHECK(!strstr(th_page(who[0], "/"), "New device on the network")); /* (Latest: what's theirs to open) */
+    CHECK_HAS(th_page(adam, "/"), "New device on the network");
+    /* and the core says no to the rest, whatever is sent */
+    ThResult r = th_act(who[0], "household.save", "name=Mine");
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Ask a grown-up");
+    r = th_act(who[1], "plan.task_add", "q=x");
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "isn't open to guests");
+    CHECK(th_act(who[1], "plan.shop_add", "q=bread").ok);
     th_halt();
 }

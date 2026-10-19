@@ -217,7 +217,11 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  moving a booking (issue #43) tells the person it's for and whoever made it: a toast plus a
                  `book_news` row (30 days, 20 each) on their Bookings page and home card until "Got it"
                  (book.news_seen). Resource.own_only (an admin sets it): only those two or an admin may cancel or
-                 move (book_may_change; the booking dialog says who may).
+                 move (book_may_change; the booking dialog says who may). Resource.kids / .guests (issue #44, an
+                 admin's "Children may book it" / "Guests may book it"; starters' PRESETS .kids/.guests; things
+                 from before start closed): book_open_to(c, r), book_res_list(c) - a child or a guest sees and
+                 books only those, for themselves, and changes only their own bookings. A thing open until
+                 midnight shows "00:00" in its dialog, read back as 1440.
                  REPEATING (issue #47): BookSeries (table booking_series: the first start/end, repeat REPEAT_*,
                  until = last start day, made = occurrences 0..made-1 done, stopped) makes REAL bookings
                  (Booking.series) SERIES_AHEAD_DAYS (56) ahead - book_series_fill() at start, right after
@@ -288,8 +292,9 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  pick anyone and read/rewrite/clear their Continue watching): others get no picker or Switch
                  and watch as nobody; forget_viewers() clears the pick from the sessions of display accounts
                  that stop driving a TV (Shows on, a deleted screen, and at start). THE GUARD (issue #90;
-                 owner, 2026-10-17): screens_on_picker() = people, admins only with pref PREF_ON_TV
-                 ("screens.on_tv" = "1", ticked under the /screens "You on the TV" card); act_viewer refuses
+                 owner, 2026-10-17): screens_on_picker() = core privacy_on_tv (issue #42): PREF_ON_TV
+                 ("screens.on_tv" "1"/"0", the /screens "You on the TV" card or Household -> Privacy; unset:
+                 members and children on, admins and guests off); act_viewer refuses
                  anyone else, screens_viewer() drops a pick that's off the list since (an admin who unticked).
                  An optional PIN (PREF_PIN = hex of HMAC(salt, "pin:<id>:<4 digits>") via auth_mac, 128 bits
                  shown; set/cleared by screens.pin): the picker's entry is a link to ?pin=<id>, a numeric
@@ -391,6 +396,14 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  remove orphaned *.conv.part. Lock order: g_pick, then upload.c's g_lock, then g_cl. Stop flag
                  + progress are atomics; change signatures are uint64_t (UBSan). Tests queue without threads
                  (convert_test_start/finish).
+  media/kids.c   NOT FOR CHILDREN (issue #44; owner: "per folder"): table media_no_kids (root path + folder below
+                 it, "" = all), marked on the Folders tab (media.kids, admins; Library settings lists them).
+                 media_kid(c) = a child, or a display account with a child picked (ctx_viewer). media_lib_for(c)
+                 = media_lib() for others, else a copy of the index with the movies/others/recent/extras/series
+                 lists filtered (files, episodes, roots shared; remade when media_lib_gen() - bumped at every
+                 swap - or the marks change): a series with ANY episode marked goes whole. By id: media_kids_ok /
+                 media_kids_series_ok (watch, series, stream /media/file -> 404, Continue watching, browse, tv's
+                 channels: a channel airing anything marked is left out for them - for_kid in tv.c).
   media/room.c   disk room shared by uploads and conversions: MEDIA_RESERVE (1 GB) always stays free (the
                  database often shares the disk), and running jobs hold what they may still write (an upload
                  its unsent bytes, a conversion its original's size minus what it wrote), per disk (same
@@ -623,9 +636,38 @@ it: the build embeds a `.gz` twin of each text file and av.wasm (~120 KB -> ~30 
 ## Accounts
 
 - A `Person` is a household member; with `username` + `pass` they can sign in.
-  Roles: `ROLE_MEMBER`, `ROLE_ADMIN` (manages people), `ROLE_DISPLAY` (read-only, e.g. a wall tablet).
-- `person_count()/person_at()` = real people only (display accounts excluded) — use for pickers,
-  "who's home", etc. `account_count()/account_at()` = every account (household admin).
+  Roles: `ROLE_MEMBER`, `ROLE_ADMIN` (manages people), `ROLE_DISPLAY` (read-only, e.g. a wall tablet),
+  `ROLE_CHILD` (3) and `ROLE_GUEST` (4) (issue #44; owner, 2026-10-19: "as issue #44 says", guests "book, shop,
+  board, watch"). Children and guests run only actions flagged `Action.may` (ACT_CHILD | ACT_GUEST), refused
+  in run_action like a display account's ("Ask a grown-up to do that" / "That isn't open to guests"; the
+  forms are cut by ui_role); modules flagged MOD_NO_CHILD / MOD_NO_GUEST aren't there for them (net: both,
+  screens: guests). What's theirs is checked in the module: a child sees/ticks/edits only their own to-dos
+  (plan_mine, childs_own; deletes only what they made), books only Resource.kids things for themselves
+  (book_open_to; guests Resource.guests), changes only their own notes and bookings; a guest gets plan's
+  shopping list only (no to-dos/calendar/agenda), no strip/Latest on Home, under Household only Your
+  account, no recovery codes, no calendar link. A GUEST'S LAST DAY: `Person.until` = the local midnight after
+  it (people.save `until`, required for guests; people's rezone hook moves it); person_signin_over() ends
+  sessions (session_over) and auth_login answers LOGIN_ENDED - only after the right password - -> /login?e=5
+  "Your sign-in has ended. To stay longer, ask <admins>". `/api`: 403 for children and guests too.
+- MOVED OUT (issue #45): `Person.left` = when; the row stays (names on history: person_label "Eva (moved
+  out)", ui_avatar's title + .av-left), no username/pass, never in person_count/person_at/person_real/
+  person_find, privacy_on_tv false. people.delete how=keep|erase -> person_forget(&Forget{person, keep,
+  apply, now}): every Module.forget hook, then the core (sessions, recovery codes, prefs, TV picks of them,
+  erasing: their Latest lines; then the row kept as moved out - an admin becomes a member - or deleted).
+  apply false = count + forget_note() only: the remove dialog (/people?remove=<id>) lists both ways first.
+  Keep = what's AHEAD goes or is handed on (bookings to come cancelled, series stopped, open to-dos to
+  anyone or the next in a turns line - plan_drop_turn - future events of theirs deleted, devices
+  unassigned); erase = the rest of theirs too (past bookings, done to-dos, notes, watch history) and "by"
+  on what they made for others cleared. people.return brings someone back (no sign-in). Display accounts
+  and the moved-out are only erased.
+- PRIVACY (issue #42, Your account -> Privacy, people.privacy; "all" = the whole form, unticked = no):
+  core prefs PREF_WALL ("" / "name" / "no": screens' wall_people), PREF_DOING ("no": presence_screens and
+  presence_page say nothing of them), PREF_ON_TV ("1"/"0"; unset = members and children yes, admins and
+  guests no: privacy_on_tv, which screens_on_picker is), PREF_NOT_HOME ("1": presence_set_home ignores
+  them, net's update_presence forgets them). net's "Your devices" card (net.mine_name, net.mine_drop: the
+  owner's own; the rest stays the admin's).
+- `person_count()/person_at()` = real people only (display accounts and the moved-out excluded) — use for
+  pickers, "who's home", etc. `account_count()/account_at()` = every account (household admin).
 - Sessions: random 128-bit cookie `hemma` (HttpOnly, SameSite=Lax); only its SHA-256 is stored.
   `session_create/session_end/sessions_drop`. Signing in again in another tab keeps that session.
   A session ends (`session_over`, checked at every lookup, rows pruned hourly) a week unused, a year
@@ -704,7 +746,8 @@ it: the build embeds a `.gz` twin of each text file and av.wasm (~120 KB -> ~30 
   Hemma version. media_file_src/media_sub_src put keys on video and subtitle addresses (media, tiles,
   tv); pictures need none (the browser fetches those itself). No stored session (the harness's
   app_ctx) = no key = the plain address. A signed-out WebSocket (hello/nav/act/close)
-  only ever re-renders its own screen. `/api` is for members and admins (display accounts: 403); tables
+  only ever re-renders its own screen. `/api` is for members and admins (display accounts, children and
+  guests: 403); tables
   with `api_owner` (pref, media_watch) show a member only their own rows, admins all (owner, 2026-10-12).
   Signed-out WebSockets: 48 in all, 4 per address (`stranger_room`), past that the upgrade gets 503.
   `MOD_ADMIN` modules exist only for admins: nav, /more, pages ("not found" for others) and http hooks.
@@ -738,6 +781,9 @@ MODULE(things)   /* self-registers: no shared file to edit */
   their own `app_notify_person` toast. They run inside one SQLite
   transaction; the core re-renders every screen afterwards. Never hand-craft DOM updates.
   `c->me` is always set in actions (signed in, not a display account); check `is_admin(c)` when needed.
+  CHILDREN AND GUESTS run an action only when its table entry says so: `{"plan.shop_add", act, .may =
+  ACT_ALL}` (ACT_CHILD | ACT_GUEST; issue #44) - a new action is closed to them until you open it, and
+  then it still checks what's theirs (`is_child(c)`, `is_guest(c)`).
   `app_notify()` toasts everyone else, `app_notify_person()` one person; `activity_add()` feeds home.
 - **Live inputs**: `<input data-live="mod.preview" name="q">` sends a "live" action on typing;
   store per-screen state with `ctx_set_live()` and read it in `page()` with `ctx_live()`. The action
@@ -772,6 +818,11 @@ MODULE(things)   /* self-registers: no shared file to edit */
   modules - only this hook.
 - **Admin-only module**: `.flags = MOD_ADMIN` hides it from non-admins everywhere (nav, /more, pages,
   http hooks, side(), widgets, agenda items, the /api action list); its actions still check `is_admin`.
+  `MOD_NO_CHILD` / `MOD_NO_GUEST` do the same for children / guests (module_visible).
+- **Someone leaves** (issue #45): `int forget(Forget *f)` - hand on or drop what's theirs (f->person): with
+  f->keep only what's ahead of them (their history stays), else everything; with !f->apply only count and
+  `forget_note(f, "3 bookings still to come are cancelled")` - the remove dialog shows it first. The core
+  runs every hook, then removes sessions, prefs and the row (person_forget). Keep it to your own tables.
 - **Blocks for screens** (the TV view, wall tablets - modules/screens arranges them): `.blocks` =
   `{id "<mod>.<name>", title, kinds SCREEN_TV|SCREEN_WALL, render, choices}`, terminated by {0}.
   `bool render(c, b, kind, arg)` draws one row's content WITHOUT its heading (false = nothing to show:
@@ -1062,7 +1113,7 @@ screen's address, #79 browser-log limits per person an hour (PR #81). 0.7.0 (bra
 guard + FIELD_WAS + the media cache's format + install-pi.sh keeps hemma.prev, #39 part 1 the time zone on
 System and a warning when it changes (PR #82). 0.7.1 (branch fix/library-keeps-progress) = #36 watch
 history follows videos to a new library folder, #40 unfinished uploads listed + removable, #28 left-out
-videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px (PR #105). 0.9.3 (pushed to main) = the player remembers the volume and mute per device. 0.9.4 (branch fix/database-recovery) = #87 a rescue that gets next to nothing back refuses (no new household over the data) + no welcome page after a rescue + the damaged page, #88 SQLite 3.54.1 + its recovery extension (orphans placed back), counts against the census in household words (Table.what), damaged copies pruned, #92 refusals in versions + into hemma.log + exit 78 (RestartPreventExitStatus), going back = a swap, the installer copies the database, FIELD_WAS needs its breaks_older migration (test). 0.10.0 (branch feat/backups) = #35 nightly checked backups (7 days, on the media disk by default), System → Backups (Back up now, Download with the secret, Go back to this + restart), hemma --restore, core/tar, docs for a new memory card (PR #107). 0.11.0 (branch fix/hardening-2) = #90 admins on the TV picker only when they opt in + an optional 4-digit PIN + display sign-ins end after 90 days, #91 a full server pushes out busy strangers (Conn.known), #100 typed names kept on the server for a minute instead of in the address, #102 left-out browser lines summed up from the tick + the note before the address (PR #109). 0.12.0 (branch fix/forms-and-wording) = #60 errors beside their field (ctx_fail_at, wire.js formErr) + toasts dodge the focused field + Undo instead of "are you sure?" (ctx_undo, core.undo), #43 someone else cancelling/moving your booking tells you (book_news, app_notify_but) + an admin's per-thing "only theirs" rule (Resource.own_only), #55 quick booking knows other names (starters' Swedish words + Resource.aliases) and says what can be booked, #58 members are told which admin to ask (ui_admins), #62 plain words (Address check, File details, What plays where, "Connected over Wi-Fi" via LanIface.link, the password secret; HealthItem.tech folded under "Technical details") (PR #110). 0.13.0 (branch fix/accessibility) = #63 dialogs take and keep the focus + inert behind + focus back to the opener, #64 the player's state in words + its bar stays under the keyboard + the "Next episode" card read out, #65 Add buttons named on phones, #66 contrast (--muted #6f675b, no faded done items, 12 px booking text), #67 44 px tap targets in Plan, #68 "Skip to content" + focus kept after a morph, #69 previews read out ([data-say]) + avatars named + list buttons name their item, #70 reduced motion + main landmarks on the sign-in pages. (PR #111). 0.13.1 (branch feat/tools-addition, tooling only, PR #112) = the Makefile builds one object per file (make -j), the suite runs in one process per core (runner --shard K/N, tests/parallel.sh, build.ps1 test), CI's Linux jobs locally (tools/ci/local.sh, ./build.ps1 ci in WSL), core/version.c holds the commit stamp, media's disk meter measures afresh at each start (a test leaned on another's leftovers), an upload PUT counts its file done BEFORE answering ok (upload.c put worker; a busy Pi answered "0 of 2 files" right after an ok). 0.14.0 (branch ci/releases) = #19 releases (release.yml + tools/ci/bundle.sh: bundles with the installer, checksums, notes with the commits since the last release), #52 a version per PR in the VERSION file, released when merged, #21 "Try it on your laptop first" + a download way at the top of the Pi/Linux/Mac guides (Gatekeeper click-through; no Windows download: Defender flags hemma.exe), #31 hemma --demo (core/demo.c). 0.16.0 (branch feat/household-basics) = #47 parts 1-2: chores that take turns (Task.turns/turn/swap, plan.task_swap, "@anna,@erik" in quick add) + repeating bookings and events (BookSeries / EventSeries making real rows ahead). 0.17.0 (branch feat/note-photos) = #47 part 3: photos on notes, shrunk in the browser ([data-shrink]) + the socket's 4 KB field cut fixed (json_value). 0.15.0 (branch fix/all-day-dates) = #39 part 2 a new time zone keeps days on their days (core/zone.c, Module.rezone; typed times moved back on an admin's choice) + #41 a calendar feed per person (core/feed.c, /cal/<id>-<key>.ics, "Your calendar on your phone"). 0.10.1 (branch library-follow-ups) = #89 uploads write .hemma-part (torrents' .part left alone) + upload_claims by the video's name, #94 extras only after a separating mark + by length (40 min) + unknown length kept + episode codes never extras, #95 one "Disk space" row per disk (health_disk) + the library wants its biggest video + the reserve, #93 history follows by place, content (fp) or name (ident), away = an emptied library folder, filled from the cache at start, lost history listed + forgettable. Next ideas: calmer home cards (hide empty ones), touch on the wall
+videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px (PR #105). 0.9.3 (pushed to main) = the player remembers the volume and mute per device. 0.9.4 (branch fix/database-recovery) = #87 a rescue that gets next to nothing back refuses (no new household over the data) + no welcome page after a rescue + the damaged page, #88 SQLite 3.54.1 + its recovery extension (orphans placed back), counts against the census in household words (Table.what), damaged copies pruned, #92 refusals in versions + into hemma.log + exit 78 (RestartPreventExitStatus), going back = a swap, the installer copies the database, FIELD_WAS needs its breaks_older migration (test). 0.10.0 (branch feat/backups) = #35 nightly checked backups (7 days, on the media disk by default), System → Backups (Back up now, Download with the secret, Go back to this + restart), hemma --restore, core/tar, docs for a new memory card (PR #107). 0.11.0 (branch fix/hardening-2) = #90 admins on the TV picker only when they opt in + an optional 4-digit PIN + display sign-ins end after 90 days, #91 a full server pushes out busy strangers (Conn.known), #100 typed names kept on the server for a minute instead of in the address, #102 left-out browser lines summed up from the tick + the note before the address (PR #109). 0.12.0 (branch fix/forms-and-wording) = #60 errors beside their field (ctx_fail_at, wire.js formErr) + toasts dodge the focused field + Undo instead of "are you sure?" (ctx_undo, core.undo), #43 someone else cancelling/moving your booking tells you (book_news, app_notify_but) + an admin's per-thing "only theirs" rule (Resource.own_only), #55 quick booking knows other names (starters' Swedish words + Resource.aliases) and says what can be booked, #58 members are told which admin to ask (ui_admins), #62 plain words (Address check, File details, What plays where, "Connected over Wi-Fi" via LanIface.link, the password secret; HealthItem.tech folded under "Technical details") (PR #110). 0.13.0 (branch fix/accessibility) = #63 dialogs take and keep the focus + inert behind + focus back to the opener, #64 the player's state in words + its bar stays under the keyboard + the "Next episode" card read out, #65 Add buttons named on phones, #66 contrast (--muted #6f675b, no faded done items, 12 px booking text), #67 44 px tap targets in Plan, #68 "Skip to content" + focus kept after a morph, #69 previews read out ([data-say]) + avatars named + list buttons name their item, #70 reduced motion + main landmarks on the sign-in pages. (PR #111). 0.13.1 (branch feat/tools-addition, tooling only, PR #112) = the Makefile builds one object per file (make -j), the suite runs in one process per core (runner --shard K/N, tests/parallel.sh, build.ps1 test), CI's Linux jobs locally (tools/ci/local.sh, ./build.ps1 ci in WSL), core/version.c holds the commit stamp, media's disk meter measures afresh at each start (a test leaned on another's leftovers), an upload PUT counts its file done BEFORE answering ok (upload.c put worker; a busy Pi answered "0 of 2 files" right after an ok). 0.14.0 (branch ci/releases) = #19 releases (release.yml + tools/ci/bundle.sh: bundles with the installer, checksums, notes with the commits since the last release), #52 a version per PR in the VERSION file, released when merged, #21 "Try it on your laptop first" + a download way at the top of the Pi/Linux/Mac guides (Gatekeeper click-through; no Windows download: Defender flags hemma.exe), #31 hemma --demo (core/demo.c). 0.16.0 (branch feat/household-basics) = #47 parts 1-2: chores that take turns (Task.turns/turn/swap, plan.task_swap, "@anna,@erik" in quick add) + repeating bookings and events (BookSeries / EventSeries making real rows ahead). 0.17.0 (branch feat/note-photos) = #47 part 3: photos on notes, shrunk in the browser ([data-shrink]) + the socket's 4 KB field cut fixed (json_value). 0.18.0 (branch feat/people-and-privacy) = #44 child and guest roles (Action.may, MOD_NO_CHILD/GUEST, Resource.kids/guests, Person.until + LOGIN_ENDED, media/kids.c "Not for children" folders), #45 moved out or erased (Module.forget, person_forget, the remove dialog, Person.left), #42 privacy under Your account (wall, doing, TV picker, home) + Your devices on /net; the README shows a child's phone (docs/img/child-*.webp). 0.15.0 (branch fix/all-day-dates) = #39 part 2 a new time zone keeps days on their days (core/zone.c, Module.rezone; typed times moved back on an admin's choice) + #41 a calendar feed per person (core/feed.c, /cal/<id>-<key>.ics, "Your calendar on your phone"). 0.10.1 (branch library-follow-ups) = #89 uploads write .hemma-part (torrents' .part left alone) + upload_claims by the video's name, #94 extras only after a separating mark + by length (40 min) + unknown length kept + episode codes never extras, #95 one "Disk space" row per disk (health_disk) + the library wants its biggest video + the reserve, #93 history follows by place, content (fp) or name (ident), away = an emptied library folder, filled from the cache at start, lost history listed + forgettable. Next ideas: calmer home cards (hide empty ones), touch on the wall
 (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
 
 Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,

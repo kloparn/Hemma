@@ -103,9 +103,9 @@ static void preview(Ctx *c, Buf *b) {
 void plan_shop_page(Ctx *c, Buf *b) {
     ctx_title(c, "Shopping");
     Buf sub = {0};
-    plan_subtitle(&sub);
+    plan_subtitle(c, &sub);
     ui_head(b, "Plan", buf_cstr(&sub));
-    plan_tabs(b, 1);
+    plan_tabs(c, b, 1);
     ui_head_end(b);
     buf_free(&sub);
 

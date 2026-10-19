@@ -11,6 +11,7 @@
  * simply asks for the next range when it needs it. */
 #define _FILE_OFFSET_BITS 64 /* 64-bit fseeko/off_t for > 4 GB files on 32-bit Pi and mingw */
 #include "library.h"
+#include "media.h"
 #include "../../core/plat.h"
 
 #include <stdatomic.h>
@@ -247,7 +248,15 @@ bool media_http(Ctx *c, Conn *conn, HttpReq *r) {
         plain(conn, 401, "sign in to Hemma to watch\n");
         return true;
     }
-    if (file) return serve_file(conn, r, r->path + 12, MF_VIDEO);
+    if (file) {
+        uint64_t id = 0;
+        const MediaFile *f = media_parse_id(r->path + 12, &id) ? media_file(id) : NULL;
+        if (!media_kids_ok(c, f)) { /* (a child, or a TV with a child picked: not what's marked - issue #44) */
+            plain(conn, 404, "not in the library\n");
+            return true;
+        }
+        return serve_file(conn, r, r->path + 12, MF_VIDEO);
+    }
     if (img) return serve_file(conn, r, r->path + 11, MF_IMAGE);
     return serve_sub(conn, r->path + 11);
 }

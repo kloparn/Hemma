@@ -88,23 +88,19 @@ static void new_modal(Buf *b) {
     ui_modal_end(b);
 }
 
-/* Your own place on the TV's "Who's watching?" (issue #90): admins choose to be there, anyone can
-   ask for a PIN first. */
+/* Your own place on the TV's "Who's watching?" (issues #90, #42): anyone chooses to be there (admins are off
+   until they tick it, everyone else on until they untick it), and anyone can ask for a PIN first. */
 static void you_card(Ctx *c, Buf *b) {
     if (!c->me || c->me->role == ROLE_DISPLAY) return;
     ui_card(b, "You on the TV", NULL, NULL);
-    if (is_admin(c)) {
-        bool on = str_eq(pref(c->me->id, PREF_ON_TV, ""), "1");
-        ui_form(b, "screens.on_tv", "screens-ontv");
-        H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"on\" value=\"1\" data-auto%r> Show me on the "
-             "TV's <i>Who's watching?</i></label>",
-          on ? " checked" : "");
-        ui_form_end(b);
-        buf_puts(b, "<p class=\"muted small\">Admins are left off unless they tick this: whoever has the TV's sign-in "
-                    "could see and clear the watch history of anyone it lists.</p>");
-    } else {
-        buf_puts(b, "<p>The TV's <i>Who's watching?</i> lists you.</p>");
-    }
+    bool on = privacy_on_tv(c->me);
+    ui_form(b, "screens.on_tv", "screens-ontv");
+    H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"on\" value=\"1\" data-auto%r> Show me on the "
+         "TV's <i>Who's watching?</i></label>",
+      on ? " checked" : "");
+    ui_form_end(b);
+    buf_puts(b, "<p class=\"muted small\">Whoever has the TV's sign-in can see and clear the watch history of anyone it "
+                "lists.</p>");
     if (screens_has_pin(c->me->id)) {
         buf_puts(b, "<p>Your PIN is set: the TV asks for it when you're picked.</p>");
         ui_act(b, "screens.pin", "btn sm", "Remove the PIN", "clear", "1", NULL);
@@ -323,8 +319,14 @@ static void wall_people(Buf *b) {
     buf_puts(b, "<div class=\"screens-wpeople\">");
     for (int i = 0; i < person_count(); i++) {
         Person *p = person_at(i);
-        bool home = presence_is_home(p->id, NULL);
-        const char *state = home ? "home" : tracking && presence_known(p->id) ? "away" : presence_screens(p->id) ? "online" : "";
+        int show = privacy_wall(p->id); /* their own choice (issue #42): with home/away, the name only, or not */
+        if (show == WALL_HIDE) continue;
+        bool home = show == WALL_SHOW && presence_is_home(p->id, NULL);
+        const char *state = show == WALL_NAME ? ""
+                            : home            ? "home"
+                            : tracking && presence_known(p->id) ? "away"
+                            : presence_screens(p->id)           ? "online"
+                                                                : "";
         H(b, "<div class=\"screens-wp %s\">", state);
         ui_avatar_deco(b, p, "lg");
         H(b, "<b>%s</b><small>%s</small></div>", p->name, *state ? state : "\xC2\xA0");

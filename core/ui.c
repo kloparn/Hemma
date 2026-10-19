@@ -111,8 +111,10 @@ static void avatar(Buf *b, const Person *p, const char *size, bool named) {
         H(b, "<span class=\"av av-%s av-none\" %r>?</span>", size, named ? "role=\"img\" aria-label=\"Someone\"" : "aria-hidden=\"true\"");
         return;
     }
-    H(b, "<span class=\"av av-%s\" title=\"%s\"", size, p->name);
-    if (named) H(b, " role=\"img\" aria-label=\"%s\"", p->name);
+    char label[80];
+    person_label(p, label, sizeof label); /* "Eva (moved out)" on what they did (issue #45) */
+    H(b, "<span class=\"av av-%s%r\" title=\"%s\"", size, p->left ? " av-left" : "", label);
+    if (named) H(b, " role=\"img\" aria-label=\"%s\"", label);
     else buf_puts(b, " aria-hidden=\"true\"");
     ui_hue_style(b, p->hue);
     buf_putc(b, '>');
@@ -275,8 +277,9 @@ void ui_player(Buf *b, const UiPlayer *p) {
 
 /* ----------------------------------------------------------------- forms */
 
-/* Open forms, innermost last: where each began, and whether it goes again at its end (ui_view_only). */
-static bool g_view_only;
+/* Open forms, innermost last: where each began, and whether it goes again at its end (ui_role). */
+static int g_role = ROLE_MEMBER;
+static bool g_view_only; /* a role that may not run everything: forms and dialogs get cut */
 static struct {
     Buf *b;
     size_t mark;
@@ -291,19 +294,20 @@ static struct {
     bool open, cut;
 } g_modal;
 
-void ui_view_only(bool on) {
-    g_view_only = on;
+void ui_role(int role) {
+    g_role = role;
+    g_view_only = role == ROLE_DISPLAY || role == ROLE_CHILD || role == ROLE_GUEST;
     g_nforms = 0;
     g_modal.open = false;
 }
 
-bool ui_can(const char *action) { return !g_view_only || app_action_display(action); }
+bool ui_can(const char *action) { return !g_view_only || app_action_open(action, g_role); }
 
 static void form_begins(Buf *b, const char *action) {
     if (g_nforms < countof(g_forms)) {
         g_forms[g_nforms].b = b;
         g_forms[g_nforms].mark = b->len;
-        g_forms[g_nforms].cut = g_view_only && !app_action_display(action);
+        g_forms[g_nforms].cut = g_view_only && !app_action_open(action, g_role);
     }
     g_nforms++;
 }

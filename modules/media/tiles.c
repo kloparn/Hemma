@@ -205,7 +205,7 @@ static bool row_continue(Ctx *c, Buf *b, int kind, const char *arg) {
 static bool row_recent(Ctx *c, Buf *b, int kind, const char *arg) {
     (void)arg;
     MediaRecent r[20];
-    int n = media_recent(r, countof(r));
+    int n = media_recent(c, r, countof(r));
     if (!n) return false;
     char back[400];
     media_row_back(c, back, sizeof back);
@@ -220,7 +220,7 @@ static bool row_recent(Ctx *c, Buf *b, int kind, const char *arg) {
 
 static bool row_series(Ctx *c, Buf *b, int kind, const char *arg) {
     (void)arg;
-    const MediaIndex *ix = media_lib();
+    const MediaIndex *ix = media_lib_for(c);
     if (!ix->nseries) return false;
     char back[400];
     media_row_back(c, back, sizeof back);
@@ -232,7 +232,7 @@ static bool row_series(Ctx *c, Buf *b, int kind, const char *arg) {
 
 static bool row_movies(Ctx *c, Buf *b, int kind, const char *arg) {
     (void)arg;
-    const MediaIndex *ix = media_lib();
+    const MediaIndex *ix = media_lib_for(c);
     if (!ix->nmovies) return false;
     char back[400];
     media_row_back(c, back, sizeof back);
@@ -249,7 +249,7 @@ static bool row_movies(Ctx *c, Buf *b, int kind, const char *arg) {
 static bool row_series_one(Ctx *c, Buf *b, int kind, const char *arg) {
     uint64_t id = 0;
     const MediaSeries *s = media_parse_id(arg, &id) ? media_series(id) : NULL;
-    if (!s || s->count <= 0) return false;
+    if (!s || s->count <= 0 || !media_kids_series_ok(c, s)) return false; /* (a child picked: issue #44) */
     const MediaFile *up = media_next_up(c, s);
     int at = 0;
     for (int i = 0; i < s->count; i++)

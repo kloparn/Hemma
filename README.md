@@ -35,6 +35,15 @@ booking (and whether the car is free) before you press Enter.</em></p>
 <p align="center"><em>The tablet on the wall: the time, what's on now and next, who's home, and
 the household's cards.</em></p>
 
+<p align="center">
+  <img src="docs/img/child-home.webp" alt="A child's Home page on a phone: only the sauna to book, his own chore for today, the shopping list and his note on the board" width="270">
+  &nbsp;
+  <img src="docs/img/child-movies.webp" alt="A child's Movies: five films, without the two in folders marked Not for children" width="270">
+</p>
+<p align="center"><em>Leo's phone. A child books what's open to children, sees their own to-dos and the
+shared lists, and watches without the folders marked "Not for children" - Live TV and the TV
+too, while they're the one watching. A guest gets a sign-in that ends on their last day.</em></p>
+
 <sub>The household is made up, and the films are the Blender Foundation's open movies (CC BY):
 see [the credits](docs/img/CREDITS.md).</sub>
 
@@ -45,12 +54,12 @@ see [the credits](docs/img/CREDITS.md).</sub>
 | **Home** | A greeting, who's home, a card from every section and the latest news |
 | **Book** | Shared things like the car, laundry, guest room or sauna. It has a week view, warns about clashes and understands quick text like *"car fri 14-17 ikea"* or *"bastu ikväll 19"* (English or Swedish, and any other names you give a thing). Repeating bookings too: *"laundry every tuesday 18-21"*. Whoever's booking someone else cancels or moves is told |
 | **Plan** | Chores with repeats and people (*"vacuum @sam fri every week"*), and chores that take turns (*"vacuum every week @sam,@alex"*: it shows whose turn is next, and a turn can be swapped), a shared shopping list that remembers what you often buy, and a calendar that also shows bookings, with repeating events (*"football practice every wednesday 17:30-19"*). Your bookings, to-dos and the household's events can go into your phone's own calendar too, with its reminders ([how](docs/accounts.md#your-calendar-on-your-phone)) |
-| **Watch** | Your movie and series drive as a little cinema. It sorts series into seasons, has search and subtitles, and remembers where you stopped. It can convert videos a browser can't play (like DVD rips) into a copy that plays everywhere, and moves HEVC films into a file Safari on iPhone, iPad and Mac can play. Admins can upload whole folders from a browser: the uploading computer makes those copies itself, so only the small copy travels and the Pi does no heavy lifting. An upload picks up where it stopped if the connection drops, and skips episodes and films you already have. Admins can remove a film for good, folder and all. **Live TV** ("90s TV") is a tab here: channels that play your shows non-stop on a shared clock, with a TV guide |
+| **Watch** | Your movie and series drive as a little cinema. It sorts series into seasons, has search and subtitles, and remembers where you stopped. It can convert videos a browser can't play (like DVD rips) into a copy that plays everywhere, and moves HEVC films into a file Safari on iPhone, iPad and Mac can play. Admins can upload whole folders from a browser: the uploading computer makes those copies itself, so only the small copy travels and the Pi does no heavy lifting. An upload picks up where it stopped if the connection drops, and skips episodes and films you already have. Admins can remove a film for good, folder and all, and mark folders *Not for children*. **Live TV** ("90s TV") is a tab here: channels that play your shows non-stop on a shared clock, with a TV guide |
 | **Board** | The fridge door: notes with pins, colours and a photo (the school letter, the parking permit) that disappear when they're out of date |
 | **Network** | The devices on your network, who owns which, a good guess at who's home (from phones on the Wi-Fi) and Wake-on-LAN |
 | **Screens** | Hemma on the TV: a streaming-app view with big rows you move through with the remote (Continue watching, On TV, Recently added, Series, Movies), arranged by an admin. The TV asks *Who's watching?*: pick yourself (no password) and your progress follows you; on the TV you can only watch |
 | **Wall** | An always-on overview for a tablet on the wall (a Screen too): a big clock, what's on now and next, who's home, then cards for today, bookings, the coming days, the shopping list, notes, Live TV and what's new - an admin picks them. Cards with nothing to show stay away. Signed in with a read-only *display* account |
-| **Household** | People, sign-ins and roles, your home's name, and the link that puts your calendar on your phone |
+| **Household** | People and their sign-ins: members, children (their own to-dos, what's open to children, films for them), guests until a last day, admins, and read-only displays for the TV and the wall. Someone moving out keeps their history, or it's all erased - Hemma says what will happen first. Everyone's own privacy (on the wall, on the TV, who's home, what they're doing), your home's name, and the link that puts your calendar on your phone ([accounts](docs/accounts.md)) |
 | **System** | For admins: is everything working (in plain words), a getting-started list that ticks itself off, the server's log live, and what to do when something's wrong |
 
 **About posters.** Hemma never looks anything up on the internet, so a new film or series

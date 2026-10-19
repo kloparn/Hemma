@@ -32,3 +32,21 @@
 .people-cal-qr .qr { display: block; width: 156px; height: 156px; border-radius: 8px; }
 .people-cal-url { display: inline-block; max-width: 100%; overflow-wrap: anywhere; font-size: 13px; }
 .people-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+/* A guest's last day (issue #44): only beside the Guest role, where the browser can tell (:has) */
+@supports selector(:has(*)) {
+  .people-signin:not(:has(select option[value="4"]:checked)) .people-until { display: none; }
+}
+
+/* Removing someone (issue #45): two ways, each with what it does */
+.people-how { border: 0; padding: 0; margin: 0; display: grid; gap: 10px; }
+.people-how-o { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); cursor: pointer; }
+.people-how-o input { margin-top: 4px; width: 20px; height: 20px; flex: none; }
+.people-how-o span { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.people-how-o small { color: var(--muted); }
+.people-how-o:has(input:checked) { border-color: var(--accent); background: var(--panel-2); }
+.people-will { margin: 2px 0 0; padding-left: 1.2em; font-size: 14px; }
+.people-will li { margin: 2px 0; }
+.people-gone .row-main small { color: var(--muted); }
+.people-gone-a { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.people-privacy { margin-top: 12px; }

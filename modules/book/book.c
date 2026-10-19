@@ -8,7 +8,8 @@ static const FieldDef res_fields[] = {
     FIELD(Resource, hue, F_INT),         FIELD(Resource, slot, F_INT),        FIELD(Resource, open_min, F_INT),
     FIELD(Resource, close_min, F_INT),   FIELD(Resource, default_min, F_INT), FIELD(Resource, max_min, F_INT),
     FIELD(Resource, rules, F_STR),       FIELD(Resource, archived, F_BOOL),   FIELD(Resource, sort, F_INT),
-    FIELD(Resource, aliases, F_STR),     FIELD(Resource, own_only, F_BOOL),
+    FIELD(Resource, aliases, F_STR),     FIELD(Resource, own_only, F_BOOL),   FIELD(Resource, kids, F_BOOL),
+    FIELD(Resource, guests, F_BOOL),
 };
 Table T_resource = TABLE("resource", Resource, res_fields);
 
@@ -38,8 +39,16 @@ Table T_book_news = TABLE("book_news", BookNews, news_fields);
 
 bool book_may_change(const Ctx *c, const Resource *r, const Booking *b) {
     if (!c->me || c->me->role == ROLE_DISPLAY) return false;
+    if (is_child(c) || is_guest(c)) return c->me->id == b->who || c->me->id == b->by; /* (their own: issue #44) */
     if (!r || !r->own_only) return true;
     return c->me->id == b->who || c->me->id == b->by || c->me->role == ROLE_ADMIN;
+}
+
+bool book_open_to(const Ctx *c, const Resource *r) {
+    if (!r) return false;
+    if (is_child(c)) return r->kids;
+    if (is_guest(c)) return r->guests;
+    return true;
 }
 
 /* ================================================================ lookups */
@@ -61,6 +70,13 @@ int res_list(Resource **out, int max, bool with_archived) {
     }
     qsort(out, (size_t)n, sizeof *out, res_order);
     return n;
+}
+
+int book_res_list(const Ctx *c, Resource **out, int max) {
+    int n = res_list(out, max, false), k = 0;
+    for (int i = 0; i < n; i++)
+        if (book_open_to(c, out[i])) out[k++] = out[i];
+    return k;
 }
 
 Booking *book_conflict(int res, int64_t start, int64_t end, int except) {
@@ -567,6 +583,15 @@ static bool may_change_or_say(Ctx *c, const Resource *r, const Booking *b, const
 
 static bool save_booking(Ctx *c, Resource *r, int id, int who, int64_t s, int64_t e, const char *note, int repeat,
                          int64_t until) {
+    if (r && !book_open_to(c, r)) { /* children and guests: what an admin opened to them (issue #44) */
+        if (is_child(c)) ctx_fail(c, "Ask a grown-up to book the %s", r->name);
+        else ctx_fail(c, "The %s isn't open to guests", r->name);
+        return false;
+    }
+    if ((is_child(c) || is_guest(c)) && who && who != c->me->id) {
+        ctx_fail(c, "You can book for yourself");
+        return false;
+    }
     const char *why = book_check(r, s, e, id, c->now);
     if (why) {
         ctx_fail(c, "%s", why);
@@ -586,7 +611,7 @@ static bool save_booking(Ctx *c, Resource *r, int id, int who, int64_t s, int64_
         b.created = c->now;
     }
     b.res = r->id;
-    b.who = person_real(who) ? who : (c->me ? c->me->id : 0); /* pickers list real people only */
+    if (!id || who) b.who = person_real(who) ? who : (c->me ? c->me->id : 0); /* pickers list real people only */
     b.start = s;
     b.end = e;
     str_copy(b.note, sizeof b.note, note ? note : "");
@@ -747,17 +772,19 @@ typedef struct {
     int hue, slot, open, close, dflt, max;
     const char *rules;
     const char *aliases; /* Swedish names quick booking knows it by (issue #55); a prefix covers "bilen", "bastun" */
+    bool kids, guests;   /* open to children / guests from the start (issue #44; an admin changes it) */
 } Preset;
 
 static const Preset PRESETS[] = {
-    {"Car", "🚗", 205, 30, 0, 1440, 120, 0, "Fill up when it's below a quarter tank", "bil"},
-    {"Laundry", "🧺", 175, 60, 7 * 60, 22 * 60, 180, 240, "Clean the lint filter afterwards", "tvätt, tvättstuga"},
-    {"Guest room", "🛏️", 25, 1440, 0, 1440, 1440, 0, "", "gästrum"},
-    {"Sauna", "🧖", 15, 30, 6 * 60, 24 * 60, 90, 180, "", "bastu"},
-    {"TV room", "📺", 255, 30, 0, 1440, 120, 0, "", "tv-rum, tv-rummet"},
-    {"Cargo bike", "🚲", 90, 30, 0, 1440, 120, 0, "", "lådcykel"},
-    {"Workshop", "🔧", 45, 60, 8 * 60, 21 * 60, 120, 0, "", "verkstad"},
-    {"Office", "💻", 220, 60, 7 * 60, 20 * 60, 240, 0, "Quiet please", "kontor, arbetsrum"},
+    {"Car", "🚗", 205, 30, 0, 1440, 120, 0, "Fill up when it's below a quarter tank", "bil", false, false},
+    {"Laundry", "🧺", 175, 60, 7 * 60, 22 * 60, 180, 240, "Clean the lint filter afterwards", "tvätt, tvättstuga",
+     false, true},
+    {"Guest room", "🛏️", 25, 1440, 0, 1440, 1440, 0, "", "gästrum", false, true},
+    {"Sauna", "🧖", 15, 30, 6 * 60, 24 * 60, 90, 180, "", "bastu", true, true},
+    {"TV room", "📺", 255, 30, 0, 1440, 120, 0, "", "tv-rum, tv-rummet", true, true},
+    {"Cargo bike", "🚲", 90, 30, 0, 1440, 120, 0, "", "lådcykel", false, false},
+    {"Workshop", "🔧", 45, 60, 8 * 60, 21 * 60, 120, 0, "", "verkstad", false, false},
+    {"Office", "💻", 220, 60, 7 * 60, 20 * 60, 240, 0, "Quiet please", "kontor, arbetsrum", true, false},
 };
 
 const char *book_starter_aliases(const char *name) {
@@ -780,6 +807,8 @@ static void act_preset(Ctx *c, Fields *f) {
         r.default_min = PRESETS[i].dflt;
         r.max_min = PRESETS[i].max;
         str_copy(r.rules, sizeof r.rules, PRESETS[i].rules);
+        r.kids = PRESETS[i].kids;
+        r.guests = PRESETS[i].guests;
         r.sort = tbl_count(&T_resource) + 1;
         tbl_put(&T_resource, &r);
         activity_add(c->me ? c->me->id : 0, r.emoji, "/book", "%s added %s to bookings", c->me ? c->me->name : "Someone",
@@ -817,7 +846,9 @@ static void act_res_save(Ctx *c, Fields *f) {
     if (r.slot != 15 && r.slot != 30 && r.slot != 60 && r.slot != 1440) r.slot = 30;
     int open = 0, close = 1440;
     if (!daily && !str_eq(fields_str(f, "always"), "1")) {
-        if (!parse_hm(fields_str(f, "open"), &open) || !parse_hm(fields_str(f, "close"), &close) || close <= open) {
+        bool ok = parse_hm(fields_str(f, "open"), &open) && parse_hm(fields_str(f, "close"), &close);
+        if (ok && close == 0) close = 1440; /* "until 00:00" = until midnight */
+        if (!ok || close <= open) {
             ctx_fail_at(c, "open", "Opening hours look odd — from must be before until");
             return;
         }
@@ -830,7 +861,11 @@ static void act_res_save(Ctx *c, Fields *f) {
     str_copy(r.rules, sizeof r.rules, fields_str(f, "rules"));
     str_copy(r.aliases, sizeof r.aliases, fields_str(f, "aliases"));
     str_trim(r.aliases);
-    if (is_admin(c)) r.own_only = str_eq(fields_str(f, "own_only"), "1"); /* the household's rule: an admin's to set */
+    if (is_admin(c)) { /* the household's rules: an admin's to set */
+        r.own_only = str_eq(fields_str(f, "own_only"), "1");
+        r.kids = str_eq(fields_str(f, "kids"), "1");
+        r.guests = str_eq(fields_str(f, "guests"), "1");
+    }
     if (!id) r.sort = tbl_count(&T_resource) + 1;
     tbl_put(&T_resource, &r);
     ctx_ok(c, id ? "Saved %s" : "Added %s", r.name);
@@ -899,13 +934,13 @@ static const Block blocks[] = {
     {0},
 };
 
-/* Bookings in other modules' agendas (the planner's calendar, ...). */
+/* Bookings in other modules' agendas (the planner's calendar, ...). A guest: only what's open to guests. */
 static void agenda(Ctx *c, int64_t from, int64_t to, Agenda *out) {
     for (int i = 0; i < tbl_count(&T_booking); i++) {
         Booking *bk = tbl_at(&T_booking, i);
         if (bk->end <= from || bk->start >= to) continue;
         Resource *r = res_get(bk->res);
-        if (!r || r->archived) continue;
+        if (!r || r->archived || (is_guest(c) && !r->guests)) continue;
         AgendaItem it = {0};
         it.start = bk->start;
         it.end = bk->end;
@@ -921,10 +956,64 @@ static void agenda(Ctx *c, int64_t from, int64_t to, Agenda *out) {
     }
 }
 
+/* Someone leaves (issue #45): what's ahead of them is cancelled; erasing, the rest of theirs goes too and what
+   they booked for others keeps no "by". */
+static int forget(Forget *f) {
+    int ahead = 0, past = 0, by = 0, series = 0, news = 0;
+    for (int i = tbl_count(&T_booking) - 1; i >= 0; i--) {
+        Booking *bk = tbl_at(&T_booking, i);
+        if (bk->who == f->person) {
+            bool future = bk->start >= f->now;
+            if (!future && f->keep) continue; /* (history: under way or over) */
+            if (future) ahead++;
+            else past++;
+            if (f->apply) tbl_del(&T_booking, bk->id);
+        } else if (bk->by == f->person && !f->keep) {
+            by++;
+            if (f->apply) {
+                Booking rec = *bk;
+                rec.by = 0;
+                tbl_put(&T_booking, &rec);
+            }
+        }
+    }
+    for (int i = tbl_count(&T_book_series) - 1; i >= 0; i--) {
+        BookSeries rec = *(BookSeries *)tbl_at(&T_book_series, i);
+        if (rec.who == f->person) { /* nothing more is made for them */
+            series += !rec.stopped;
+            rec.stopped = true;
+            if (f->apply && f->keep) tbl_put(&T_book_series, &rec);
+            else if (f->apply) tbl_del(&T_book_series, rec.id);
+        } else if (rec.by == f->person && !f->keep && f->apply) {
+            rec.by = 0;
+            tbl_put(&T_book_series, &rec);
+        }
+    }
+    for (int i = tbl_count(&T_book_news) - 1; i >= 0; i--) {
+        BookNews *x = tbl_at(&T_book_news, i);
+        if (x->person != f->person) continue;
+        news++;
+        if (f->apply) tbl_del(&T_book_news, x->id);
+    }
+    if (ahead) forget_note(f, "%d booking%s still to come %s cancelled", ahead, ahead == 1 ? "" : "s", ahead == 1 ? "is" : "are");
+    if (series) forget_note(f, "%d repeating booking%s stop%s", series, series == 1 ? "" : "s", series == 1 ? "s" : "");
+    if (past) forget_note(f, "%d past booking%s %s deleted", past, past == 1 ? "" : "s", past == 1 ? "is" : "are");
+    if (by) forget_note(f, "%d booking%s they made for others stay%s, without their name", by, by == 1 ? "" : "s",
+                        by == 1 ? "s" : "");
+    return ahead + past + by + series + news;
+}
+
+/* Children and guests (issue #44) book what's open to them, for themselves, and change only their own. */
 static const Action actions[] = {
-    {"book.preview", act_preview, true}, {"book.quick", act_quick},   {"book.create", act_create},
-    {"book.cancel", act_cancel},   {"book.preset", act_preset}, {"book.res_save", act_res_save},
-    {"book.res_archive", act_res_archive}, {"book.news_seen", act_news_seen}, {0},
+    {"book.preview", act_preview, true, .may = ACT_ALL},
+    {"book.quick", act_quick, .may = ACT_ALL},
+    {"book.create", act_create, .may = ACT_ALL},
+    {"book.cancel", act_cancel, .may = ACT_ALL},
+    {"book.preset", act_preset},
+    {"book.res_save", act_res_save},
+    {"book.res_archive", act_res_archive},
+    {"book.news_seen", act_news_seen, .may = ACT_ALL},
+    {0},
 };
 
 const char *book_presets_name(int i);
@@ -974,6 +1063,7 @@ static const Module book = {
     .widget_order = 10,
     .agenda = agenda,
     .rezone = rezone,
+    .forget = forget,
     .blocks = blocks,
 };
 MODULE(book)

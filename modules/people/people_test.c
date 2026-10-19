@@ -98,7 +98,7 @@ TEST(people_keep_an_admin_counted_after_the_change) {
     /* once Adam can sign in again, Bea may go */
     snprintf(f, sizeof f, "id=%d&name=Adam&username=adam&password=longenough1", adam);
     CHECK(th_act(bea, "people.save", f).ok);
-    snprintf(f, sizeof f, "id=%d", bea);
+    snprintf(f, sizeof f, "id=%d&how=erase", bea);
     CHECK(th_act(adam, "people.delete", f).ok);
     CHECK(person_get(bea) == NULL);
     th_halt();
@@ -133,9 +133,14 @@ TEST(people_admin_removes_people_and_their_sessions) {
     CHECK(th_act(adam, "people.signout", f).ok);
     CHECK_INT(tbl_count(&T_session), 0);
     session_create(eva, true, NULL, sid);
+    CHECK(th_act(adam, "people.delete", f).ok); /* moved out (issue #45): the row stays, the sign-in goes */
+    CHECK(person_get(eva) && person_get(eva)->left);
+    CHECK_STR(person_get(eva)->username, "");
+    CHECK_INT(tbl_count(&T_session), 0);
+    CHECK(!person_real(eva));
+    snprintf(f, sizeof f, "id=%d&how=erase", eva);
     CHECK(th_act(adam, "people.delete", f).ok);
     CHECK(person_get(eva) == NULL);
-    CHECK_INT(tbl_count(&T_session), 0);
     snprintf(f, sizeof f, "id=%d", adam);
     CHECK(!th_act(adam, "people.delete", f).ok); /* not yourself */
     th_halt();
@@ -443,5 +448,167 @@ TEST(people_calendar_link_is_made_renewed_and_turned_off) {
     CHECK(cal_feed_path(adam, third, sizeof third) && !str_eq(third, first) && !str_eq(third, second));
     CHECK(!th_act(hall, "people.cal_make", "").ok); /* view-only */
     app_test_ctx_host(NULL);
+    th_halt();
+}
+
+/* ------------------------------------------------- children and guests (issue #44) */
+
+TEST(people_children_and_guests_are_roles_an_admin_gives) {
+    boot();
+    g_fake_now = dt_make(2026, 10, 7, 10, 0); /* a Wednesday */
+    int adam = admin("Adam", "adam");
+    CHECK(th_act(adam, "people.save", "name=Leo&username=leo&password=longenough1&role=3").ok);
+    CHECK_INT(person_by_username("leo")->role, ROLE_CHILD);
+    ThResult r = th_act(adam, "people.save", "name=Gun&username=gun&password=longenough1&role=4&until=");
+    CHECK(!r.ok);
+    CHECK_STR(r.field, "until");
+    r = th_act(adam, "people.save", "name=Gun&username=gun&password=longenough1&role=4&until=2026-10-06");
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "from today on");
+    CHECK(th_act(adam, "people.save", "name=Gun&username=gun&password=longenough1&role=4&until=2026-10-11").ok);
+    Person *gun = person_by_username("gun");
+    CHECK_INT(gun->role, ROLE_GUEST);
+    CHECK(gun->until == dt_make(2026, 10, 12, 0, 0)); /* the midnight after the last day */
+    int gid = gun->id;
+    const char *h = th_page(adam, "/people");
+    CHECK_HAS(h, "@leo · Child");
+    CHECK_HAS(h, "@gun · Guest until Sun");
+    char f[160], url[40];
+    snprintf(url, sizeof url, "/people?edit=%d", gid);
+    h = th_page(adam, url);
+    CHECK_HAS(h, "value=\"2026-10-11\"");
+    CHECK_HAS(h, "Child — their own to-dos and the lists");
+    snprintf(f, sizeof f, "id=%d&name=Gun&role=0", gid); /* a member now: no end */
+    CHECK(th_act(adam, "people.save", f).ok);
+    CHECK(person_get(gid)->until == 0);
+    /* what they may do on their own account */
+    int leo = person_by_username("leo")->id;
+    snprintf(f, sizeof f, "id=%d&name=Leo+L&emoji=🐢", leo);
+    CHECK(th_act(leo, "people.save", f).ok);
+    CHECK(!th_act(leo, "people.save", "name=Newbie").ok);
+    r = th_act(leo, "household.save", "name=Mine");
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Ask a grown-up");
+    CHECK(th_act(leo, "people.privacy", "all=1&tv=1").ok);
+    g_fake_now = 0;
+    th_halt();
+}
+
+TEST(people_a_guests_sign_in_ends_by_itself) {
+    boot();
+    int64_t now = dt_make(2026, 10, 7, 10, 0);
+    g_fake_now = now;
+    int adam = admin("Adam", "adam");
+    CHECK(th_act(adam, "people.save", "name=Gun&username=gun&password=longenough1&role=4&until=2026-10-08").ok);
+    int gun = person_by_username("gun")->id, who = 0, wait = 0;
+    CHECK_INT(auth_login("gun", "longenough1", 0x0A000001, now, &who, &wait), LOGIN_OK);
+    CHECK(!person_signin_over(person_get(gun), now));
+    char sid[33];
+    CHECK(session_create(gun, true, NULL, sid));
+    CHECK_INT(auth_codes_left(gun), 0); /* (no recovery codes: an admin sets a new password) */
+    CHECK(!auth_codes_new(gun, NULL));
+    int64_t later = dt_make(2026, 10, 9, 0, 0);
+    CHECK(person_signin_over(person_get(gun), later));
+    CHECK_INT(auth_login("gun", "wrong", 0x0A000002, later, &who, &wait), LOGIN_WRONG); /* (said only to the one who knows it) */
+    CHECK_INT(auth_login("gun", "longenough1", 0x0A000003, later, &who, &wait), LOGIN_ENDED);
+    CHECK_HAS(th_page(0, "/login?e=5"), "Your sign-in has ended");
+    CHECK_HAS(th_page(0, "/login?e=5"), "ask Adam (admin) for more days");
+    g_fake_now = later;
+    CHECK_HAS(th_page(adam, "/people"), "Guest, ended Yesterday"); /* (ended at the midnight after Thursday) */
+    g_fake_now = 0;
+    th_halt();
+}
+
+TEST(people_a_guest_sees_their_own_account_only) {
+    boot();
+    int adam = admin("Adam", "adam");
+    CHECK(th_act(adam, "people.save", "name=Gun&username=gun&password=longenough1&role=4&until=2099-01-01").ok);
+    int gun = person_by_username("gun")->id;
+    const char *h = th_page(gun, "/people");
+    CHECK_HAS(h, "Your account");
+    CHECK_HAS(h, "a guest until");
+    CHECK_HAS(h, "Privacy");
+    CHECK(!strstr(h, "Adam")); /* not the household's list */
+    CHECK(!strstr(h, "Recovery codes"));
+    CHECK(!strstr(h, "Your calendar on your phone"));
+    CHECK(!strstr(th_page(gun, "/net"), "net-devs")); /* (not a guest's) */
+    CHECK_HAS(th_page(gun, "/net"), "Nothing here");
+    th_halt();
+}
+
+/* ------------------------------------------------- leaving (issue #45) */
+
+TEST(people_the_remove_dialog_says_what_happens_first) {
+    boot();
+    int adam = admin("Adam", "adam");
+    CHECK(th_act(adam, "people.save", "name=Eva&username=eva&password=longenough1").ok);
+    int eva = person_by_username("eva")->id;
+    CHECK(th_act(adam, "plan.task_add", "q=fix+the+fence+%40eva").ok);
+    char sid[33], url[40], f[64];
+    session_create(eva, true, NULL, sid);
+    snprintf(url, sizeof url, "/people?remove=%d", eva);
+    const char *h = th_page(adam, url);
+    CHECK_HAS(h, "Eva moved out - keep their history");
+    CHECK_HAS(h, "Erase everything about Eva");
+    CHECK_HAS(h, "1 open to-do of theirs goes to anyone");
+    CHECK_HAS(h, "Their sign-in goes (signed in on 1 device now)");
+    CHECK(!strstr(th_page(eva, url), "role=\"dialog\"")); /* (an admin's) */
+    snprintf(url, sizeof url, "/people?edit=%d", eva);
+    CHECK_HAS(th_page(adam, url), "?remove=");
+    snprintf(f, sizeof f, "id=%d&how=keep", eva);
+    ThResult r = th_act(adam, "people.delete", f);
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "Eva moved out - their history stays");
+    Person *e = person_get(eva);
+    CHECK(e && e->left && !e->username[0] && !e->pass[0]);
+    CHECK_INT(tbl_count(&T_session), 0);
+    h = th_page(adam, "/people");
+    CHECK_HAS(h, "Moved out");
+    CHECK_HAS(h, "Back in the household");
+    CHECK_INT(person_count(), 1);
+    CHECK(person_find("Eva") == NULL); /* (in no picker) */
+    char label[80];
+    CHECK_STR(person_label(person_get(eva), label, sizeof label), "Eva (moved out)");
+    snprintf(url, sizeof url, "/people?remove=%d", eva);
+    h = th_page(adam, url);
+    CHECK_HAS(h, "Erase Eva");
+    CHECK(!strstr(h, "keep their history"));
+    /* she's back */
+    snprintf(f, sizeof f, "id=%d", eva);
+    CHECK(th_act(adam, "people.return", f).ok);
+    CHECK(!person_get(eva)->left);
+    CHECK_INT(person_count(), 2);
+    CHECK(!th_act(adam, "people.return", f).ok);
+    th_halt();
+}
+
+/* ------------------------------------------------- privacy (issue #42) */
+
+TEST(people_privacy_is_each_persons_own) {
+    boot();
+    int adam = admin("Adam", "adam");
+    CHECK(th_act(adam, "people.save", "name=Eva&username=eva&password=longenough1").ok);
+    int eva = person_by_username("eva")->id;
+    CHECK_INT(privacy_wall(eva), WALL_SHOW);
+    CHECK(privacy_doing(eva) && privacy_home(eva));
+    CHECK(privacy_on_tv(person_get(eva)));  /* a member: on the TV unless she unticks it */
+    CHECK(!privacy_on_tv(person_get(adam))); /* an admin: once he ticks it */
+    const char *h = th_page(eva, "/people");
+    CHECK_HAS(h, "On the wall tablet");
+    CHECK_HAS(h, "data-a=\"people.privacy\"");
+    CHECK(th_act(eva, "people.privacy", "all=1&wall=name").ok); /* the boxes left unticked: no */
+    CHECK_INT(privacy_wall(eva), WALL_NAME);
+    CHECK(!privacy_doing(eva) && !privacy_home(eva) && !privacy_on_tv(person_get(eva)));
+    presence_set_home(eva, true, now_sec()); /* her devices don't tell */
+    CHECK(!presence_known(eva));
+    CHECK(th_act(eva, "people.privacy", "all=1&wall=no&doing=1&tv=1&home=1").ok);
+    CHECK_INT(privacy_wall(eva), WALL_HIDE);
+    CHECK(privacy_doing(eva) && privacy_home(eva) && privacy_on_tv(person_get(eva)));
+    presence_set_home(eva, true, now_sec());
+    CHECK(presence_is_home(eva, NULL));
+    CHECK(th_act(eva, "people.privacy", "tv=0").ok); /* one at a time (no "all"): the rest stays */
+    CHECK(!privacy_on_tv(person_get(eva)));
+    CHECK_INT(privacy_wall(eva), WALL_HIDE);
+    CHECK(privacy_doing(eva));
     th_halt();
 }

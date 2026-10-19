@@ -15,8 +15,8 @@ typedef struct {
 
 static const DemoStep STEPS[] = {
     {"anna", "household.save", "name=Björkbacken", -1},
-    {"anna", "people.save", "name=Maja&emoji=🦄&hue=300", -1},
-    {"anna", "people.save", "name=Leo&emoji=🐢&hue=120", -1},
+    {"anna", "people.save", "name=Maja&emoji=🦄&hue=300&role=3", -1}, /* (children: issue #44) */
+    {"anna", "people.save", "name=Leo&emoji=🐢&hue=120&role=3", -1},
     {"anna", "book.preset", "name=Car", -1},
     {"anna", "book.preset", "name=Laundry", -1},
     {"anna", "book.preset", "name=Sauna", -1},
