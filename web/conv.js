@@ -3,11 +3,40 @@
 // to WebAssembly (/static/av.wasm): this file only feeds it the file's bytes
 // and gathers what it writes. Nothing here knows about video.
 //   in:  {file, wasm}        a File and the module's URL
+//        {put, at}           send the copy, from byte `at`, to that address (a PUT)
 //   out: {pm}                progress, 0..1000
-//        {blob}              the finished copy
+//        {size}              the copy is made, this many bytes: it waits here to be sent
+//        {status, body}      the PUT's answer; status 0 = none came (the connection dropped)
+//        {lost: true}        the copy can't be read any more (the browser's disk filled up?)
 //        {error}             why there is none (the original is sent instead)
+// The copy never leaves this worker: wire.js ends the worker once the copy is sent, and the
+// browser lets go of it right then. Handed to the page, finished copies stayed until the page's
+// memory was next tidied - which a page this small hardly ever needs - and a long upload left
+// 28 GB of them on the browser's disk, until it was full and the next copy broke.
 'use strict';
+let made = null; // the finished copy
+
+async function send(url, at) {
+  try {
+    const r = await fetch(`${url}?at=${at}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: made.slice(at),
+    });
+    return { status: r.status, body: await r.text() };
+  } catch (_) {
+    try {
+      await made.slice(at, at + 1).arrayBuffer(); // still readable: the connection, not the copy
+    } catch (_) {
+      return { lost: true };
+    }
+    return { status: 0 };
+  }
+}
+
 self.onmessage = async (e) => {
+  if (e.data.put) {
+    postMessage(await send(e.data.put, e.data.at));
+    return;
+  }
   const { file, wasm } = e.data;
   try {
     const reader = new FileReaderSync();
@@ -58,8 +87,12 @@ self.onmessage = async (e) => {
       return new TextDecoder().decode(b.subarray(p, end));
     };
     fold();
-    if (rc === 1) postMessage({ blob: new Blob([copy], { type: 'video/mp4' }) });
-    else postMessage({ error: text(x.conv_err()) });
+    if (rc === 1) {
+      made = new Blob([copy], { type: 'video/mp4' });
+      postMessage({ size: made.size });
+    } else {
+      postMessage({ error: text(x.conv_err()) });
+    }
   } catch (err) {
     // no WebAssembly / blocked / out of memory: the original goes instead
     postMessage({ error: 'This browser couldn\'t convert it (' + ((err && err.message) || err) + ')' });

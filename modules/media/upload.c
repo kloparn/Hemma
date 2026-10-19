@@ -34,6 +34,13 @@
 #include "room.h"
 #include "upload.h"
 
+/* How much of the sending device's disk copies waiting to be sent may take, in GB (the form's slider,
+   remembered per person; wire.js's converter keeps to it). More lets more slow conversions - DVD rips -
+   run side by side. */
+#define PREF_UPLOAD_ROOM "media.upload_room"
+#define ROOM_DEFAULT 8
+#define ROOM_MIN 2
+#define ROOM_MAX 32
 #define MAX_BATCHES 4
 #define MAX_FILES 5000
 #define MAX_WORKERS 2
@@ -736,6 +743,11 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
     bool originals = json_string(&j, json_get(&j, 0, "originals"), tmp, sizeof tmp) && str_eq(tmp, "1");
     if (!originals) skip_originals(b);
     if (json_string(&j, json_get(&j, 0, "conv"), tmp, sizeof tmp) && str_eq(tmp, "1")) convert_here(b, originals, c->me->id);
+    if (json_string(&j, json_get(&j, 0, "room"), tmp, sizeof tmp)) { /* the slider's choice, for next time */
+        char v[8];
+        snprintf(v, sizeof v, "%d", (int)CLAMP(str_int_or(tmp, ROOM_DEFAULT), ROOM_MIN, ROOM_MAX));
+        pref_set(c->me->id, PREF_UPLOAD_ROOM, v);
+    }
 planned:
     for (int k = 0; k < b->nfiles; k++) {
         const UpFile *f = &b->files[k];
@@ -1489,9 +1501,18 @@ void upload_page(Ctx *c, Buf *b) {
                 "webkitdirectory multiple></label>"
                 "<label class=\"field\"><span>…or single files</span><input type=\"file\" name=\"files\" multiple "
                 "accept=\"video/*,.mkv,.avi,.m2ts,.ts,.srt,.vtt,.jpg,.jpeg,.png,.webp\"></label>");
-    if (here)
+    if (here) {
         buf_puts(b, "<label class=\"check\"><input type=\"checkbox\" name=\"conv\" value=\"1\" checked> Make videos play "
                     "everywhere on this device first (recommended)</label>");
+        int room = (int)CLAMP(str_int_or(pref(c->me->id, PREF_UPLOAD_ROOM, ""), ROOM_DEFAULT), ROOM_MIN, ROOM_MAX);
+        H(b, /* (wire.js [data-show] keeps the number with the slider) */
+          "<label class=\"field\"><span>Room on this device for copies waiting to be sent: <b id=\"media-room-n\">%d</b> "
+          "GB</span><input type=\"range\" name=\"room\" min=\"%d\" max=\"%d\" step=\"1\" value=\"%d\" "
+          "data-show=\"media-room-n\" aria-describedby=\"media-room-h\"><small class=\"muted\" id=\"media-room-h\">More "
+          "room lets more videos convert side by side - DVD rips take minutes each. A copy leaves this device's disk "
+          "as soon as it's sent.</small></label>",
+          room, ROOM_MIN, ROOM_MAX, room);
+    }
     buf_puts(b, "<label class=\"check\"><input type=\"checkbox\" name=\"originals\" value=\"1\"> Also send the "
                 "originals</label>"
                 "<label class=\"check\"><input type=\"checkbox\" name=\"dupes\" value=\"1\"> Also send episodes and "

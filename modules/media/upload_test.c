@@ -533,6 +533,14 @@ TEST(upload_takes_copies_the_browser_makes) {
     char other[17];
     plan_for(adam, plain, &r, other);
     CHECK_HAS(body_of(&r), "\"todo\":[[0,0]]");
+    /* the room slider's choice is kept for next time (the browser's converter keeps to it), within 2-32 GB */
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up3\",\"conv\":\"1\",\"room\":\"16\",\"files\":[[\"S/x.mkv\",3000]]}", &r, other);
+    CHECK_STR(pref(adam_id, "media.upload_room", ""), "16");
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up3\",\"conv\":\"1\",\"room\":\"99\",\"files\":[[\"S/x.mkv\",3000]]}", &r, other);
+    CHECK_STR(pref(adam_id, "media.upload_room", ""), "32");
+    const char *form = th_page(adam_id, "/media/upload");
+    if (strstr(form, "data-wasm")) /* (when the converter is built in: the slider comes with it) */
+        CHECK_HAS(form, "name=\"room\" min=\"2\" max=\"32\" step=\"1\" value=\"32\" data-show=\"media-room-n\"");
     plan_for(adam, plan, &r, batch); /* (that replaced the first plan: plan again) */
 
     /* nothing to send before the copy exists */
