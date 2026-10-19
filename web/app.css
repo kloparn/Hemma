@@ -125,6 +125,8 @@ small { font-size: 12.5px; }
 .me:hover { border-color: var(--line-2); }
 .main { padding: 28px 36px 64px; max-width: 1240px; width: 100%; }
 .main:focus { outline: none; } /* (the skip link's target: focused, not ringed) */
+/* hemma --demo: every page says so */
+.demo-band { margin: 0 0 16px; padding: 8px 14px; border-radius: 12px; background: var(--accent-soft); font-size: 14px; font-weight: 550; }
 /* "Skip to content": shown only when Tab reaches it (issue #68) */
 .skip {
   position: absolute; left: 12px; top: -64px; z-index: 90; padding: 10px 16px; border-radius: 10px;

@@ -7,6 +7,11 @@ building the files for a Raspberry Pi, Linux or a Mac.
 All commands are for **PowerShell** (Start menu → type *PowerShell*). Some steps need
 **PowerShell as administrator** (right-click → *Run as administrator*). Those are marked.
 
+There's no ready-made Hemma for Windows to download yet ([why](#if-windows-security-removes-hemmaexe)):
+steps 1 to 3 build it from its source code, which takes a few minutes. To try it before setting
+it up, start the program you built with `.\build\hemma.exe --demo`: a made-up household, in a
+throwaway folder; the login shows in its window.
+
 ## 1. Install zig
 
 Hemma is C code, and [zig](https://ziglang.org) is the compiler that turns it into a
@@ -56,6 +61,16 @@ The same script builds for other computers too:
 | `.\build.ps1 mac` | `build\hemma-mac-arm64`, `build\hemma-mac-x64` | Macs with Apple silicon / Intel |
 
 Each one is a single file with no dependencies.
+
+### If Windows Security removes hemma.exe
+
+Windows Security (Defender) sometimes calls a freshly built `hemma.exe` a threat and removes it
+("Threats found", often naming *CobaltStrike*). That's a false alarm: its machine learning
+guesses from how a program looks, and a new, unsigned program with its own web server and
+network scanning looks like the tools it watches for. It's also why there's no Windows download
+yet. For a `hemma.exe` you built yourself from this source: *Windows Security → Virus & threat
+protection → Protection history*, open the entry, then **Actions → Allow on device**. Don't do
+that for a `hemma.exe` from anywhere else.
 
 ## 4. Set it up in its own folder
 

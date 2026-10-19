@@ -1278,6 +1278,9 @@ static void signin_page(Ctx *c, Buf *b) {
     if (welcome_back) H(b, "<h1>Welcome back, %s</h1>", guess->name);
     else buf_puts(b, "<h1>Sign in</h1>");
     H(b, "<p class=\"sub\">to %s</p>", app_name());
+    if (app_demo()) /* (hemma --demo: a made-up household - its login is no secret) */
+        H(b, "<p class=\"notice\">A demo: sign in as <b>anna</b> (an admin) or <b>jonas</b>, password <b>%s</b>.</p>",
+          app_demo_password());
     if (rescued()) /* (issue #87: the details are on the System page, for admins) */
         buf_puts(b, "<p class=\"notice\">Hemma's data was damaged, and it rescued what it could still read: some "
                     "things may be missing.</p>");

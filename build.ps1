@@ -50,6 +50,10 @@ try {
     }
 } catch { $Commit = "" }
 if ($Commit) { $Flags += "-DHEMMA_COMMIT=$Commit" }
+# The version: the VERSION file, MAJOR.MINOR.PATCH (semver.org)
+$Version = if (Test-Path VERSION) { (Get-Content -Raw VERSION).Trim() } else { "" }
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION must hold MAJOR.MINOR.PATCH (semver.org), like 0.14.0 - it says '$Version'" }
+$Flags += "-DHEMMA_VER=$Version"
 $Debug = @("-O0", "-g", "-fsanitize=undefined", "-fsanitize-trap=undefined")
 # release builds leave unused code and unwind tables out (the linker side is per target, below)
 $Release = @("-O2", "-DNDEBUG", "-s", "-ffunction-sections", "-fdata-sections", "-fno-asynchronous-unwind-tables")

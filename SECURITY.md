@@ -10,10 +10,11 @@ Fixes go into a new release, with a note in its release notes once it's out.
 
 ## Releases
 
-Every release raises the version (`HEMMA_VERSION` in `core/app.h`) and gets a git tag
-(`v0.3.0`) and a GitHub release whose notes come from [CHANGELOG.md](CHANGELOG.md).
-`hemma --version` also prints the commit it was built from, so a binary copied onto a
-Pi can be matched to the code even between releases. Before a release:
+Every change raises the version (the [VERSION](VERSION) file), and merging it releases
+it: a workflow runs the tests, builds every download with checksums, tags the commit
+(`v0.14.0`) and publishes a GitHub release whose notes come from [CHANGELOG.md](CHANGELOG.md). `hemma --version` also prints the commit it was built from,
+so a program copied onto a Pi can be matched to the code even between releases. Before a
+release:
 
 - **SQLite** is vendored (`third_party/sqlite`, pinned and hash-checked), so nothing
   warns about its security fixes automatically: check

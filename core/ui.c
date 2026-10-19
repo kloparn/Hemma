@@ -549,6 +549,9 @@ void ui_shell(Ctx *c, Buf *b, const Module *active, const char *page, size_t pag
         H(b, "<span>%s</span></a>", c->me->name);
     }
     buf_puts(b, "</div></aside><main class=\"main\" id=\"main\" tabindex=\"-1\">");
+    if (app_demo()) /* hemma --demo: every page says so (issue #31) */
+        buf_puts(b, "<p class=\"demo-band\" role=\"note\">A demo with a made-up household: try anything, nothing here "
+                    "is real. The next <code>hemma --demo</code> starts afresh.</p>");
     buf_put(b, page, page_len);
     buf_puts(b, "</main><nav class=\"tabbar\">");
     nav_links(c, b, active, true);
