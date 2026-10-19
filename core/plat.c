@@ -6,6 +6,7 @@
 #include <bcrypt.h>
 #include <direct.h> /* _wrmdir */
 #include <io.h>
+#include <time.h> /* _tzset */
 #else
 #include <dirent.h>
 #include <fcntl.h>
@@ -60,6 +61,17 @@ bool plat_setenv(const char *key, const char *val, bool overwrite) {
     return _putenv_s(key, val) == 0;
 #else
     return setenv(key, val, 1) == 0;
+#endif
+}
+
+void plat_set_tz(const char *tz) {
+#ifdef _WIN32
+    _putenv_s("TZ", tz ? tz : ""); /* (an empty value removes it) */
+    _tzset();
+#else
+    if (tz) setenv("TZ", tz, 1);
+    else unsetenv("TZ");
+    tzset();
 #endif
 }
 

@@ -766,6 +766,21 @@ int book_presets_count(void) { return countof(PRESETS); }
 const char *book_presets_emoji(int i);
 const char *book_presets_emoji(int i) { return i >= 0 && i < countof(PRESETS) ? PRESETS[i].emoji : NULL; }
 
+/* Issue #39: a whole-day thing's bookings are kept as local midnights; the others' times were typed. */
+static int rezone(Rezone *z) {
+    int n = 0;
+    for (int i = 0; i < tbl_count(&T_booking); i++) {
+        Booking bk = *(Booking *)tbl_at(&T_booking, i);
+        const Resource *r = res_get(bk.res);
+        int64_t was = bk.start;
+        if (!rezone_span(z, r && res_daily(r), bk.created, &bk.start, &bk.end)) continue;
+        n++;
+        if (z->apply) tbl_put(&T_booking, &bk);
+        else if (!z->days) rezone_note(z, r ? r->name : "A booking", was, bk.start);
+    }
+    return n;
+}
+
 static const Module book = {
     .id = "book",
     .title = "Book",
@@ -777,6 +792,7 @@ static const Module book = {
     .widget = widget,
     .widget_order = 10,
     .agenda = agenda,
+    .rezone = rezone,
     .blocks = blocks,
 };
 MODULE(book)

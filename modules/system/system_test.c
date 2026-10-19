@@ -527,29 +527,33 @@ TEST(system_says_when_the_database_was_rescued) {
 TEST(system_watches_the_time_zone) {
     /* issue #39: a Pi left on UTC for a week and then corrected showed that week's bookings hours off -
        and nothing anywhere said which zone the clock was in */
-    system_test_zone("+00:00");
-    th_boot();
+    char dir[512];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    zone_test_sig("+00:00");
+    th_boot_in(dir);
     int adam = all_well();
     const char *h = th_page(adam, "/system");
     CHECK_HAS(h, "in UTC all year");
     CHECK_HAS(h, "sudo raspi-config");
-    const Module *m = module_find("system");
-    CHECK(m && m->start && m->stop);
-    system_test_zone("+01:00/+02:00"); /* set to Stockholm, and Hemma restarted */
-    m->stop();
-    m->start();
+    th_halt();
+    zone_test_sig("+01:00/+02:00"); /* set to Stockholm, and Hemma restarted */
+    th_boot_in(dir);
+    all_well();
     h = th_page(adam, "/system");
     CHECK_HAS(h, "The time zone changed on ");
     CHECK_HAS(h, "from UTC+00:00 all year to UTC+01:00 in January, UTC+02:00 in July");
+    CHECK_HAS(h, "Nothing typed before then shows at another time."); /* (a household with nothing in it yet) */
+    CHECK(!strstr(h, "system.tz_retime"));
     CHECK_HAS(h, "system.tz_seen");
     CHECK(th_act(adam, "system.tz_seen", "").ok);
     h = th_page(adam, "/system");
     CHECK(!strstr(h, "The time zone changed"));
     CHECK_HAS(h, "(UTC+01:00 in January, UTC+02:00 in July)");
-    m->stop(); /* the same zone at the next start: nothing new */
-    m->start();
+    th_halt(); /* the same zone at the next start: nothing new */
+    th_boot_in(dir);
+    all_well();
     CHECK(!strstr(th_page(adam, "/system"), "The time zone changed"));
-    system_test_zone("");
+    zone_test_sig("");
     th_halt();
 }
 
@@ -823,5 +827,42 @@ TEST(system_says_disk_space_once_per_disk) {
     CHECK_HAS(h, "<b>Disk space (/srv/test)</b>");
     CHECK_HAS(h, "1.7 TB free on the disk with the test library (15% used).");
     g_ndisks = 0;
+    th_halt();
+}
+
+/* Issue #39, part 2: after the change the System page says what moving typed times back would do, an admin
+   chooses, and it's done once */
+TEST(system_moves_typed_times_back_when_asked) {
+    char dir[512];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    plat_set_tz("UTC0");
+    g_fake_now = dt_make(2026, 10, 7, 10, 0);
+    th_boot_in(dir);
+    int adam = all_well(), eva = th_person("Eva");
+    CHECK(th_act(adam, "plan.event_add", "q=dentist+13%2F10+14%3A30").ok);
+    CHECK(th_act(adam, "plan.event_add", "q=midsummer+party+24%2F10").ok);
+    th_halt();
+    plat_set_tz("XXX-2");
+    g_fake_now += 3600;
+    th_boot_in(dir);
+    all_well();
+    const char *h = th_page(adam, "/system");
+    CHECK_HAS(h, "kept their days (1)");
+    CHECK_HAS(h, "1 booking or event typed before then shows shifted by the difference");
+    CHECK_HAS(h, "Dentist · Tue 13 Oct 16:30 → 14:30");
+    CHECK_HAS(h, "system.tz_retime");
+    CHECK(!th_act(eva, "system.tz_retime", "").ok); /* admins only */
+    ThResult r = th_act(adam, "system.tz_retime", "");
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "Moved 1 back to the times typed");
+    h = th_page(adam, "/system");
+    CHECK_HAS(h, "1 time typed before then was moved back to the time typed.");
+    CHECK(!strstr(h, "system.tz_retime"));
+    CHECK(!th_act(adam, "system.tz_retime", "").ok); /* once */
+    CHECK_HAS(th_page(adam, "/plan/cal?day=2026-10-13"), "14:30");
+    CHECK(th_act(adam, "system.tz_seen", "").ok);
+    CHECK(!strstr(th_page(adam, "/system"), "The time zone changed"));
+    g_fake_now = 0;
+    plat_set_tz(NULL);
     th_halt();
 }

@@ -565,3 +565,40 @@ TEST(book_wall_card_only_shows_and_says_what_it_leaves_out) {
     CHECK_HAS(home, "<a href=\"/book\">+3 more</a>");
     th_halt();
 }
+
+/* Issue #39: the guest room booked for 24-26 October stays those days when the zone changes; the car
+   typed for 14:00-17:00 under UTC shows two hours later until an admin moves it back. */
+TEST(book_keeps_days_when_the_zone_changes) {
+    char dir[512];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    plat_set_tz("UTC0");
+    g_fake_now = dt_make(2026, 10, 7, 10, 0);
+    th_boot_in(dir);
+    adam = th_person("Adam");
+    int room = add_res("Guest room", "🛏️", 1440, 0, 1440, 1440, 0), car = add_res("Car", "🚗", 60, 0, 1440, 120, 0);
+    Booking stay = {.res = room, .who = adam, .by = adam, .created = g_fake_now};
+    stay.start = dt_make(2026, 10, 24, 0, 0);
+    stay.end = dt_make(2026, 10, 27, 0, 0);
+    tbl_put(&T_booking, &stay);
+    Booking drive = {.res = car, .who = adam, .by = adam, .created = g_fake_now};
+    drive.start = dt_make(2026, 10, 13, 14, 0);
+    drive.end = dt_make(2026, 10, 13, 17, 0);
+    tbl_put(&T_booking, &drive);
+    th_halt();
+    plat_set_tz("XXX-2");
+    g_fake_now += 86400;
+    th_boot_in(dir);
+    const Booking *s = book_get(stay.id);
+    CHECK(s && s->start == dt_make(2026, 10, 24, 0, 0) && s->end == dt_make(2026, 10, 27, 0, 0));
+    const Booking *dr = book_get(drive.id);
+    CHECK(dr && at(dr->start).hour == 16 && at(dr->end).hour == 19);
+    Rezone z;
+    CHECK_INT(zone_retime(false, &z), 1);
+    CHECK_STR(z.note[0], "Car · Tue 13 Oct 16:00 → 14:00");
+    CHECK_INT(zone_retime(true, &z), 1);
+    dr = book_get(drive.id);
+    CHECK(dr && at(dr->start).hour == 14 && at(dr->end).hour == 17);
+    g_fake_now = 0;
+    plat_set_tz(NULL);
+    th_halt();
+}

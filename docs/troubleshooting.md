@@ -145,6 +145,19 @@ the older one and put back the copy of the database the message names
 (`hemma.db.before-format-<n>`, made just before the change; the installer's
 `hemma.db.before-install-<when>` works too). What was added since that copy is lost.
 
+**Times look shifted after the time zone was changed.**
+Hemma keeps a time as a moment, worked out from the clock's zone when it was typed, so a Pi
+left on UTC for a week and then set to your zone shows that week's bookings hours off. At the
+next start Hemma notices: things that last whole days (all-day events, chores' days, whole-day
+bookings) keep their days by themselves, and the System page lists the times typed before,
+as they'd be if moved back ("Dentist · Tue 16:30 → 14:30"). If the old zone was wrong, press
+**Move them back to the times typed**; if Hemma really moved to another zone, press **Got it**.
+
+**A phone's calendar doesn't update.**
+It only can on the home Wi-Fi (Hemma isn't on the internet), and phones choose when to look
+(an iPhone: Settings → Calendar → Accounts → Fetch New Data). Was a new link made, or the link
+turned off? Then add the new one under **Household → Your calendar on your phone**.
+
 **A library folder is missing.**
 The disk isn't plugged in or mounted. Plug it in (on a Pi, check `/etc/fstab` so it's
 mounted at every start), then rescan in **Watch → Library settings**.

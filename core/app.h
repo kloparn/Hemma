@@ -16,6 +16,7 @@
 #include "http.h"
 #include "server.h"
 #include "store.h"
+#include "zone.h"
 
 /* The version: the VERSION file at the top of the repo ("0.14.0"; every PR raises it, merging releases
    it - docs/development.md). HEMMA_VERSION_FULL adds the commit the binary was built from: "0.6.0
@@ -77,6 +78,7 @@ typedef struct Ctx {
     Person *me;     /* NULL until the visitor picked who they are */
     Client *client; /* live WebSocket client; NULL for plain HTTP */
     uint32_t ip;    /* visitor's IPv4 (host order) */
+    char host[96];  /* the address they opened Hemma by (the Host header: "hemma.local", "192.168.1.50:8080"); "" = none */
     int64_t now;
     char url[600];  /* current page: path + query, e.g. "/book?r=2" */
     char path[300]; /* decoded path, e.g. "/book" */
@@ -191,7 +193,21 @@ typedef struct {
 typedef struct {
     AgendaItem *items;
     int n, cap;
+    bool todos; /* set by the caller: to-dos with a due day too (the calendar feed - not walls or calendars) */
 } Agenda;
+
+/* A person's calendar on their phone (issue #41; core/feed.c): an iCalendar feed at /cal/<id>-<key>.ics of
+   what's on for them - their bookings and to-dos with a day, their events and everyone's (pref PREF_CAL_ALL
+   "1": every booking too), from a month back to a year ahead. A phone's calendar subscribes (webcal://) and
+   keeps a copy for when it's away from home; its own reminders work as usual. The key is 128 bits of
+   HMAC(the server secret, "cal:<id>:<n>") - nothing secret is stored: pref PREF_CAL = n (absent/0 = off),
+   and a new link is n + 1 (the old one stops working). Only people who can sign in. */
+#define PREF_CAL "cal.feed"
+#define PREF_CAL_ALL "cal.all"
+bool cal_feed_path(int person, char *out, size_t cap); /* "/cal/3-<32 hex>.ics"; false: off (or no secret) */
+int cal_feed_person(const char *path);                 /* whose feed an address is: 0 = nobody's */
+void cal_feed_ics(Ctx *c, int person, Buf *out);       /* the calendar (links on c->host) */
+void cal_feed_http(Conn *conn, HttpReq *r);            /* core: GET /cal/... */
 
 void agenda_add(Agenda *a, const AgendaItem *it);
 /* Everything overlapping [from, to) from every module except `except` (NULL = all), sorted by start. */
@@ -272,6 +288,10 @@ typedef struct Module {
     void (*widget)(Ctx *c, Buf *b, int where);    /* a card for the home dashboard (WIDGET_HOME) */
     int widget_order;
     void (*agenda)(Ctx *c, int64_t from, int64_t to, Agenda *out); /* timed things for shared agendas */
+    /* The time zone changed (zone.h, issue #39): z->days - move every day it keeps as a local midnight with
+       rezone_day(); else every time typed before z->before with rezone_time(). With z->apply false only count
+       (and rezone_note() the first few). Returns how many things (would) move. */
+    int (*rezone)(Rezone *z);
     /* A small block at the foot of the sidebar, above the profile (phones: on the More page).
        Every page shows it: keep it quick (cached numbers, no disk or network work). */
     void (*side)(Ctx *c, Buf *b);
@@ -376,6 +396,7 @@ bool app_dev_mode(void);
 bool app_boot(const char *data_dir);
 void app_halt(void);                       /* stop hooks + close the store */
 void app_ctx(Ctx *c, int person, const char *url); /* context as a person (0 = anonymous visitor) */
+void app_test_ctx_host(const char *host); /* tests: app_ctx's pages as if opened by this address (Ctx.host) */
 void app_ctx_free(Ctx *c);
 void app_render(Ctx *c, Buf *out);         /* the <div id="app"> for c->url */
 bool app_action(Ctx *c, const char *name, Fields *f); /* false if no such action */

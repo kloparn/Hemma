@@ -22,11 +22,6 @@
 #define SET_SALT "system.salt_saved"
 #define SET_HIDDEN "system.start_hidden"
 #define SET_PHONE "system.phone"
-#define SET_TZ "system.time_zone"          /* this computer's zone at the last start: "+01:00/+02:00" */
-#define SET_TZ_CHANGED "system.tz_changed" /* "<from>|<to>|<day>" until an admin has seen it */
-
-static void zone_sig(char *out, size_t cap);
-static void zone_words(const char *sig, char *out, size_t cap);
 
 static int64_t g_started; /* unix seconds */
 static LogLevel g_level_at_start = LOG_INFO;
@@ -164,16 +159,29 @@ static void own_checks(Ctx *c, Health *h) {
     zone_sig(sig, sizeof sig);
     zone_words(sig, words, sizeof words);
     fmt_hm(now, hm);
-    char from[32] = "", to[32] = "", day[16] = "";
-    if (sscanf(setting(SET_TZ_CHANGED, ""), "%31[^|]|%31[^|]|%15s", from, to, day) == 3) {
+    ZoneChange zc;
+    if (zone_change(&zc)) {
         char a[80], b[80];
-        zone_words(from, a, sizeof a);
-        zone_words(to, b, sizeof b);
-        snprintf(d, sizeof d, "The time zone changed on %s, from %s to %s. Bookings and events entered before then may "
-                              "show at times shifted by the difference.", day, a, b);
-        health_add(h, HEALTH_WARN, "Time zone", d,
-                   "Look at a few bookings and events from before that day and move any that are off. \"Got it\" "
-                   "above hides this.",
+        zone_words(zc.from, a, sizeof a);
+        zone_words(zc.to, b, sizeof b);
+        Rezone z;
+        int typed = zc.retimed < 0 ? zone_retime(false, &z) : 0;
+        int n = snprintf(d, sizeof d, "The time zone changed on %s, from %s to %s. ", zc.day, a, b);
+        if (zc.kept)
+            n += snprintf(d + n, sizeof d - (size_t)n, "Things that last whole days (all-day events, chores' days, "
+                                                       "whole-day bookings) kept their days (%d). ", zc.kept);
+        if (zc.retimed >= 0)
+            snprintf(d + n, sizeof d - (size_t)n, "%d time%s typed before then %s moved back to the time%s typed.",
+                     zc.retimed, zc.retimed == 1 ? "" : "s", zc.retimed == 1 ? "was" : "were", zc.retimed == 1 ? "" : "s");
+        else if (typed)
+            snprintf(d + n, sizeof d - (size_t)n, "%d %s typed before then %s shifted by the difference - right if "
+                                                  "Hemma moved house, wrong if the old zone was.",
+                     typed, typed == 1 ? "booking or event" : "bookings and events", typed == 1 ? "shows" : "show");
+        else snprintf(d + n, sizeof d - (size_t)n, "Nothing typed before then shows at another time.");
+        health_add(h, typed ? HEALTH_WARN : HEALTH_INFO, "Time zone", d,
+                   typed ? "Was the old zone wrong (a Raspberry Pi left on its own UTC)? Then move them back to the "
+                           "times they were typed, above. If not, \"Got it\"."
+                         : NULL,
                    NULL);
     } else if (str_eq(sig, "+00:00")) {
         snprintf(d, sizeof d, "The clock says %s, in UTC all year - a Raspberry Pi's own setting, not many homes' "
@@ -527,9 +535,27 @@ static void page_checks(Ctx *c, Buf *b) {
         ui_act(b, "system.rescued_seen", "btn sm", "Got it - I've read about the rescued database", NULL, NULL, NULL);
         buf_puts(b, "</div>");
     }
-    if (setting(SET_TZ_CHANGED, "")[0]) {
-        buf_puts(b, "<div class=\"system-again\">");
-        ui_act(b, "system.tz_seen", "btn sm", "Got it - I've checked the times", NULL, NULL, NULL);
+    ZoneChange zc;
+    if (zone_change(&zc)) { /* issue #39: what moving them back would do, then the choice */
+        buf_puts(b, "<div class=\"system-again\" id=\"system-zone\">");
+        Rezone z;
+        int typed = zc.retimed < 0 ? zone_retime(false, &z) : 0;
+        if (typed) {
+            H(b, "<p>The time zone changed on %s. Moved back to the times they were typed, these would show:</p>"
+                 "<ul class=\"system-zone\">",
+              zc.day);
+            for (int k = 0; k < z.notes; k++) H(b, "<li>%s</li>", z.note[k]);
+            if (typed > z.notes) H(b, "<li class=\"muted\">and %d more</li>", typed - z.notes);
+            buf_puts(b, "</ul><div class=\"system-zone-do\">");
+            char ask[120];
+            snprintf(ask, sizeof ask, "Move %d %s back to the time%s typed?", typed,
+                     typed == 1 ? "booking or event" : "bookings and events", typed == 1 ? "" : "s");
+            ui_form_confirm(b, "system.tz_retime", "inline", ask);
+            buf_puts(b, "<button class=\"btn sm primary\">Move them back to the times typed</button>");
+            ui_form_end(b);
+            ui_act(b, "system.tz_seen", "btn sm", "Got it - they're right as they are", NULL, NULL, NULL);
+            buf_puts(b, "</div>");
+        } else ui_act(b, "system.tz_seen", "btn sm", "Got it - I've read about the time zone", NULL, NULL, NULL);
         buf_puts(b, "</div>");
     }
     bool start = setting_int(SET_HIDDEN, 0) != 1;
@@ -814,8 +840,23 @@ static void act_salt_saved(Ctx *c, Fields *f) {
 
 static void act_tz_seen(Ctx *c, Fields *f) {
     if (!admin_only(c)) return;
-    setting_set(SET_TZ_CHANGED, "");
+    zone_seen();
     ctx_ok(c, "Noted");
+}
+
+/* Issue #39: the old zone was wrong - what was typed then shows at the times typed again */
+static void act_tz_retime(Ctx *c, Fields *f) {
+    if (!admin_only(c)) return;
+    ZoneChange zc;
+    if (!zone_change(&zc) || zc.retimed >= 0) {
+        ctx_fail(c, "Nothing to move: that's been done, or put away");
+        return;
+    }
+    Rezone z;
+    int n = zone_retime(true, &z);
+    activity_add(c->me->id, "🕑", "/system", "%s moved %d time%s typed before the time zone changed back to the "
+                                             "times typed", c->me->name, n, n == 1 ? "" : "s");
+    ctx_ok(c, "Moved %d back to the times typed", n);
 }
 
 static void act_rescued_seen(Ctx *c, Fields *f) {
@@ -839,6 +880,7 @@ static const Action actions[] = {
     {"system.search", act_search, true},  {"system.verbose", act_verbose},     {"system.salt_saved", act_salt_saved},
     {"system.start_hide", act_start_hide}, {"system.start_show", act_start_show}, {"system.rescued_seen", act_rescued_seen},
     {"system.tz_seen", act_tz_seen},
+    {"system.tz_retime", act_tz_retime},
     {"system.backup_now", system_backup_act_now}, {"system.backup_restore", system_backup_act_restore},
     {"system.backup_cancel", system_backup_act_cancel}, {"system.backup_dir", system_backup_act_dir},
     {"system.restored_seen", system_backup_act_restored_seen}, {0},
@@ -870,63 +912,8 @@ static bool http(Ctx *c, Conn *conn, HttpReq *r) {
 
 /* -------------------------------------------------------------- lifecycle */
 
-/* ------------------------------------------------------------ time zone */
-
-static char g_zone_test[32];
-void system_test_zone(const char *sig) { str_copy(g_zone_test, sizeof g_zone_test, sig ? sig : ""); }
-
-static void offset_text(int secs, char out[8]) {
-    char sign = secs < 0 ? '-' : '+';
-    if (secs < 0) secs = -secs;
-    snprintf(out, 8, "%c%02d:%02d", sign, secs / 3600 % 100, secs / 60 % 60);
-}
-
-/* This computer's time zone, as its offsets from UTC in January and July: "+01:00/+02:00", or
-   "+00:00" when they're the same. (A zone's name isn't portable; what it does to times is.) */
-static void zone_sig(char *out, size_t cap) {
-    if (g_zone_test[0]) {
-        str_copy(out, cap, g_zone_test);
-        return;
-    }
-    int year = dt_local(now_sec()).year;
-    char a[8], b[8];
-    offset_text(utc_offset(dt_make(year, 1, 15, 12, 0)), a);
-    offset_text(utc_offset(dt_make(year, 7, 15, 12, 0)), b);
-    if (str_eq(a, b)) snprintf(out, cap, "%s", a);
-    else snprintf(out, cap, "%s/%s", a, b);
-}
-
-/* "UTC+01:00 in January, UTC+02:00 in July" / "UTC+00:00 all year" */
-static void zone_words(const char *sig, char *out, size_t cap) {
-    const char *slash = strchr(sig, '/');
-    if (slash) snprintf(out, cap, "UTC%.*s in January, UTC%s in July", (int)(slash - sig), sig, slash + 1);
-    else snprintf(out, cap, "UTC%s all year", sig);
-}
-
-/* Issue #39: times are kept as moments, worked out from the zone when they were typed - a Pi left on
-   UTC for a week and then corrected shows every booking from that week hours off. The zone is kept
-   at each start; a change is said on the System page until an admin has seen it. */
-static void zone_watch(void) {
-    char sig[32];
-    zone_sig(sig, sizeof sig);
-    char was[32];
-    str_copy(was, sizeof was, setting(SET_TZ, ""));
-    if (str_eq(was, sig)) return;
-    if (was[0]) {
-        char day[11], rec[96], a[80], b[80];
-        fmt_ymd(now_sec(), day);
-        snprintf(rec, sizeof rec, "%s|%s|%s", was, sig, day);
-        setting_set(SET_TZ_CHANGED, rec);
-        zone_words(was, a, sizeof a);
-        zone_words(sig, b, sizeof b);
-        log_warn("the time zone changed from %s to %s: times entered before may look shifted", a, b);
-    }
-    setting_set(SET_TZ, sig);
-}
-
 static void start(void) {
     g_started = now_sec();
-    zone_watch();
     if (!g_level_known) {
         g_level_at_start = g_log_level;
         g_level_known = true;

@@ -385,3 +385,63 @@ TEST(people_page_after_a_recovery) {
     CHECK_HAS(th_page(adam, "/people?recovered=1"), "You have 1 recovery code left - make new ones");
     th_halt();
 }
+
+/* Issue #41: "Your calendar on your phone" - off until you make a link; the link is for the address you
+   opened Hemma by, as webcal:// (a tap or a QR code on an iPhone) and http:// (ICSx⁵ on Android) */
+TEST(people_calendar_link_is_made_renewed_and_turned_off) {
+    boot();
+    int adam = admin("Adam", "adam");
+    int hall = admin("Hall", "hall");
+    Person h = *person_get(hall);
+    h.role = ROLE_DISPLAY;
+    tbl_put(&T_person, &h);
+    const char *page = th_page(adam, "/people");
+    CHECK_HAS(page, "Your calendar on your phone");
+    CHECK_HAS(page, "people.cal_make");
+    CHECK(!strstr(page, "webcal://"));
+    CHECK(!strstr(th_page(hall, "/people"), "Your calendar on your phone")); /* (a display account has none) */
+    CHECK(th_act(adam, "people.cal_make", "").ok);
+    char first[96], second[96], third[96];
+    CHECK(cal_feed_path(adam, first, sizeof first));
+    /* no address known: nothing to make the link of */
+    page = th_page(adam, "/people");
+    CHECK_HAS(page, "Open this page at Hemma's address to see your link.");
+    CHECK(!strstr(page, "webcal://"));
+    /* opened on this computer: the link works for its own calendar, a phone can't reach it (no code to scan) */
+    app_test_ctx_host("127.0.0.1:8080");
+    page = th_page(adam, "/people");
+    CHECK_HAS(page, "which only this computer can reach");
+    CHECK_HAS(page, "href=\"webcal://127.0.0.1:8080/cal/");
+    CHECK(!strstr(page, "<svg class=\"qr\""));
+    app_test_ctx_host("hemma.local:8080");
+    page = th_page(adam, "/people");
+    char want[160];
+    snprintf(want, sizeof want, "href=\"webcal://hemma.local:8080%s\" data-native", first);
+    CHECK_HAS(page, want);
+    snprintf(want, sizeof want, "<code class=\"people-cal-url\">http://hemma.local:8080%s</code>", first);
+    CHECK_HAS(page, want);
+    CHECK_HAS(page, "<svg class=\"qr\"");
+    CHECK_HAS(page, "ICSx⁵");
+    /* every booking: a tick */
+    CHECK(th_act(adam, "people.cal_all", "all=1").ok);
+    CHECK_STR(pref(adam, PREF_CAL_ALL, ""), "1");
+    CHECK_HAS(th_page(adam, "/people"), "value=\"1\" data-auto checked");
+    CHECK(th_act(adam, "people.cal_all", "").ok);
+    CHECK_STR(pref(adam, PREF_CAL_ALL, ""), "");
+    /* a new link: the old one stops */
+    ThResult r = th_act(adam, "people.cal_make", "");
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "the old one stopped working");
+    CHECK(cal_feed_path(adam, second, sizeof second) && !str_eq(first, second));
+    CHECK_INT(cal_feed_person(first), 0);
+    /* off - and made again: neither of the old ones comes back */
+    CHECK(th_act(adam, "people.cal_off", "").ok);
+    CHECK(!cal_feed_path(adam, third, sizeof third));
+    CHECK_INT(cal_feed_person(second), 0);
+    CHECK_HAS(th_page(adam, "/people"), "Make my calendar link");
+    CHECK(th_act(adam, "people.cal_make", "").ok);
+    CHECK(cal_feed_path(adam, third, sizeof third) && !str_eq(third, first) && !str_eq(third, second));
+    CHECK(!th_act(hall, "people.cal_make", "").ok); /* view-only */
+    app_test_ctx_host(NULL);
+    th_halt();
+}

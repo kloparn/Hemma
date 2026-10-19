@@ -44,13 +44,13 @@ see [the credits](docs/img/CREDITS.md).</sub>
 |---|---|
 | **Home** | A greeting, who's home, a card from every section and the latest news |
 | **Book** | Shared things like the car, laundry, guest room or sauna. It has a week view, warns about clashes and understands quick text like *"car fri 14-17 ikea"* or *"bastu ikväll 19"* (English or Swedish, and any other names you give a thing). Whoever's booking someone else cancels or moves is told |
-| **Plan** | Chores with repeats and people (*"vacuum @sam fri every week"*), a shared shopping list that remembers what you often buy, and a calendar that also shows bookings |
+| **Plan** | Chores with repeats and people (*"vacuum @sam fri every week"*), a shared shopping list that remembers what you often buy, and a calendar that also shows bookings. Your bookings, to-dos and the household's events can go into your phone's own calendar too, with its reminders ([how](docs/accounts.md#your-calendar-on-your-phone)) |
 | **Watch** | Your movie and series drive as a little cinema. It sorts series into seasons, has search and subtitles, and remembers where you stopped. It can convert videos a browser can't play (like DVD rips) into a copy that plays everywhere, and moves HEVC films into a file Safari on iPhone, iPad and Mac can play. Admins can upload whole folders from a browser: the uploading computer makes those copies itself, so only the small copy travels and the Pi does no heavy lifting. An upload picks up where it stopped if the connection drops, and skips episodes and films you already have. Admins can remove a film for good, folder and all. **Live TV** ("90s TV") is a tab here: channels that play your shows non-stop on a shared clock, with a TV guide |
 | **Board** | The fridge door: notes with pins and colours that disappear when they're out of date |
 | **Network** | The devices on your network, who owns which, a good guess at who's home (from phones on the Wi-Fi) and Wake-on-LAN |
 | **Screens** | Hemma on the TV: a streaming-app view with big rows you move through with the remote (Continue watching, On TV, Recently added, Series, Movies), arranged by an admin. The TV asks *Who's watching?*: pick yourself (no password) and your progress follows you; on the TV you can only watch |
 | **Wall** | An always-on overview for a tablet on the wall (a Screen too): a big clock, what's on now and next, who's home, then cards for today, bookings, the coming days, the shopping list, notes, Live TV and what's new - an admin picks them. Cards with nothing to show stay away. Signed in with a read-only *display* account |
-| **Household** | People, sign-ins and roles, and your home's name |
+| **Household** | People, sign-ins and roles, your home's name, and the link that puts your calendar on your phone |
 | **System** | For admins: is everything working (in plain words), a getting-started list that ticks itself off, the server's log live, and what to do when something's wrong |
 
 **About posters.** Hemma never looks anything up on the internet, so a new film or series

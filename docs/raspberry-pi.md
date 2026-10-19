@@ -48,7 +48,8 @@ matches `hemma-pi64`. The older models only run the 32-bit system, which matches
    - **Username and password:** your own. You'll use them for SSH and `sudo`.
    - **Wi-Fi:** name, password and country. You can skip this if you use a cable.
    - **Time zone and keyboard:** your own. The time zone matters: bookings and the
-     calendar use the Pi's clock.
+     calendar use the Pi's clock. (Set it later and Hemma keeps all-day things on their
+     days, and offers to move the times typed before on the System page.)
    - **SSH: enable it.** Choose *public-key authentication* if you already have an SSH
      key (see [ssh.md](ssh.md#keys-better-than-passwords)), otherwise a password is fine
      for now.

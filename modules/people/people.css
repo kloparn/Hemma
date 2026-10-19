@@ -26,3 +26,9 @@
   .people-codes { grid-template-columns: 1fr 1fr; }
   .people-codes li { background: none; border: 1px dashed #888; }
 }
+
+/* Your calendar on your phone (issue #41) */
+.people-cal-qr { margin: 4px 0 10px; }
+.people-cal-qr .qr { display: block; width: 156px; height: 156px; border-radius: 8px; }
+.people-cal-url { display: inline-block; max-width: 100%; overflow-wrap: anywhere; font-size: 13px; }
+.people-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
