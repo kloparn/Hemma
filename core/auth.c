@@ -614,6 +614,7 @@ LoginResult auth_login(const char *username, const char *password, uint32_t ip, 
     }
     try_passed(&t, now);
     salt_proven();
+    if (person_signin_over(p, now)) return LOGIN_ENDED; /* (a guest's last day went by: issue #44) */
     Person rec = *p;
     rec.last_login = now;
     if (auth_needs_rehash(rec.pass)) { /* upgrade old hashes while we know the password */
@@ -760,7 +761,10 @@ static void code_hash(int person, const char *norm, char out[65]) {
     hex_encode(mac, sizeof mac, out);
 }
 
-static bool can_have_codes(const Person *p) { return p && p->role != ROLE_DISPLAY && p->username[0] && p->pass[0]; }
+/* (a guest's sign-in ends by itself in days: an admin sets a new password if they forget it) */
+static bool can_have_codes(const Person *p) {
+    return p && p->role != ROLE_DISPLAY && p->role != ROLE_GUEST && p->username[0] && p->pass[0];
+}
 
 int auth_codes_left(int person) {
     int n = 0;
@@ -1034,7 +1038,11 @@ int auth_reset_cli(const char *data_dir, const char *username, int wait_ms, Buf 
             while (sqlite3_step(st) == SQLITE_ROW) {
                 int role = sqlite3_column_int(st, 1);
                 buf_printf(out, "%s%s%s", k++ ? ", " : "Accounts here: ", (const char *)sqlite3_column_text(st, 0),
-                           role == ROLE_ADMIN ? " (admin)" : role == ROLE_DISPLAY ? " (display)" : "");
+                           role == ROLE_ADMIN     ? " (admin)"
+                           : role == ROLE_DISPLAY ? " (display)"
+                           : role == ROLE_CHILD   ? " (child)"
+                           : role == ROLE_GUEST   ? " (guest)"
+                                                  : "");
             }
         }
         sqlite3_finalize(st);
@@ -1294,6 +1302,11 @@ static void signin_page(Ctx *c, Buf *b) {
     else if (e == 2) wait_notice(c, b);
     else if (e == 3) buf_puts(b, "<p class=\"notice\">You're signed out.</p>");
     else if (e == 4) buf_puts(b, "<p class=\"notice\">This Hemma already has an admin. Sign in, or ask them to add you.</p>");
+    else if (e == 5) { /* the password was right: a guest whose last day went by */
+        buf_puts(b, "<p class=\"notice bad\" role=\"alert\">Your sign-in has ended. To stay longer, ask ");
+        ui_admins(b);
+        buf_puts(b, " for more days.</p>");
+    }
     buf_puts(b, "<form method=\"post\" action=\"/login\" class=\"stack\">");
     ui_hidden(b, "next", next);
     H(b,
@@ -1577,7 +1590,7 @@ bool auth_http(Ctx *c, Conn *conn, HttpReq *r) {
     } else {
         Buf loc = {0};
         bool wait_more = res == LOGIN_THROTTLED || res == LOGIN_BUSY;
-        buf_printf(&loc, "/login?e=%d", wait_more ? 2 : 1);
+        buf_printf(&loc, "/login?e=%d", wait_more ? 2 : res == LOGIN_ENDED ? 5 : 1);
         typed_keep(conn->ip, user);
         if (wait_more) buf_printf(&loc, "&w=%d%s", wait, res == LOGIN_BUSY ? "&busy=1" : "");
         buf_puts(&loc, "&next=");

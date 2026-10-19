@@ -24,6 +24,7 @@ static const FieldDef person_fields[] = {
     FIELD(Person, id, F_INT),        FIELD(Person, name, F_STR),          FIELD(Person, emoji, F_STR),
     FIELD(Person, hue, F_INT),       FIELD(Person, created, F_I64),       FIELD(Person, username, F_STR),
     FIELD_SECRET(Person, pass, F_STR), FIELD(Person, role, F_INT),        FIELD(Person, last_login, F_I64),
+    FIELD(Person, until, F_I64),     FIELD(Person, left, F_I64),
 };
 Table T_person = TABLE("person", Person, person_fields);
 
@@ -242,10 +243,13 @@ const Block *block_find(const char *id, const Module **owner) {
 
 static const Action *action_find(const char *name, const Module **owner);
 
-bool app_action_display(const char *name) {
+bool app_action_open(const char *name, int role) {
+    if (role != ROLE_DISPLAY && role != ROLE_CHILD && role != ROLE_GUEST) return true;
     const Module *owner = NULL;
     const Action *a = action_find(name, &owner);
-    return a && a->display;
+    if (!a) return false;
+    if (role == ROLE_DISPLAY) return a->display;
+    return a->may & (role == ROLE_CHILD ? ACT_CHILD : ACT_GUEST);
 }
 
 static const Action *action_find(const char *name, const Module **owner) {
@@ -277,23 +281,35 @@ Person *person_get(int id) { return id > 0 ? tbl_get(&T_person, id) : NULL; }
 int account_count(void) { return tbl_count(&T_person); }
 Person *account_at(int i) { return tbl_at(&T_person, i); }
 
+/* one of the household's people: not a display account, not someone who moved out */
+static bool in_household(const Person *p) { return p->role != ROLE_DISPLAY && !p->left; }
+
 int person_count(void) {
     int n = 0;
-    for (int i = 0; i < tbl_count(&T_person); i++) n += ((Person *)tbl_at(&T_person, i))->role != ROLE_DISPLAY;
+    for (int i = 0; i < tbl_count(&T_person); i++) n += in_household(tbl_at(&T_person, i));
     return n;
 }
 
 Person *person_real(int id) {
     Person *p = person_get(id);
-    return p && p->role != ROLE_DISPLAY ? p : NULL;
+    return p && in_household(p) ? p : NULL;
 }
 
 Person *person_at(int i) {
     for (int k = 0; k < tbl_count(&T_person); k++) {
         Person *p = tbl_at(&T_person, k);
-        if (p->role != ROLE_DISPLAY && i-- == 0) return p;
+        if (in_household(p) && i-- == 0) return p;
     }
     return NULL;
+}
+
+bool person_signin_over(const Person *p, int64_t now) { return p && (p->left || (p->until && now >= p->until)); }
+
+const char *person_label(const Person *p, char *out, size_t cap) {
+    if (!p) snprintf(out, cap, "Someone");
+    else if (p->left) snprintf(out, cap, "%s (moved out)", p->name);
+    else snprintf(out, cap, "%s", p->name);
+    return out;
 }
 
 Person *person_find(const char *name) {
@@ -332,7 +348,7 @@ static void sid_token(const char *sid, char token[65]) {
    display account's older than DISPLAY_SESSION_DAYS (a TV's cookie: issue #90). */
 static bool session_over(const Session *s, int64_t now) {
     const Person *p = s->token[0] ? person_get(s->person) : NULL;
-    if (!p) return true;
+    if (!p || person_signin_over(p, now)) return true; /* (a guest's last day went by: issue #44) */
     if (now - MAX(s->seen, s->created) > (s->remember ? 366 : 7) * 86400LL) return true;
     if (p->role == ROLE_DISPLAY && now - s->created > DISPLAY_SESSION_DAYS * 86400LL) return true; /* (a TV's cookie: issue #90) */
     return p->role == ROLE_ADMIN && now - s->created > ADMIN_SESSION_DAYS * 86400LL;
@@ -801,6 +817,7 @@ static int g_nhome;
 static bool g_tracking;
 
 int presence_screens(int person) {
+    if (!privacy_doing(person)) return 0; /* (they'd rather not show: issue #42) */
     int n = 0;
     for (int i = 0; i < nclients; i++) {
         Session *s = session_by_token(clients[i]->token);
@@ -810,6 +827,7 @@ int presence_screens(int person) {
 }
 
 const char *presence_page(int person) {
+    if (!privacy_doing(person)) return NULL;
     for (int i = nclients - 1; i >= 0; i--) {
         Session *s = session_by_token(clients[i]->token);
         if (!s || s->person != person || !clients[i]->ready) continue;
@@ -823,6 +841,10 @@ const char *presence_page(int person) {
 }
 
 void presence_set_home(int person, bool home, int64_t since) {
+    if (!privacy_home(person)) { /* their devices don't tell (issue #42): unknown, never "away" */
+        presence_forget(person);
+        return;
+    }
     g_tracking = true;
     for (int i = 0; i < g_nhome; i++) {
         if (g_home[i].person == person) {
@@ -867,6 +889,24 @@ bool presence_known(int person) {
         if (g_home[i].person == person) return true;
     return false;
 }
+
+/* ============================================================== privacy */
+
+int privacy_wall(int person) {
+    const char *v = pref(person, PREF_WALL, "");
+    return str_eq(v, "no") ? WALL_HIDE : str_eq(v, "name") ? WALL_NAME : WALL_SHOW;
+}
+
+bool privacy_doing(int person) { return !str_eq(pref(person, PREF_DOING, ""), "no"); }
+
+bool privacy_on_tv(const Person *p) {
+    if (!p || p->role == ROLE_DISPLAY || p->left) return false;
+    const char *v = pref(p->id, PREF_ON_TV, "");
+    if (v[0]) return str_eq(v, "1");
+    return p->role != ROLE_ADMIN && p->role != ROLE_GUEST; /* (an admin's or a guest's history is theirs to show) */
+}
+
+bool privacy_home(int person) { return !str_eq(pref(person, PREF_NOT_HOME, ""), "1"); }
 
 static int (*g_guesser)(uint32_t ip);
 void presence_set_guesser(int (*guess)(uint32_t ip)) { g_guesser = guess; }
@@ -927,6 +967,71 @@ void pref_set(int person, const char *key, const char *val) {
     tbl_put(&T_pref, &rec);
 }
 
+/* ============================================================ forgetting */
+
+void forget_note(Forget *f, const char *fmt, ...) {
+    if (f->nnotes >= countof(f->notes)) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(f->notes[f->nnotes++], sizeof f->notes[0], fmt, ap);
+    va_end(ap);
+}
+
+int person_forget(Forget *f) {
+    const Person *p = person_get(f->person);
+    if (!p) return 0;
+    int n = 0;
+    for (int i = 0; i < nmods; i++)
+        if (mods[i]->forget) n += mods[i]->forget(f);
+    int signed_in = 0, prefs = 0, lines = 0, watching = 0;
+    for (int i = tbl_count(&T_session) - 1; i >= 0; i--) {
+        Session *s = tbl_at(&T_session, i);
+        if (s->person == f->person) {
+            signed_in++;
+            if (f->apply) tbl_del(&T_session, s->id);
+        } else if (s->viewer == f->person) { /* a TV that had them picked asks again */
+            watching++;
+            if (f->apply) {
+                Session rec = *s;
+                rec.viewer = 0;
+                tbl_put(&T_session, &rec);
+            }
+        }
+    }
+    for (int i = tbl_count(&T_pref) - 1; i >= 0; i--) {
+        Pref *x = tbl_at(&T_pref, i);
+        if (x->person != f->person) continue;
+        prefs++;
+        if (f->apply) tbl_del(&T_pref, x->id);
+    }
+    for (int i = tbl_count(&T_activity) - 1; !f->keep && i >= 0; i--) {
+        Activity *a = tbl_at(&T_activity, i);
+        if (a->who != f->person) continue;
+        lines++;
+        if (f->apply) tbl_del(&T_activity, a->id);
+    }
+    if (p->username[0] && signed_in)
+        forget_note(f, "Their sign-in goes (signed in on %d device%s now)", signed_in, signed_in == 1 ? "" : "s");
+    else if (p->username[0])
+        forget_note(f, "Their sign-in goes");
+    if (lines) forget_note(f, "%d line%s in Latest about what they did go%s", lines, lines == 1 ? "" : "s", lines == 1 ? "es" : "");
+    n += signed_in + prefs + lines + watching;
+    if (!f->apply) return n;
+    auth_codes_drop(f->person);
+    presence_forget(f->person);
+    if (f->keep) {
+        Person rec = *p;
+        rec.left = f->now;
+        rec.username[0] = rec.pass[0] = '\0';
+        rec.until = 0;
+        if (rec.role == ROLE_ADMIN) rec.role = ROLE_MEMBER; /* (nobody counts them as an admin any more) */
+        tbl_put(&T_person, &rec);
+    } else {
+        tbl_del(&T_person, f->person);
+    }
+    return n + 1;
+}
+
 /* ============================================================== activity */
 
 void activity_add(int who, const char *icon, const char *link, const char *fmt, ...) {
@@ -963,7 +1068,7 @@ static void display_start(Ctx *c) {
 
 static void render_app(Ctx *c, Buf *out) {
     display_start(c);
-    ui_view_only(c->me && c->me->role == ROLE_DISPLAY); /* (its forms that only answer "view-only" stay out) */
+    ui_role(c->me ? c->me->role : ROLE_MEMBER); /* (forms that would only say no stay out: display, child, guest) */
     const Module *m = module_for_path(c->path);
     Buf page = {0};
     c->title[0] = '\0';
@@ -1003,7 +1108,7 @@ static void render_app(Ctx *c, Buf *out) {
     else ui_shell(c, out, m, page.p, page.len);
     buf_puts(out, "</div>");
     buf_free(&page);
-    ui_view_only(false);
+    ui_role(ROLE_MEMBER);
 }
 
 static void send_ops(Client *cl, const Buf *ops) {
@@ -1173,6 +1278,11 @@ static bool run_action(Ctx *c, const char *name, Fields *f, bool *ran, bool live
     }
     if (c->me->role == ROLE_DISPLAY && !a->display) { /* a TV may only watch (Action.display) */
         ctx_fail(c, "This screen is view-only");
+        return true;
+    }
+    if (!app_action_open(name, c->me->role)) { /* children and guests: what's opened to them (issue #44) */
+        if (c->me->role == ROLE_CHILD) ctx_fail(c, "Ask a grown-up to do that");
+        else ctx_fail(c, "That isn't open to guests");
         return true;
     }
     int me = c->me->id;
@@ -1649,6 +1759,9 @@ static void api(Ctx *c, Conn *conn, HttpReq *r) {
         reply_json(conn, 401, &out);
     } else if (c->me->role == ROLE_DISPLAY) { /* a wall tablet only looks at its own screens (review) */
         buf_puts(&out, "{\"error\":\"display accounts can't use the API\"}");
+        reply_json(conn, 403, &out);
+    } else if (c->me->role == ROLE_CHILD || c->me->role == ROLE_GUEST) { /* (it reads every table: issue #44) */
+        buf_puts(&out, "{\"error\":\"the API is for members and admins\"}");
         reply_json(conn, 403, &out);
     } else if (str_eq(r->method, "POST")) {
         Fields f = {0};

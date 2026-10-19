@@ -43,10 +43,9 @@ int screens_first(int kind); /* the first screen of that kind (SCREEN_TV / SCREE
 /* The display account opens a TV screen at its "/" (Screens -> Edit -> Shows on): only such an
    account picks who's watching. */
 bool screens_drives_tv(int account);
-/* Issue #90 (owner, 2026-10-17): who a TV's "Who's watching?" lists - people, admins only once they
-   ticked "Show me on the TV" (PREF_ON_TV: whoever holds the TV's sign-in could read and clear their
-   history) - and who asked for a PIN there (PREF_PIN, optional, 4 digits). */
-#define PREF_ON_TV "screens.on_tv"
+/* Issues #90, #42: who a TV's "Who's watching?" lists - people who chose to be there (core privacy_on_tv:
+   PREF_ON_TV; admins and guests off until they tick it - whoever holds the TV's sign-in could read and clear
+   their history) - and who asked for a PIN there (PREF_PIN, optional, 4 digits). */
 #define PREF_PIN "screens.pin"
 bool screens_on_picker(const Person *p);
 bool screens_has_pin(int person);

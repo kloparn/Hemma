@@ -115,7 +115,7 @@ TEST(media_recently_added_groups_a_series_new_episodes) {
     int adam = library();
     /* everything came at once: each series is one entry, the films themselves */
     MediaRecent r[10];
-    int n = media_recent(r, countof(r));
+    int n = media_recent(NULL, r, countof(r));
     CHECK_INT(n, 4);
     int garden = -1;
     for (int i = 0; i < n; i++)
@@ -139,14 +139,14 @@ TEST(media_recently_added_groups_a_series_new_episodes) {
     MediaIndex *ix = (MediaIndex *)media_lib();
     g_ix = ix;
     qsort(ix->recent, (size_t)ix->nrecent, sizeof(int), newest_first);
-    n = media_recent(r, countof(r));
+    n = media_recent(NULL, r, countof(r));
     CHECK_INT(n, 5);
     CHECK(r[0].f == find("Flower.mp4") && r[0].n == 1 && !r[0].series);
     CHECK(r[1].series == series_named("Garden Show") && r[1].n == 2 && r[1].f == find("S02E01.mp4"));
     CHECK(r[2].series == series_named("Night Owls") && r[2].n == 2);
     CHECK(r[3].f == find("Inception.2010.mkv"));
     CHECK(r[4].f == find("S01E01.Seeds.mp4") && r[4].n == 1 && !r[4].series); /* three weeks older */
-    CHECK_INT(media_recent(r, 2), 2); /* room for two: the batches still count every episode */
+    CHECK_INT(media_recent(NULL, r, 2), 2); /* room for two: the batches still count every episode */
     CHECK(r[1].n == 2);
     th_halt();
 }

@@ -765,3 +765,120 @@ TEST(plan_events_repeat) {
     g_fake_now = 0;
     th_halt();
 }
+
+/* ------------------------------------------------- children, guests (issue #44) */
+
+static int with_role(int person, int role) {
+    Person p = *person_get(person);
+    p.role = role;
+    tbl_put(&T_person, &p);
+    return person;
+}
+
+TEST(plan_a_child_looks_after_their_own_to_dos) {
+    th_boot();
+    g_fake_now = NOW;
+    int anna = th_person("Anna"), leo = with_role(th_person("Leo"), ROLE_CHILD);
+    CHECK(th_act(anna, "plan.task_add", "q=tidy+your+room+%40leo+today").ok);
+    CHECK(th_act(anna, "plan.task_add", "q=pay+the+bills+%40anna+today").ok);
+    int tidy = open_task("Tidy your room")->id, bills = open_task("Pay the bills")->id;
+    const char *h = th_page(leo, "/plan");
+    CHECK_HAS(h, "Tidy your room");
+    CHECK(!strstr(h, "Pay the bills")); /* their own only */
+    CHECK(!strstr(h, "plan-filter"));
+    CHECK_HAS(h, "for yourself");
+    char f[40];
+    snprintf(f, sizeof f, "id=%d", bills);
+    ThResult r = th_act(leo, "plan.task_done", f);
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "isn't yours");
+    snprintf(f, sizeof f, "/plan?edit=%d", bills);
+    CHECK(!strstr(th_page(leo, f), "role=\"dialog\""));
+    r = th_act(leo, "plan.task_add", "q=feed+the+cat+%40anna");
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "for yourself");
+    CHECK(th_act(leo, "plan.task_add", "q=build+a+lego+castle+sat").ok);
+    CHECK_INT(open_task("Build a lego castle")->who, leo);
+    snprintf(f, sizeof f, "id=%d", tidy);
+    r = th_act(leo, "plan.task_delete", f); /* what a grown-up gave them stays on */
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Ask a grown-up");
+    CHECK(th_act(leo, "plan.task_done", f).ok);
+    snprintf(f, sizeof f, "id=%d", open_task("Build a lego castle")->id);
+    CHECK(th_act(leo, "plan.task_delete", f).ok);
+    /* swapping turns and the calendar's events are the grown-ups' */
+    r = th_act(leo, "plan.event_add", "q=party+fri+18");
+    CHECK_HAS(r.toast, "Ask a grown-up");
+    CHECK(th_act(leo, "plan.shop_add", "q=ice+cream").ok); /* the shopping list is everyone's */
+    CHECK(!strstr(th_page(leo, "/plan/cal"), "plan.event_add"));
+    g_fake_now = 0;
+    th_halt();
+}
+
+TEST(plan_a_guest_sees_the_shopping_list) {
+    th_boot();
+    g_fake_now = NOW;
+    int anna = th_person("Anna"), gun = with_role(th_person("Gun"), ROLE_GUEST);
+    CHECK(th_act(anna, "plan.task_add", "q=pay+the+bills+today").ok);
+    CHECK(th_act(anna, "plan.event_add", "q=dentist+fri+14").ok);
+    CHECK(th_act(anna, "plan.shop_add", "q=milk").ok);
+    const char *h = th_page(gun, "/plan");
+    CHECK_HAS(h, "Milk");
+    CHECK(!strstr(h, "Pay the bills"));
+    CHECK(!strstr(h, "plan-tabs"));
+    CHECK(!strstr(th_page(gun, "/plan/cal"), "Dentist"));
+    CHECK(!th_act(gun, "plan.task_add", "q=x").ok);
+    CHECK(th_act(gun, "plan.shop_add", "q=bread").ok);
+    Ctx c;
+    app_ctx(&c, gun, "/");
+    Agenda ag = {0};
+    agenda_collect(&c, NOW - 86400, NOW + 30 * 86400, NULL, &ag);
+    CHECK_INT(ag.n, 0); /* the household's plans aren't a guest's */
+    agenda_free(&ag);
+    app_ctx_free(&c);
+    g_fake_now = 0;
+    th_halt();
+}
+
+TEST(plan_someone_who_leaves_hands_on_their_chores) {
+    th_boot();
+    g_fake_now = NOW;
+    int anna = th_person("Anna"), eva = th_person("Eva"), erik = th_person("Erik");
+    CHECK(th_act(anna, "plan.task_add", "q=vacuum+every+friday+%40eva%2C%40anna%2C%40erik").ok);
+    CHECK(th_act(anna, "plan.task_add", "q=fix+the+fence+%40eva").ok);
+    CHECK(th_act(eva, "plan.task_add", "q=buy+a+card+%40erik").ok); /* made by Eva, for Erik */
+    CHECK(th_act(anna, "plan.task_add", "q=wash+the+car+%40eva").ok);
+    char f[40];
+    snprintf(f, sizeof f, "id=%d", open_task("Wash the car")->id);
+    CHECK(th_act(eva, "plan.task_done", f).ok); /* done: history */
+    CHECK(th_act(anna, "plan.event_add", "q=eva%27s+dentist+fri+14+%40eva").ok);
+    CHECK(th_act(eva, "plan.shop_add", "q=oat+milk").ok);
+    Forget fg = {.person = eva, .keep = true, .now = NOW};
+    person_forget(&fg);
+    bool turns = false, anyone = false;
+    for (int i = 0; i < fg.nnotes; i++) {
+        turns |= strstr(fg.notes[i], "taking turns go") != NULL;
+        anyone |= strstr(fg.notes[i], "to anyone") != NULL;
+    }
+    CHECK(turns && anyone);
+    CHECK_INT(open_task("Vacuum")->who, eva); /* (only said) */
+    fg = (Forget){.person = eva, .keep = true, .apply = true, .now = NOW};
+    person_forget(&fg);
+    Task *v = open_task("Vacuum");
+    char want[48];
+    snprintf(want, sizeof want, "%d,%d", anna, erik);
+    CHECK(v && v->who == anna && str_eq(v->turns, want) && v->turn == 0); /* her turn: the next one's */
+    CHECK_INT(open_task("Fix the fence")->who, 0);
+    CHECK_INT(open_task("Buy a card")->by, eva); /* (kept: who made it) */
+    CHECK_INT(tbl_count(&T_event), 0);       /* hers still to come */
+    bool done_kept = false;
+    for (int i = 0; i < tbl_count(&T_task); i++) done_kept |= str_eq(((Task *)tbl_at(&T_task, i))->title, "Wash the car");
+    CHECK(done_kept);
+    fg = (Forget){.person = eva, .apply = true, .now = NOW};
+    person_forget(&fg);
+    for (int i = 0; i < tbl_count(&T_task); i++) CHECK(!str_eq(((Task *)tbl_at(&T_task, i))->title, "Wash the car"));
+    CHECK_INT(open_task("Buy a card")->by, 0);
+    CHECK_INT(((Item *)tbl_at(&T_item, 0))->by, 0);
+    g_fake_now = 0;
+    th_halt();
+}

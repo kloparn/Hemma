@@ -821,3 +821,40 @@ TEST(screens_a_pin_guards_a_spot_on_the_picker) {
     CHECK(th_act(tv, "screens.viewer", form).ok);
     halt();
 }
+
+/* Issue #42: each person chooses how the wall shows them and whether a TV lists them; issue #44: guests
+   don't get the household's screens, children pick their own place on the TV. */
+TEST(screens_people_choose_how_they_are_shown) {
+    boot();
+    g_fake_now = dt_make(2026, 10, 10, 13, 5);
+    int adam = with_role("Adam", ROLE_ADMIN), eva = th_person("Eva"), bo = th_person("Bo");
+    int leo = with_role("Leo", ROLE_CHILD), gun = with_role("Gun", ROLE_GUEST);
+    int tablet = with_role("Hall tablet", ROLE_DISPLAY);
+    char url[40], tvurl[40];
+    snprintf(url, sizeof url, "/screens/%d", screens_first(SCREEN_WALL));
+    presence_set_home(eva, true, g_fake_now);
+    presence_set_home(bo, true, g_fake_now);
+    CHECK(th_act(eva, "people.privacy", "all=1&wall=name&doing=1&tv=1&home=1").ok);
+    CHECK(th_act(bo, "people.privacy", "all=1&wall=no&doing=1&tv=1&home=1").ok);
+    const char *h = th_page(tablet, url);
+    CHECK_HAS(h, "<div class=\"screens-wp \">"); /* Eva: her name, not where she is */
+    CHECK_HAS(h, "<b>Eva</b>");
+    CHECK(!strstr(h, "screens-wp home"));
+    CHECK(!strstr(h, "<b>Bo</b>")); /* Bo: not at all */
+    CHECK_HAS(h, "<b>Leo</b>");
+    /* the TV's picker: members and children unless they untick it, admins and guests once they tick it */
+    int tv = 0;
+    tv_showing(adam, tvurl, &tv);
+    h = th_page(tv, tvurl);
+    CHECK_HAS(h, "<b>Leo</b>");
+    CHECK_HAS(h, "<b>Eva</b>");
+    CHECK(!strstr(h, "<b>Gun</b>"));
+    CHECK(th_act(leo, "screens.on_tv", "on=0").ok); /* (a child's own choice) */
+    CHECK(!strstr(th_page(tv, tvurl), "<b>Leo</b>"));
+    CHECK_HAS(th_page(leo, "/screens"), "Show me on the TV");
+    /* a guest: not the household's screens */
+    CHECK_HAS(th_page(gun, "/screens"), "Nothing here");
+    CHECK(!th_act(gun, "screens.on_tv", "on=1").ok);
+    CHECK(!strstr(th_page(gun, "/"), "href=\"/wall\""));
+    halt();
+}

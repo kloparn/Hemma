@@ -31,6 +31,15 @@ static void people_strip(Ctx *c, Buf *b) {
     buf_puts(b, "</div>");
 }
 
+/* A line about a section this person doesn't have (a child: the Network page's news) stays out. */
+static bool for_them(const Ctx *c, const Activity *a) {
+    if (a->link[0] != '/') return true;
+    char id[32];
+    str_ncopy(id, sizeof id, a->link + 1, strcspn(a->link + 1, "/?#"));
+    const Module *m = id[0] ? module_find(id) : NULL;
+    return !m || module_visible(m, c);
+}
+
 static void activity_card(Ctx *c, Buf *b) {
     ui_card(b, "Latest", NULL, NULL);
     int n = tbl_count(&T_activity);
@@ -38,8 +47,10 @@ static void activity_card(Ctx *c, Buf *b) {
         buf_puts(b, "<p class=\"muted\">Things people do show up here.</p>");
     } else {
         buf_puts(b, "<ul class=\"feed\">");
-        for (int i = n - 1, shown = 0; i >= 0 && shown < 10; i--, shown++) {
+        for (int i = n - 1, shown = 0; i >= 0 && shown < 10; i--) {
             Activity *a = tbl_at(&T_activity, i);
+            if (!for_them(c, a)) continue;
+            shown++;
             H(b, "<li><span class=\"feed-i\">%s</span><span class=\"feed-t\">", a->icon[0] ? a->icon : "•");
             if (a->link[0]) H(b, "<a href=\"%s\">%s</a>", a->link, a->text);
             else html_esc(b, a->text);
@@ -87,13 +98,17 @@ static void page(Ctx *c, Buf *b) {
     snprintf(sub, sizeof sub, "%s %d %s · week %d", weekday_name(d.wday, false), d.day, month_name(d.mon, false),
              iso_week(c->now, NULL));
     ui_head(b, title, sub);
-    /* /wall is the household's first wall screen (modules/screens answers it): a full load */
-    H(b, "<a class=\"btn ghost\" href=\"/wall\" data-native title=\"Wall display\">");
-    ui_icon(b, "monitor");
-    buf_puts(b, "<span>Wall</span></a>");
+    bool guest = is_guest(c); /* a guest: their own things - not who's where, nor the household's news (#44) */
+    const Module *screens = module_find("screens");
+    if (screens && module_visible(screens, c)) {
+        /* /wall is the household's first wall screen (modules/screens answers it): a full load */
+        H(b, "<a class=\"btn ghost\" href=\"/wall\" data-native title=\"Wall display\">");
+        ui_icon(b, "monitor");
+        buf_puts(b, "<span>Wall</span></a>");
+    }
     ui_head_end(b);
 
-    people_strip(c, b);
+    if (!guest) people_strip(c, b);
 
     const Module *w[64];
     int nw = 0;
@@ -102,7 +117,7 @@ static void page(Ctx *c, Buf *b) {
     qsort(w, (size_t)nw, sizeof *w, by_widget_order);
     buf_puts(b, "<div class=\"widgets\">");
     for (int i = 0; i < nw; i++) w[i]->widget(c, b, WIDGET_HOME);
-    activity_card(c, b);
+    if (!guest) activity_card(c, b);
     buf_puts(b, "</div>");
 }
 

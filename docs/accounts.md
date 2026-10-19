@@ -11,11 +11,13 @@ Everyone in the household is a **person** in Hemma. A person can have a **sign-i
 for, without signing in. On the sign-in page you can type your **username or your name**
 ("admin" or "Alex"); a name only works when nobody else with a sign-in has the same one.
 
-A sign-in is one of three kinds:
+A sign-in is one of five kinds:
 
 | Kind | Can |
 |---|---|
 | **Member** | Use everything |
+| **Child** | Their own to-dos, the shopping list, the board, booking what's open to children, and watching - without the folders marked *Not for children* ([children](#children)) |
+| **Guest** | Until a last day: book what's open to guests, the shopping list, the board, watching ([guests](#guests)) |
 | **Admin** | Use everything, and also add and remove people, rename the home, manage media folders |
 | **Display** | Only look. For the living-room TV or a tablet on the wall: it shows its screen but can't change anything ([a TV](#a-tv-whos-watching)) |
 
@@ -73,13 +75,82 @@ Good to know:
 
 As the admin, go to **Household** and press **Add someone**. Give them a name, and if
 they should sign in, a username and a password. Choose what they can do: *Member*,
-*Admin* or *Display*. Tell them their username and password; they can change the
-password themselves under **Household → Your account → Change password**.
+*Child*, *Guest* (with their last day), *Admin* or *Display*. Tell them their username and
+password; they can change the password themselves under **Household → Your account →
+Change password**.
 
 That's also where admins change their own password: it asks for the current one first.
 (The pencil next to your own name edits your profile, not your password.)
 
 Each person can then make their own recovery codes (see [Recovery codes](#recovery-codes)).
+
+## Children
+
+Give a child the kind **Child**, with a sign-in of their own or without one (then they're
+still someone things are booked for, and they can be picked on the TV). Signed in, a child:
+
+- sees **their own to-dos** under Plan, adds to-dos for themselves, ticks theirs off and
+  takes off only what they put on themselves - a chore a grown-up gave them stays;
+- uses the **shopping list** and the **board** (changing only their own notes), and looks
+  at the household's calendar;
+- **books only what's open to children**, for themselves, and cancels or moves only their
+  own bookings. Which things those are is up to an admin: under **Book**, edit a thing and
+  tick **Children may book it** (a new TV room and sauna start ticked, a car doesn't;
+  things you had before this version start unticked);
+- **watches** - everything except folders an admin marked **Not for children**: open the
+  folder under **Watch → Folders** and tick it (Library settings lists them all, and opens
+  one again). Those videos aren't in a child's lists, search or Live TV, and their address
+  doesn't play for them either. A series with an episode in such a folder goes whole, and
+  so does a channel that would air something from one. The same goes for a TV while a
+  child is picked under *Who's watching?*;
+- doesn't get the **Network** page, the household's settings or anyone else's account.
+
+Anything else a child tries says **Ask a grown-up to do that**.
+
+## Guests
+
+A guest - a lodger, family staying a fortnight - gets the kind **Guest** and a **last day**.
+Their sign-in ends after that day by itself: their devices are signed out, and signing in
+says *Your sign-in has ended* and who to ask for more days. To give them more, edit them and
+pick a later day (or make them a member).
+
+Until then a guest books what an admin opened to guests (tick **Guests may book it** on a
+thing: the guest room, laundry and sauna start ticked), uses the shopping list and the
+board, and watches. They don't see who's home, the household's news, calendar, to-dos,
+screens or Network page, and under Household only their own account. Guests get no
+recovery codes: if they forget their password, an admin sets a new one.
+
+## When someone moves out
+
+Under **Household**, edit them and press **Remove**. Before anything happens, Hemma shows
+what removing them would do, two ways:
+
+- **They moved out - keep their history.** What they did stays, under their name: bookings
+  that happened, notes on the board, the Latest feed, what they watched. What's still ahead
+  of them is handed on: bookings to come are cancelled, a repeating booking or event stops,
+  their open to-dos go to *anyone* (or, for a chore taking turns, to the next one in line),
+  their devices are nobody's. Their sign-in goes. They're listed under **Moved out**, where
+  **Back in the household** brings them back (give them a sign-in again under Edit), and
+  **Erase** removes the rest.
+- **Erase everything about them.** All of that, and their past bookings, done to-dos,
+  notes, watch history and lines in Latest go too. Things they added for everyone (an event,
+  a shopping item, a to-do for someone else) stay, without their name.
+
+A TV's or tablet's sign-in has no history: removing it just removes it.
+
+## Privacy: what others see of you
+
+Under **Household → Your account → Privacy** everyone chooses for themselves:
+
+- **On the wall tablet**: with home or away, just your name, or not at all.
+- **Others see when I have Hemma open, and which part** - untick it, and nobody sees you
+  online or what you're looking at.
+- **On the TV's *Who's watching?*** - see [a TV](#a-tv-whos-watching).
+- **My phone and computer may tell Hemma when I'm home** - untick it, and your devices never
+  say you're home (or away): you're simply not shown either way.
+
+Which devices count as yours is the admin's to set on the **Network** page; there, under
+**Your devices**, you can rename yours or say one isn't yours.
 
 ## A TV: "Who's watching?"
 
@@ -115,8 +186,9 @@ question asked.
 Whoever holds the TV's sign-in can watch as anyone it lists, see their history and clear
 it. So:
 
-- **Admins aren't listed** until they tick **Show me on the TV** under **Screens** (the
-  "You on the TV" card).
+- **You choose whether it lists you**: **Show me on the TV** under **Screens** (the "You on
+  the TV" card) or **Household → Privacy**. Members and children are listed until they
+  untick it; admins and guests aren't until they tick it.
 - **Anyone can set a PIN** there: four digits the TV asks for when you're picked. After
   five wrong tries it waits a minute, then longer, before it lets anyone try again.
 - **A TV's or tablet's sign-in ends 90 days after signing in**, however much it's used, so

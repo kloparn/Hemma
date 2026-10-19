@@ -275,9 +275,9 @@ static void event_modal(Ctx *c, Buf *b, const Event *e, int64_t day) {
 void plan_cal_page(Ctx *c, Buf *b) {
     ctx_title(c, "Calendar");
     Buf sub = {0};
-    plan_subtitle(&sub);
+    plan_subtitle(c, &sub);
     ui_head(b, "Plan", buf_cstr(&sub));
-    plan_tabs(b, 2);
+    plan_tabs(c, b, 2);
     ui_head_end(b);
     buf_free(&sub);
 
@@ -389,6 +389,7 @@ int plan_today_events(Ctx *c, Buf *b, bool wall) {
 }
 
 void plan_agenda(Ctx *c, int64_t from, int64_t to, Agenda *out) {
+    if (is_guest(c)) return; /* (the household's plans aren't a guest's: issue #44) */
     static int idx[MAX_EVENTS];
     int n = events_between(from, to, idx, MAX_EVENTS);
     for (int k = 0; k < n; k++) {

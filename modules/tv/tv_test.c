@@ -3,6 +3,7 @@
 #include "../../core/plat.h"
 #include "../../tests/harness.h"
 #include "../media/library.h"
+#include "../media/media.h"
 #include "tv.h"
 
 /* =============================================================== pure math */
@@ -730,5 +731,29 @@ TEST(tv_channel_full_screen_for_the_tv) {
     CHECK(str_starts(h, "<div id=\"app\" class=\"bare\""));
     CHECK_HAS(h, "No such channel");
     CHECK_HAS(h, "href=\"/screens/2\"");
+    th_halt();
+}
+
+/* Issue #44: a child gets only channels with nothing from a folder marked "Not for children" on them (one
+   clock for everyone: a channel can't skip a programme for them). */
+TEST(tv_children_get_the_channels_fit_for_them) {
+    library();
+    int leo = th_person("Leo");
+    Person p = *person_get(leo);
+    p.role = ROLE_CHILD;
+    tbl_put(&T_person, &p);
+    char form[200], a[17];
+    media_id_hex(series_named("Alpha")->id, a);
+    snprintf(form, sizeof form, "number=1&name=Cartoons&show=%s&order=rotate&align=none", a);
+    CHECK(th_act(adam, "tv.save", form).ok);
+    CHECK(th_act(adam, "tv.save", "number=2&name=Everything&all=1&movies=1&order=rotate&align=none").ok);
+    media_kids_set(g_root, "Movies/Gamma (2001)", true);
+    const char *h = th_page(leo, "/tv");
+    CHECK_HAS(h, "Cartoons");
+    CHECK(!strstr(h, "Everything"));
+    CHECK_HAS(th_page(leo, "/tv/2"), "No such channel");
+    CHECK_HAS(th_page(leo, "/tv/1"), "Cartoons");
+    CHECK_HAS(th_page(adam, "/tv"), "Everything");
+    CHECK(!th_act(leo, "tv.save", "number=3&all=1").ok); /* (making channels is the grown-ups') */
     th_halt();
 }

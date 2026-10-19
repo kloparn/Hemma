@@ -56,7 +56,10 @@ static void quick_bar(Ctx *c, Buf *b, int res) {
       "placeholder=\"Book something… e.g. “car fri 14-17 ikea trip”\" aria-label=\"Quick booking\">"
       "<button class=\"btn primary\">Book</button></div>",
       q);
-    if (str_blank(q)) {
+    if (str_blank(q) && (is_child(c) || is_guest(c))) { /* (for themselves: issue #44) */
+        buf_puts(b, "<p class=\"quick-hint\">Type what and when: <i>sauna tomorrow 18-19</i>, <i>bastu ikväll 19</i>. "
+                    "Press <span class=\"kbd\">/</span> to start typing.</p>");
+    } else if (str_blank(q)) {
         buf_puts(b, "<p class=\"quick-hint\">Type what, when and (optionally) for whom: <i>laundry tomorrow 18-21</i>, "
                     "<i>guest room fri-sun @eva</i>, <i>bastu ikväll 19</i>. Press <span class=\"kbd\">/</span> to "
                     "start typing.</p>");
@@ -64,7 +67,12 @@ static void quick_bar(Ctx *c, Buf *b, int res) {
         Quick k;
         book_quick_parse(q, res, c->now, &k);
         Resource *r = res_get(k.res);
-        bool ok = !k.problem[0] && r;
+        char no[120] = ""; /* a child's, a guest's: what they may book, for themselves (issue #44) */
+        if (r && !book_open_to(c, r))
+            snprintf(no, sizeof no, is_child(c) ? "Ask a grown-up to book the %s" : "The %s isn't open to guests", r->name);
+        else if ((is_child(c) || is_guest(c)) && k.who && k.who != c->me->id)
+            snprintf(no, sizeof no, "You can book for yourself");
+        bool ok = !k.problem[0] && r && !no[0];
         H(b, "<div class=\"preview %s\" data-say>", ok ? "ok" : "bad"); /* read out once typing pauses (#69) */
         if (r && k.has_when && k.start) {
             res_title(b, r);
@@ -85,6 +93,7 @@ static void quick_bar(Ctx *c, Buf *b, int res) {
         }
         if (r && k.has_when && k.start) buf_puts(b, "<span class=\"sr-only\">. </span>"); /* (read as a pause: #69) */
         if (k.problem[0]) H(b, "<span class=\"book-why\">%s</span>", k.problem);
+        else if (no[0]) H(b, "<span class=\"book-why\">%s</span>", no);
         else if (k.repeat)
             H(b, "<span class=\"book-why ok\">The first one is free — press Enter to book it and the next %d weeks</span>",
               SERIES_AHEAD_DAYS / 7);
@@ -97,7 +106,7 @@ static void quick_bar(Ctx *c, Buf *b, int res) {
         Quick k;
         book_quick_parse(q, res, c->now, &k);
         Resource *r = res_get(k.res);
-        if (k.has_alt && r) {
+        if (k.has_alt && r && book_open_to(c, r)) {
             ui_form(b, "book.create", "book-alt");
             ui_hidden_int(b, "res", r->id);
             ui_hidden_int(b, "start", k.alt_start);
@@ -161,10 +170,16 @@ static void booking_form(Ctx *c, Buf *b, Resource *r, Booking *edit, int64_t at)
           "step=\"%d\" required></label>",
           hm1, step, hm2, step);
     }
-    buf_puts(b, "</div><label class=\"field\"><span>For</span>");
-    ui_person_select(b, "who", edit ? edit->who : (c->me ? c->me->id : 0), NULL);
+    if (is_child(c) || is_guest(c)) { /* they book for themselves (issue #44) */
+        buf_puts(b, "</div>");
+        ui_hidden_int(b, "who", c->me->id);
+    } else {
+        buf_puts(b, "</div><label class=\"field\"><span>For</span>");
+        ui_person_select(b, "who", edit ? edit->who : (c->me ? c->me->id : 0), NULL);
+        buf_puts(b, "</label>");
+    }
     H(b,
-      "</label><label class=\"field\"><span>Note</span><input name=\"note\" maxlength=\"100\" value=\"%s\" "
+      "<label class=\"field\"><span>Note</span><input name=\"note\" maxlength=\"100\" value=\"%s\" "
       "placeholder=\"Optional — where, why…\"></label>",
       edit ? edit->note : "");
     if (!edit) { /* (issue #47; one of a series is moved on its own) */
@@ -270,7 +285,8 @@ static void resource_modal(Ctx *c, Buf *b, Resource *r, const char *close) {
     bool always = !r || (r->open_min <= 0 && r->close_min >= 1440);
     char open[6], close_hm[6];
     snprintf(open, sizeof open, "%02d:%02d", (r ? r->open_min : 420) / 60, (r ? r->open_min : 420) % 60);
-    int cm = r && r->close_min < 1440 ? r->close_min : 22 * 60;
+    /* (open until midnight: 00:00 - it used to say 22:00, and saving the dialog shortened the hours) */
+    int cm = !r ? 22 * 60 : r->close_min < 1440 ? r->close_min : 0;
     snprintf(close_hm, sizeof close_hm, "%02d:%02d", cm / 60, cm % 60);
     H(b,
       "<div class=\"field\"><span>Booked by</span><div class=\"chips\">"
@@ -298,12 +314,16 @@ static void resource_modal(Ctx *c, Buf *b, Resource *r, const char *close) {
       "<label class=\"field\"><span>House rules (optional)</span><input name=\"rules\" maxlength=\"150\" "
       "value=\"%s\" placeholder=\"Fill up the tank, clean the filter…\"></label>",
       r ? r->rules : "");
-    if (is_admin(c)) /* issue #43: in a household, usually anyone may - an admin can make it stricter */
+    if (is_admin(c)) { /* issue #43: in a household, usually anyone may - an admin can make it stricter */
         H(b,
           "<label class=\"check\"><input type=\"checkbox\" name=\"own_only\" value=\"1\"%r> Only the person a booking "
           "is for, whoever made it, or an admin can cancel or move it</label>",
           r && r->own_only ? " checked" : "");
-    else if (r && r->own_only)
+        H(b, /* issue #44: who else may book it */
+          "<label class=\"check\"><input type=\"checkbox\" name=\"kids\" value=\"1\"%r> Children may book it</label>"
+          "<label class=\"check\"><input type=\"checkbox\" name=\"guests\" value=\"1\"%r> Guests may book it</label>",
+          r && r->kids ? " checked" : "", r && r->guests ? " checked" : "");
+    } else if (r && r->own_only)
         buf_puts(b, "<p class=\"muted small\">Only the person a booking is for, whoever made it, or an admin can cancel "
                     "or move it (an admin's choice).</p>");
     buf_puts(b, "<div class=\"field\"><span>Colour</span>");
@@ -510,7 +530,7 @@ static void upcoming(Ctx *c, Buf *b, int only_res, int max, bool links) {
         Booking *bk = tbl_at(&T_booking, i);
         if (bk->end <= c->now || (only_res && bk->res != only_res)) continue;
         Resource *r = res_get(bk->res);
-        if (!r || r->archived) continue;
+        if (!r || r->archived || !book_open_to(c, r)) continue; /* (a child's, a guest's: what they may book) */
         all++;
         if (n == cap && !sooner(bk, list[n - 1])) continue;
         int j = n < cap ? n++ : n - 1; /* insert in order; when full, the latest drops out */
@@ -566,7 +586,7 @@ static void upcoming(Ctx *c, Buf *b, int only_res, int max, bool links) {
 static void overview(Ctx *c, Buf *b) {
     ctx_title(c, "Bookings");
     Resource *rs[64];
-    int n = res_list(rs, 64, false);
+    int n = book_res_list(c, rs, 64);
     ui_head(b, "Bookings", n ? "What's booked and what's free" : NULL);
     if (ui_can("book.res_save")) { /* (a display account only looks: issue #96) */
         buf_puts(b, "<a class=\"btn\" href=\"/book?res=new\">");
@@ -575,7 +595,10 @@ static void overview(Ctx *c, Buf *b) {
     }
     ui_head_end(b);
     news(c, b);
-    if (!n) {
+    if (!n && (is_child(c) || is_guest(c))) {
+        ui_empty(b, "🗝️", "Nothing to book yet",
+                 is_child(c) ? "A grown-up decides what children may book." : "An admin decides what guests may book.");
+    } else if (!n) {
         ui_empty(b, "🗝️", "What do you share at home?",
                  "Add the things people take turns with — then anyone can book them from their phone.");
         buf_puts(b, "<div class=\"chips book-presets center\">");
@@ -636,7 +659,7 @@ static void resource_page(Ctx *c, Buf *b, Resource *r) {
 
     /* switch between things */
     Resource *rs[64];
-    int n = res_list(rs, 64, false);
+    int n = book_res_list(c, rs, 64);
     if (n > 1) {
         buf_puts(b, "<nav class=\"chips book-res-switch\">");
         for (int i = 0; i < n; i++)
@@ -683,6 +706,13 @@ void book_page(Ctx *c, Buf *b) {
     int id = 0;
     if (str_starts(c->path, "/book/")) id = (int)str_int_or(c->path + 6, 0);
     Resource *r = res_get(id);
+    if (r && !book_open_to(c, r)) { /* a child's, a guest's (issue #44) */
+        ctx_title(c, "%s", r->name);
+        ui_empty(b, "🔒", is_child(c) ? "Not for children" : "Not open to guests",
+                 is_child(c) ? "A grown-up books this one." : "Ask someone in the household about it.");
+        buf_puts(b, "<p class=\"center\"><a class=\"btn\" href=\"/book\">What you can book</a></p>");
+        return;
+    }
     if (r) resource_page(c, b, r);
     else overview(c, b);
     if (!r && ctx_qint(c, "res", 0) > 0) {
@@ -709,7 +739,8 @@ static void now_pills(Ctx *c, Buf *b, Resource **rs, int n) {
 void book_widget(Ctx *c, Buf *b, int where) {
     (void)where;
     Resource *rs[64];
-    int n = res_list(rs, 64, false);
+    int n = book_res_list(c, rs, 64);
+    if (!n && (is_child(c) || is_guest(c))) return; /* (nothing they may book: no card) */
     ui_card(b, "Bookings", "/book", n ? "Book" : "Set up");
     news(c, b);
     if (!n) {

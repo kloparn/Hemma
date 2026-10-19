@@ -41,6 +41,15 @@ void media_row_back(const Ctx *c, char *out, size_t cap);
 /* The library's picture of a video: its own, else its series' (0 = none: draw one). */
 uint64_t media_picture(const MediaFile *f);
 void media_img_src(Buf *b, uint64_t img); /* "/media/img/<id>?v=<version>" */
+/* Children (issue #44): what's in a folder an admin marked "Not for children" (kids.c) is left out for a
+   child - signed in, or picked on a TV (media_kid). media_lib_for(c) = the library as c's viewer may see it
+   (media_lib() for everyone else, and for NULL); media_kids_ok / media_kids_series_ok for whatever is opened
+   by its id. A series with an episode in a marked folder goes whole. */
+bool media_kid(const Ctx *c);
+const MediaIndex *media_lib_for(const Ctx *c);
+bool media_kids_ok(const Ctx *c, const MediaFile *f);
+bool media_kids_series_ok(const Ctx *c, const MediaSeries *s);
+
 /* A tile's art (web/app.css .tile-art): the picture, or a drawn poster in the title's colour
    showing `text` (NULL = the title; label: a small word over it, e.g. "Series"; NULL = none),
    with the progress bar along its foot when pct > 0. */
@@ -80,7 +89,16 @@ typedef struct {
     int n;                     /* how many videos (episodes) the entry stands for */
     int64_t oldest;            /* mtime of the oldest of them */
 } MediaRecent;
-int media_recent(MediaRecent *out, int max);
+int media_recent(const Ctx *c, MediaRecent *out, int max); /* (what c's viewer may see: media_lib_for) */
+
+/* The marks (Library settings, the Folders tab): a library folder and a folder below it ("" = all of it). */
+bool media_kids_marked(const char *root, const char *dir);
+const char *media_kids_covered(const char *root, const char *dir); /* a marked folder above dir, or NULL */
+void media_kids_set(const char *root, const char *dir, bool on);
+int media_kids_count(void);
+bool media_kids_at(int i, char *root, size_t rcap, char *dir, size_t dcap);
+void media_kids_init(void); /* (media's init and stop) */
+void media_kids_stop(void);
 
 /* TV mode's pages (tiles.c) and the rows media offers to screens */
 void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f);

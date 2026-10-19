@@ -92,6 +92,7 @@ typedef struct {
 
 /* ---- reading the index (never NULL; an empty index before the first scan) ---- */
 const MediaIndex *media_lib(void);
+unsigned media_lib_gen(void); /* changes whenever another index is swapped in (kids.c remakes its copy) */
 const MediaFile *media_file(uint64_t id);
 const MediaSeries *media_series(uint64_t id);
 const MediaFile *media_episode(const MediaSeries *s, int i); /* i-th episode in order */

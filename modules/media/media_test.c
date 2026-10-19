@@ -6,6 +6,8 @@
 #include "../av/mp4.h"
 #include "convert.h"
 #include "library.h"
+#include "media.h"
+#include "../../core/codec.h"
 
 static void put(const char *root, const char *rel, const char *text) {
     char path[1024], dir[1024];
@@ -882,5 +884,94 @@ TEST(media_rescan_is_for_admins_and_who_they_let) {
     CHECK(r.ok);
     CHECK_HAS(r.toast, "Only admins may rescan");
     CHECK_STR(setting("media.rescanners", "-"), "");
+    th_halt();
+}
+
+/* Issue #44: a folder an admin marks "Not for children" stays out of a child's Watch - lists, search, the
+   watch page, the stream, a TV with a child picked - and a series with an episode in it goes whole. */
+TEST(media_folders_not_for_children) {
+    int adam = boot_with_library();
+    Person p = *person_get(adam);
+    p.role = ROLE_ADMIN;
+    tbl_put(&T_person, &p);
+    int eva = th_person("Eva"), leo = th_person("Leo"), tv = th_person("Living room TV");
+    p = *person_get(leo);
+    p.role = ROLE_CHILD;
+    tbl_put(&T_person, &p);
+    p = *person_get(tv);
+    p.role = ROLE_DISPLAY;
+    tbl_put(&T_person, &p);
+    const MediaFile *inc = find("Inception.2010.1080p.BluRay.x264.mkv"), *ep = find("Garden.Show.S01E01.Seeds.mp4");
+    uint64_t inc_id = inc->id, show = ep->series;
+    CHECK(th_act(adam, "media.kids", "p=0:Movies/Inception%20(2010)&on=1").ok);
+    CHECK(th_act(adam, "media.kids", "p=0:Series/Garden%20Show/Season%202&on=1").ok); /* one season: the show goes */
+    ThResult r = th_act(leo, "media.kids", "p=0:Movies&on=0");
+    CHECK(!r.ok);
+    CHECK_HAS(r.toast, "Ask a grown-up");
+    const char *h = th_page(leo, "/media/movies");
+    CHECK_HAS(h, "Flower");
+    CHECK(!strstr(h, "Inception"));
+    CHECK_HAS(h, "1 movie");
+    CHECK(!strstr(th_page(leo, "/media/series"), "Garden Show"));
+    h = th_page(leo, "/media");
+    CHECK(!strstr(h, "Inception"));
+    CHECK(!strstr(h, "Garden Show"));
+    CHECK(!strstr(th_page(leo, "/media?q=incep"), "Inception"));
+    CHECK_HAS(th_page(leo, url("/media/watch/%s", inc_id)), "isn&#39;t in the library");
+    CHECK_HAS(th_page(leo, url("/media/series/%s", show)), "isn&#39;t in the library");
+    CHECK(!strstr(th_page(leo, "/media/browse?p=0:Movies/Inception%20(2010)"), "/media/watch/"));
+    Buf out = {0};
+    char path[80];
+    snprintf(path, sizeof path, "/media/file/%016llx", (unsigned long long)inc_id);
+    CHECK(str_starts(serve(leo, "GET", path, NULL, &out), "HTTP/1.1 404"));
+    CHECK(str_starts(serve(eva, "HEAD", path, NULL, &out), "HTTP/1.1 200"));
+    buf_free(&out);
+    /* everyone else sees it all */
+    CHECK_HAS(th_page(eva, "/media/movies"), "Inception");
+    CHECK_HAS(th_page(eva, "/media/series"), "Garden Show");
+    /* the TV, with Leo picked */
+    Ctx c;
+    app_ctx(&c, tv, "/");
+    CHECK(media_kids_ok(&c, media_file(inc_id)));
+    ctx_set_viewer(&c, leo);
+    CHECK(!media_kids_ok(&c, media_file(inc_id)));
+    CHECK_INT(media_lib_for(&c)->nmovies, 1);
+    CHECK_INT(media_lib_for(&c)->nseries, 0);
+    ctx_set_viewer(&c, eva);
+    CHECK_INT(media_lib_for(&c)->nmovies, 2);
+    app_ctx_free(&c);
+    /* the admin's views */
+    h = th_page(adam, "/media/settings");
+    CHECK_HAS(h, "Not for children");
+    CHECK_HAS(h, "Movies/Inception (2010)");
+    h = th_page(adam, "/media/browse?p=0:Movies");
+    CHECK_HAS(h, "not for children");
+    h = th_page(adam, "/media/browse?p=0:Movies/Inception%20(2010)");
+    CHECK_HAS(h, "name=\"on\" value=\"1\" data-auto checked");
+    /* open to children again (Library settings' list names the folder itself) */
+    Buf form = {0};
+    buf_puts(&form, "root=");
+    url_encode(&form, g_root, false);
+    buf_puts(&form, "&dir=Movies%2FInception%20(2010)");
+    CHECK(th_act(adam, "media.kids", buf_cstr(&form)).ok);
+    buf_free(&form);
+    CHECK_HAS(th_page(leo, "/media/movies"), "Inception");
+    th_halt();
+}
+
+/* Issue #45: erasing someone takes what they watched; someone who moved out keeps it. */
+TEST(media_someone_who_leaves) {
+    int adam = boot_with_library();
+    int eva = th_person("Eva");
+    const MediaFile *f = find("Flower.mp4");
+    media_watch_report(eva, f->id, 30, 100, false, now_sec());
+    media_watch_report(adam, f->id, 50, 100, false, now_sec());
+    Forget fg = {.person = eva, .keep = true, .apply = true, .now = now_sec()};
+    person_forget(&fg);
+    CHECK(media_watch_get(eva, f->id) != NULL);
+    fg = (Forget){.person = eva, .apply = true, .now = now_sec()};
+    person_forget(&fg);
+    CHECK(media_watch_get(eva, f->id) == NULL);
+    CHECK(media_watch_get(adam, f->id) != NULL);
     th_halt();
 }

@@ -808,3 +808,53 @@ TEST(net_an_overgrown_list_shrinks_at_start) {
     CHECK_INT(tbl_count(&T_device), NET_MAX_DEVICES);
     app_halt();
 }
+
+/* Issue #42: your own devices - rename one, say one isn't yours, keep them out of who's home. Issue #44:
+   not a child's or a guest's page. Issue #45: someone who leaves owns no device any more. */
+TEST(net_your_devices_are_yours_to_name_and_keep_out_of_whos_home) {
+    boot();
+    int adam = admin("Adam"), eva = th_person("Eva"), leo = th_person("Leo");
+    Person p = *person_get(leo);
+    p.role = ROLE_CHILD;
+    tbl_put(&T_person, &p);
+    Neighbor r[] = {nb("192.168.1.10", ADAMS_PHONE, NEIGH_REACHABLE), nb("192.168.1.11", "a4:83:e7:11:22:44", NEIGH_REACHABLE)};
+    net_ingest(r, 2, T0, false);
+    char f[80];
+    snprintf(f, sizeof f, "id=1&name=&owner=%d", eva);
+    CHECK(th_act(adam, "net.save", f).ok);
+    CHECK(th_act(adam, "net.scan", "on=1").ok);
+    net_ingest(r, 2, T0 + 10, true);
+    CHECK(presence_is_home(eva, NULL));
+    const char *h = th_page(eva, "/net");
+    CHECK_HAS(h, "id=\"net-mine\"");
+    CHECK_HAS(h, "They tell Hemma when you&#39;re home");
+    CHECK(!strstr(th_page(adam, "/net"), "id=\"net-mine\"")); /* (none of his) */
+    CHECK(th_act(eva, "net.mine_name", "id=1&name=Eva%27s+phone").ok);
+    CHECK_STR(((Device *)tbl_get(&T_device, 1))->name, "Eva's phone");
+    ThResult res = th_act(eva, "net.mine_name", "id=2&name=Mine+now");
+    CHECK(!res.ok);
+    CHECK_HAS(res.toast, "isn't yours");
+    CHECK(!th_act(eva, "net.save", "id=1&owner=0").ok); /* (the rest stays the admin's) */
+    /* her phone doesn't say she's home */
+    CHECK(th_act(eva, "people.privacy", "home=0").ok);
+    net_ingest(r, 2, T0 + 20, true);
+    CHECK(!presence_known(eva));
+    CHECK_HAS(th_page(eva, "/net"), "not to use them for who&#39;s home");
+    CHECK(th_act(eva, "people.privacy", "home=1").ok);
+    net_ingest(r, 2, T0 + 30, true);
+    CHECK(presence_is_home(eva, NULL));
+    CHECK(th_act(eva, "net.mine_drop", "id=1").ok);
+    CHECK_INT(((Device *)tbl_get(&T_device, 1))->owner, 0);
+    CHECK(!presence_known(eva));
+    /* a child doesn't get the Network page */
+    CHECK_HAS(th_page(leo, "/net"), "Nothing here");
+    CHECK(!th_act(leo, "net.mine_name", "id=1&name=x").ok);
+    /* someone leaving owns nothing any more */
+    snprintf(f, sizeof f, "id=2&name=Tablet&owner=%d", eva);
+    CHECK(th_act(adam, "net.save", f).ok);
+    Forget fg = {.person = eva, .keep = true, .apply = true, .now = T0};
+    person_forget(&fg);
+    CHECK_INT(((Device *)tbl_get(&T_device, 2))->owner, 0);
+    CHECK_STR(((Device *)tbl_get(&T_device, 2))->name, "Tablet");
+    th_halt();
+}

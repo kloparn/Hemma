@@ -316,10 +316,9 @@ static void forget_viewers(void) {
     forget_viewer_of(0);
 }
 
-bool screens_on_picker(const Person *p) {
-    if (!p || p->role == ROLE_DISPLAY) return false;
-    return p->role != ROLE_ADMIN || str_eq(pref(p->id, PREF_ON_TV, ""), "1");
-}
+/* their own choice (core privacy_on_tv, issue #42): members and children unless they untick it, admins and
+   guests once they tick it */
+bool screens_on_picker(const Person *p) { return privacy_on_tv(p); }
 
 bool screens_has_pin(int person) { return pref(person, PREF_PIN, "")[0] != 0; }
 
@@ -415,10 +414,10 @@ static void act_viewer(Ctx *c, Fields *f) {
     else seat_drop(c->me->id, c->sess->token);
 }
 
-/* Your own place on the TV's picker (issue #90): an admin's "Show me on the TV", and anyone's PIN. */
+/* Your own place on the TV's picker (issues #90, #42): anyone's "Show me on the TV", and anyone's PIN. */
 static void act_on_tv(Ctx *c, Fields *f) {
     bool on = str_eq(fields_str(f, "on"), "1");
-    pref_set(c->me->id, PREF_ON_TV, on ? "1" : "");
+    pref_set(c->me->id, PREF_ON_TV, on ? "1" : "0");
     if (!on) forget_viewer_of(c->me->id);
     ctx_ok(c, on ? "You're on the TV's Who's watching? now" : "You're off the TV's Who's watching?");
 }
@@ -583,7 +582,7 @@ static void act_shows(Ctx *c, Fields *f) {
 
 static const Action actions[] = {
     {"screens.viewer", act_viewer, false, true}, /* the one thing a TV may do here */
-    {"screens.on_tv", act_on_tv}, {"screens.pin", act_pin},
+    {"screens.on_tv", act_on_tv, .may = ACT_CHILD}, {"screens.pin", act_pin, .may = ACT_CHILD}, /* (their own: #44) */
     {"screens.create", act_create},
     {"screens.save", act_save},
     {"screens.delete", act_delete},
@@ -674,6 +673,7 @@ static const Module screens = {
     .id = "screens",
     .title = "Screens",
     .icon = "monitor",
+    .flags = MOD_NO_GUEST, /* (the household's TV and walls: not a guest's - issue #44) */
     .nav = 85, /* after the household's sections, before Household and System */
     .init = init,
     .start = start,

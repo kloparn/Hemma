@@ -4,6 +4,82 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 0.18.0 (2026-10-19)
+
+People and privacy: children and guests (#44), someone moving out (#45), and what everyone else sees
+of you (#42).
+
+### New
+
+- **Children.** A new kind of sign-in, *Child* (with or without a sign-in of their own). A child sees
+  their own to-dos, adds and ticks off their own, uses the shopping list and the board (changing
+  only their own notes), looks at the calendar, and books only the things open to children - for
+  themselves, cancelling or moving only their own bookings. Anything else says *Ask a grown-up to
+  do that*. No Network page.
+- **What children may book**: each thing has **Children may book it** and **Guests may book it**
+  (an admin's). A new TV room, sauna and office start open to children; a guest room, laundry and
+  sauna to guests; a car to neither. **Things you already have start open to neither** - tick them.
+- **Not for children.** An admin marks a folder under **Watch → Folders** (Library settings lists
+  them, and opens one again). Its videos stay out of a child's Watch: lists, search, Continue
+  watching, the watch page and the video's address itself. A series with an episode in such a
+  folder goes whole, and so does a Live TV channel that would air something from one. The same
+  holds on a TV while a child is picked under *Who's watching?*.
+- **Guests.** *Guest* sign-ins have a **last day**: after it their devices are signed out and
+  signing in says *Your sign-in has ended* and who to ask for more days. Until then a guest books
+  what's open to guests, uses the shopping list and the board, and watches; they don't see who's
+  home, the household's news, calendar, to-dos, screens or Network page, and under Household only
+  their own account. No recovery codes for guests (an admin sets a new password).
+- **Someone moving out.** **Remove** now opens a dialog that says what will happen before it does,
+  two ways: **they moved out - keep their history** (bookings that happened, notes, Latest and what
+  they watched stay under their name, "Eva (moved out)"; their bookings to come are cancelled,
+  repeating ones stop, open to-dos go to anyone or to the next in line, devices are nobody's, the
+  sign-in goes), or **erase everything about them** (the rest goes too; what they added for
+  everyone stays, without their name). People who moved out are listed under **Moved out**, with
+  **Back in the household** and **Erase**.
+- **Privacy**, under Household → Your account: how the wall tablet shows you (with home or away,
+  just your name, or not at all), whether others see that you have Hemma open and where, whether
+  the TV's *Who's watching?* lists you, and whether your phone and computer may tell Hemma you're
+  home.
+- **Your devices** on the Network page: the ones an admin marked as yours - rename one, or say it
+  isn't yours.
+- The demo household's Maja and Leo are children. The README shows a child's phone.
+
+### Changed
+
+- **The TV's *Who's watching?*** lists whoever chose to be on it: members and children until they
+  untick it, admins and guests once they tick it (the box is under Screens and under Privacy).
+- **Latest** on Home leaves out what happened in sections you don't have (a child doesn't see the
+  Network page's news).
+- The JSON API is for members and admins only (children and guests: 403, like display accounts).
+
+### Fixes
+
+- **A thing open until midnight lost its last hours when its dialog was saved.** The dialog showed
+  *Until 22:00* for one open until 24:00 (the sauna, say), and saving it - to tick *Children may
+  book it*, for instance - made it close at 22:00. Midnight now shows as 00:00 and stays midnight.
+- Moving a booking without saying who it's for kept it theirs (it used to become the mover's).
+
+### For developers
+
+- Roles `ROLE_CHILD` (3) and `ROLE_GUEST` (4); `Person.until` (a sign-in's end) and `Person.left` (moved
+  out: the row stays for names, out of `person_count`/`person_at`/`person_real`/`person_find`);
+  `person_signin_over()`, `person_label()` ("Eva (moved out)"), `is_child()`, `is_guest()`.
+  `LOGIN_ENDED` from `auth_login` (only after the right password), the sign-in page's `e=5`.
+- `Action.may` (`ACT_CHILD` | `ACT_GUEST`): actions children/guests may run, refused in the core
+  otherwise like a display account's. `app_action_open(name, role)` replaces
+  `app_action_display`; `ui_role(role)` replaces `ui_view_only` (forms and dialogs a role can't
+  use are cut). `MOD_NO_CHILD` / `MOD_NO_GUEST` module flags (net: both; screens: guests).
+- `Module.forget(Forget *)` and `person_forget()`: count and say first (`apply` false, `forget_note`),
+  then hand on or drop (book, plan, board, media, net; the core: sessions, codes, prefs, TV picks,
+  erased Latest lines, the row).
+- Privacy prefs and `privacy_wall/_doing/_on_tv/_home()` in the core: `presence_screens/_page` say
+  nothing of someone who opted out, `presence_set_home` ignores devices of someone who did.
+  `PREF_ON_TV` moved to app.h.
+- media/kids.c: table `media_no_kids` (library folder + folder below it), `media_lib_for(c)` (a child's
+  copy of the index lists, remade when `media_lib_gen()` or the marks change), `media_kid()`,
+  `media_kids_ok()`, `media_kids_series_ok()`; `media_recent()` takes the Ctx. Table
+  `resource` gained `kids`, `guests`.
+
 ## 0.17.0 (2026-10-19)
 
 Photos on notes - the last part of #47.

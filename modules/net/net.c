@@ -212,6 +212,10 @@ static void update_presence(int64_t now) {
     int window = window_s();
     for (int i = 0; i < person_count(); i++) {
         int pid = person_at(i)->id;
+        if (!privacy_home(pid)) { /* their devices don't tell (issue #42) */
+            forget_presence(pid);
+            continue;
+        }
         bool has = false, home = false;
         for (int k = 0; k < tbl_count(&T_device); k++) {
             Device *d = tbl_at(&T_device, k);
@@ -991,6 +995,37 @@ static void edit_modal(Ctx *c, Buf *b, const Device *d) {
     buf_free(&close);
 }
 
+/* Your devices (issue #42): the ones an admin marked as yours - rename them, or say one isn't yours. Whether
+   they may tell Hemma you're home is under Your account (privacy). */
+static void mine_card(Ctx *c, Buf *b) {
+    if (!c->me || c->me->role == ROLE_DISPLAY) return;
+    int n = 0;
+    for (int i = 0; i < tbl_count(&T_device); i++) n += ((Device *)tbl_at(&T_device, i))->owner == c->me->id;
+    if (!n) return;
+    buf_puts(b, "<section class=\"card net-mine\" id=\"net-mine\"><header class=\"card-h\"><h2>Your devices</h2>"
+                "</header><ul class=\"rows\">");
+    for (int i = 0; i < tbl_count(&T_device); i++) {
+        const Device *d = tbl_at(&T_device, i);
+        if (d->owner != c->me->id) continue;
+        H(b, "<li class=\"row\" id=\"net-mine-%d\"><div class=\"row-main\">", d->id);
+        ui_form(b, "net.mine_name", "row-form net-mine-name");
+        ui_hidden_int(b, "id", d->id);
+        H(b, "<input name=\"name\" maxlength=\"40\" value=\"%s\" placeholder=\"%s\" aria-label=\"Name of %s\"><button "
+             "class=\"btn sm\">Rename</button>",
+          d->name, d->hostname[0] ? d->hostname : "My phone", net_label(d));
+        ui_form_end(b);
+        H(b, "<small class=\"muted\">%s</small></div>", net_online(d, c->now) ? "online now" : "not seen lately");
+        char ids[16], aria[96];
+        snprintf(ids, sizeof ids, "%d", d->id);
+        snprintf(aria, sizeof aria, "%s isn't mine", net_label(d));
+        ui_act(b, "net.mine_drop", "btn sm", "Not mine", "id", ids, aria);
+        buf_puts(b, "</li>");
+    }
+    H(b, "</ul><p class=\"muted small\">%s <a href=\"/people\">Your account</a>.</p></section>",
+      privacy_home(c->me->id) ? "They tell Hemma when you're home - change that under"
+                              : "You asked Hemma not to use them for who's home:");
+}
+
 static void page(Ctx *c, Buf *b) {
     ctx_title(c, "Network");
     int n = tbl_count(&T_device), online = 0, people = 0, unknown = 0, tidy = 0;
@@ -1006,6 +1041,7 @@ static void page(Ctx *c, Buf *b) {
     ui_head(b, "Network", sub);
     ui_head_end(b);
 
+    mine_card(c, b);
     buf_puts(b, "<div class=\"net-top\">");
     hub_card(b);
     scan_card(c, b);
@@ -1314,10 +1350,63 @@ static void stop(void) {
     flush();
 }
 
+/* Your own devices (issue #42): a name of your choosing, or "not mine" (it goes back to nobody's) */
+static Device *mine_arg(Ctx *c, Fields *f) {
+    Device *d = device_for(c, f);
+    if (d && d->owner != c->me->id) {
+        ctx_fail(c, "That device isn't yours");
+        return NULL;
+    }
+    return d;
+}
+
+static void act_mine_name(Ctx *c, Fields *f) {
+    Device *d = mine_arg(c, f);
+    if (!d) return;
+    Device upd = *d;
+    char name[64];
+    str_copy(name, sizeof name, fields_str(f, "name"));
+    str_trim(name);
+    str_copy(upd.name, sizeof upd.name, name);
+    upd.dirty = false;
+    tbl_put(&T_device, &upd);
+    ctx_ok(c, "Saved %s", net_label(&upd));
+}
+
+static void act_mine_drop(Ctx *c, Fields *f) {
+    Device *d = mine_arg(c, f);
+    if (!d) return;
+    Device upd = *d;
+    upd.owner = 0;
+    upd.dirty = false;
+    tbl_put(&T_device, &upd);
+    if (net_scan_on()) update_presence(now_sec());
+    ctx_ok(c, "%s isn't counted as yours any more", net_label(&upd));
+}
+
+/* Someone leaves (issue #45): their devices are nobody's (they no longer say who's home). */
+static int forget(Forget *f) {
+    int n = 0;
+    for (int i = 0; i < tbl_count(&T_device); i++) {
+        Device d = *(Device *)tbl_at(&T_device, i);
+        bool owned = d.owner == f->person;
+        if (!owned && d.used_by != f->person) continue;
+        n += owned;
+        if (!f->apply) continue;
+        if (owned) d.owner = 0;
+        if (d.used_by == f->person) d.used_by = 0;
+        d.dirty = false;
+        tbl_put(&T_device, &d);
+    }
+    if (n) forget_note(f, "%d device%s of theirs on the network %s nobody's", n, n == 1 ? "" : "s", n == 1 ? "is" : "are");
+    if (f->apply) forget_presence(f->person);
+    return n;
+}
+
 static const Action actions[] = {
     {"net.scan", act_scan},     {"net.window", act_window}, {"net.save", act_save},
     {"net.assign", act_assign}, {"net.forget", act_forget}, {"net.wake", act_wake},
-    {"net.tidy", act_tidy},
+    {"net.tidy", act_tidy},     {"net.mine_name", act_mine_name}, {"net.mine_drop", act_mine_drop},
     {0},
 };
 
@@ -1326,6 +1415,8 @@ static const Module net = {
     .title = "Network",
     .icon = "wifi",
     .nav = 6,
+    .flags = MOD_NO_CHILD | MOD_NO_GUEST, /* (the household's devices and who's home: issue #44) */
+    .forget = forget,
     .init = init,
     .start = start,
     .stop = stop,

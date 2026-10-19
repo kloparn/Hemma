@@ -72,8 +72,10 @@ Person *person_for_sign_in(const char *typed);
 void auth_bootstrap_admin(void);                          /* create/attach/reset the env admin */
 
 /* LOGIN_BUSY (auth_login only): too many password checks from new places right now - try
-   again in *wait_s seconds; it counts against the address like a wrong try. */
-typedef enum { LOGIN_OK, LOGIN_WRONG, LOGIN_THROTTLED, LOGIN_UNAVAILABLE, LOGIN_BUSY } LoginResult;
+   again in *wait_s seconds; it counts against the address like a wrong try.
+   LOGIN_ENDED (auth_login only): the password was right, but the sign-in has ended (a guest's last day went
+   by: person_signin_over) - said only to someone who knew the password. */
+typedef enum { LOGIN_OK, LOGIN_WRONG, LOGIN_THROTTLED, LOGIN_UNAVAILABLE, LOGIN_BUSY, LOGIN_ENDED } LoginResult;
 /* Checks credentials with throttling (see above). On LOGIN_OK *person is set;
  * on LOGIN_THROTTLED *wait_s says how long to wait. */
 LoginResult auth_login(const char *username, const char *password, uint32_t ip, int64_t now, int *person, int *wait_s);
