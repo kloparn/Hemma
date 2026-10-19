@@ -218,3 +218,24 @@ TEST(board_note_buttons_name_their_note) {
     CHECK(!strstr(h, "Remove this note?"));
     th_halt();
 }
+
+/* Issue #39: a note kept until Friday still goes at Friday's midnight after the zone changed */
+TEST(board_note_keeps_its_day_when_the_zone_changes) {
+    char dir[512];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    plat_set_tz("UTC0");
+    g_fake_now = dt_make(2026, 10, 7, 9, 0);
+    th_boot_in(dir);
+    int adam = th_person("Adam");
+    CHECK(th_act(adam, "board.post", "text=Dentist+Friday&keep=date&until=2026-10-09").ok);
+    th_halt();
+    plat_set_tz("XXX-2"); /* UTC+2: without the move it would stay until 02:00 on Saturday */
+    th_boot_in(dir);
+    g_fake_now = dt_make(2026, 10, 9, 23, 30);
+    CHECK_HAS(th_page(adam, "/board"), "Dentist Friday");
+    g_fake_now = dt_make(2026, 10, 10, 0, 1);
+    CHECK(!strstr(th_page(adam, "/board"), "Dentist Friday"));
+    g_fake_now = 0;
+    plat_set_tz(NULL);
+    th_halt();
+}

@@ -383,7 +383,7 @@ DateTime dt_local(int64_t t) {
 }
 
 /* Days from 1970-01-01 to a date (proleptic Gregorian; H. Hinnant's days_from_civil). */
-static int64_t days_from_civil(int64_t y, int m, int d) {
+int64_t days_of_date(int64_t y, int m, int d) {
     y -= m <= 2;
     int64_t era = (y >= 0 ? y : y - 399) / 400;
     int64_t yoe = y - era * 400;
@@ -392,9 +392,22 @@ static int64_t days_from_civil(int64_t y, int m, int d) {
     return era * 146097 + doe - 719468;
 }
 
+/* ... and back (H. Hinnant's civil_from_days). */
+void date_of_days(int64_t days, int *y, int *m, int *d) {
+    days += 719468;
+    int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+    int64_t doe = days - era * 146097;
+    int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    int64_t mp = (5 * doy + 2) / 153;
+    *d = (int)(doy - (153 * mp + 2) / 5 + 1);
+    *m = (int)(mp < 10 ? mp + 3 : mp - 9);
+    *y = (int)(yoe + era * 400 + (*m <= 2));
+}
+
 int utc_offset(int64_t t) {
     DateTime d = dt_local(t);
-    int64_t o = days_from_civil(d.year, d.mon, d.day) * 86400 + d.hour * 3600 + d.min * 60 + d.sec - t;
+    int64_t o = days_of_date(d.year, d.mon, d.day) * 86400 + d.hour * 3600 + d.min * 60 + d.sec - t;
     return o > 86400 || o < -86400 ? 0 : (int)o; /* (0: the C library can't say) */
 }
 

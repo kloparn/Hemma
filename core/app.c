@@ -452,6 +452,7 @@ int sessions_drop(int person, const Session *keep) {
 #define NAV_BURST_MS 3000
 struct Client {
     Conn *conn;
+    char host[96]; /* the Host it was opened by (Ctx.host) */
     char token[65]; /* session token (hash of the cookie), "" = signed out */
     char url[600];
     char title[160]; /* the document title last sent */
@@ -558,6 +559,13 @@ static void ctx_free(Ctx *c) { fields_free(&c->q); }
 
 static void client_ctx(Client *cl, Ctx *c) {
     ctx_init(c, session_for(cl->token), cl, cl->conn ? cl->conn->ip : 0, cl->url);
+    str_copy(c->host, sizeof c->host, cl->host);
+}
+
+/* the address the visitor opened Hemma by (already checked: http_host_ok) */
+static void ctx_host(Ctx *c, const HttpReq *r) {
+    const char *h = http_header(r, "Host");
+    str_copy(c->host, sizeof c->host, h ? h : "");
 }
 
 const char *ctx_q(const Ctx *c, const char *key) { return fields_str(&c->q, key); }
@@ -1724,6 +1732,10 @@ static void on_http(Conn *conn, HttpReq *r) {
         else conn_reply(conn, 405, "text/plain", "GET only\n", 9, "Allow: GET, HEAD\r\n");
         return;
     }
+    if (!r->streaming && str_starts(r->path, "/cal/")) { /* a person's calendar feed: its own key, no cookie */
+        cal_feed_http(conn, r);
+        return;
+    }
     if (!r->streaming && (str_starts(r->path, "/static/") || str_eq(r->path, "/favicon.ico"))) {
         serve_static(conn, r);
         return;
@@ -1741,6 +1753,7 @@ static void on_http(Conn *conn, HttpReq *r) {
            it straight from the socket may take it. The server closes otherwise. */
         Ctx c;
         ctx_init(&c, session_for(token), NULL, conn->ip, r->target);
+        ctx_host(&c, r);
         bool taken = false;
         for (int i = 0; i < nmods && !taken; i++)
             if (mods[i]->http && (c.me || (mods[i]->flags & MOD_PUBLIC)) && module_visible(mods[i], &c))
@@ -1762,6 +1775,7 @@ static void on_http(Conn *conn, HttpReq *r) {
         if (keyed) {
             Ctx c;
             ctx_init(&c, keyed, NULL, conn->ip, r->target);
+            ctx_host(&c, r);
             bool taken = false;
             for (int i = 0; i < nmods && !taken; i++)
                 if (mods[i]->http && c.me && module_visible(mods[i], &c)) taken = mods[i]->http(&c, conn, r);
@@ -1778,13 +1792,16 @@ static void on_http(Conn *conn, HttpReq *r) {
             conn->keep_alive = false; /* the page still works: signing in is a plain POST */
             conn_reply(conn, 503, "text/plain", msg, sizeof msg - 1, "Retry-After: 60\r\n");
         } else if (conn_ws_upgrade(conn, r)) {
-            client_new(conn, live ? token : "");
+            Client *cl = client_new(conn, live ? token : "");
+            const char *h = http_header(r, "Host");
+            str_copy(cl->host, sizeof cl->host, h ? h : "");
         }
         return;
     }
 
     Ctx c;
     ctx_init(&c, session_for(token), NULL, conn->ip, r->target);
+    ctx_host(&c, r);
 
     if (auth_http(&c, conn, r)) {
         ctx_free(&c);
@@ -1997,6 +2014,7 @@ bool app_boot(const char *data_dir) {
     auth_start(); /* password resets left by `hemma --reset-password` */
     str_copy(g_extra_hosts, sizeof g_extra_hosts, env("HEMMA_HOSTS", ""));
     prune_sessions();
+    zone_boot(); /* a new time zone since the last start: days kept on their days (issue #39) */
     for (int i = 0; i < nmods; i++)
         if (mods[i]->start) mods[i]->start();
     if (app_demo()) app_demo_seed(g_cfg.demo_password); /* (a new demo folder: its made-up household) */
@@ -2012,6 +2030,9 @@ void app_halt(void) {
     g_tracking = false;
 }
 
+static char g_test_ctx_host[96];
+void app_test_ctx_host(const char *host) { str_copy(g_test_ctx_host, sizeof g_test_ctx_host, host ? host : ""); }
+
 void app_ctx(Ctx *c, int person, const char *url) {
     static Session s;
     memset(&s, 0, sizeof s);
@@ -2019,6 +2040,7 @@ void app_ctx(Ctx *c, int person, const char *url) {
     s.person = person;
     if (person > 0 && person < countof(g_test_viewer)) s.viewer = g_test_viewer[person];
     ctx_init(c, &s, NULL, 0x7F000001, url);
+    str_copy(c->host, sizeof c->host, g_test_ctx_host);
 }
 
 void app_ctx_free(Ctx *c) { ctx_free(c); }

@@ -397,6 +397,27 @@ static const Action actions[] = {
     {0},
 };
 
+/* Issue #39: a chore's day and an all-day event's days are kept as local midnights; a timed event's times
+   were typed. (Shopping keeps only moments.) */
+static int rezone(Rezone *z) {
+    int n = 0;
+    for (int i = 0; z->days && i < tbl_count(&T_task); i++) {
+        Task t = *(Task *)tbl_at(&T_task, i);
+        if (!rezone_day(z, &t.due)) continue;
+        n++;
+        if (z->apply) tbl_put(&T_task, &t);
+    }
+    for (int i = 0; i < tbl_count(&T_event); i++) {
+        Event e = *(Event *)tbl_at(&T_event, i);
+        int64_t was = e.start;
+        if (!rezone_span(z, e.allday, e.created, &e.start, &e.end)) continue;
+        n++;
+        if (z->apply) tbl_put(&T_event, &e);
+        else if (!z->days) rezone_note(z, e.title, was, e.start);
+    }
+    return n;
+}
+
 static const Module plan = {
     .id = "plan",
     .title = "Plan",
@@ -409,6 +430,7 @@ static const Module plan = {
     .widget = widget,
     .widget_order = 20,
     .agenda = plan_agenda,
+    .rezone = rezone,
     .blocks = blocks,
 };
 MODULE(plan)

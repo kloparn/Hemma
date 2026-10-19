@@ -362,7 +362,6 @@ int plan_today_events(Ctx *c, Buf *b, bool wall) {
 }
 
 void plan_agenda(Ctx *c, int64_t from, int64_t to, Agenda *out) {
-    (void)c;
     static int idx[MAX_EVENTS];
     int n = events_between(from, to, idx, MAX_EVENTS);
     for (int k = 0; k < n; k++) {
@@ -378,6 +377,31 @@ void plan_agenda(Ctx *c, int64_t from, int64_t to, Agenda *out) {
         snprintf(it.link, sizeof it.link, "/plan/cal?day=%s&edit=%d", ymd, e->id);
         it.who = e->who;
         str_copy(it.kind, sizeof it.kind, "Event");
+        agenda_add(out, &it);
+    }
+    if (!out->todos) return;
+    /* to-dos with a day (the calendar feed, issue #41): one still open after its day shows today, saying so */
+    int64_t today = day_start(c->now);
+    for (int i = 0; i < tbl_count(&T_task); i++) {
+        const Task *t = tbl_at(&T_task, i);
+        if (t->done_at || !t->due) continue;
+        int64_t day = t->due < today ? today : t->due;
+        if (day < from || day >= to) continue;
+        AgendaItem it = {0};
+        it.start = day;
+        it.end = add_days(day, 1);
+        it.allday = true;
+        char since[40] = "";
+        if (t->due < today) {
+            DateTime d = dt_local(t->due);
+            snprintf(since, sizeof since, " (due %s %d %s)", weekday_name(d.wday, true), d.day, month_name(d.mon, true));
+        }
+        str_copy(it.title, sizeof it.title - strlen(since), t->title); /* (a long title gives way, whole letters) */
+        strcat(it.title, since);
+        str_copy(it.icon, sizeof it.icon, plan_task_icon(t->title)[0] ? plan_task_icon(t->title) : "✅");
+        snprintf(it.link, sizeof it.link, "/plan?edit=%d", t->id);
+        it.who = t->who;
+        str_copy(it.kind, sizeof it.kind, "To-do");
         agenda_add(out, &it);
     }
 }

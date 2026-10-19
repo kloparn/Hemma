@@ -92,3 +92,8 @@ a.system-st { font-weight: 650; color: var(--text); }
 .system-tech { margin-top: 4px; font-size: 13px; color: var(--muted); }
 .system-tech summary { cursor: pointer; width: max-content; }
 .system-tech span { display: block; margin-top: 2px; overflow-wrap: anywhere; }
+
+/* the time zone changed: what moving typed times back would do (issue #39) */
+.system-zone { margin: 6px 0 10px; padding-left: 20px; font-size: 14px; }
+.system-zone li { margin: 2px 0; }
+.system-zone-do { display: flex; flex-wrap: wrap; gap: 8px; }

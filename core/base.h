@@ -98,6 +98,9 @@ int64_t dt_make(int year, int mon, int day, int hour, int min);
 int64_t day_start(int64_t t);  /* local midnight */
 int64_t week_start(int64_t t); /* local Monday 00:00 */
 int64_t add_days(int64_t t, int days); /* same wall-clock time `days` later (DST-safe) */
+/* Calendar dates as days since 1970-01-01 and back - no time zone in either (mon 1..12) */
+int64_t days_of_date(int64_t year, int mon, int day);
+void date_of_days(int64_t days, int *year, int *mon, int *day);
 int iso_week(int64_t t, int *iso_year);
 int days_in_month(int year, int mon);
 const char *weekday_name(int wday, bool abbrev); /* English, wday 0 = Monday */

@@ -136,6 +136,39 @@ did. A card with nothing to show stays away, so a quiet day makes a calm wall. A
 the cards and their order under **Screens → Edit**, and can make more walls (**New screen →
 Wall**). The wall only shows: ticking things off happens on your phone.
 
+## Your calendar on your phone
+
+Your bookings, your to-dos and the household's events can show in your phone's own calendar
+app, next to everything else in your life. The phone keeps a copy, so you see them when
+you're out too, and its reminders work as usual.
+
+1. Open Hemma (on the phone, or on a computer at home) and go to **Household → Your calendar
+   on your phone**.
+2. Press **Make my calendar link**.
+3. **iPhone:** press **Add to this device's calendar** and choose **Subscribe**. (Or open
+   the page on a computer and scan its code with the iPhone's camera.)
+   **Android:** install **ICSx⁵** (free, from Google Play or F-Droid), add a subscription
+   and paste the `http://` address shown under the button.
+   **A computer:** Outlook, Apple Calendar and Thunderbird can subscribe to the same
+   address ("add a calendar from the internet" or similar).
+
+Good to know:
+
+- Hemma isn't on the internet, so the phone brings its copy up to date **while it's on the
+  home Wi-Fi** (or over your VPN, see [home-network.md](home-network.md#reaching-hemma-from-outside-the-safe-way)).
+  Google Calendar's own website can't reach a home network, which is why Android goes through
+  ICSx⁵.
+- What's in it: your bookings, your to-dos with a day and the ones for anyone, and the
+  household's events and yours, from a month back to a year ahead. A to-do still open after
+  its day shows on today, saying when it was due. Tick **Every booking in the household, not
+  only yours** to see everyone's bookings too.
+- **Anyone with the link can read that calendar**, so keep it to your own devices. Shared it
+  by mistake, or lost a phone? **Make a new link**: the old one stops working at once. **Turn
+  it off** stops it altogether.
+- Open the page by Hemma's address at home (like `http://hemma.local`), not on the server
+  itself at `127.0.0.1`: the link uses the address you opened the page by.
+- Display accounts (a TV, a wall tablet) have no calendar link.
+
 ## Recovery codes
 
 Recovery codes are your spare keys. If you ever forget your password, one code lets you

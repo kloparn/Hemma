@@ -4,6 +4,43 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 0.15.0 (2026-10-19)
+
+Your calendar on your phone, and a change of time zone that no longer moves things.
+
+### New
+
+- **Your calendar on your phone** (#41). Under **Household → Your calendar on your phone**,
+  everyone who signs in can make a link that their phone's own calendar subscribes to: their
+  bookings, their to-dos with a day and the ones for anyone, and the household's events and
+  theirs, from a month back to a year ahead. The phone keeps a copy for when it's out, and its
+  reminders work as usual; it brings it up to date on the home Wi-Fi. An iPhone subscribes with
+  one tap (or by scanning the code on a computer's screen), Android through the free ICSx⁵, a
+  computer's calendar by the address. A tick adds everyone's bookings. **Make a new link** stops
+  the old one at once, **Turn it off** stops it altogether. A to-do still open after its day
+  shows on today, saying when it was due.
+- **A new time zone keeps days on their days** (#39). A Pi left on UTC for a week and then set
+  to Stockholm used to show a one-day party on two days, spill a guest-room booking into the
+  next day and put a 14:00 dentist at 16:00. Now, at the next start, things that last whole
+  days (all-day events, chores' days, whole-day bookings, a note's last day) keep their days by
+  themselves. The times typed before are listed on the System page as they'd be if moved back
+  ("Dentist · Tue 13 Oct 16:30 → 14:30"): **Move them back to the times typed** if the old zone
+  was wrong, **Got it** if Hemma really moved.
+
+### For developers
+
+- **Module.rezone** (core/zone.c): at a start in another zone the core asks every module to move
+  the days it keeps as local midnights (`rezone_day`, `rezone_span`), and, when an admin asks,
+  the times typed before (`rezone_time`, previewed with `rezone_note`). The zone's detection moved
+  from the System module to the core's start, before the modules start. plan, book and board
+  take part.
+- **The calendar feed** (core/feed.c): `/cal/<id>-<key>.ics`, the key HMAC(server secret,
+  "cal:<id>:<n>") - nothing secret stored; pref `cal.feed` counts the links made (negative =
+  off). Built on the shared agenda: `Agenda.todos` asks plan for to-dos as well. `Ctx.host` is the
+  address the visitor opened Hemma by.
+- Tests can run in another time zone (`plat_set_tz("UTC0")`, `"XXX-2"`) and open pages by an
+  address (`app_test_ctx_host`); `days_of_date` / `date_of_days` in base.
+
 ## 0.14.0 (2026-10-19)
 
 Downloads, and a demo to try Hemma before setting it up.

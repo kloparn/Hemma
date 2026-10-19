@@ -38,6 +38,9 @@ typedef struct pollfd pollfd_t;
 bool plat_init(void);
 const char *plat_getenv(const char *key);                       /* NULL when unset */
 bool plat_setenv(const char *key, const char *val, bool overwrite); /* process environment */
+/* Tests: run in another time zone, a POSIX TZ string ("UTC0", "XXX-2" = UTC+2 all year); NULL = the
+   computer's own again. Local-time functions follow at once (tzset). */
+void plat_set_tz(const char *tz);
 /* Called once on Ctrl+C / SIGTERM. Must only set flags (signal context). */
 void plat_on_quit(void (*fn)(void));
 void plat_sleep_ms(int ms);

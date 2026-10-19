@@ -562,6 +562,18 @@ static const Action actions[] = {
     {"board.keep", act_keep}, {"board.delete", act_delete}, {0},
 };
 
+/* Issue #39: a note kept "until" a day disappears at the local midnight after it; the others at a moment. */
+static int rezone(Rezone *z) {
+    int n = 0;
+    for (int i = 0; z->days && i < tbl_count(&T_note); i++) {
+        Note note = *(Note *)tbl_at(&T_note, i);
+        if (!rezone_day(z, &note.expires)) continue;
+        n++;
+        if (z->apply) tbl_put(&T_note, &note);
+    }
+    return n;
+}
+
 static const Module board = {
     .id = "board",
     .title = "Board",
@@ -569,6 +581,7 @@ static const Module board = {
     .nav = 5,
     .init = init,
     .start = start,
+    .rezone = rezone,
     .page = page,
     .actions = actions,
     .widget = widget,

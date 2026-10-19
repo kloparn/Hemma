@@ -7,6 +7,7 @@
  * environment). /people/codes shows freshly made recovery codes once. */
 #include "../../core/app.h"
 #include "../../core/auth.h"
+#include "../../core/qr.h"
 #include "../../core/ui.h"
 
 static const char *const EMOJI[] = {"🦊", "🐻", "🐼", "🐨", "🐯", "🦁", "🐸", "🐵", "🦄", "🐙",
@@ -214,6 +215,61 @@ static bool http(Ctx *c, Conn *conn, HttpReq *r) {
     return true;
 }
 
+/* Issue #41: your calendar on your phone - a feed its own calendar subscribes to (core/feed.c) */
+static bool loopback_host(const char *host) {
+    return !host[0] || str_starts(host, "127.") || str_starts(host, "localhost") || str_starts(host, "[::1]");
+}
+
+static void calendar_card(Ctx *c, Buf *b) {
+    ui_card(b, "Your calendar on your phone", NULL, NULL);
+    char path[96];
+    if (!cal_feed_path(c->me->id, path, sizeof path)) {
+        buf_puts(b, "<p class=\"muted\">Your bookings, your to-dos and the household's events in your phone's own "
+                    "calendar. It keeps a copy for when you're out, and its reminders work as usual. Hemma isn't on "
+                    "the internet, so the phone brings it up to date while it's at home.</p>");
+        ui_act(b, "people.cal_make", "btn primary", "Make my calendar link", NULL, NULL, NULL);
+        ui_card_end(b);
+        return;
+    }
+    if (!c->host[0]) { /* (no address to make the link for) */
+        buf_puts(b, "<p class=\"notice\">Open this page at Hemma's address to see your link.</p>");
+    } else {
+        bool here_only = loopback_host(c->host); /* 127.0.0.1: a calendar on this computer can, a phone can't */
+        if (here_only)
+            H(b, "<p class=\"notice\">You opened Hemma at <b>%s</b>, which only this computer can reach: this link works "
+                 "for a calendar on this computer. For your phone, open this page on the phone, or at Hemma's address "
+                 "at home.</p>",
+              c->host);
+        char webcal[200], web[200];
+        snprintf(webcal, sizeof webcal, "webcal://%s%s", c->host, path);
+        snprintf(web, sizeof web, "http://%s%s", c->host, path);
+        H(b, "<p><a class=\"btn primary\" href=\"%s\" data-native>Add to this device's calendar</a></p>", webcal);
+        static QrCode q;
+        if (!here_only && qr_make(&q, webcal, strlen(webcal), QR_M, -1)) {
+            buf_puts(b, "<div class=\"people-cal-qr\">");
+            qr_svg(b, &q, "A code with your calendar link, for a phone's camera");
+            buf_puts(b, "</div>");
+        }
+        H(b, "<p class=\"small\"><b>iPhone:</b> tap the button on the phone%r, and choose Subscribe. <b>Android:</b> "
+             "install ICSx⁵ (free, from Google Play or F-Droid) and add this address in it. A computer's calendar "
+             "subscribes to it too:</p><p><code class=\"people-cal-url\">%s</code></p>",
+          here_only ? "" : ", or scan the code with its camera", web);
+    }
+    ui_form(b, "people.cal_all", "");
+    H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"all\" value=\"1\" data-auto%r> Every booking in the "
+         "household, not only yours</label>",
+      str_eq(pref(c->me->id, PREF_CAL_ALL, ""), "1") ? " checked" : "");
+    ui_form_end(b);
+    buf_puts(b, "<p class=\"muted small\">Anyone with the link can read this calendar: keep it to your own phone and "
+                "computer. A new link stops the old one.</p><div class=\"people-actions\">");
+    ui_form_confirm(b, "people.cal_make", "inline", "Make a new link? Phones with the old one stop getting updates.");
+    buf_puts(b, "<button class=\"btn\">Make a new link</button>");
+    ui_form_end(b);
+    ui_act(b, "people.cal_off", "btn", "Turn it off", NULL, NULL, NULL);
+    buf_puts(b, "</div>");
+    ui_card_end(b);
+}
+
 static void account_card(Ctx *c, Buf *b) {
     ui_card(b, "Your account", NULL, NULL);
     buf_puts(b, "<div class=\"device-me\">");
@@ -304,6 +360,7 @@ static void page(Ctx *c, Buf *b) {
     home_card(c, b);
     buf_puts(b, "</div><div>");
     account_card(c, b);
+    if (c->me->pass[0] && c->me->role != ROLE_DISPLAY) calendar_card(c, b);
     buf_puts(b, "</div></div>");
 
     int edit = (int)ctx_qint(c, "edit", 0);
@@ -548,7 +605,42 @@ static void act_household(Ctx *c, Fields *f) {
     ctx_ok(c, "Saved");
 }
 
+/* The calendar link (issue #41): PREF_CAL counts the links made - off is that count made negative, so a
+   link turned off never works again, and the next one is new. */
+static void act_cal_make(Ctx *c, Fields *f) {
+    (void)f;
+    if (!c->me->pass[0]) {
+        ctx_fail(c, "A calendar link is for people who sign in");
+        return;
+    }
+    long long n = llabs(atoll(pref(c->me->id, PREF_CAL, "0"))) + 1;
+    char v[24];
+    snprintf(v, sizeof v, "%lld", n);
+    pref_set(c->me->id, PREF_CAL, v);
+    ctx_ok(c, n == 1 ? "Your calendar link is ready" : "A new calendar link - the old one stopped working");
+}
+
+static void act_cal_off(Ctx *c, Fields *f) {
+    (void)f;
+    long long n = atoll(pref(c->me->id, PREF_CAL, "0"));
+    if (n > 0) {
+        char v[24];
+        snprintf(v, sizeof v, "%lld", -n);
+        pref_set(c->me->id, PREF_CAL, v);
+    }
+    ctx_ok(c, "Turned off - phones that used it stop getting updates");
+}
+
+static void act_cal_all(Ctx *c, Fields *f) {
+    bool all = fields_get(f, "all") != NULL;
+    pref_set(c->me->id, PREF_CAL_ALL, all ? "1" : "");
+    ctx_ok(c, all ? "Every booking goes in your calendar" : "Only your own bookings go in your calendar");
+}
+
 static const Action actions[] = {
+    {"people.cal_make", act_cal_make},
+    {"people.cal_off", act_cal_off},
+    {"people.cal_all", act_cal_all},
     {"people.save", act_save},
     {"people.delete", act_delete},
     {"people.password", act_password},

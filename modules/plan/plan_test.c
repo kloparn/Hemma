@@ -528,3 +528,56 @@ TEST(plan_reads_out_what_and_who) {
     CHECK_HAS(th_page(adam, "/plan/cal"), "aria-label=\"Add event\"");
     th_halt();
 }
+
+/* Issue #39: a Pi on UTC for a week, then set to UTC+2. A chore's day and an all-day party stay their
+   days by themselves; the dentist typed for 14:30 shows at 16:30 until an admin moves it back. */
+TEST(plan_keeps_days_when_the_zone_changes) {
+    char dir[512];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    plat_set_tz("UTC0");
+    g_fake_now = dt_make(2026, 10, 7, 10, 0);
+    th_boot_in(dir);
+    Task chore = {0};
+    str_copy(chore.title, sizeof chore.title, "Vacuum");
+    chore.due = dt_make(2026, 10, 9, 0, 0);
+    chore.created = g_fake_now;
+    tbl_put(&T_task, &chore);
+    Event party = {0}, dentist = {0};
+    str_copy(party.title, sizeof party.title, "Party");
+    party.allday = true;
+    party.start = dt_make(2026, 10, 24, 0, 0);
+    party.end = dt_make(2026, 10, 25, 0, 0);
+    party.created = g_fake_now;
+    tbl_put(&T_event, &party);
+    str_copy(dentist.title, sizeof dentist.title, "Dentist");
+    dentist.start = dt_make(2026, 10, 13, 14, 30);
+    dentist.end = dt_make(2026, 10, 13, 15, 0);
+    dentist.created = g_fake_now;
+    tbl_put(&T_event, &dentist);
+    th_halt();
+    plat_set_tz("XXX-2");
+    g_fake_now += 7 * 86400;
+    th_boot_in(dir);
+    const Task *t = tbl_get(&T_task, chore.id);
+    CHECK(t && t->due == dt_make(2026, 10, 9, 0, 0));
+    const Event *p = tbl_get(&T_event, party.id);
+    CHECK(p && p->start == dt_make(2026, 10, 24, 0, 0) && p->end == dt_make(2026, 10, 25, 0, 0));
+    const Event *d = tbl_get(&T_event, dentist.id);
+    CHECK(d && dt_local(d->start).hour == 16 && dt_local(d->start).min == 30);
+    Rezone z;
+    CHECK_INT(zone_retime(false, &z), 1); /* the party and the chore aren't typed times */
+    CHECK_STR(z.note[0], "Dentist · Tue 13 Oct 16:30 → 14:30");
+    CHECK_INT(zone_retime(true, &z), 1);
+    d = tbl_get(&T_event, dentist.id);
+    CHECK(d && dt_local(d->start).hour == 14 && dt_local(d->end).hour == 15);
+    CHECK_INT(zone_retime(true, &z), 0); /* once */
+    th_halt();
+    th_boot_in(dir); /* the next start, same zone: nothing moves again */
+    p = tbl_get(&T_event, party.id);
+    CHECK(p && p->start == dt_make(2026, 10, 24, 0, 0));
+    d = tbl_get(&T_event, dentist.id);
+    CHECK(d && dt_local(d->start).hour == 14);
+    g_fake_now = 0;
+    plat_set_tz(NULL);
+    th_halt();
+}

@@ -870,3 +870,52 @@ TEST(app_serves_assets_gzipped_to_browsers_that_take_it) {
     buf_free(&r);
     th_halt();
 }
+
+TEST(app_calendar_feed_answers_its_own_key_only) {
+    /* issue #41: a phone's calendar fetches its link without Hemma's cookie - the key in the address is
+       what lets it in, to that one calendar and nothing else */
+    th_boot();
+    auth_configure("e2e-salt", 1000);
+    int adam = account("Adam", "adam", "correct horse", ROLE_ADMIN);
+    pref_set(adam, PREF_CAL, "1");
+    char path[96], bad[96], req[400];
+    CHECK(cal_feed_path(adam, path, sizeof path));
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    Buf r = {0};
+    snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: hemma.local\r\nConnection: close\r\n\r\n", path);
+    request(port, req, &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 200 OK\r\n"));
+    CHECK_HAS(buf_cstr(&r), "Content-Type: text/calendar; charset=utf-8\r\n");
+    CHECK(str_starts(body_of(&r), "BEGIN:VCALENDAR\r\n"));
+    CHECK(!strstr(buf_cstr(&r), "Set-Cookie"));
+    /* one character off: nothing */
+    str_copy(bad, sizeof bad, path);
+    bad[strlen(bad) - 5] = bad[strlen(bad) - 5] == 'a' ? 'b' : 'a';
+    snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: hemma.local\r\nConnection: close\r\n\r\n", bad);
+    request(port, req, &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 404 "));
+    CHECK_HAS(body_of(&r), "Make a new calendar link");
+    CHECK(!strstr(body_of(&r), "BEGIN:VCALENDAR"));
+    /* someone else's name for Hemma (DNS rebinding) is refused before anything else */
+    snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: calendar.example.com\r\nConnection: close\r\n\r\n", path);
+    request(port, req, &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 403 "));
+    snprintf(req, sizeof req, "POST %s HTTP/1.1\r\nHost: hemma.local\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+             path);
+    request(port, req, &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 405 "));
+    /* a new link: the old address answers no more */
+    pref_set(adam, PREF_CAL, "2");
+    snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: hemma.local\r\nConnection: close\r\n\r\n", path);
+    request(port, req, &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 404 "));
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    th_halt();
+}
