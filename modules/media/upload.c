@@ -971,21 +971,8 @@ static void worker(void *arg) {
         }
     }
 
-    if (status) {
-        Buf out = {0};
-        if (complete) buf_puts(&out, "{\"ok\":true}");
-        else {
-            buf_puts(&out, "{\"error\":");
-            json_str(&out, fail);
-            buf_printf(&out, ",\"stop\":%s}", stop ? "true" : "false");
-        }
-        worker_reply(j->s, complete ? 200 : status, buf_cstr(&out));
-        buf_free(&out);
-    }
-    sock_shutdown_write(j->s);
-    if (status && !complete) drain(j->s, j->len - got);
-    sock_close(j->s);
-
+    /* counted before the answer goes: a browser told "ok" may ask about the upload at once, and must
+       find this file done (a busy machine once answered "0 of 2 files" right after an "ok") */
     lock_take(&g_lock);
     UpFile *uf = &b->files[j->i];
     uf->saved = j->at + got;
@@ -1006,6 +993,20 @@ static void worker(void *arg) {
     g_workers--;
     b->last = b->busy = now_sec();
     lock_give(&g_lock);
+    if (status) {
+        Buf out = {0};
+        if (complete) buf_puts(&out, "{\"ok\":true}");
+        else {
+            buf_puts(&out, "{\"error\":");
+            json_str(&out, fail);
+            buf_printf(&out, ",\"stop\":%s}", stop ? "true" : "false");
+        }
+        worker_reply(j->s, complete ? 200 : status, buf_cstr(&out));
+        buf_free(&out);
+    }
+    sock_shutdown_write(j->s);
+    if (status && !complete) drain(j->s, j->len - got);
+    sock_close(j->s);
     if (complete) log_info("upload: saved %s", j->full);
     else log_warn("upload: %s - %s", j->full, fail);
     app_tick_soon(); /* the tick shows it now (a new picture: at once), not at the next idle tick */

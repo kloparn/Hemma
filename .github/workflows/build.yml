@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build
-        run: make
+        run: make -j"$(getconf _NPROCESSORS_ONLN)"
       - name: Test
         run: make test
 
@@ -46,7 +46,7 @@ jobs:
         run: sudo sysctl -w vm.mmap_rnd_bits=28
       - name: Test under ASan + UBSan
         run: >
-          make test CC=clang
+          make -j"$(getconf _NPROCESSORS_ONLN)" test CC=clang
           CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
           LDFLAGS="-fsanitize=address,undefined"
 
@@ -64,7 +64,7 @@ jobs:
       - name: Address-space randomisation ASan copes with
         run: sudo sysctl -w vm.mmap_rnd_bits=28
       - name: Seed files
-        run: make build/test && HEMMA_FUZZ_SEEDS=build/fuzz-seeds build/test conv_fuzz_seeds && ls -l build/fuzz-seeds
+        run: make -j"$(getconf _NPROCESSORS_ONLN)" build/test && HEMMA_FUZZ_SEEDS=build/fuzz-seeds build/test conv_fuzz_seeds && ls -l build/fuzz-seeds
       - name: Build the fuzzer
         run: |
           # libFuzzer comes with clang's runtime libraries; some images keep those in a package of their own

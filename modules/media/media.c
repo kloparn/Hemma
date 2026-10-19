@@ -1721,6 +1721,7 @@ static void start(void) {
     upload_start();
     media_lib_start();
     media_health_reset();
+    g_disks_at = 0; /* (a start measures afresh: a test before this one may have measured other folders) */
 }
 
 static void stop(void) {

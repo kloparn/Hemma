@@ -50,9 +50,9 @@ files, HTML that is escaped by default, and several full code reviews so far.
 | | Windows (`zig cc`) | Linux, macOS, Raspberry Pi (`make`) |
 |---|---|---|
 | Compiler | [zig](https://ziglang.org) (tested with 0.17.0): `winget install zig.zig` | `cc` (gcc or clang); `make CC="zig cc"` works too |
-| Debug build | `.\build.ps1` (UBSan traps on) | `make` (optimised) |
+| Debug build | `.\build.ps1` (UBSan traps on) | `make -j8` (optimised; one object per file, so `-j` uses every core) |
 | Run, dev mode | `.\build.ps1 run` → http://127.0.0.1:8080 | `make run` → http://127.0.0.1:8080 |
-| Tests | `.\build.ps1 test [filter]` | `make test` |
+| Tests | `.\build.ps1 test [filter]` | `make test` (`make test T=lan` for a filter) |
 | Release | `.\build.ps1 release` | `make` |
 | Install | (see [windows.md](windows.md)) | `sudo make install` (systemd Linux) |
 
@@ -83,7 +83,7 @@ browser-side video converter (`av.wasm`) is built when zig is available. Without
 | Linux x86-64 | Built with `make` and the full test suite run on every push (GitHub CI, Ubuntu), also under AddressSanitizer + UBSan |
 | Linux ARM64, ARMv6/7 | Cross-compiled (static) without warnings |
 | macOS | Built with `make` and the full test suite run on every push (GitHub CI); cross-compiled from Windows too |
-| `make` with gcc on a Pi | Expected to work; not yet confirmed |
+| `make` with gcc on a Pi | Built and the full test suite run with gcc 14 on a Pi 3B+ (Debian 13) |
 
 Platform-specific code lives in `core/plat.c`/`plat.h` (sockets, files, threads,
 randomness) and `core/lan.c` (network interface, ARP/neighbour table), plus two clock
@@ -101,8 +101,37 @@ video converter for 90 seconds (`tools/convfuzz.c`: a libFuzzer target; build it
 `-DCONVFUZZ_MAIN` for a replay/mutate driver that works with zig on Windows too).
 
 ```powershell
-.\build.ps1 test            # everything
-.\build.ps1 test lan        # tests whose name or file contains "lan"
+.\build.ps1 test            # everything, one process per core
+.\build.ps1 test lan        # tests whose name or file contains "lan", in one process
+```
+
+The whole suite runs in one process per core: `build/test --shard K/N` runs every Nth test from
+the Kth, and `make test` (`tests/parallel.sh`) and `.\build.ps1 test` start N of them and add up
+the results (`HEMMA_TEST_JOBS` chooses N). Every process gets its own scratch folder, so a test
+must not lean on what an earlier one left behind - running it in different company shows when it
+does. On a 20-thread PC the suite takes about 5-10 s instead of a minute.
+
+### Checking before you push
+
+`tools/ci/local.sh` runs CI's three Linux jobs on your own machine: `test` (gcc, `make` +
+`make test`), `asan` (the suite under AddressSanitizer + UBSan with clang) and `fuzz [seconds]`
+(the converter's libFuzzer target). It works on a fresh copy of the tree in a RAM disk and keeps
+each job's compiled objects for the next run, so only what changed compiles again: a run takes
+seconds to a minute. It needs `make`, `gcc`, and for `asan`/`fuzz` clang with its sanitizer
+runtimes (Ubuntu: `build-essential clang libclang-rt-18-dev`).
+
+```sh
+bash tools/ci/local.sh test            # Linux: this checkout (asan, fuzz [seconds] likewise)
+```
+
+On Windows it runs in WSL: `.\build.ps1 ci [test|asan|fuzz]` packs the checkout and hands it
+over (`$env:HEMMA_WSL` picks the distribution). Setting WSL up, once (admin rights and a restart;
+the distribution's disk can live on another drive):
+
+```powershell
+wsl --install --no-distribution                          # then restart
+wsl --install Ubuntu-24.04 --location D:\WSL\Ubuntu      # asks for a Linux user name and password
+wsl -d Ubuntu-24.04 -u root -- sh -c "apt-get update && apt-get install -y build-essential clang libclang-rt-18-dev"
 ```
 
 A few tests look at real media when you point them at it (they're skipped otherwise, and

@@ -1,8 +1,12 @@
 /* tests/runner.c — runs every TEST() linked into the binary.
  *
- *   build/test            run everything
- *   build/test http ws    run tests whose name or file contains "http" or "ws"
- *   build/test -v         list each test as it runs */
+ *   build/test                run everything
+ *   build/test http ws        run tests whose name or file contains "http" or "ws"
+ *   build/test -v             list each test as it runs
+ *   build/test --shard K/N    run every Nth of them, from the Kth (0-based), and end with one line
+ *                             "shard K/N: R run, F failed, C checks, M ms": N of these side by side
+ *                             (tests/parallel.sh, build.ps1) keep every core busy. Each has its own
+ *                             scratch folder, as any run does. */
 #include "test.h"
 #include "../core/plat.h"
 
@@ -77,10 +81,15 @@ int main(int argc, char **argv) {
     g_log_level = LOG_QUIET;
     bool verbose = false;
     const char *filters[32];
-    int nfilters = 0;
+    int nfilters = 0, shard = 0, shards = 1;
     for (int i = 1; i < argc; i++) {
         if (str_eq(argv[i], "-v")) verbose = true;
-        else if (nfilters < countof(filters)) filters[nfilters++] = argv[i];
+        else if (str_eq(argv[i], "--shard") && i + 1 < argc) {
+            if (sscanf(argv[++i], "%d/%d", &shard, &shards) != 2 || shards < 1 || shard < 0 || shard >= shards) {
+                fprintf(stderr, "--shard K/N: 0 <= K < N\n");
+                return 2;
+            }
+        } else if (nfilters < countof(filters)) filters[nfilters++] = argv[i];
     }
 
     /* scratch files go next to the test program (its own build folder) and are removed after a
@@ -98,7 +107,7 @@ int main(int argc, char **argv) {
     dir_make(tmp_root);
 
     qsort(tests, (size_t)ntests, sizeof *tests, by_file_then_name);
-    int run = 0, failed = 0;
+    int run = 0, failed = 0, picked = 0;
     int64_t t0 = now_ms();
     for (int i = 0; i < ntests; i++) {
         Test *t = &tests[i];
@@ -108,6 +117,7 @@ int main(int argc, char **argv) {
                 hit = strstr(t->name, filters[k]) || strstr(t->file, filters[k]);
             if (!hit) continue;
         }
+        if (picked++ % shards != shard) continue; /* (a file's tests spread over the shards: even loads) */
         current_name = t->name;
         failed_in_current = 0;
         g_fake_now = 0;
@@ -117,7 +127,10 @@ int main(int argc, char **argv) {
         if (failed_in_current) failed++;
     }
     int64_t ms = now_ms() - t0;
-    if (failed)
+    if (shards > 1)
+        fprintf(stderr, "shard %d/%d: %d run, %d failed, %d checks, %lld ms\n", shard, shards, run, failed,
+                test_checks, (long long)ms);
+    else if (failed)
         fprintf(stderr, "\n\x1b[31m%d of %d tests failed\x1b[0m (%d checks, %lld ms)\n", failed, run, test_checks,
                 (long long)ms);
     else
