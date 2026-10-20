@@ -558,6 +558,7 @@
         try {
           const s = await ask(url, m.send ? `size=${m.size}` : `original=1&why=${encodeURIComponent(m.error || '')}`);
           if (!s.skip) await put(url, m.send ? m : files[t.f], s.at || 0);
+          for (const sub of m.subs || []) await subtitle(url, sub); // the file's own subtitles, as .srt next to it
         } finally {
           if (m.drop) m.drop(); // sent (or not needed): the browser lets go of the copy now
         }
@@ -617,7 +618,7 @@
       seen.delete(k);
       if (w && m.size !== undefined && !halted) { // made: it waits in its worker to be sent
         ready.set(k, w);
-        m = { size: m.size, send: sender(w), drop: () => drop(k) };
+        m = { size: m.size, subs: m.subs, send: sender(w), drop: () => drop(k) };
       } else if (w) {
         w.terminate();
       }
@@ -664,6 +665,19 @@
       },
       stop() { if (!halted) halt(''); },
     };
+  }
+
+  // A subtitle track the converter took out of a file: the server saves it next to the copy. A few
+  // tries; past them the video still counts as sent (subtitles are a bonus, not the upload).
+  async function subtitle(url, sub) {
+    const q = `sub=1&lang=${encodeURIComponent(sub.lang)}&name=${encodeURIComponent(sub.name)}&forced=${sub.forced ? 1 : 0}`;
+    for (let tries = 0; tries < 3; tries++) {
+      const s = await fetch(`${url}?${q}`, { method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: sub.text }).then(json).catch(() => ({}));
+      if (s.stop) throw new Error(s.error);
+      if (s.ok || s.skip) return;
+      await pause(1000 * 2 ** tries);
+    }
   }
 
   // A small POST with retries; {stop} answers end the upload.

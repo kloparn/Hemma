@@ -1,4 +1,5 @@
-/* modules/av/ac3.c — see ac3.h. Section and table numbers refer to ATSC A/52. */
+/* modules/av/ac3.c — see ac3.h. Section and table numbers refer to ATSC A/52; E.x ones to its Annex E
+   (E-AC-3) as printed in ETSI TS 102 366 V1.4.1. */
 #include "ac3.h"
 
 #include <math.h>
@@ -116,6 +117,51 @@ static const float EXPSCALE[25] = {P2(0),  P2(1),  P2(2),  P2(3),  P2(4),  P2(5)
 
 static const uint8_t REMATBND[5] = {13, 25, 37, 61, 253}; /* rematrixing bands (7.5.2) */
 
+/* ---- E-AC-3 (Annex E) ---- */
+/* Lo/Ro and Lt/Rt mix levels from the mixing metadata: +3, +1.5, 0, -1.5, -3, -4.5, -6 dB, off (E.1.3.1) */
+static const float MIXLEV[8] = {1.41421356f, 1.18920712f, 1.0f, 0.84089642f, 0.70710678f, 0.59460356f, 0.5f, 0.0f};
+
+/* Frame exponent strategy combinations (Table E.1.9): 0 = reuse, 1 = D15, 2 = D25, 3 = D45 per block */
+static const uint8_t FRM_EXPSTR[32][6] = {
+    {1, 0, 0, 0, 0, 0}, {1, 0, 0, 0, 0, 3}, {1, 0, 0, 0, 2, 0}, {1, 0, 0, 0, 3, 3}, {2, 0, 0, 2, 0, 0}, {2, 0, 0, 2, 0, 3},
+    {2, 0, 0, 3, 2, 0}, {2, 0, 0, 3, 3, 3}, {2, 0, 1, 0, 0, 0}, {2, 0, 2, 0, 0, 3}, {2, 0, 2, 0, 2, 0}, {2, 0, 2, 0, 3, 3},
+    {2, 0, 3, 2, 0, 0}, {2, 0, 3, 2, 0, 3}, {2, 0, 3, 3, 2, 0}, {2, 0, 3, 3, 3, 3}, {3, 1, 0, 0, 0, 0}, {3, 1, 0, 0, 0, 3},
+    {3, 2, 0, 0, 2, 0}, {3, 2, 0, 0, 3, 3}, {3, 2, 0, 2, 0, 0}, {3, 2, 0, 2, 0, 3}, {3, 2, 0, 3, 2, 0}, {3, 2, 0, 3, 3, 3},
+    {3, 3, 1, 0, 0, 0}, {3, 3, 2, 0, 0, 3}, {3, 3, 2, 0, 2, 0}, {3, 3, 2, 0, 3, 3}, {3, 3, 3, 2, 0, 0}, {3, 3, 3, 2, 0, 3},
+    {3, 3, 3, 3, 2, 0}, {3, 3, 3, 3, 3, 3}};
+
+/* Default band structures, by sub-band number: 1 = merged with the sub-band before it. Coupling's 18
+   sub-bands start at bin 37, spectral extension's 17 at bin 25 (Tables E.2.x; both 12 bins wide). */
+static const uint8_t DEF_CPLBNDSTRC[18] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1};
+static const uint8_t DEF_SPXBNDSTRC[17] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1};
+
+/* ---- the adaptive hybrid transform (E.2.4) ---- */
+#include "ac3_aht.h" /* VQ_HEBAP1..7: the vector tables (Tables E.3.1-E.3.7) */
+
+static const uint16_t (*const VQ[8])[6] = {NULL,      VQ_HEBAP1, VQ_HEBAP2, VQ_HEBAP3,
+                                           VQ_HEBAP4, VQ_HEBAP5, VQ_HEBAP6, VQ_HEBAP7};
+
+static const uint8_t HEBAPTAB[64] = { /* high-efficiency bit allocation pointers (Table E.2.1) */
+    0,  1,  2,  3,  4,  5,  6,  7,  8,  8,  8,  8,  9,  9,  9,  10, 10, 10, 10, 11, 11, 11,
+    11, 12, 12, 12, 12, 13, 13, 13, 13, 14, 14, 14, 14, 15, 15, 15, 15, 16, 16, 16, 16, 17,
+    17, 17, 17, 18, 18, 18, 18, 18, 18, 18, 18, 19, 19, 19, 19, 19, 19, 19, 19, 19};
+
+/* bits per hebap (Table E.2.2): 1-7 index a vector of six, 8-19 are one mantissa each */
+static const uint8_t HEBAP_BITS[20] = {0, 2, 3, 4, 5, 7, 8, 9, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16};
+
+/* inverse quantisation remapping y = x + a*x + b (Table E.2.6), 16-bit fractions. Gain 1 (and
+   no GAQ): a for hebap 8-19, b = 0. Gains 2 and 4, large mantissas: a, and b for x < 0, hebap
+   8-16 (b for x >= 0: 0x4000 and 0x2000). */
+static const uint16_t GAQ_A1[12] = {0x1249, 0x0889, 0x0421, 0x0208, 0x0102, 0x0081,
+                                    0x0040, 0x0020, 0x0010, 0x0008, 0x0002, 0x0000};
+static const uint16_t GAQ_A[9][2] = {{0xd555, 0xedb7}, {0xc925, 0xe666}, {0xc444, 0xe319},
+                                     {0xc211, 0xe186}, {0xc104, 0xe0c2}, {0xc081, 0xe060},
+                                     {0xc040, 0xe030}, {0xc020, 0xe018}, {0xc010, 0xe00c}};
+static const uint16_t GAQ_B[9][2] = {{0xeaab, 0xfb6e}, {0xd249, 0xeccd}, {0xc889, 0xe632},
+                                     {0xc421, 0xe30c}, {0xc208, 0xe183}, {0xc102, 0xe0c1},
+                                     {0xc081, 0xe060}, {0xc040, 0xe030}, {0xc020, 0xe018}};
+static float frac16(uint16_t v) { return (float)(int16_t)v / 32768.0f; }
+
 /* ============================================================ bit reading */
 
 typedef struct {
@@ -149,9 +195,17 @@ static int frame_words(int fscod, int frmsizecod) {
     return kbps * 3;
 }
 
+static bool is_eac3(int bsid) { return bsid >= 11 && bsid <= 16; } /* bsid 9 and 10: AC-3 at lower rates */
+
 int ac3_frame_size(const uint8_t *p, size_t n) {
     if (!p || n < 6 || p[0] != 0x0B || p[1] != 0x77) return 0;
-    int fscod = p[4] >> 6, frmsizecod = p[4] & 63, bsid = p[5] >> 3;
+    int bsid = p[5] >> 3;
+    if (is_eac3(bsid)) { /* strmtyp 2, substreamid 3, frmsiz 11 (words - 1), fscod 2, fscod2/numblkscod 2 */
+        int size = (((p[2] & 7) << 8 | p[3]) + 1) * 2;
+        if (p[2] >> 6 == 3 || (p[4] >> 6 == 3 && (p[4] >> 4 & 3) == 3)) return 0; /* reserved type or rate */
+        return size >= 16 ? size : 0; /* the smallest real frame (32 kbit/s, one block) is 22 bytes */
+    }
+    int fscod = p[4] >> 6, frmsizecod = p[4] & 63;
     if (fscod == 3 || frmsizecod > 37 || bsid > 8) return 0;
     return 2 * frame_words(fscod, frmsizecod);
 }
@@ -159,6 +213,7 @@ int ac3_frame_size(const uint8_t *p, size_t n) {
 bool ac3_crc_ok(const uint8_t *f, size_t n) {
     int size = ac3_frame_size(f, n);
     if (!size || (size_t)size > n) return false;
+    if (is_eac3(f[5] >> 3)) return ac3_crc16(0, f + 2, (size_t)size - 2) == 0; /* one CRC for all of it (E.2.2) */
     int words = size / 2, f58 = 2 * ((words >> 1) + (words >> 3)); /* first 5/8 of the frame */
     return ac3_crc16(0, f + 2, (size_t)f58 - 2) == 0 && ac3_crc16(0, f + f58, (size_t)(size - f58)) == 0;
 }
@@ -180,17 +235,109 @@ long ac3_find_frame(const uint8_t *p, size_t n, bool complete) {
 typedef struct {
     int fscod, frmsizecod, bsid, bsmod, acmod, nfchans, lfeon, dialnorm, dsurmod;
     float clev, slev;
+    bool eac3, half;   /* E-AC-3; at half the sample rate (fscod2) */
+    int strmtyp, substreamid, nblocks, frame_bytes;
 } Hdr;
 
-/* syncinfo + bsi (5.3.1, 5.3.2); leaves b after the bsi. With whole = false
+/* E-AC-3's bsi (E.1.2.2), after the sync word. */
+static bool parse_ebsi(Bits *b, Hdr *h, bool whole) {
+    h->eac3 = true;
+    h->strmtyp = (int)getb(b, 2);
+    h->substreamid = (int)getb(b, 3);
+    h->frame_bytes = ((int)getb(b, 11) + 1) * 2;
+    h->fscod = (int)getb(b, 2);
+    int numblkscod = 3;
+    if (h->fscod == 3) { /* half rate: fscod2 names the rate, always 6 blocks */
+        h->fscod = (int)getb(b, 2);
+        h->half = true;
+    } else {
+        numblkscod = (int)getb(b, 2);
+    }
+    h->nblocks = numblkscod == 3 ? 6 : numblkscod + 1;
+    h->acmod = (int)getb(b, 3);
+    h->nfchans = NFCHANS[h->acmod];
+    h->lfeon = (int)getb(b, 1);
+    h->bsid = (int)getb(b, 5);
+    if (h->strmtyp == 3 || h->fscod == 3 || !is_eac3(h->bsid)) return false;
+    int acmod = h->acmod, nprog = acmod == 0 ? 2 : 1; /* 1+1: two of some fields */
+    /* without mixing metadata: -4.5 dB centre, -6 dB surround (only where those channels exist) */
+    h->clev = (acmod & 1) && acmod > 2 ? MIXLEV[5] : 0;
+    h->slev = acmod & 4 ? MIXLEV[6] : 0;
+    for (int i = 0; i < nprog; i++) {
+        int dn = (int)getb(b, 5);
+        if (i == 0) h->dialnorm = dn ? dn : 31;
+        if (getb(b, 1)) getb(b, 8); /* compr */
+    }
+    if (h->strmtyp == 1 && getb(b, 1)) getb(b, 16); /* chanmap */
+    if (getb(b, 1)) { /* mixmdate */
+        if (acmod > 2) getb(b, 2); /* dmixmod */
+        if ((acmod & 1) && acmod > 2) {
+            getb(b, 3);                    /* ltrtcmixlev */
+            h->clev = MIXLEV[getb(b, 3)]; /* lorocmixlev */
+        }
+        if (acmod & 4) {
+            getb(b, 3);         /* ltrtsurmixlev */
+            int s = (int)getb(b, 3); /* lorosurmixlev: 0-2 are reserved, read as -1.5 dB */
+            h->slev = MIXLEV[s < 3 ? 3 : s];
+        }
+        if (h->lfeon && getb(b, 1)) getb(b, 5); /* lfemixlevcod */
+        if (h->strmtyp == 0) {
+            for (int i = 0; i < nprog; i++)
+                if (getb(b, 1)) getb(b, 6); /* pgmscl, pgmscl2 */
+            if (getb(b, 1)) getb(b, 6);     /* extpgmscl */
+            switch (getb(b, 2)) {           /* mixdef */
+            case 1: getb(b, 5); break;
+            case 2: getb(b, 12); break;
+            case 3: { /* mixdeflen, then that many bytes + 2 of mixing parameters and fill */
+                int len = (int)getb(b, 5);
+                b->pos += 8 * (len + 2);
+                break;
+            }
+            }
+            if (acmod < 2)
+                for (int i = 0; i < nprog; i++)
+                    if (getb(b, 1)) getb(b, 14); /* panmean, paninfo */
+            if (getb(b, 1))                      /* frmmixcfginfoe */
+                for (int blk = 0; blk < h->nblocks; blk++)
+                    if (h->nblocks == 1 || getb(b, 1)) getb(b, 5);
+        }
+    }
+    if (getb(b, 1)) { /* infomdate */
+        h->bsmod = (int)getb(b, 3);
+        getb(b, 2); /* copyrightb, origbs */
+        if (acmod == 2) {
+            h->dsurmod = (int)getb(b, 2);
+            getb(b, 2); /* dheadphonmod */
+        }
+        if (acmod >= 6) getb(b, 2); /* dsurexmod */
+        for (int i = 0; i < nprog; i++)
+            if (getb(b, 1)) getb(b, 8); /* mixlevel, roomtyp, adconvtyp */
+        if (!h->half) getb(b, 1);       /* sourcefscod */
+    }
+    if (h->strmtyp == 0 && h->nblocks != 6) getb(b, 1);                  /* convsync */
+    if (h->strmtyp == 2 && (h->nblocks == 6 || getb(b, 1))) getb(b, 6); /* blkid: frmsizecod */
+    if (getb(b, 1)) { /* addbsi */
+        int len = (int)getb(b, 6) + 1;
+        if (b->pos > b->end) return false;
+        if (!whole) return true;
+        b->pos += 8 * len;
+    }
+    return b->pos <= b->end;
+}
+
+/* syncinfo + bsi (5.3.1, 5.3.2; E-AC-3: E.1.2.2); leaves b after the bsi. With whole = false
    the additional bsi may lie beyond the data (only the fields matter). */
 static bool parse_bsi(Bits *b, Hdr *h, bool whole) {
+    memset(h, 0, sizeof *h);
     if (getb(b, 16) != 0x0B77) return false;
+    if (is_eac3(b->p[5] >> 3)) return parse_ebsi(b, h, whole);
+    h->nblocks = 6;
     getb(b, 16); /* crc1 */
     h->fscod = (int)getb(b, 2);
     h->frmsizecod = (int)getb(b, 6);
     h->bsid = (int)getb(b, 5);
     if (h->fscod == 3 || h->frmsizecod > 37 || h->bsid > 8) return false;
+    h->frame_bytes = 2 * frame_words(h->fscod, h->frmsizecod);
     h->bsmod = (int)getb(b, 3);
     h->acmod = (int)getb(b, 3);
     h->nfchans = NFCHANS[h->acmod];
@@ -221,9 +368,15 @@ static bool parse_bsi(Bits *b, Hdr *h, bool whole) {
 }
 
 static void fill_info(const Hdr *h, Ac3Info *info) {
-    info->sample_rate = SAMPLE_RATE[h->fscod];
-    info->bitrate = KBPS[h->frmsizecod >> 1];
-    info->frame_bytes = 2 * frame_words(h->fscod, h->frmsizecod);
+    info->sample_rate = SAMPLE_RATE[h->fscod] >> h->half;
+    info->blocks = h->nblocks;
+    info->samples = 256 * h->nblocks;
+    info->bitrate = h->eac3 ? (int)((int64_t)h->frame_bytes * 8 * info->sample_rate / info->samples / 1000)
+                            : KBPS[h->frmsizecod >> 1];
+    info->frame_bytes = h->frame_bytes;
+    info->eac3 = h->eac3;
+    info->strmtyp = h->strmtyp;
+    info->substreamid = h->substreamid;
     info->bsid = h->bsid;
     info->bsmod = h->bsmod;
     info->acmod = h->acmod;
@@ -238,8 +391,8 @@ static void fill_info(const Hdr *h, Ac3Info *info) {
 }
 
 bool ac3_parse_header(const uint8_t *p, size_t n, Ac3Info *info) {
-    uint8_t tmp[72] = {0};
-    size_t k = n < 64 ? n : 64; /* the fields before the additional bsi fit in ~20 bytes */
+    uint8_t tmp[136] = {0};
+    size_t k = n < 128 ? n : 128; /* the fields before the additional bsi: ~20 bytes, E-AC-3's mixing data up to ~50 */
     if (!p || k < 6) return false;
     memcpy(tmp, p, k);
     Bits b = {tmp, 0, (int)k * 8};
@@ -296,6 +449,25 @@ struct Ac3Dec {
     float coef[NSLOTS][256];
     bool cpl_dith[256]; /* coupling bins carrying dither (bap 0) */
     float pcm[AC3_MAX_CHANNELS][256];
+
+    /* E-AC-3: what the audio frame (E.1.2.3) says for all its blocks */
+    bool blkswe, dithflage, bamode, frmfgaincode, dbaflde, skipflde;
+    int snroffststr, frmcsnroffst, frmfsnroffst;
+    bool cplstre[6], cplinu_blk[6];
+    uint8_t expstr[6][NSLOTS]; /* per block: each channel's, CPL's and LFE's exponent strategy (0 = reuse) */
+    int spxatten[NFULL];       /* notch filter code per channel, -1 = none */
+    bool cpl_first[NFULL], cpl_first_leak;
+    uint8_t cplbndstrc[18];
+    /* spectral extension (E.2.6) */
+    bool spxinu, chinspx[NFULL], spx_first[NFULL];
+    int spx_begf, spx_begin_sb, spx_copy, spx_begin, spx_end, nspxbnd;
+    uint8_t spxbndstrc[17], spxbnd_size[17];
+    float spx_nblend[NFULL][17], spx_sblend[NFULL][17];
+    float spx_atten[32][3]; /* Table E.2.12 */
+    /* the adaptive hybrid transform: a channel's mantissas for all six blocks come in block 0 */
+    bool aht[NSLOTS];
+    float aht_pre[NSLOTS][256][6]; /* per bin, the six blocks' mantissas after the inverse DCT */
+    float idct6[6][6];             /* E.2.4.5: [block][j] = sqrt(2) R_j cos(j (2 block + 1) pi / 12) */
 };
 
 static void kbd_window(float *w, int n, double alpha) { /* Kaiser-Bessel derived (7.9.4.1) */
@@ -342,6 +514,10 @@ Ac3Dec *ac3_open(void) {
     }
     for (unsigned i = 0; i < 128; i++) d->rev7[i] = (uint8_t)bitrev(i, 7);
     for (unsigned i = 0; i < 64; i++) d->rev6[i] = (uint8_t)bitrev(i, 6);
+    for (int code = 0; code < 32; code++)
+        for (int i = 0; i < 3; i++) d->spx_atten[code][i] = (float)pow(2.0, -(i + 1) * (code + 1) / 15.0);
+    for (int m = 0; m < 6; m++) /* R_0 = 1/sqrt(2), the others 1 */
+        for (int j = 0; j < 6; j++) d->idct6[m][j] = (float)((j ? sqrt(2.0) : 1.0) * cos(j * (2 * m + 1) * PI / 12));
     return d;
 }
 
@@ -364,6 +540,11 @@ void ac3_set_drc(Ac3Dec *d, float scale) { /* 7.7.1: gain = 2^X * (1 + Y/32), X 
 static inline float dither(Ac3Dec *d) { /* uniform, +-0.707 (7.3.4) */
     d->seed = d->seed * 1664525u + 1013904223u;
     return (float)(int32_t)d->seed * (SQRT1_2 / 2147483648.0f);
+}
+
+static inline float noise(Ac3Dec *d) { /* uniform, +-1: spectral extension's noise (variance 1/3) */
+    d->seed = d->seed * 1664525u + 1013904223u;
+    return (float)(int32_t)d->seed * (1.0f / 2147483648.0f);
 }
 
 /* ============================================================== exponents */
@@ -494,7 +675,7 @@ bool ac3_bit_allocation(const Ac3BitAlloc *p, const int8_t *exps, int start, int
         for (; i < lastbin; i++) {
             int a = psd[i] - m;
             a = a < 0 ? 0 : a >> 5;
-            bap[i] = BAPTAB[a > 63 ? 63 : a];
+            bap[i] = (p->hebap ? HEBAPTAB : BAPTAB)[a > 63 ? 63 : a];
         }
         j++;
     } while (end > lastbin);
@@ -515,6 +696,7 @@ static bool allocate(Ac3Dec *d, int slot, int start, int end) {
         .cplsleak = d->cplsleak,
         .dba_mode = slot == LFE ? 2 : d->dba_mode[slot],
         .dba_nseg = d->dba_nseg[slot],
+        .hebap = d->aht[slot],
     };
     memcpy(p.dba_offst, d->dba_offst[slot], 8);
     memcpy(p.dba_len, d->dba_len[slot], 8);
@@ -583,6 +765,70 @@ static void mantissas(Ac3Dec *d, Bits *b, Groups *g, int slot, int start, int en
     }
 }
 
+/* ---- E-AC-3's adaptive hybrid transform (E.2.4): in block 0 a channel's mantissas for all six
+   blocks, per bin a vector (hebap 1-7) or six gain-adaptive scalars (8-19), then a 6-point DCT
+   back to the six blocks' values. hebap[] came from the bit allocation (Table E.2.1). */
+
+static inline int sbits(Bits *b, int n) { /* n-bit two's complement */
+    int v = (int)getb(b, n);
+    return v >= 1 << (n - 1) ? v - (1 << n) : v;
+}
+
+static bool aht_read(Ac3Dec *d, Bits *b, int slot, int start, int end) {
+    const uint8_t *hebap = d->bap[slot];
+    int mode = (int)getb(b, 2), endbap = mode < 2 ? 12 : 17;
+    uint8_t gain[258]; /* log2 of the gain of each bin that has one (8 <= hebap < endbap), in order */
+    int ngain = 0;
+    for (int bin = start; bin < end; bin++) ngain += mode && hebap[bin] > 7 && hebap[bin] < endbap;
+    if (mode == 1 || mode == 2) { /* one bit each: gain 1, or 2 (mode 1) / 4 (mode 2) */
+        for (int k = 0; k < ngain; k++) gain[k] = getb(b, 1) ? (uint8_t)mode : 0;
+    } else if (mode == 3) { /* three gains of 1, 2 or 4 in 5 bits */
+        for (int k = 0; k < ngain; k += 3) {
+            int v = (int)getb(b, 5);
+            if (v > 26) v = 26;
+            gain[k] = (uint8_t)(v / 9), gain[k + 1] = (uint8_t)(v % 9 / 3), gain[k + 2] = (uint8_t)(v % 3);
+        }
+    }
+    for (int bin = start, gi = 0; bin < end; bin++) {
+        int h = hebap[bin], bits = HEBAP_BITS[h];
+        float *pre = d->aht_pre[slot][bin], x[6];
+        if (h == 0) { /* nothing sent: noise, used where the block wants dither */
+            for (int k = 0; k < 6; k++) x[k] = 0.5f * noise(d);
+        } else if (h < 8) {
+            const uint16_t *row = VQ[h][getb(b, bits)];
+            for (int k = 0; k < 6; k++) x[k] = frac16(row[k]);
+        } else {
+            int lg = mode && h < endbap ? gain[gi++] : 0, gbits = bits - lg;
+            for (int k = 0; k < 6; k++) {
+                int v = sbits(b, gbits);
+                if (lg && v == -(1 << (gbits - 1))) { /* the tag: a large mantissa follows (Table E.2.5) */
+                    int mbits = bits - 2 + lg;
+                    float m = (float)sbits(b, mbits) * EXPSCALE[mbits - 1];
+                    x[k] = m + frac16(GAQ_A[h - 8][lg - 1]) * m + (m >= 0 ? (lg == 1 ? 0.5f : 0.25f) : frac16(GAQ_B[h - 8][lg - 1]));
+                } else { /* small (gain 2, 4: already divided by it), or the plain symmetric quantiser */
+                    float m = (float)v * EXPSCALE[bits - 1];
+                    x[k] = lg ? m : m + frac16(GAQ_A1[h - 8]) * m;
+                }
+            }
+        }
+        for (int m = 0; m < 6; m++) {
+            float s = 0;
+            for (int j = 0; j < 6; j++) s += d->idct6[m][j] * x[j];
+            pre[m] = s;
+        }
+    }
+    return b->pos <= b->end;
+}
+
+/* An AHT channel's coefficients in block blk; bins with nothing sent are noise only with dither. */
+static void aht_coefs(Ac3Dec *d, int slot, int start, int end, int blk, bool dith, bool *dith_mask) {
+    for (int bin = start; bin < end; bin++) {
+        bool none = d->bap[slot][bin] == 0;
+        if (dith_mask) dith_mask[bin] = none;
+        d->coef[slot][bin] = none && !dith ? 0.0f : d->aht_pre[slot][bin][blk] * EXPSCALE[d->exps[slot][bin]];
+    }
+}
+
 /* ============================================================ audio block */
 
 static void read_dba(Bits *b, Ac3Dec *d, int slot) {
@@ -597,41 +843,243 @@ static void read_dba(Bits *b, Ac3Dec *d, int slot) {
 /* every rejection records where it happened (ac3_stats: error_block / error_line) */
 #define FAIL (d->stats.error_block = blk, d->stats.error_line = __LINE__, AC3_ERR_BITSTREAM)
 
-/* Parse audio block blk (5.4.3) and leave its frequency coefficients in d->coef. */
+/* ---- E-AC-3 ---- */
+
+/* The audio frame (E.1.2.3): which syntax the blocks carry, coupling use and exponent strategies of
+   every block, the frame's SNR offsets, spectral extension's notch filters. */
+static int audfrm(Ac3Dec *d, Bits *b) {
+    const Hdr *h = &d->h;
+    int nf = h->nfchans, nb = h->nblocks, acmod = h->acmod, blk = 0;
+    bool expstre = true, ahte = false;
+    if (nb == 6) {
+        expstre = getb(b, 1);
+        ahte = getb(b, 1);
+    }
+    d->snroffststr = (int)getb(b, 2);
+    bool transproce = getb(b, 1);
+    d->blkswe = getb(b, 1);
+    d->dithflage = getb(b, 1);
+    d->bamode = getb(b, 1);
+    d->frmfgaincode = getb(b, 1);
+    d->dbaflde = getb(b, 1);
+    d->skipflde = getb(b, 1);
+    bool spxattene = getb(b, 1);
+    if (d->snroffststr == 3) return FAIL; /* reserved */
+
+    int ncplblks = 0;
+    for (blk = 0; blk < nb; blk++) {
+        if (acmod > 1) {
+            d->cplstre[blk] = blk == 0 || getb(b, 1);
+            d->cplinu_blk[blk] = d->cplstre[blk] ? getb(b, 1) : d->cplinu_blk[blk - 1];
+        } else {
+            d->cplstre[blk] = blk == 0;
+            d->cplinu_blk[blk] = false;
+        }
+        ncplblks += d->cplinu_blk[blk];
+    }
+    blk = 0;
+    memset(d->expstr, 0, sizeof d->expstr);
+    if (expstre) {
+        for (int k = 0; k < nb; k++) {
+            if (d->cplinu_blk[k]) d->expstr[k][CPL] = (uint8_t)getb(b, 2);
+            for (int ch = 0; ch < nf; ch++) d->expstr[k][ch] = (uint8_t)getb(b, 2);
+        }
+    } else { /* one 5-bit code per channel for all six blocks */
+        if (acmod > 1 && ncplblks) {
+            int v = (int)getb(b, 5);
+            for (int k = 0; k < 6; k++) d->expstr[k][CPL] = FRM_EXPSTR[v][k];
+        }
+        for (int ch = 0; ch < nf; ch++) {
+            int v = (int)getb(b, 5);
+            for (int k = 0; k < 6; k++) d->expstr[k][ch] = FRM_EXPSTR[v][k];
+        }
+    }
+    if (h->lfeon)
+        for (int k = 0; k < nb; k++) d->expstr[k][LFE] = (uint8_t)getb(b, 1);
+    if (h->strmtyp == 0 && (nb == 6 || getb(b, 1))) b->pos += 5 * nf; /* convexpstr: for re-making AC-3 */
+    memset(d->aht, 0, sizeof d->aht);
+    if (ahte) { /* a channel whose exponents come only in block 0 may use the adaptive hybrid transform */
+        int slots[NSLOTS], n = 0;
+        if (ncplblks == 6) slots[n++] = CPL;
+        for (int ch = 0; ch < nf; ch++) slots[n++] = ch;
+        if (h->lfeon) slots[n++] = LFE;
+        for (int i = 0; i < n; i++) {
+            bool one = true;
+            for (int k = 1; k < 6; k++)
+                if (d->expstr[k][slots[i]] || (slots[i] == CPL && d->cplstre[k])) one = false;
+            d->aht[slots[i]] = one && getb(b, 1);
+        }
+    }
+    if (d->snroffststr == 0) {
+        d->frmcsnroffst = (int)getb(b, 6);
+        d->frmfsnroffst = (int)getb(b, 4);
+    }
+    if (transproce)
+        for (int ch = 0; ch < nf; ch++)
+            if (getb(b, 1)) b->pos += 18; /* transient pre-noise processing: location, length - not applied */
+    for (int ch = 0; ch < nf; ch++) d->spxatten[ch] = spxattene && getb(b, 1) ? (int)getb(b, 5) : -1;
+    if (nb > 1 && getb(b, 1)) { /* block start information: (blocks - 1) x (4 + ceil(log2(words))) bits */
+        int bits = 0;
+        while ((1 << bits) < h->frame_bytes / 2) bits++;
+        b->pos += (nb - 1) * (4 + bits);
+    }
+    for (int ch = 0; ch < nf; ch++) d->spx_first[ch] = d->cpl_first[ch] = true;
+    d->cpl_first_leak = true;
+    memcpy(d->cplbndstrc, DEF_CPLBNDSTRC, sizeof d->cplbndstrc);
+    memcpy(d->spxbndstrc, DEF_SPXBNDSTRC, sizeof d->spxbndstrc);
+    d->spxinu = false;
+    memset(d->chinspx, 0, sizeof d->chinspx);
+    if (!d->bamode) { /* the default bit allocation parameters */
+        d->sdecay = SLOWDEC[2];
+        d->fdecay = FASTDEC[1];
+        d->sgain = SLOWGAIN[1];
+        d->dbknee = DBPBTAB[2];
+        d->floor = FLOORTAB[7];
+    }
+    return b->pos <= b->end ? AC3_OK : FAIL;
+}
+
+/* Spectral extension strategy (E.1.2.4): which channels, which bins are copied up, the bands. */
+static bool spx_strategy(Ac3Dec *d, Bits *b) {
+    for (int ch = 0; ch < d->h.nfchans; ch++) d->chinspx[ch] = d->h.acmod == 1 || getb(b, 1);
+    int strtf = (int)getb(b, 2), begf = (int)getb(b, 3), endf = (int)getb(b, 3);
+    int begin = begf < 6 ? begf + 2 : begf * 2 - 3, end = endf < 3 ? endf + 5 : endf * 2 + 3; /* sub-bands */
+    if (getb(b, 1)) /* spxbndstrce */
+        for (int sb = begin + 1; sb < end; sb++) d->spxbndstrc[sb] = (uint8_t)getb(b, 1);
+    d->spx_begf = begf;
+    d->spx_begin_sb = begin;
+    d->spx_copy = 25 + 12 * strtf;
+    d->spx_begin = 25 + 12 * begin;
+    d->spx_end = 25 + 12 * end;
+    if (begin >= end || d->spx_copy >= d->spx_begin) return false;
+    int n = 0;
+    d->spxbnd_size[0] = 12;
+    for (int sb = begin + 1; sb < end; sb++) {
+        if (d->spxbndstrc[sb]) d->spxbnd_size[n] += 12;
+        else d->spxbnd_size[++n] = 12;
+    }
+    d->nspxbnd = n + 1;
+    return true;
+}
+
+/* Spectral extension coordinates (E.2.6.3) and the blending factors they come with (E.2.6.4.2.1). The
+   noise is uniform (variance 1/3), so its factor carries sqrt(3) for the spec's unit variance. */
+static void spx_coordinates(Ac3Dec *d, Bits *b) {
+    for (int ch = 0; ch < d->h.nfchans; ch++) {
+        if (!d->chinspx[ch]) {
+            d->spx_first[ch] = true;
+            continue;
+        }
+        if (!d->spx_first[ch] && !getb(b, 1)) continue; /* spxcoe 0: the previous ones stay */
+        d->spx_first[ch] = false;
+        float noffset = (float)getb(b, 5) / 32.0f;
+        int mstr = 3 * (int)getb(b, 2), bin = d->spx_begin;
+        for (int bnd = 0; bnd < d->nspxbnd; bnd++) {
+            int size = d->spxbnd_size[bnd];
+            float nratio = (float)(bin + size / 2) / (float)d->spx_end - noffset;
+            nratio = nratio < 0.0f ? 0.0f : nratio > 1.0f ? 1.0f : nratio;
+            bin += size;
+            int e = (int)getb(b, 4), m = (int)getb(b, 2);
+            float co = (e == 15 ? (float)m / 4.0f : (float)(m + 4) / 8.0f) * EXPSCALE[e + mstr] * 32.0f;
+            d->spx_nblend[ch][bnd] = sqrtf(3.0f * nratio) * co;
+            d->spx_sblend[ch][bnd] = sqrtf(1.0f - nratio) * co;
+        }
+    }
+}
+
+static void notch(float *c, const float *a) { /* 5 bins centred on c[2] (E.2.6.4.2.3) */
+    c[0] *= a[0], c[1] *= a[1], c[2] *= a[2], c[3] *= a[1], c[4] *= a[0];
+}
+
+/* High frequency synthesis (E.2.6.4): copy low bins up (wrapping round the copy region), notch the
+   seams, blend with noise matched to each band's energy, scale by the coordinates. */
+static void spx_synth(Ac3Dec *d) {
+    int begin = d->spx_begin, n = d->spx_end - begin, copy = d->spx_copy;
+    uint8_t from[256];
+    bool wrap[17];
+    for (int bnd = 0, k = 0, at = copy; bnd < d->nspxbnd; bnd++) {
+        int size = d->spxbnd_size[bnd];
+        wrap[bnd] = at + size > begin;
+        if (wrap[bnd]) at = copy;
+        for (int i = 0; i < size; i++, k++) {
+            if (at == begin) at = copy;
+            from[k] = (uint8_t)at++;
+        }
+    }
+    for (int ch = 0; ch < d->h.nfchans; ch++) {
+        if (!d->chinspx[ch]) continue;
+        float *c = d->coef[ch], rms[17];
+        for (int k = 0; k < n; k++) c[begin + k] = c[from[k]];
+        for (int bnd = 0, bin = begin; bnd < d->nspxbnd; bnd++) {
+            int size = d->spxbnd_size[bnd];
+            float acc = 0.0f;
+            for (int i = 0; i < size; i++, bin++) acc += c[bin] * c[bin];
+            rms[bnd] = sqrtf(acc / (float)size);
+        }
+        if (d->spxatten[ch] >= 0) { /* at the border and at every band whose copy wrapped */
+            const float *a = d->spx_atten[d->spxatten[ch]];
+            for (int bnd = 0, bin = begin; bnd < d->nspxbnd; bin += d->spxbnd_size[bnd++])
+                if (bnd == 0 || wrap[bnd]) notch(c + bin - 2, a);
+        }
+        for (int bnd = 0, bin = begin; bnd < d->nspxbnd; bnd++) {
+            float ns = d->spx_nblend[ch][bnd] * rms[bnd], ss = d->spx_sblend[ch][bnd];
+            for (int i = 0; i < d->spxbnd_size[bnd]; i++, bin++) c[bin] = c[bin] * ss + noise(d) * ns;
+        }
+    }
+}
+
+/* Parse audio block blk (5.4.3; E-AC-3: E.1.2.4) and leave its frequency coefficients in d->coef. */
 static int audio_block(Ac3Dec *d, Bits *b, int blk) {
     int nf = d->h.nfchans, acmod = d->h.acmod;
-    for (int ch = 0; ch < nf; ch++) d->blksw[ch] = getb(b, 1);
-    for (int ch = 0; ch < nf; ch++) d->dithflag[ch] = getb(b, 1);
+    bool e = d->h.eac3;
+    for (int ch = 0; ch < nf; ch++) d->blksw[ch] = (!e || d->blkswe) && getb(b, 1);
+    for (int ch = 0; ch < nf; ch++) d->dithflag[ch] = e && !d->dithflage ? true : getb(b, 1);
     for (int i = 0; i <= (acmod == 0); i++) { /* dynrng, dynrng2 */
         if (getb(b, 1)) d->dynrng[i] = d->drc[getb(b, 8)];
         else if (blk == 0) d->dynrng[i] = 1.0f;
     }
 
-    /* coupling strategy */
-    if (getb(b, 1)) {
-        d->cplinu = getb(b, 1);
+    /* spectral extension (E-AC-3) */
+    if (e) {
+        if (blk == 0 || getb(b, 1)) { /* spxstre */
+            d->spxinu = getb(b, 1);
+            if (d->spxinu && !spx_strategy(d, b)) return FAIL;
+            if (!d->spxinu)
+                for (int ch = 0; ch < nf; ch++) d->chinspx[ch] = false, d->spx_first[ch] = true;
+        }
+        if (d->spxinu) spx_coordinates(d, b);
+    }
+
+    /* coupling strategy (E-AC-3: whether there is one, and its use, came with the frame) */
+    if (e ? d->cplstre[blk] : getb(b, 1)) {
+        d->cplinu = e ? d->cplinu_blk[blk] : getb(b, 1);
         if (d->cplinu) {
             if (acmod < 2) return FAIL;
-            for (int ch = 0; ch < nf; ch++) d->chincpl[ch] = getb(b, 1);
+            if (e && getb(b, 1)) return AC3_ERR_UNSUPPORTED; /* enhanced coupling (E.2.5) */
+            for (int ch = 0; ch < nf; ch++) d->chincpl[ch] = (e && acmod == 2) || getb(b, 1);
             d->phsflginu = acmod == 2 && getb(b, 1);
             d->cplbegf = (int)getb(b, 4);
-            d->cplendf = (int)getb(b, 4);
+            d->cplendf = e && d->spxinu ? d->spx_begin_sb - 4 : (int)getb(b, 4); /* with SPX: up to where it starts */
             int nsub = 3 + d->cplendf - d->cplbegf;
             if (nsub < 1) return FAIL;
             d->cplstrtmant = 37 + 12 * d->cplbegf;
             d->cplendmant = 37 + 12 * (d->cplendf + 3);
+            if (!e || getb(b, 1)) /* cplbndstrc: 1 = merged with the sub-band before (E-AC-3: else the last ones) */
+                for (int sb = 1; sb < nsub; sb++) d->cplbndstrc[d->cplbegf + sb] = (uint8_t)getb(b, 1);
             int nb = 0;
             for (int sb = 0; sb < nsub; sb++) {
-                if (sb == 0 || !getb(b, 1)) nb++; /* cplbndstrc: 1 = merge with the previous sub-band */
+                if (sb == 0 || !d->cplbndstrc[d->cplbegf + sb]) nb++;
                 d->cplbnd_end[nb - 1] = d->cplstrtmant + 12 * (sb + 1);
             }
             d->ncplbnd = nb;
         } else {
             memset(d->chincpl, 0, sizeof d->chincpl);
+            for (int ch = 0; ch < nf; ch++) d->cpl_first[ch] = true;
+            d->cpl_first_leak = true;
         }
         for (int ch = 0; ch < nf; ch++)
             if (!d->chincpl[ch]) d->cplco_ok[ch] = false; /* rejoining coupling needs fresh coordinates */
-    } else if (blk == 0) {
+    } else if (!e && blk == 0) {
         return FAIL;
     }
 
@@ -639,8 +1087,12 @@ static int audio_block(Ac3Dec *d, Bits *b, int blk) {
     if (d->cplinu) {
         bool fresh = false;
         for (int ch = 0; ch < nf; ch++) {
-            if (!d->chincpl[ch]) continue;
-            if (getb(b, 1)) {
+            if (!d->chincpl[ch]) {
+                d->cpl_first[ch] = true;
+                continue;
+            }
+            if ((e && d->cpl_first[ch]) || getb(b, 1)) {
+                d->cpl_first[ch] = false;
                 int mstr = 3 * (int)getb(b, 2);
                 for (int bnd = 0; bnd < d->ncplbnd; bnd++) {
                     int e = (int)getb(b, 4), m = (int)getb(b, 4);
@@ -657,10 +1109,12 @@ static int audio_block(Ac3Dec *d, Bits *b, int blk) {
             for (int bnd = 0; bnd < d->ncplbnd; bnd++) d->phsflg[bnd] = d->phsflginu && getb(b, 1);
     }
 
-    /* rematrixing */
+    /* rematrixing (bands: 7.5.2, E.2.3.2) */
     if (acmod == 2) {
-        if (getb(b, 1)) {
-            d->nrematbnd = !d->cplinu || d->cplbegf > 2 ? 4 : d->cplbegf > 0 ? 3 : 2;
+        if ((e && blk == 0) || getb(b, 1)) {
+            d->nrematbnd = d->cplinu ? (d->cplbegf > 2 ? 4 : d->cplbegf > 0 ? 3 : 2)
+                           : e && d->spxinu ? (d->spx_begf < 2 ? 3 : 4)
+                                             : 4;
             for (int i = 0; i < d->nrematbnd; i++) d->rematflg[i] = getb(b, 1);
         } else if (blk == 0) {
             d->nrematbnd = 0;
@@ -669,13 +1123,21 @@ static int audio_block(Ac3Dec *d, Bits *b, int blk) {
 
     /* exponent strategies and bandwidth */
     int cplexpstr = 0, chexpstr[NFULL] = {0}, lfeexpstr = 0;
-    if (d->cplinu) cplexpstr = (int)getb(b, 2);
-    for (int ch = 0; ch < nf; ch++) chexpstr[ch] = (int)getb(b, 2);
-    if (d->h.lfeon) lfeexpstr = (int)getb(b, 1);
+    if (e) {
+        if (d->cplinu) cplexpstr = d->expstr[blk][CPL];
+        for (int ch = 0; ch < nf; ch++) chexpstr[ch] = d->expstr[blk][ch];
+        if (d->h.lfeon) lfeexpstr = d->expstr[blk][LFE];
+    } else {
+        if (d->cplinu) cplexpstr = (int)getb(b, 2);
+        for (int ch = 0; ch < nf; ch++) chexpstr[ch] = (int)getb(b, 2);
+        if (d->h.lfeon) lfeexpstr = (int)getb(b, 1);
+    }
     for (int ch = 0; ch < nf; ch++) {
         if (!chexpstr[ch]) continue;
         if (d->chincpl[ch]) {
             d->endmant[ch] = d->cplstrtmant;
+        } else if (e && d->chinspx[ch]) {
+            d->endmant[ch] = d->spx_begin;
         } else {
             int bw = (int)getb(b, 6);
             if (bw > 60) return FAIL;
@@ -727,42 +1189,70 @@ static int audio_block(Ac3Dec *d, Bits *b, int blk) {
         d->endmant[LFE] = 7;
     }
 
-    /* bit allocation parameters */
-    if (getb(b, 1)) {
-        d->sdecay = SLOWDEC[getb(b, 2)];
-        d->fdecay = FASTDEC[getb(b, 2)];
-        d->sgain = SLOWGAIN[getb(b, 2)];
-        d->dbknee = DBPBTAB[getb(b, 2)];
-        d->floor = FLOORTAB[getb(b, 3)];
-    } else if (blk == 0) {
-        return FAIL;
-    }
-    if (getb(b, 1)) {
-        d->csnroffst = (int)getb(b, 6);
-        if (d->cplinu) {
-            d->fsnroffst[CPL] = (int)getb(b, 4);
-            d->fgain[CPL] = FASTGAIN[getb(b, 3)];
-        }
-        for (int ch = 0; ch < nf; ch++) {
-            d->fsnroffst[ch] = (int)getb(b, 4);
-            d->fgain[ch] = FASTGAIN[getb(b, 3)];
-        }
-        if (d->h.lfeon) {
-            d->fsnroffst[LFE] = (int)getb(b, 4);
-            d->fgain[LFE] = FASTGAIN[getb(b, 3)];
-        }
-    } else if (blk == 0) {
-        return FAIL;
-    }
-    if (d->cplinu) {
+    /* bit allocation parameters (E-AC-3 without bamode: the defaults, set with the frame) */
+    if (!e || d->bamode) {
         if (getb(b, 1)) {
-            d->cplfleak = (int)getb(b, 3);
-            d->cplsleak = (int)getb(b, 3);
+            d->sdecay = SLOWDEC[getb(b, 2)];
+            d->fdecay = FASTDEC[getb(b, 2)];
+            d->sgain = SLOWGAIN[getb(b, 2)];
+            d->dbknee = DBPBTAB[getb(b, 2)];
+            d->floor = FLOORTAB[getb(b, 3)];
         } else if (blk == 0) {
             return FAIL;
         }
     }
-    if (getb(b, 1)) { /* delta bit allocation */
+    if (!e) { /* SNR offsets with the fast gains */
+        if (getb(b, 1)) {
+            d->csnroffst = (int)getb(b, 6);
+            if (d->cplinu) {
+                d->fsnroffst[CPL] = (int)getb(b, 4);
+                d->fgain[CPL] = FASTGAIN[getb(b, 3)];
+            }
+            for (int ch = 0; ch < nf; ch++) {
+                d->fsnroffst[ch] = (int)getb(b, 4);
+                d->fgain[ch] = FASTGAIN[getb(b, 3)];
+            }
+            if (d->h.lfeon) {
+                d->fsnroffst[LFE] = (int)getb(b, 4);
+                d->fgain[LFE] = FASTGAIN[getb(b, 3)];
+            }
+        } else if (blk == 0) {
+            return FAIL;
+        }
+    } else { /* SNR offsets by the frame's strategy, then fast gains of their own */
+        if (d->snroffststr == 0) {
+            d->csnroffst = d->frmcsnroffst;
+            for (int s = 0; s < NSLOTS; s++) d->fsnroffst[s] = d->frmfsnroffst;
+        } else if (blk == 0 || getb(b, 1)) {
+            d->csnroffst = (int)getb(b, 6);
+            if (d->snroffststr == 1) { /* one fine offset for every channel */
+                int f = (int)getb(b, 4);
+                for (int s = 0; s < NSLOTS; s++) d->fsnroffst[s] = f;
+            } else {
+                if (d->cplinu) d->fsnroffst[CPL] = (int)getb(b, 4);
+                for (int ch = 0; ch < nf; ch++) d->fsnroffst[ch] = (int)getb(b, 4);
+                if (d->h.lfeon) d->fsnroffst[LFE] = (int)getb(b, 4);
+            }
+        }
+        if (d->frmfgaincode && getb(b, 1)) {
+            if (d->cplinu) d->fgain[CPL] = FASTGAIN[getb(b, 3)];
+            for (int ch = 0; ch < nf; ch++) d->fgain[ch] = FASTGAIN[getb(b, 3)];
+            if (d->h.lfeon) d->fgain[LFE] = FASTGAIN[getb(b, 3)];
+        } else {
+            for (int s = 0; s < NSLOTS; s++) d->fgain[s] = FASTGAIN[4];
+        }
+        if (d->h.strmtyp == 0 && getb(b, 1)) getb(b, 10); /* convsnroffst: for re-making AC-3 */
+    }
+    if (d->cplinu) {
+        if ((e && d->cpl_first_leak) || getb(b, 1)) {
+            d->cpl_first_leak = false;
+            d->cplfleak = (int)getb(b, 3);
+            d->cplsleak = (int)getb(b, 3);
+        } else if (!e && blk == 0) {
+            return FAIL;
+        }
+    }
+    if ((!e || d->dbaflde) && getb(b, 1)) { /* delta bit allocation */
         if (d->cplinu) d->dba_mode[CPL] = (int)getb(b, 2);
         for (int ch = 0; ch < nf; ch++) d->dba_mode[ch] = (int)getb(b, 2);
         if (d->cplinu && d->dba_mode[CPL] == 3) return FAIL;
@@ -774,30 +1264,48 @@ static int audio_block(Ac3Dec *d, Bits *b, int blk) {
     } else if (blk == 0) {
         for (int s = 0; s < NSLOTS; s++) d->dba_mode[s] = 2;
     }
-    if (getb(b, 1)) { /* skip field */
+    if ((!e || d->skipflde) && getb(b, 1)) { /* skip field */
         int skipl = (int)getb(b, 9);
         b->pos += 8 * skipl;
     }
     if (b->pos > b->end) return FAIL;
 
-    /* bit allocation */
-    if (d->cplinu && !allocate(d, CPL, d->cplstrtmant, d->cplendmant)) return FAIL;
+    /* bit allocation (an AHT channel's, made in block 0, holds for the frame) */
+    if (d->cplinu && (blk == 0 || !d->aht[CPL]) && !allocate(d, CPL, d->cplstrtmant, d->cplendmant)) return FAIL;
     for (int ch = 0; ch < nf; ch++)
-        if (!allocate(d, ch, 0, d->endmant[ch])) return FAIL;
-    if (d->h.lfeon && !allocate(d, LFE, 0, 7)) return FAIL;
+        if ((blk == 0 || !d->aht[ch]) && !allocate(d, ch, 0, d->endmant[ch])) return FAIL;
+    if (d->h.lfeon && (blk == 0 || !d->aht[LFE]) && !allocate(d, LFE, 0, 7)) return FAIL;
 
-    /* mantissas, in transmission order */
+    /* mantissas, in transmission order (an AHT channel's all come in block 0) */
     Groups g = {0};
     bool got_cpl = false;
     for (int ch = 0; ch < nf; ch++) {
-        mantissas(d, b, &g, ch, 0, d->endmant[ch], d->dithflag[ch], NULL);
+        if (!d->aht[ch]) {
+            mantissas(d, b, &g, ch, 0, d->endmant[ch], d->dithflag[ch], NULL);
+        } else {
+            if (blk == 0 && !aht_read(d, b, ch, 0, d->endmant[ch])) return FAIL;
+            aht_coefs(d, ch, 0, d->endmant[ch], blk, d->dithflag[ch], NULL);
+        }
         if (d->cplinu && d->chincpl[ch] && !got_cpl) {
-            mantissas(d, b, &g, CPL, d->cplstrtmant, d->cplendmant, true, d->cpl_dith);
+            if (!d->aht[CPL]) {
+                mantissas(d, b, &g, CPL, d->cplstrtmant, d->cplendmant, true, d->cpl_dith);
+            } else {
+                if (blk == 0 && !aht_read(d, b, CPL, d->cplstrtmant, d->cplendmant)) return FAIL;
+                aht_coefs(d, CPL, d->cplstrtmant, d->cplendmant, blk, true, d->cpl_dith);
+            }
             got_cpl = true;
         }
     }
-    if (d->h.lfeon) mantissas(d, b, &g, LFE, 0, 7, false, NULL);
+    if (d->h.lfeon) {
+        if (!d->aht[LFE]) {
+            mantissas(d, b, &g, LFE, 0, 7, false, NULL);
+        } else {
+            if (blk == 0 && !aht_read(d, b, LFE, 0, 7)) return FAIL;
+            aht_coefs(d, LFE, 0, 7, blk, false, NULL);
+        }
+    }
     if (b->pos > b->end) return FAIL;
+    for (int s = 0; s < NSLOTS; s++) d->stats.blocks_aht += d->aht[s] && (s != CPL || d->cplinu);
 
     /* decoupling (7.4) */
     for (int ch = 0; ch < nf; ch++) {
@@ -841,6 +1349,8 @@ static int audio_block(Ac3Dec *d, Bits *b, int blk) {
             for (int i = 0; i < 256; i++) d->coef[slot][i] *= gain;
     }
 
+    if (e && d->spxinu) spx_synth(d);
+    d->stats.blocks_spx += e && d->spxinu;
     d->stats.blocks_cpl += d->cplinu;
     if (d->cplinu && acmod == 2)
         for (int bnd = 0; bnd < d->ncplbnd; bnd++)
@@ -1055,7 +1565,8 @@ int ac3_decode(Ac3Dec *d, const uint8_t *frame, size_t n, float *out, int *chann
     memset(&d->stats, 0, sizeof d->stats);
     if (!frame || n < 6 || frame[0] != 0x0B || frame[1] != 0x77) return AC3_ERR_SYNC;
     int bsid = frame[5] >> 3;
-    if (bsid > 8) return bsid <= 16 ? AC3_ERR_UNSUPPORTED : AC3_ERR_SYNC;
+    if (bsid > 16) return AC3_ERR_SYNC;
+    if (bsid == 9 || bsid == 10) return AC3_ERR_UNSUPPORTED; /* AC-3 at half and quarter rates */
     int size = ac3_frame_size(frame, n);
     if (!size) return AC3_ERR_SYNC;
     if ((size_t)size > n) return AC3_ERR_TRUNCATED;
@@ -1067,6 +1578,8 @@ int ac3_decode(Ac3Dec *d, const uint8_t *frame, size_t n, float *out, int *chann
     if (!parse_bsi(&b, h, true)) return AC3_ERR_SYNC;
     Ac3Info tmp;
     fill_info(h, info ? info : &tmp);
+    if (h->eac3 && (h->strmtyp == 1 || h->substreamid)) return AC3_SKIP; /* not independent substream 0 */
+    if (h->half) return AC3_ERR_UNSUPPORTED;
     int nout = ac3_layout_channels(h->acmod, h->lfeon, d->layout);
     *channels = nout;
 
@@ -1087,16 +1600,23 @@ int ac3_decode(Ac3Dec *d, const uint8_t *frame, size_t n, float *out, int *chann
     d->exp_start_cpl = 0;
     d->cplfleak = d->cplsleak = 0;
     for (int s = 0; s < NSLOTS; s++) d->fgain[s] = FASTGAIN[0];
+    memset(d->aht, 0, sizeof d->aht);
+    if (!err && h->eac3) err = audfrm(d, &b);
 
-    for (int blk = 0; blk < 6 && !err; blk++) {
+    for (int blk = 0; blk < h->nblocks && !err; blk++) {
         err = audio_block(d, &b, blk);
         if (err) break;
         for (int ch = 0; ch < h->nfchans; ch++) synth(d, d->coef[ch], d->blksw[ch], d->delay[ch], d->pcm[ch]);
         if (h->lfeon) synth(d, d->coef[LFE], false, d->delay[h->nfchans], d->pcm[h->nfchans]);
         emit(d, blk, out, nout);
     }
+    if (err == AC3_ERR_UNSUPPORTED) { /* a tool we lack: say so instead of passing silence off as sound */
+        *channels = 0;
+        ac3_reset(d);
+        return err;
+    }
     if (err) {
-        memset(out, 0, sizeof(float) * AC3_SAMPLES * (size_t)nout);
+        memset(out, 0, sizeof(float) * 256 * (size_t)h->nblocks * (size_t)nout);
         ac3_reset(d);
         return err;
     }

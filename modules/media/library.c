@@ -998,6 +998,7 @@ static void cache_load(void) {
         f->probe.audio_channels = sqlite3_column_int(st, 12);
         f->probe.playable = (Playable)sqlite3_column_int(st, 13);
         col_text(st, 14, f->probe.why, sizeof f->probe.why);
+        if (f->probe.playable != PLAY_UNKNOWN) media_probe_judge(&f->probe); /* (a newer Hemma may say it better) */
         f->fp = (uint64_t)sqlite3_column_int64(st, 15);
         if (f->type == MF_VIDEO) { /* (the same rules as a scan: add_file) */
             parse_name(root_name(ix->roots[r]), f->rel, &f->name, false);

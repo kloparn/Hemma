@@ -334,3 +334,55 @@ bool media_sub_for(const char *video, const char *sub, char *lang, size_t cap) {
     if (lang && cap) str_copy(lang, cap, found);
     return true;
 }
+
+/* ISO 639-2 (bibliographic and terminology) -> 639-1, for the languages subtitle tracks come in */
+static const char *const LANG3[][2] = {
+    {"eng", "en"}, {"swe", "sv"}, {"nor", "no"}, {"nob", "no"}, {"nno", "no"}, {"dan", "da"}, {"fin", "fi"},
+    {"ger", "de"}, {"deu", "de"}, {"fre", "fr"}, {"fra", "fr"}, {"spa", "es"}, {"ita", "it"}, {"dut", "nl"},
+    {"nld", "nl"}, {"pol", "pl"}, {"por", "pt"}, {"jpn", "ja"}, {"kor", "ko"}, {"chi", "zh"}, {"zho", "zh"},
+    {"rus", "ru"}, {"ara", "ar"}, {"tur", "tr"}, {"ice", "is"}, {"isl", "is"}, {"cze", "cs"}, {"ces", "cs"},
+    {"slo", "sk"}, {"slk", "sk"}, {"slv", "sl"}, {"hun", "hu"}, {"gre", "el"}, {"ell", "el"}, {"heb", "he"},
+    {"tha", "th"}, {"vie", "vi"}, {"ind", "id"}, {"may", "ms"}, {"msa", "ms"}, {"ukr", "uk"}, {"rum", "ro"},
+    {"ron", "ro"}, {"bul", "bg"}, {"hrv", "hr"}, {"srp", "sr"}, {"bos", "bs"}, {"est", "et"}, {"lav", "lv"},
+    {"lit", "lt"}, {"per", "fa"}, {"fas", "fa"}, {"cat", "ca"}, {"glg", "gl"}, {"baq", "eu"}, {"eus", "eu"},
+    {"wel", "cy"}, {"cym", "cy"}, {"gle", "ga"}, {"tam", "ta"}, {"tel", "te"}, {"ben", "bn"}, {"urd", "ur"},
+    {"tgl", "tl"}, {"afr", "af"}, {"alb", "sq"}, {"sqi", "sq"}, {"mac", "mk"}, {"mkd", "mk"}, {"geo", "ka"},
+    {"kat", "ka"}, {"arm", "hy"}, {"hye", "hy"}, {"aze", "az"}, {"kaz", "kk"}, {"uzb", "uz"}, {"mon", "mn"},
+    {"nep", "ne"}, {"sin", "si"}, {"khm", "km"}, {"lao", "lo"}, {"bur", "my"}, {"mya", "my"}, {"swa", "sw"},
+    {"amh", "am"}, {"yor", "yo"}, {"zul", "zu"}, {"som", "so"}, {"mlt", "mt"}, {"ltz", "lb"}, {"fao", "fo"},
+    {"epo", "eo"}, {"lat", "la"}, {"kur", "ku"}, {"pus", "ps"}, {"tir", "ti"},
+};
+
+static bool word_in(const char *hay, const char *word) { /* case-insensitive, as a word of its own */
+    size_t n = strlen(word);
+    for (const char *p = hay; *p; p++) {
+        if (!str_istarts(p, word)) continue;
+        bool before = p == hay || !isalnum((unsigned char)p[-1]), after = !isalnum((unsigned char)p[n]);
+        if (before && after) return true;
+    }
+    return false;
+}
+
+bool media_sub_sidecar(const char *video, const char *lang, const char *name, bool forced, char *out, size_t cap) {
+    if (!video || !out || !cap) return false;
+    size_t vn = strlen(video), stem = vn;
+    const char *slash = strrchr(video, '/'), *dot = strrchr(video, '.');
+    if (vn > 8 && str_iends(video, ".web.mp4")) stem = vn - 8;
+    else if (dot && (!slash || dot > slash)) stem = (size_t)(dot - video);
+    char code[4] = "", l[8] = "";
+    size_t ln = lang ? strcspn(lang, "-_") : 0;
+    if (ln == 2 || ln == 3) {
+        for (size_t i = 0; i < ln; i++) l[i] = (char)tolower((unsigned char)lang[i]);
+        l[ln] = 0;
+        if (ln == 2 && isalpha((unsigned char)l[0]) && isalpha((unsigned char)l[1])) str_copy(code, sizeof code, l);
+        for (size_t i = 0; ln == 3 && i < sizeof LANG3 / sizeof LANG3[0]; i++)
+            if (!strcmp(l, LANG3[i][0])) str_copy(code, sizeof code, LANG3[i][1]);
+    }
+    if (!strcmp(code, "hi") || !strcmp(code, "cc")) code[0] = 0; /* names that read as "hearing impaired" / "closed captions" */
+    name = name ? name : "";
+    bool sdh = word_in(name, "sdh") || word_in(name, "cc") || word_in(name, "hearing impaired");
+    forced = forced || word_in(name, "forced");
+    int n = snprintf(out, cap, "%.*s%s%s%s%s.srt", (int)stem, video, code[0] ? "." : "", code, sdh ? ".sdh" : "",
+                     forced ? ".forced" : "");
+    return n > 0 && (size_t)n < cap;
+}

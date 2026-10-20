@@ -10,4 +10,8 @@
    and 192 kbit/s, one after another in out (768 bytes each). Returns the bytes written. */
 size_t ac3_test_tone(uint8_t *out, size_t cap, int frames);
 
+/* The same tone as E-AC-3 (Dolby Digital Plus): `frames` frames of 3 blocks (768 samples, 384
+   bytes at 192 kbit/s; at most 128). Returns the bytes written. */
+size_t eac3_test_tone(uint8_t *out, size_t cap, int frames);
+
 #endif

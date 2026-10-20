@@ -4,8 +4,10 @@
  *   MPEG-2 / MPEG-1 (DVD rips) -> mpeg2 -> deint -> h264enc  \
  *   H.264                      -> copied as it is             >  mp4 (faststart)
  *   HEVC (x265 films)          -> copied as 'hvc1'           /   (plays in Safari; other browsers need HEVC hardware)
- *   Dolby AC-3                 -> ac3 (stereo) -> aac         /
+ *   Dolby AC-3 / E-AC-3 (DD+)  -> ac3 (stereo) -> aac         /
  *   AAC                        -> copied
+ *   text subtitles (SRT, ASS)  -> SubRip texts handed back (want_subs): the caller saves them as
+ *                                 "<name>.<language>.srt" next to the video, where the library finds them
  *
  * Frames stream through: memory stays a few MB whatever the file size (plus
  * ~4 bytes per sample for the MP4 index, and 16 per video frame when H.264 is
@@ -31,6 +33,18 @@
 #include "mkv.h"
 #include "mp4.h"
 
+#define AV_CONV_MAX_SUBS 8               /* text subtitle tracks taken from one file */
+#define AV_CONV_SUB_BYTES (768u << 10)   /* the most SRT one track may come to (a film's is ~100 KB) */
+
+typedef struct {
+    char lang[24];        /* the track's language as the file names it: "eng", "en-US", "und" */
+    char name[128];       /* its name, if any ("English (SDH)") */
+    bool forced, is_default;
+    int cues;
+    char *srt;            /* SubRip, UTF-8, NUL-terminated, timed like the copy; av_convert_free frees it */
+    size_t len;
+} AvConvSub;
+
 typedef struct {
     MkvReader in;
     Mp4Out out;           /* needs write_at: the index is written into room reserved up front */
@@ -38,19 +52,23 @@ typedef struct {
     int audio_kbps;       /* AAC bitrate; 0 = 160 */
     int64_t limit_ns;     /* stop after this much video (previews, tests); 0 = the whole file */
     int64_t max_samples;  /* most samples a track may get, if fewer than the built-in bound (tests, fuzzing); 0 = that */
+    bool want_subs;       /* hand back the text subtitle tracks (subs) */
     volatile int *stop;   /* non-zero: give up soon */
     /* called whenever permille changes (may be NULL) */
     void (*progress)(void *ctx, int permille);
     void *progress_ctx;
     /* results */
     volatile int permille; /* 0..1000 */
-    char err[200];         /* why it failed */
-    char what[120];        /* what was done: "DVD video (film, 23.976 fps) → H.264 · Dolby → AAC" */
+    char err[200];         /* why it failed: words for people ("Its sound is DTS, which ...") */
+    char what[120];        /* what was done: "DVD video (film, 23.976 fps) → H.264 · Dolby Digital → AAC" */
     int64_t out_bytes;
     bool unsupported;      /* failed because of what the file holds (a codec we don't convert yet), not an error */
+    AvConvSub subs[AV_CONV_MAX_SUBS]; /* with want_subs, after a success: the text subtitles (empty ones left out) */
+    int nsubs;
 } AvConvJob;
 
-/* Blocking. True when the output is complete. */
+/* Blocking. True when the output is complete. Starts with nsubs = 0: free a previous run's first. */
 bool av_convert(AvConvJob *j);
+void av_convert_free(AvConvJob *j); /* the subtitles' memory */
 
 #endif

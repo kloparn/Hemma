@@ -76,6 +76,8 @@ typedef struct {
 bool media_probe(const MediaReader *r, const char *filename_hint, MediaProbe *out);
 bool media_probe_file(const char *path, MediaProbe *out); /* UTF-8 path */
 bool media_probe_mem(const void *data, size_t n, const char *filename_hint, MediaProbe *out);
+/* playable + why again from the container and codecs: a cached probe gets today's verdict and words */
+void media_probe_judge(MediaProbe *p);
 
 const char *media_mime(const char *container);    /* "video/mp4", "video/webm", "video/x-matroska", ... */
 bool media_is_video_ext(const char *name);        /* .mp4 .m4v .mkv .webm .mov .avi .ts .m2ts .mts .wmv .mpg .mpeg */
@@ -96,5 +98,12 @@ bool srt_to_vtt(const char *src, size_t n, Buf *out);
    `video` ("Movie.mkv")? Plain file names, case-insensitive. On success
    copies a language code ("sv", "en", ... or "" when untagged) into lang. */
 bool media_sub_for(const char *video, const char *sub, char *lang, size_t cap);
+
+/* The .srt a subtitle track taken out of `video` (a path or name; a copy "x.web.mp4" counts as "x")
+   is saved as: "<video without its extension>.<code>[.sdh][.forced].srt" - code = the track's
+   language in two letters ("eng", "en-US" -> "en"), none for "und" or one we don't know; sdh when
+   the track's name says so ("SDH", "hearing impaired", "CC"), forced when the track is. media_sub_for
+   gives that file to the video. false when the name would be too long. */
+bool media_sub_sidecar(const char *video, const char *lang, const char *name, bool forced, char *out, size_t cap);
 
 #endif

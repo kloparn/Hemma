@@ -1149,15 +1149,19 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         buf_puts(b, "<div class=\"media-convert\">");
         if (convert_queued(f->id)) buf_puts(b, "<p class=\"muted\">Being made playable everywhere - see the library settings.</p>");
         else if (is_admin(c)) {
-            bool hevc = str_eq(f->probe.vcodec, "hevc");
+            bool hevc = str_eq(f->probe.vcodec, "hevc"), dolby = str_eq(f->probe.acodec, "ac3") || str_eq(f->probe.acodec, "eac3");
             H(b, "<p class=\"muted\">%s</p>",
-              hevc ? "Safari (iPhone, iPad, Mac) can't open MKV files: a new container fixes that - quick, the picture isn't "
-                     "re-encoded. HEVC still needs a device that can decode it (most from the last few years)."
+              hevc && dolby ? "Its Dolby sound plays silently in Chrome and Firefox, and Safari can't open MKV files: a copy "
+                              "with AAC sound fixes both - quick, the picture isn't re-encoded. HEVC still needs a device "
+                              "that can decode it (most from the last few years)."
+              : hevc ? "Safari (iPhone, iPad, Mac) can't open MKV files: a new container fixes that - quick, the picture isn't "
+                       "re-encoded. HEVC still needs a device that can decode it (most from the last few years)."
               : need == CONV_REMUX ? "A new container makes this play on iPhones and every TV too - quick, nothing is re-encoded."
                                    : "Hemma can convert this once into a copy that plays on every browser, iPhone and TV.");
             char hex[17];
             media_id_hex(f->id, hex);
-            ui_act(b, "media.convert", "btn", hevc ? "Make it play in Safari too" : "Make it play everywhere", "id", hex, NULL);
+            ui_act(b, "media.convert", "btn", hevc && dolby ? "Fix the sound" : hevc ? "Make it play in Safari too" : "Make it play everywhere",
+                   "id", hex, NULL);
         } else {
             buf_puts(b, "<p class=\"muted\">Hemma can make a copy of this that plays everywhere: ask ");
             ui_admins(b);
@@ -1495,11 +1499,12 @@ static void page_settings(Ctx *c, Buf *b) {
                 "few years.</li><li><span class=\"badge bad\">Needs conversion</span> Nowhere until Hemma has made its "
                 "copy.</li></ul><details class=\"media-formats\"><summary>Which formats are which</summary><ul "
                 "class=\"media-tips\"><li><b>Plays in browsers:</b> MP4 or WebM with H.264/VP9 video and AAC/MP3/Opus "
-                "sound.</li><li><b>May not play everywhere:</b> MKV, HEVC, or Dolby (AC-3) sound — fine in Chrome/Edge "
-                "or Safari, not all of them. An HEVC film converted here (<i>Plays on newer devices</i>) plays in Safari "
-                "and on most devices from the last few years.</li><li><b>Needs conversion:</b> MPEG-2 (DVD rips), "
-                "AVI/XviD, DTS sound. Hemma converts MKV files with MPEG-2 or H.264 video and Dolby or AAC sound "
-                "itself.</li></ul></details>");
+                "sound.</li><li><b>May not play everywhere:</b> MKV, HEVC, or Dolby sound (Dolby Digital and Digital "
+                "Plus: AC-3, E-AC-3) — fine in Chrome/Edge or Safari, not all of them; Dolby sound plays silently in "
+                "Chrome and Firefox. An HEVC film converted here (<i>Plays on newer devices</i>) plays in Safari and on "
+                "most devices from the last few years.</li><li><b>Needs conversion:</b> MPEG-2 (DVD rips), AVI/XviD, "
+                "DTS sound. Hemma converts MKV files with MPEG-2, H.264 or HEVC video and Dolby or AAC sound itself, "
+                "and keeps their text subtitles as .srt files next to them.</li></ul></details>");
     ui_card_end(b);
     buf_puts(b, "</div>");
     media_drives_dialog(c, b); /* (?format=<disk>) */

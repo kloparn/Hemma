@@ -12,6 +12,8 @@
  *   POST /media/upload/<batch>/<i>?pm=<0..1000>      progress      -> {"ok":true} | {"stop":true,...}
  *   POST /media/upload/<batch>/<i>?size=<bytes>      the copy's size -> {"at":0}: then PUT it
  *   POST /media/upload/<batch>/<i>?original=1&why=.. it couldn't   -> {"at":n} (PUT the original) | {"skip":true}
+ *   POST /media/upload/<batch>/<i>?sub=1&lang=&name=&forced=   (body: SRT) a text subtitle track of the
+ *        file, saved next to the copy as "<name>.<language>.srt" -> {"ok":true} | {"skip":true} (one is there)
  *
  * web/wire.js drives it (form[data-upload]): one plan, then one PUT per file.
  * Files are written as "<name>.hemma-part" (MEDIA_PART_SUFFIX) and renamed when complete, so the library
@@ -1179,14 +1181,49 @@ static void where(Ctx *c, Conn *conn, uint64_t id, int i) {
     buf_free(&out);
 }
 
+/* A text subtitle track the browser's converter took out of a file it made a copy of (?sub=1&lang=
+   &name=&forced=, the SRT as the body): saved next to the copy, named by media_sub_sidecar - never
+   over a file that is there ({"skip":true} then). */
+static void save_sub(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i, const Fields *q) {
+    char lang[24], name[128], full[1024];
+    str_copy(lang, sizeof lang, fields_str(q, "lang"));
+    str_copy(name, sizeof name, fields_str(q, "name"));
+    bool forced = str_eq(fields_str(q, "forced"), "1");
+    const char *err = NULL;
+    int status = 200;
+    lock_take(&g_lock);
+    const Batch *b = find(id);
+    const UpFile *f = b && i >= 0 && i < b->nfiles ? &b->files[i] : NULL;
+    if (!b || b->person != c->me->id) err = "That upload is over", status = 404;
+    else if (!f || f->conv == CV_NONE || f->conv == CV_ORIGINAL) err = "That file has no copy made here", status = 404;
+    else join(full, sizeof full, b->root, f->rel);
+    lock_give(&g_lock);
+    if (!err && (!r->body || !r->body_len)) err = "No subtitles came", status = 400;
+    if (err) {
+        reply_err(conn, status, false, err);
+        return;
+    }
+    Buf out = {0};
+    bool saved = convert_save_sub(full, lang, name, forced, r->body, r->body_len);
+    buf_puts(&out, saved ? "{\"ok\":true}" : "{\"skip\":true}");
+    if (saved) app_changed_where("/media"); /* (the next scan lists it) */
+    reply(conn, 200, &out);
+    buf_free(&out);
+}
+
 /* The browser's side of a copy it makes (see the top): progress, the finished size, or "it
    couldn't" - then the original goes under its own name, unless it's on the list anyway. */
 static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     Fields q = {0};
     fields_parse(&q, r->query, strlen(r->query));
+    if (str_eq(fields_str(&q, "sub"), "1")) {
+        save_sub(c, conn, r, id, i, &q);
+        fields_free(&q);
+        return;
+    }
     long long pm = fields_int(&q, "pm", -1), size = fields_int(&q, "size", -1);
     bool original = str_eq(fields_str(&q, "original"), "1");
-    char why[64], msg[300];
+    char why[96], msg[300];
     str_copy(why, sizeof why, fields_str(&q, "why"));
     fields_free(&q);
 
@@ -1427,6 +1464,15 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
         buf_puts(b, "<p class=\"muted media-small\">If the browser that started it was closed, choose the same folder "
                     "again below - what's already on the server is skipped, and half-sent files continue where "
                     "they stopped.</p>");
+    if (as_is) { /* said out loud, not only in the list below: such a video may play silent or not at all */
+        const UpFile *first = NULL;
+        for (int i = 0; i < u->nfiles && !first; i++)
+            if (u->files[i].conv == CV_ORIGINAL) first = &u->files[i];
+        H(b, "<p class=\"notice media-up-asis\" id=\"media-up-asis-%X\">%d video%s couldn't be converted on this device and "
+             "went up as %s - %s may not play everywhere. Why: %s%s</p>",
+          u->id, as_is, as_is == 1 ? "" : "s", as_is == 1 ? "it was" : "they were", as_is == 1 ? "it" : "they", first->why,
+          as_is > 1 ? " (each one's reason is in the list below)." : ".");
+    }
     if (u->failed || u->skipped || as_is || heads) {
         H(b, "<details class=\"media-up-list\"><summary>%d skipped", u->skipped);
         if (heads) H(b, ", %d play-all header%s", heads, heads == 1 ? "" : "s");

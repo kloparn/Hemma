@@ -11,7 +11,7 @@
 typedef enum {
     CONV_NONE,      /* plays everywhere already, or nothing we can do yet */
     CONV_REMUX,     /* H.264 + AAC in MKV: a new container is enough (fast, lossless) */
-    CONV_TRANSCODE, /* MPEG-2 video (DVD rips) and/or Dolby AC-3 sound: re-encoded */
+    CONV_TRANSCODE, /* MPEG-2 video (DVD rips) and/or Dolby AC-3 / E-AC-3 sound: re-encoded */
 } ConvertNeed;
 
 ConvertNeed convert_need(const MediaFile *f);
@@ -29,14 +29,20 @@ typedef struct {
     atomic_int permille;       /* progress 0..1000, written by the worker */
     atomic_int out_mb;         /* written so far, in MB: what the copy already takes on the disk */
     char err[200];             /* why it failed */
-    char what[120];            /* what was done: "DVD video (film) → H.264 · Dolby → AAC" */
+    char what[120];            /* what was done: "DVD video (film) → H.264 · Dolby Digital → AAC" */
     int64_t out_bytes;
+    int subs;                  /* text subtitle tracks saved next to the original as .srt */
 } ConvertJob;
 
 /* Blocking - run it on a worker thread. True when dst is complete. Uses only
    the av library and plain file I/O, so any number may run at once. Never
-   replaces a file already at dst. */
+   replaces a file already at dst. The original's text subtitle tracks become
+   .srt files next to it (convert_save_sub). */
 bool convert_file(ConvertJob *j);
+
+/* Save one subtitle track taken out of `video` (a path) next to it, named by media_sub_sidecar -
+   never over a file that is there (one saved earlier, or the household's own). True when written. */
+bool convert_save_sub(const char *video, const char *lang, const char *name, bool forced, const char *srt, size_t len);
 
 /* The queue (event-loop side): one file per worker thread, progress on screen. Before a file
    starts, its original's size must fit on the disk next to it (room.h): what doesn't wait while

@@ -17,7 +17,10 @@
  *   hemma.progress(permille)      0..1000
  * and calls _initialize(), then conv_run(size, quality, audio_kbps):
  *   1 = done, 0 = failed, 2 = the file holds something we can't convert (send the original);
- *   conv_err() says why (UTF-8, NUL-terminated). */
+ *   conv_err() says why (UTF-8, NUL-terminated).
+ * After a 1, the file's text subtitle tracks as SRT: conv_subs() of them, each with
+ *   conv_sub_text(i) / conv_sub_len(i) (UTF-8), conv_sub_lang(i), conv_sub_name(i) (NUL-terminated)
+ *   and conv_sub_forced(i) - the page sends them to the server, which saves them next to the copy. */
 #include <stdlib.h>
 #include <string.h>
 
@@ -136,16 +139,27 @@ EXPORT("conv_run") int conv_run(double size, int quality, int audio_kbps) {
     g_nout = 0;
     g_flushed = 0;
     for (int i = 0; i < NBLOCKS; i++) g_blocks[i].at = -1, g_blocks[i].used = 0;
+    av_convert_free(&g_job); /* a previous file's subtitles */
     memset(&g_job, 0, sizeof g_job);
     g_job.in = (MkvReader){&total, total, src_read};
     g_job.out = (Mp4Out){NULL, dst_write, dst_write_at};
     g_job.quality = quality;
     g_job.audio_kbps = audio_kbps;
+    g_job.want_subs = true;
     g_job.progress = on_progress;
     bool ok = av_convert(&g_job) && flush_out();
     if (ok) return 1;
+    av_convert_free(&g_job);
     if (!g_job.err[0]) strcpy(g_job.err, "Couldn't hand the copy to the page");
     return g_job.unsupported ? 2 : 0;
 }
 
 EXPORT("conv_err") const char *conv_err(void) { return g_job.err; }
+
+static const AvConvSub *sub(int i) { return i >= 0 && i < g_job.nsubs ? &g_job.subs[i] : NULL; }
+EXPORT("conv_subs") int conv_subs(void) { return g_job.nsubs; }
+EXPORT("conv_sub_text") const char *conv_sub_text(int i) { return sub(i) ? sub(i)->srt : ""; }
+EXPORT("conv_sub_len") int conv_sub_len(int i) { return sub(i) ? (int)sub(i)->len : 0; }
+EXPORT("conv_sub_lang") const char *conv_sub_lang(int i) { return sub(i) ? sub(i)->lang : ""; }
+EXPORT("conv_sub_name") const char *conv_sub_name(int i) { return sub(i) ? sub(i)->name : ""; }
+EXPORT("conv_sub_forced") int conv_sub_forced(int i) { return sub(i) && sub(i)->forced; }

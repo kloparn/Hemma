@@ -205,8 +205,20 @@ TEST(probe_mp4_hevc_and_dolby_is_maybe) {
     CHECK_STR(p.vcodec, "hevc");
     CHECK_STR(p.acodec, "ac3");
     CHECK_INT(p.playable, PLAY_MAYBE);
-    CHECK_HAS(p.why, "HEVC");
+    CHECK_HAS(p.why, "silent in Chrome"); /* sound that plays silently: the bigger surprise of the two */
     buf_free(&b);
+    /* a probe from the library's cache gets today's verdict and words from its codecs */
+    MediaProbe old = {.playable = PLAY_MAYBE};
+    str_copy(old.container, sizeof old.container, "mkv");
+    str_copy(old.vcodec, sizeof old.vcodec, "hevc");
+    str_copy(old.acodec, sizeof old.acodec, "eac3");
+    str_copy(old.why, sizeof old.why, "Dolby audio: Safari/Edge only");
+    media_probe_judge(&old);
+    CHECK_INT(old.playable, PLAY_MAYBE);
+    CHECK_STR(old.why, "Dolby sound: Safari/Edge only - silent in Chrome and Firefox");
+    str_copy(old.acodec, sizeof old.acodec, "aac");
+    media_probe_judge(&old);
+    CHECK_HAS(old.why, "HEVC");
 }
 
 TEST(probe_mp4_esds_object_types) {

@@ -4,6 +4,51 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 0.24.0 (2026-10-20)
+
+Dolby Digital Plus sound plays everywhere, and a video's own subtitles come along.
+
+### Fixed
+
+- **Videos with Dolby Digital Plus sound ("DDP5.1", E-AC-3) played silently** in Chrome and
+  Firefox, and an upload sent them unconverted: the converter only knew Dolby Digital (AC-3).
+  It now decodes Dolby Digital Plus too - in Hemma's own C, like the rest of the converter, on
+  the server and in the uploading browser - and makes the usual copy with AAC sound, which every
+  browser plays (the picture is copied as it is: quick). For videos already in the library, the
+  video's page says why it's silent and offers **Fix the sound**; **Watch → Library settings**
+  converts every such video at once.
+
+### New
+
+- **Subtitles inside an MKV come along:** when Hemma converts a video, on the server or while
+  uploading, its text subtitles (SRT, ASS/SSA) are saved as `.srt` files next to it - named by
+  language ("Movie.en.srt", "Movie.sv.forced.srt") - and the player offers them. Never over a
+  file that's there. (Picture subtitles - PGS, VobSub - can't be turned into text yet.)
+- **The upload says out loud what went up unconverted**, and why ("Its sound is DTS, which the
+  converter can't change yet"), instead of only in the folded list - such a video may play
+  without sound, or not at all, in some browsers. The converter's reasons are in plain words
+  now, not codec ids.
+- The video's page tells Dolby sound apart: "Dolby sound: Safari/Edge only - silent in Chrome
+  and Firefox" (videos already in the library get the new words too).
+
+### For developers
+
+- modules/av/ac3.c decodes E-AC-3 (ETSI TS 102 366 Annex E): its header and audio frame, 1/2/3/6
+  blocks a frame, spectral extension, the adaptive hybrid transform (vector and gain-adaptive
+  quantisation; ac3_aht.h holds the spec's vector tables - FFmpeg's hebap-4 table lacks the
+  spec's first row), mixing metadata. Only independent substream 0 is decoded (AC3_SKIP for the
+  rest); enhanced coupling and half rates are AC3_ERR_UNSUPPORTED. Checked: real DDP5.1 episodes
+  parse bit-exactly and match FFmpeg but for dither; Dolby-made test clips with coupling,
+  spectral extension and AHT match FFmpeg but for noise; the test encoder (ac3_test.c) writes
+  E-AC-3 with every quantiser and the decoder rebuilds exactly what it sent.
+- av_convert: A_EAC3 sound, frames of any length; `want_subs` hands back text subtitle tracks as
+  SRT (AvConvJob.subs, av_convert_free); errors in words (codec_words). convert_save_sub /
+  media_sub_sidecar name and save them; the upload API's `?sub=1` takes the browser's
+  (web/conv.js posts them, wire.js sends them after the copy).
+- media_probe_judge(): cached probes get today's verdict at load. tools/ac3dump.c reads E-AC-3
+  and writes raw floats (`f32`) for comparisons; its raw-stream reader no longer re-reads 8 MB a
+  frame.
+
 ## 0.23.0 (2026-10-20)
 
 A ready-made Raspberry Pi image: write it, plug the Pi in, open http://hemma.local (#71).
