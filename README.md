@@ -143,7 +143,15 @@ window), or put it on a Pi with the quick start below.
 
 ## Quick start
 
-The usual setup is a Raspberry Pi in a cupboard, plugged into the router:
+The usual setup is a Raspberry Pi in a cupboard, plugged into the router.
+
+**The quickest (a Pi 3, 4, 5 or Zero 2 W, no terminal):** write the release's
+`hemma-<version>-pi.img.xz` to a memory card with Raspberry Pi Imager (*Use custom*), put
+it in the Pi, plug it in, and open `http://hemma.local` a few minutes later. The setup code
+is in `HEMMA-SETUP.txt` on the card (or on a screen plugged into the Pi). More in the
+[Raspberry Pi guide](docs/raspberry-pi.md#the-quick-way-hemmas-ready-made-image).
+
+**On a Pi that already runs Raspberry Pi OS:**
 
 1. **Prepare the Pi.** Put Raspberry Pi OS Lite on a memory card with Raspberry Pi Imager,
    naming the Pi `hemma` and turning on SSH.
@@ -175,6 +183,7 @@ digits like `7KQ4-M2XP`. It only appears where you installed Hemma, never on a w
 
 | You installed Hemma on | Where the code is |
 |---|---|
+| A Raspberry Pi from Hemma's ready-made image | In `HEMMA-SETUP.txt` on the memory card (switch the Pi off, put the card in any computer), or on a screen plugged into the Pi |
 | A Raspberry Pi or Linux with the installer | In the installer's last lines. Missed them? It's also in the settings file: `sudo grep SETUP /etc/hemma/hemma.env`, and in Hemma's log: `sudo journalctl -u hemma \| grep "setup code"` |
 | Windows or a Mac | In Hemma's own window (or its log file) right after it starts: `The welcome page asks for this setup code: 7KQ4-M2XP` |
 | Any computer, started by hand | In the lines Hemma prints when it starts, next to `No admin yet - open http://... in a browser` |

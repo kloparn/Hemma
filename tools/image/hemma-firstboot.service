@@ -1,0 +1,20 @@
+# /etc/systemd/system/hemma-firstboot.service — only in the ready-made image (tools/image/build.sh)
+#
+# The first start of a Pi from Hemma's image (issue #71): the security-update packages that came with
+# the image go in, the machine is named "hemma" unless Raspberry Pi Imager named it, and then Hemma's
+# own installer runs - so the password secret and the setup code are made here, on this Pi, as for any
+# install. It turns itself off once that went well (a failed run tries again at the next start).
+# After cloud-config: Imager's settings (user, hostname, Wi-Fi, locale) are in place by then.
+[Unit]
+Description=Hemma's first start (the ready-made image)
+After=network-online.target cloud-config.service systemd-user-sessions.service
+Wants=network-online.target
+ConditionPathExists=/opt/hemma-image/hemma-pi64/install-pi.sh
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/hemma-image/firstboot.sh
+TimeoutStartSec=20min
+
+[Install]
+WantedBy=multi-user.target

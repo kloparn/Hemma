@@ -4,13 +4,14 @@
 # must exist) and the commits since the last release. Windows runs the suite and builds the programs
 # the way build.ps1 does on a PC - with the in-browser converter (av.wasm) - and Linux packs the
 # downloads (tools/ci/bundle.sh): a Pi or Linux one holds the program, the installer and the service
-# file - each SHA256SUMS signed with the project's key (issue #73: the GitHub secret HEMMA_SIGNING_KEY,
-# whose public half is built into Hemma; installed Hemmas take nothing unsigned, so a release without
-# the secret fails here). No Windows program yet (owner, 2026-10-19): Windows Defender's machine
-# learning calls hemma.exe a trojan (a false positive) - it comes back once it's signed or cleared
-# with Microsoft. "Run workflow"
-# (by hand, any branch) builds the same downloads without publishing them: a dry run, kept as an
-# artifact of the run.
+# file - and the ready-made Raspberry Pi image (issue #71: tools/image/build.sh, the official
+# Raspberry Pi OS Lite with Hemma's download and a first-start unit added). Each SHA256SUMS is signed
+# with the project's key (issue #73: the GitHub secret HEMMA_SIGNING_KEY, whose public half is built
+# into Hemma; installed Hemmas take nothing unsigned, so a release without the secret fails here).
+# No Windows program yet (owner, 2026-10-19): Windows Defender's machine learning calls hemma.exe a
+# trojan (a false positive) - it comes back once it's signed or cleared with Microsoft. "Run
+# workflow" (by hand, any branch) builds the same downloads without publishing them: a dry run, kept
+# as an artifact of the run.
 name: release
 
 on:
@@ -90,10 +91,11 @@ jobs:
         with:
           name: programs
           path: programs
-      - name: Downloads, checksums, signatures and notes
+      - name: Downloads, the Pi image, checksums, signatures and notes
         env:
           HEMMA_SIGNING_KEY: ${{ secrets.HEMMA_SIGNING_KEY }}
           PUBLISH: ${{ needs.check.outputs.publish }}
+          HEMMA_IMAGE: "1" # (issue #71: Raspberry Pi OS Lite + Hemma; tools/image/build.sh, no root needed)
         run: |
           chmod +x programs/hemma-linux # (artifacts lose the executable bit; this runner is x86-64 Linux)
           if [ -n "$HEMMA_SIGNING_KEY" ]; then
@@ -111,6 +113,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VER: ${{ needs.check.outputs.version }}
         run: gh release create "v$VER" dist/* --target "$GITHUB_SHA" --title "Hemma $VER" --notes-file notes.md
+      # Only the newest release keeps its Pi image (owner, 2026-10-20): an older one is an older Raspberry
+      # Pi OS and an older Hemma - nobody should start a new Pi from it. Its program downloads stay (and
+      # their SHA256SUMS still verify: hemma-upgrade checks only the files it takes). Runs only after the
+      # new release is out, so a failed release never takes an image away.
+      - name: Remove the Pi image from older releases
+        if: needs.check.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VER: ${{ needs.check.outputs.version }}
+        run: |
+          gh release view "v$VER" --json assets --jq '.assets[].name' | grep -q '\.img\.xz$' || {
+            echo "v$VER has no image: the older ones stay"; exit 0; }
+          gh release list --limit 200 --json tagName --jq '.[].tagName' | while read -r tag; do
+            [ "$tag" = "v$VER" ] && continue
+            # (pipefail: a release without an image is no error)
+            gh release view "$tag" --json assets --jq '.assets[].name' | { grep '\.img\.xz$' || true; } | while read -r asset; do
+              gh release delete-asset "$tag" "$asset" --yes && echo "removed $asset from $tag"
+            done
+          done
       - name: Keep the downloads (a dry run)
         if: needs.check.outputs.publish != 'true'
         uses: actions/upload-artifact@v4

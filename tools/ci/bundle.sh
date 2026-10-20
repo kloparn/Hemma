@@ -75,8 +75,30 @@ To keep it running: docs/macos.md (local.hemma.plist is here).'
 pack hemma-mac-arm64 hemma-mac-arm64 "$(echo "$mac" | sed 's/PROG/hemma-mac-arm64/g')" deploy/local.hemma.plist
 pack hemma-mac-x64 hemma-mac-x64 "$(echo "$mac" | sed 's/PROG/hemma-mac-x64/g')" deploy/local.hemma.plist
 
-(cd "$out" && sha256sum -- *.tar.gz > SHA256SUMS)
+# the ready-made Raspberry Pi image (issue #71): with HEMMA_IMAGE=1 (CI) - a 550 MB download and a minute
+# or two; tools/image/build.sh says what's in it
+img=""
+if [ "${HEMMA_IMAGE:-}" = 1 ]; then
+    sh tools/image/build.sh "$out/hemma-pi64.tar.gz" "$out"
+    img=hemma-$ver-pi.img.xz
+    [ -f "$out/$img" ] || { echo "the image wasn't made"; exit 1; }
+fi
+# shellcheck disable=SC2086 # ($img: one name or none)
+(cd "$out" && sha256sum -- *.tar.gz $img > SHA256SUMS)
 sign "$out"
+
+# the image's line in the downloads table and how to use it (only when it was made)
+image_row="" image_note=""
+if [ -n "$img" ]; then
+    image_row="| A new Raspberry Pi, ready to go (Pi 3, 4, 5, Zero 2) | \`$img\` |"
+    image_note="
+**A new Pi, no terminal at all:** write \`$img\` to a memory card or USB stick with Raspberry Pi
+Imager (*Choose OS → Use custom*), put it in the Pi, plug it in, and open http://hemma.local a few
+minutes later. The password secret and the setup code are made on your Pi at its first start;
+[docs/raspberry-pi.md]($repo/blob/v$ver/docs/raspberry-pi.md) has the details. Only the newest
+release has an image: an older one is taken away when a new release comes out.
+"
+fi
 
 # the notes: what changed, then the downloads
 {
@@ -91,7 +113,8 @@ sign "$out"
 | Raspberry Pi, 32-bit OS (every Pi) | \`hemma-pi32.tar.gz\` |
 | Linux PC or server (x86-64) | \`hemma-linux-x64.tar.gz\` |
 | Mac with Apple silicon / Intel | \`hemma-mac-arm64.tar.gz\` / \`hemma-mac-x64.tar.gz\` |
-
+$image_row
+$image_note
 **On a Pi:**
 \`\`\`sh
 wget $repo/releases/download/v$ver/hemma-pi64.tar.gz
