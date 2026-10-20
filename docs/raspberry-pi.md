@@ -207,9 +207,24 @@ Hemma also keeps its own log in `/var/lib/hemma/hemma.log`. More in
 
 **Restart it:** `sudo systemctl restart hemma`
 
-**Update Hemma.** Download the new release the way you did in step 3A and run its installer.
-It keeps your settings, database and media folders, keeps the program it replaces for
-[going back](#going-back), and restarts the service:
+**Update Hemma.** Installed from a download of 0.21.0 or newer? Then either:
+
+- **In Hemma:** System → **Updates**. **Check now** asks github.com which version is newest (or
+  tick **Check once a day**); **Install** puts it in. No internet on the Pi? Download
+  `hemma-pi64.tar.gz` from the [releases page](https://github.com/kloparn/Hemma/releases) on any
+  computer and choose it under **Install from a file**.
+- **On the Pi:** `sudo hemma-upgrade`. `sudo hemma-upgrade --check` only looks,
+  `--dry-run` downloads and checks without installing, and `--file hemma-pi64.tar.gz` installs a
+  download you copied over.
+
+Either way only what the Hemma project signed goes in: the Hemma you have checks the
+download's signature first (the key is built into the program). It keeps your settings,
+database and media folders, keeps the program it replaces and a copy of the database, and
+restarts the service. If the new Hemma doesn't answer within a minute, both are put back and
+the old one starts again by itself; the Updates tab says what happened.
+
+**From 0.20.0 or older**, update once by hand - download the new release the way you did in
+step 3A and run its installer (it brings `hemma-upgrade` along):
 
 ```sh
 wget https://github.com/kloparn/Hemma/releases/latest/download/hemma-pi64.tar.gz
@@ -223,8 +238,10 @@ sudo sh install-pi.sh ./hemma-pi64
 
 **Go back to the version before**: see [Going back](#going-back), below.
 
-**Update the system** now and then: `sudo apt update && sudo apt full-upgrade -y`, then
-`sudo reboot` if it asks for one.
+**Update the system.** Debian can install its security updates by itself every day:
+`sudo apt install unattended-upgrades` (System → Updates shows whether it does). Bigger updates
+now and then: `sudo apt update && sudo apt full-upgrade -y`, then `sudo reboot` if it asks for
+one.
 
 **Health check.** These are useful if things feel slow. They're explained in
 [ssh.md](ssh.md#the-commands-youll-actually-need):
@@ -311,6 +328,9 @@ everything.
 Movies aren't in the database: back those up the way you back up any big files.
 
 ### Going back
+
+An update from System → Updates or `sudo hemma-upgrade` goes back by itself when the new
+version doesn't start. To go back by hand:
 
 **Go back to the version before.** The installer keeps the program it replaced as
 `/opt/hemma/hemma.prev`. Swap the two, so the newer one is still there to come back to

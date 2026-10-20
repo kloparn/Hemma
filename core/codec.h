@@ -30,6 +30,18 @@ void sha256_final(Sha256 *s, uint8_t out[32]);
 void sha256(const void *data, size_t n, uint8_t out[32]);
 void sha256_hex(const void *data, size_t n, char out[65]);
 void hmac_sha256(const void *key, size_t klen, const void *msg, size_t mlen, uint8_t out[32]);
+
+/* SHA-512 (FIPS 180-4): Ed25519 needs it (core/ed25519) */
+typedef struct {
+    uint64_t h[8];
+    uint64_t total;
+    uint8_t block[128];
+    size_t fill;
+} Sha512;
+void sha512_init(Sha512 *s);
+void sha512_update(Sha512 *s, const void *data, size_t n);
+void sha512_final(Sha512 *s, uint8_t out[64]);
+void sha512(const void *data, size_t n, uint8_t out[64]);
 /* PBKDF2-HMAC-SHA256 (RFC 8018) */
 void pbkdf2_sha256(const void *pass, size_t plen, const void *salt, size_t slen, uint32_t iterations, uint8_t *out,
                    size_t outlen);

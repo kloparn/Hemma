@@ -4,8 +4,11 @@
 # must exist) and the commits since the last release. Windows runs the suite and builds the programs
 # the way build.ps1 does on a PC - with the in-browser converter (av.wasm) - and Linux packs the
 # downloads (tools/ci/bundle.sh): a Pi or Linux one holds the program, the installer and the service
-# file. No Windows program yet (owner, 2026-10-19): Windows Defender's machine learning calls hemma.exe
-# a trojan (a false positive) - it comes back once it's signed or cleared with Microsoft. "Run workflow"
+# file - each SHA256SUMS signed with the project's key (issue #73: the GitHub secret HEMMA_SIGNING_KEY,
+# whose public half is built into Hemma; installed Hemmas take nothing unsigned, so a release without
+# the secret fails here). No Windows program yet (owner, 2026-10-19): Windows Defender's machine
+# learning calls hemma.exe a trojan (a false positive) - it comes back once it's signed or cleared
+# with Microsoft. "Run workflow"
 # (by hand, any branch) builds the same downloads without publishing them: a dry run, kept as an
 # artifact of the run.
 name: release
@@ -87,8 +90,21 @@ jobs:
         with:
           name: programs
           path: programs
-      - name: Downloads, checksums and notes
-        run: sh tools/ci/bundle.sh programs dist notes.md
+      - name: Downloads, checksums, signatures and notes
+        env:
+          HEMMA_SIGNING_KEY: ${{ secrets.HEMMA_SIGNING_KEY }}
+          PUBLISH: ${{ needs.check.outputs.publish }}
+        run: |
+          chmod +x programs/hemma-linux # (artifacts lose the executable bit; this runner is x86-64 Linux)
+          if [ -n "$HEMMA_SIGNING_KEY" ]; then
+            export HEMMA_SIGNER="$PWD/programs/hemma-linux"
+          elif [ "$PUBLISH" = true ]; then
+            echo "::error::The secret HEMMA_SIGNING_KEY is missing: every installed Hemma would refuse an unsigned release"
+            exit 1
+          else
+            echo "::warning::No HEMMA_SIGNING_KEY: a dry run without signatures"
+          fi
+          sh tools/ci/bundle.sh programs dist notes.md
       - name: Publish the release (and its tag)
         if: needs.check.outputs.publish == 'true'
         env:

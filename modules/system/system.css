@@ -97,3 +97,20 @@ a.system-st { font-weight: 650; color: var(--text); }
 .system-zone { margin: 6px 0 10px; padding-left: 20px; font-size: 14px; }
 .system-zone li { margin: 2px 0; }
 .system-zone-do { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* updates (issue #73) */
+.system-up p { margin: 0 0 10px; }
+.system-up p:last-child { margin-bottom: 0; }
+.system-up code { overflow-wrap: anywhere; }
+.system-up-note { margin-bottom: 14px; }
+.system-up-note p { margin: 0 0 8px; }
+.system-up-bad { border-color: var(--warn); }
+p.system-up-bad:not(.notice) { color: var(--danger); }
+.system-up-v { font-size: 17px; }
+.system-up-install { margin: 0 0 10px; }
+.system-up-auto { margin: 10px 0; }
+/* choosing a file needs wire.js (form[data-upload]): without it, a line says so instead */
+.system-up-form { display: none; margin: 0; }
+html[data-ws=on] .system-up-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+html[data-ws=on] .system-up-nojs { display: none; }
+.system-up-form .field { flex: 1 1 260px; margin: 0; }

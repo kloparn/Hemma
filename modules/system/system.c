@@ -6,6 +6,8 @@
  *                 itself from real data until it's hidden
  * /system/log     the server's own log, live (log.c): filter, search, download, detailed logging
  * /system/backups the nightly backups: back up now, download, go back to one (backup.c)
+ * /system/updates the version, new ones (checked when asked, or daily when allowed), install one or
+ *                 an uploaded download - through a root helper, with a way back (update.c)
  * /system/help    where to look when something's wrong, on this machine, and what to send
  * /system/log.txt the log as a file (the http hook); /system/backups/<name>.tar a backup to keep
  * The home dashboard gets a small card only while a check needs a look.
@@ -204,6 +206,7 @@ static void own_checks(Ctx *c, Health *h) {
                    "/system/backups");
 
     system_backup_checks(h); /* (backup.c) */
+    system_update_checks(h); /* (update.c) */
 
     /* saving */
     if (store_damaged()) {
@@ -503,10 +506,10 @@ static void steps_card(Ctx *c, Buf *b, const Health *h) {
 /* ----------------------------------------------------------------- pages */
 
 static void tabs(Buf *b, const char *on) {
-    static const char *const href[] = {"/system", "/system/log", "/system/backups", "/system/help"};
-    static const char *const label[] = {"Checks", "Log", "Backups", "Help"};
+    static const char *const href[] = {"/system", "/system/log", "/system/backups", "/system/updates", "/system/help"};
+    static const char *const label[] = {"Checks", "Log", "Backups", "Updates", "Help"};
     buf_puts(b, "<nav class=\"seg system-tabs\" aria-label=\"System\">");
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 5; i++)
         H(b, "<a href=\"%s\"%r>%s</a>", href[i], str_eq(on, label[i]) ? " class=\"on\" aria-current=\"page\"" : "",
           label[i]);
     buf_puts(b, "</nav>");
@@ -734,21 +737,27 @@ static void page(Ctx *c, Buf *b) {
         return;
     }
     bool is_log = str_eq(c->path, "/system/log"), help = str_eq(c->path, "/system/help");
-    bool backups = str_eq(c->path, "/system/backups");
-    if (!is_log && !help && !backups && !str_eq(c->path, "/system") && !str_eq(c->path, "/system/")) {
+    bool backups = str_eq(c->path, "/system/backups"), updates = str_eq(c->path, "/system/updates");
+    if (!is_log && !help && !backups && !updates && !str_eq(c->path, "/system") && !str_eq(c->path, "/system/")) {
         ctx_title(c, "Not found");
         ui_empty(b, "🧭", "Nothing here", "That page doesn't exist (anymore).");
         return;
     }
-    ctx_title(c, is_log ? "Log" : help ? "Help" : backups ? "Backups" : "System");
+    ctx_title(c, is_log ? "Log" : help ? "Help" : backups ? "Backups" : updates ? "Updates" : "System");
     ui_head(b, "System",
             is_log    ? "What Hemma is doing, live"
             : help    ? "When something isn't right"
             : backups ? "Copies of everything Hemma knows"
+            : updates ? "New versions of Hemma, checked before they go in"
                       : "Is everything working?");
     ui_head_end(b);
-    tabs(b, is_log ? "Log" : help ? "Help" : backups ? "Backups" : "Checks");
+    tabs(b, is_log ? "Log" : help ? "Help" : backups ? "Backups" : updates ? "Updates" : "Checks");
     if (is_log) page_log(c, b);
+    else if (updates) {
+        buf_puts(b, "<div class=\"system-up\">");
+        system_update_page(c, b);
+        buf_puts(b, "</div>");
+    }
     else if (backups) {
         buf_puts(b, "<div class=\"system-bk\">");
         system_backup_page(c, b);
@@ -883,14 +892,16 @@ static const Action actions[] = {
     {"system.tz_retime", act_tz_retime},
     {"system.backup_now", system_backup_act_now}, {"system.backup_restore", system_backup_act_restore},
     {"system.backup_cancel", system_backup_act_cancel}, {"system.backup_dir", system_backup_act_dir},
-    {"system.restored_seen", system_backup_act_restored_seen}, {0},
+    {"system.restored_seen", system_backup_act_restored_seen},
+    {"system.update_check", system_update_act_check}, {"system.update_auto", system_update_act_auto},
+    {"system.update_install", system_update_act_install}, {"system.update_seen", system_update_act_seen}, {0},
 };
 
 /* ------------------------------------------------------------- endpoints */
 
 /* /system/log.txt: the log file(s) as a download. Admins only (MOD_ADMIN, and checked again). */
 static bool http(Ctx *c, Conn *conn, HttpReq *r) {
-    if (system_backup_http(c, conn, r)) return true;
+    if (system_backup_http(c, conn, r) || system_update_http(c, conn, r)) return true;
     if (r->streaming || !str_eq(r->path, "/system/log.txt") || !is_admin(c)) return false;
     if (!str_eq(r->method, "GET") && !str_eq(r->method, "HEAD")) {
         conn_reply(conn, 405, "text/plain", "GET only\n", 9, "Allow: GET, HEAD\r\n");
@@ -920,6 +931,7 @@ static void start(void) {
     }
     system_log_start(data_path());
     system_backup_start();
+    system_update_start();
     g_disk_at = g_addr_at = g_phone_at = g_shown_at = 0;
     g_free = g_total = -1;
     g_shown_seq = system_log_seq();
@@ -932,6 +944,7 @@ static void start(void) {
 }
 
 static void stop(void) {
+    system_update_stop();
     system_backup_stop();
     system_log_stop();
 }
@@ -939,6 +952,7 @@ static void stop(void) {
 static void tick(int64_t now) {
     system_log_tick(now, false);
     system_backup_tick(now);
+    system_update_tick(now);
     /* new lines: screens on the System pages see them - at most every 1.5 s, so a flood of log
        lines can't keep re-rendering screens */
     uint32_t seq = system_log_seq();

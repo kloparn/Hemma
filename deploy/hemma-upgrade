@@ -1,0 +1,378 @@
+#!/bin/sh
+# deploy/hemma-upgrade — update Hemma to a newer release: checked first, then installed, with a way
+# back (issue #73). install-pi.sh puts it in /usr/local/sbin. Run it as root:
+#
+#   sudo hemma-upgrade                  the newest release, when it's newer than the one running
+#   sudo hemma-upgrade --check          only say what's out
+#   sudo hemma-upgrade --file F         a download (hemma-pi64.tar.gz ...) brought from another computer
+#   sudo hemma-upgrade --release X.Y.Z  that release instead of the newest
+#   --dry-run    everything but installing: download, check, and say what it would do
+#   --force      also the same version again or an older one. Careful: an older Hemma refuses data a
+#                newer one changed (docs/raspberry-pi.md, "Going back")
+#
+# Hemma's System page (System -> Updates) asks through hemma-update.path: it writes a request into
+# /var/lib/hemma/update ("check <nonce>", "install X.Y.Z <nonce>" or "install-file <nonce>" for its
+# upload.tar.gz) and hemma-update.service runs this as `hemma-upgrade --from-hemma`. The answers go
+# to /var/lib/hemma-update (root's; Hemma may read it): latest = "<unix> <version>" or "<unix> -
+# <why>", result = "<state> <unix> <version|-> <words>", state fetching (downloading, checking) |
+# installing | installed (words = the version before) | back (it didn't start: the one before is
+# back) | refused (nothing changed) | broken (going back didn't help either). Hemma's own folder is
+# only ever read, as Hemma's user.
+#
+# What it installs: only what the Hemma project signed. The INSTALLED Hemma checks the signature
+# (hemma --verify-release: the public key is built into the program) on the release's SHA256SUMS
+# before anything is unpacked, and on the download's own after; the download's program must run
+# here and say its version. Then the download's install-pi.sh installs it as always (keeping the
+# program it replaces as hemma.prev and a copy of the database), and when Hemma doesn't answer
+# within a minute, the previous program and that database copy are put back.
+set -eu
+umask 022
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+REPO=${HEMMA_UPDATE_REPO:-kloparn/Hemma}
+HEMMA=/opt/hemma/hemma
+DATA=/var/lib/hemma
+ASK=$DATA/update          # Hemma's: request, upload.tar.gz
+ANS=/var/lib/hemma-update # ours: latest, result, handled
+ENVF=/etc/hemma/hemma.env
+WAIT=60                   # seconds for a new Hemma to answer
+MAX=67108864              # 64 MB: a download is about 2 MB
+
+FROM_HEMMA=0 CHECK=0 DRY=0 FORCE=0 FILE="" WANT=""
+WHY="" HAVE="" NAME="" PROG="" LATEST="" BUNDLE="" DIR="" NEW="" COPY="" WORK=""
+
+usage() {
+    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+    exit "${1:-2}"
+}
+
+say() { printf '%s\n' "$*"; }
+now() { date +%s; }
+is_version() { printf '%s\n' "$1" | grep -Eqx '[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}'; }
+newer() { # is version $1 newer than $2?
+    awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, "."); split(b, y, ".")
+        for (i = 1; i <= 3; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 }
+        exit 1 }'
+}
+
+# One of the files Hemma reads: written beside it, then renamed over it (Hemma never sees half).
+answer() { # name line
+    [ -d "$ANS" ] || return 0
+    printf '%s\n' "$2" >"$ANS/.$1.new" && chmod 644 "$ANS/.$1.new" && mv -f "$ANS/.$1.new" "$ANS/$1"
+}
+result() { # state version words
+    answer result "$1 $(now) ${2:--} $(printf '%s' "$3" | tr '\n\r' '  ' | cut -c1-300)"
+}
+
+# Read from Hemma's folder as Hemma's user: a link there can't make root read what Hemma couldn't.
+as_hemma() {
+    if command -v setpriv >/dev/null 2>&1; then
+        timeout 120 setpriv --reuid=hemma --regid=hemma --clear-groups -- "$@"
+    else
+        timeout 120 runuser -u hemma -- "$@"
+    fi
+}
+
+installed_version() {
+    "$HEMMA" --version 2>/dev/null | sed -n 's/^hemma \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1
+}
+
+# Which download fits: the installed program's own kind (its ELF header), else the machine's.
+target() {
+    m=$(od -An -tx1 -j18 -N2 "$HEMMA" 2>/dev/null | tr -d ' \n' || true)
+    case $m in
+    b700) m=aarch64 ;;
+    2800) m=arm ;;
+    3e00) m=x86_64 ;;
+    *) m=$(uname -m) ;;
+    esac
+    case $m in
+    aarch64 | arm64) NAME=hemma-pi64 PROG=hemma-pi64 ;;
+    arm*) NAME=hemma-pi32 PROG=hemma-pi32 ;;
+    x86_64 | amd64) NAME=hemma-linux-x64 PROG=hemma-linux ;;
+    *) WHY="there's no Hemma download for this kind of computer ($m)" && return 1 ;;
+    esac
+}
+
+fetch() { # url file
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --proto '=https' --proto-redir '=https' --max-filesize "$MAX" -m 300 -o "$2" "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q --https-only -T 60 -O "$2" "$1"
+    else
+        return 1
+    fi
+}
+
+latest() { # the newest release's version -> LATEST
+    if ! fetch "https://api.github.com/repos/$REPO/releases/latest" "$WORK/latest.json"; then
+        command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 ||
+            { WHY="neither curl nor wget is installed (sudo apt install curl)" && return 1; }
+        WHY="couldn't ask github.com which version is newest - is this machine on the internet?"
+        return 1
+    fi
+    LATEST=$(tr -d '\r' <"$WORK/latest.json" |
+        sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p' | head -n 1)
+    is_version "$LATEST" || { WHY="github.com's answer named no version" && return 1; }
+}
+
+# Is the folder as the Hemma project signed it? Asked of the INSTALLED program.
+verify() { # dir [--partial]
+    rc=0
+    out=$("$HEMMA" --verify-release "$@" 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        say "  $out"
+        return 0
+    fi
+    if [ "$rc" -eq 2 ]; then
+        WHY="the installed Hemma ($HAVE) can't check signatures yet - install this once by hand (docs/raspberry-pi.md)"
+    else
+        WHY=$(printf '%s\n' "$out" | head -n 1 | sed 's/^NOT verified: //')
+    fi
+    return 1
+}
+
+download() { # version -> BUNDLE, the release's signature checked
+    mkdir -p "$WORK/dl"
+    base="https://github.com/$REPO/releases/download/v$1"
+    for f in SHA256SUMS SHA256SUMS.sig "$NAME.tar.gz"; do
+        say "  downloading $f"
+        if ! fetch "$base/$f" "$WORK/dl/$f"; then
+            WHY="couldn't download $f of Hemma $1 from github.com"
+            [ "$f" != SHA256SUMS.sig ] || WHY="Hemma $1 isn't signed (releases are signed from 0.21.0 on)"
+            return 1
+        fi
+    done
+    verify "$WORK/dl" --partial || return 1
+    BUNDLE=$WORK/dl/$NAME.tar.gz
+}
+
+# The download looked over before a byte of it is written, then unpacked and checked -> DIR, NEW
+unpack() { # bundle
+    list=$(tar -tzf "$1" 2>/dev/null) || { WHY="that isn't a Hemma download (not a .tar.gz)" && return 1; }
+    top=$(printf '%s\n' "$list" | head -n 1 | sed 's#/.*##')
+    case $top in
+    hemma-pi64 | hemma-pi32 | hemma-linux-x64 | hemma-mac-arm64 | hemma-mac-x64)
+        [ "$top" = "$NAME" ] || { WHY="that's the download $top.tar.gz - this machine needs $NAME.tar.gz" && return 1; } ;;
+    *) WHY="that isn't a Hemma download" && return 1 ;;
+    esac
+    if printf '%s\n' "$list" | grep -Evq "^$NAME/([A-Za-z0-9_-][A-Za-z0-9._-]*)?\$"; then
+        WHY="the download holds something other than plain files in its folder" && return 1
+    fi
+    [ "$(printf '%s\n' "$list" | wc -l)" -le 40 ] || { WHY="the download holds too many files" && return 1; }
+    tar -tvzf "$1" | awk '{ t = substr($1, 1, 1); if (t != "-" && t != "d") bad = 1; s += $3 }
+        END { exit (bad || s > 209715200) }' ||
+        { WHY="the download holds links or special files, or is far too big" && return 1; }
+    mkdir "$WORK/x"
+    tar -xzf "$1" -C "$WORK/x" --no-same-owner || { WHY="couldn't unpack the download" && return 1; }
+    DIR=$WORK/x/$NAME
+    verify "$DIR" || return 1
+    NEW=$(tr -d ' \r\n' <"$DIR/VERSION" 2>/dev/null || true)
+    is_version "$NEW" || { WHY="the download doesn't say its version" && return 1; }
+    [ -f "$DIR/$PROG" ] && [ -f "$DIR/install-pi.sh" ] || { WHY="the download lacks $PROG or install-pi.sh" && return 1; }
+    ran=$("$DIR/$PROG" --version 2>/dev/null | sed -n 's/^hemma \([0-9.]*\).*/\1/p' || true)
+    [ "$ran" = "$NEW" ] || { WHY="the program in the download doesn't run on this machine" && return 1; }
+}
+
+wanted() { # is NEW one to install? (newer than HAVE, unless forced)
+    if newer "$NEW" "$HAVE" || [ "$FORCE" -eq 1 ]; then return 0; fi
+    if [ "$NEW" = "$HAVE" ]; then WHY="Hemma $NEW is the one running already"; else WHY="Hemma $NEW is older than the one running ($HAVE)"; fi
+    return 1
+}
+
+setting() { # $1's value in the settings file, as install-pi.sh reads it
+    sed -n "s/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}$1[[:space:]]*=[[:space:]]*//p" "$ENVF" 2>/dev/null |
+        tr -d '\r' | sed 's/^#.*//; s/^\([^"'\''].*\)[[:space:]]#.*$/\1/; s/[[:space:]]*$//' |
+        sed 's/^"\(.*\)"$/\1/; s/^'\''\(.*\)'\''$/\1/' | sed -n '/./{p;q;}'
+}
+answers() { # does Hemma answer GET /healthz?
+    port=$(setting HEMMA_PORT)
+    host=$(setting HEMMA_HOST)
+    case $host in "" | 0.0.0.0) host=127.0.0.1 ;; esac
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsS -m 2 "http://$host:${port:-8080}/healthz" 2>/dev/null | grep -q '^ok'
+    else
+        wget -q -T 2 -O - "http://$host:${port:-8080}/healthz" 2>/dev/null | grep -q '^ok'
+    fi
+}
+up_within() { # seconds
+    i=0
+    while [ "$i" -lt "$1" ]; do
+        if systemctl is-active --quiet hemma && answers; then return 0; fi
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+copies() { ls -1 "$DATA"/hemma.db.before-install-* 2>/dev/null | grep -v -- '-wal$' | sort | tail -n 1 || true; }
+
+# DIR's installer, then up to a minute for Hemma to answer - or back to the program and data before
+put_in() {
+    cp -p "$HEMMA" "$WORK/hemma.was"
+    before=$(copies)
+    result installing "$NEW" "from $HAVE"
+    say "Installing Hemma $NEW (now $HAVE)..."
+    rc=0
+    (cd "$DIR" && HEMMA_INSTALL_WAIT=$WAIT sh ./install-pi.sh "./$PROG") 9>&- || rc=$? # (9: the lock - ours alone)
+    COPY=$(copies)
+    [ "$COPY" != "$before" ] || COPY=""
+    if [ "$rc" -eq 0 ]; then
+        sleep 5
+        if up_within 10; then
+            result installed "$NEW" "$HAVE"
+            say "Hemma $NEW is installed and running (it was $HAVE)."
+            return 0
+        fi
+        WHY="Hemma $NEW started, then stopped answering"
+    else
+        WHY="Hemma $NEW didn't start within $WAIT seconds"
+    fi
+    go_back
+}
+
+go_back() {
+    say "$WHY. Going back to Hemma $HAVE..."
+    systemctl stop hemma >/dev/null 2>&1 9>&- || true
+    install -m 755 "$WORK/hemma.was" "$HEMMA.back" && mv -f "$HEMMA.back" "$HEMMA"
+    if [ -n "$COPY" ] && [ -f "$COPY" ]; then # the new one may have changed the data: as it was before
+        stamp=$(date '+%Y-%m-%d-%H%M%S')
+        for s in "" -wal -shm; do
+            [ ! -f "$DATA/hemma.db$s" ] || mv -f "$DATA/hemma.db$s" "$DATA/hemma.db.after-failed-update-$stamp$s"
+        done
+        cp -p "$COPY" "$DATA/hemma.db"
+        [ ! -f "$COPY-wal" ] || cp -p "$COPY-wal" "$DATA/hemma.db-wal"
+        chown hemma:hemma "$DATA"/hemma.db* 2>/dev/null || true
+        ls -1 "$DATA"/hemma.db.after-failed-update-* 2>/dev/null | grep -Ev -- '-(wal|shm)$' | sort -r | tail -n +4 |
+            while read -r old; do rm -f "$old" "$old-wal" "$old-shm"; done
+        say "  the database is back as it was before (what the failed start left: hemma.db.after-failed-update-$stamp)"
+    fi
+    systemctl restart hemma >/dev/null 2>&1 9>&- || true
+    if up_within "$WAIT"; then
+        result back "$NEW" "$WHY"
+        say "Hemma $HAVE is running again. Nothing was lost; the log of the failed start: journalctl -u hemma"
+    else
+        result broken "$NEW" "$WHY, and Hemma $HAVE didn't start again either"
+        say "Hemma $HAVE didn't start again either. See: journalctl -u hemma -n 50   (docs/troubleshooting.md)"
+    fi
+    return 1
+}
+
+# ---- what Hemma asked for (System -> Updates) ------------------------------------------------
+from_hemma() {
+    req=$(as_hemma head -c 200 "$ASK/request" 2>/dev/null | head -n 1 | tr -d '\r' || true)
+    [ -n "$req" ] || return 0
+    nonce=${req##* }
+    printf '%s\n' "$nonce" | grep -Eqx '[0-9a-f]{16}' || { result refused "" "Hemma's request wasn't understood" && return 0; }
+    [ "$nonce" != "$(cat "$ANS/handled" 2>/dev/null || true)" ] || return 0 # (done already)
+    printf '%s\n' "$nonce" >"$ANS/handled"
+    case $req in
+    "check $nonce") # (github.com is asked at most once a minute: a page can't make this a flood)
+        last=$(stat -c %Y "$ANS/latest" 2>/dev/null || echo 0)
+        if [ $(($(now) - last)) -lt 60 ] && [ -s "$ANS/latest" ]; then answer latest "$(cat "$ANS/latest")"
+        elif latest; then answer latest "$(now) $LATEST"
+        else answer latest "$(now) - $WHY"; fi ;;
+    "install-file $nonce")
+        result fetching "" "checking the uploaded download"
+        rc=0
+        as_hemma head -c $((MAX + 1)) "$ASK/upload.tar.gz" >"$WORK/upload.tar.gz" 2>/dev/null || rc=$?
+        if [ "$rc" -ne 0 ] || [ ! -s "$WORK/upload.tar.gz" ]; then result refused "" "the uploaded file wasn't there"
+        elif [ "$(wc -c <"$WORK/upload.tar.gz")" -gt "$MAX" ]; then result refused "" "that file is far too big for a Hemma download"
+        elif ! unpack "$WORK/upload.tar.gz" || ! wanted; then result refused "$NEW" "$WHY"
+        else put_in || true; fi ;;
+    "install "*)
+        ver=$(printf '%s\n' "$req" | sed -n 's/^install \([0-9]*\.[0-9]*\.[0-9]*\) [0-9a-f]*$/\1/p')
+        if ! is_version "$ver"; then result refused "" "Hemma's request wasn't understood"
+        elif ! newer "$ver" "$HAVE"; then result refused "$ver" "Hemma $ver isn't newer than the one running ($HAVE)"
+        elif ! result fetching "$ver" "downloading" || ! download "$ver" || ! unpack "$BUNDLE"; then result refused "$ver" "$WHY"
+        elif [ "$NEW" != "$ver" ]; then result refused "$ver" "the download said it was Hemma $NEW"
+        else put_in || true; fi ;;
+    *) result refused "" "Hemma's request wasn't understood" ;;
+    esac
+}
+
+# ---- a terminal ------------------------------------------------------------------------------
+by_hand() {
+    if [ -n "$FILE" ]; then
+        [ -f "$FILE" ] || { say "no file at $FILE" && return 1; }
+        cp "$FILE" "$WORK/upload.tar.gz"
+        BUNDLE=$WORK/upload.tar.gz
+        say "Checking $FILE..."
+    else
+        if [ -n "$WANT" ]; then
+            is_version "$WANT" || { say "--release takes a version like 0.21.0" && return 2; }
+            LATEST=$WANT
+        else
+            say "Asking github.com for the newest release..."
+            if ! latest; then
+                answer latest "$(now) - $WHY"
+                say "$WHY"
+                return 1
+            fi
+            answer latest "$(now) $LATEST"
+        fi
+        if [ "$CHECK" -eq 1 ]; then
+            if newer "$LATEST" "$HAVE"; then
+                say "Hemma $LATEST is out (this is $HAVE): sudo hemma-upgrade installs it."
+                say "What's new: https://github.com/$REPO/releases/tag/v$LATEST"
+            else
+                say "Hemma $HAVE is the newest."
+            fi
+            return 0
+        fi
+        if ! newer "$LATEST" "$HAVE" && [ "$FORCE" -eq 0 ]; then
+            say "Hemma $HAVE is the newest - nothing to do."
+            return 0
+        fi
+        say "Downloading Hemma $LATEST..."
+        download "$LATEST" || { say "Not installed: $WHY" && return 1; }
+    fi
+    unpack "$BUNDLE" || { say "Not installed: $WHY" && return 1; }
+    wanted || { say "Not installed: $WHY (--force installs it anyway)" && return 1; }
+    if [ "$DRY" -eq 1 ]; then
+        say "Checked: Hemma $NEW ($NAME), signed by the Hemma project. --dry-run: nothing installed."
+        return 0
+    fi
+    put_in
+}
+
+main() {
+    [ "$(id -u)" -eq 0 ] || { say "run me with sudo" >&2 && exit 1; }
+    [ -x "$HEMMA" ] || { say "no Hemma at $HEMMA - install it with install-pi.sh first (docs/raspberry-pi.md)" >&2 && exit 1; }
+    install -d -o root -g hemma -m 750 "$ANS" 2>/dev/null || true
+    exec 9>/run/hemma-upgrade.lock
+    if command -v flock >/dev/null 2>&1 && ! flock -n 9; then say "another update is running" >&2 && exit 1; fi
+    WORK=$(mktemp -d "${TMPDIR:-/var/tmp}/hemma-upgrade.XXXXXX")
+    trap 'rm -rf "$WORK"' EXIT
+    trap 'exit 1' INT TERM HUP
+    HAVE=$(installed_version)
+    is_version "$HAVE" || HAVE=0.0.0
+    if ! target; then
+        [ "$FROM_HEMMA" -eq 1 ] && result refused "" "$WHY"
+        say "$WHY" >&2
+        exit 1
+    fi
+    if [ "$FROM_HEMMA" -eq 1 ]; then
+        from_hemma
+        return 0
+    fi
+    rc=0
+    by_hand || rc=$?
+    return "$rc"
+}
+
+while [ $# -gt 0 ]; do
+    case $1 in
+    --check) CHECK=1 ;;
+    --dry-run) DRY=1 ;;
+    --force) FORCE=1 ;;
+    --from-hemma) FROM_HEMMA=1 ;;
+    --file) [ $# -ge 2 ] || usage; FILE=$2; shift ;;
+    --release) [ $# -ge 2 ] || usage; WANT=$2; shift ;;
+    -h | --help) usage 0 ;;
+    *) usage ;;
+    esac
+    shift
+done
+# (all of it read before it runs: the installer replaces this very file)
+main; exit $?

@@ -6,6 +6,7 @@
 #include "auth.h"
 #include "env.h"
 #include "plat.h"
+#include "release.h"
 #include "store.h"
 
 static void usage(void) {
@@ -35,6 +36,12 @@ static void usage(void) {
             "                 up) to HEMMA-SETUP.txt on a Raspberry Pi's memory card and its console's login\n"
             "                 screen, then exit. Run by hemma-setup.service as root (docs/raspberry-pi.md);\n"
             "                 --boot DIR and --issue FILE write elsewhere instead\n"
+            "  --verify-release DIR [--partial]\n"
+            "                 is DIR a release download as the Hemma project signed it? Exit 0 = yes.\n"
+            "                 hemma-upgrade asks the installed Hemma before installing (docs/raspberry-pi.md)\n"
+            "  --gen-signing-key FILE | --sign FILE\n"
+            "                 for the project's maintainer: a new release signing key (the secret into FILE,\n"
+            "                 the public half printed), or a signature of FILE with $HEMMA_SIGNING_KEY\n"
             "  --verbose | --quiet | --version\n\n"
             "While it runs, Hemma logs here and to hemma.log in its data folder. Admins find checks\n"
             "(\"is everything working?\") and the live log on its System page. Scripts: GET /healthz.\n",
@@ -65,6 +72,57 @@ static int restore_cli(const char *file, const char *data_dir, const char *env_f
                "put the old HEMMA_AUTH_SALT line back in %s first (docs/raspberry-pi.md, \"Backups\").\n",
                env_file);
     printf("\nThen (re)start Hemma - on a Pi: sudo systemctl restart hemma\n");
+    return 0;
+}
+
+/* Signed releases (issue #73; core/release.h): no settings file, no data folder. */
+static int release_cli(int argc, char **argv) {
+    const char *verb = NULL, *arg = NULL;
+    bool partial = false;
+    for (int i = 1; i < argc; i++) {
+        if (str_eq(argv[i], "--partial")) partial = true;
+        else if (!verb && i + 1 < argc &&
+                 (str_eq(argv[i], "--verify-release") || str_eq(argv[i], "--gen-signing-key") || str_eq(argv[i], "--sign")))
+            verb = argv[i], arg = argv[++i];
+        else {
+            usage();
+            return 2;
+        }
+    }
+    if (!verb) {
+        usage();
+        return 2;
+    }
+    char why[400];
+    if (str_eq(verb, "--verify-release")) {
+        Buf say = {0};
+        bool ok = release_verify_dir(arg, partial, &say);
+        fprintf(ok ? stdout : stderr, "%s: %s\n", ok ? "verified" : "NOT verified", buf_cstr(&say));
+        buf_free(&say);
+        return ok ? 0 : 1;
+    }
+    if (partial) {
+        usage();
+        return 2;
+    }
+    if (str_eq(verb, "--gen-signing-key")) {
+        char pub[65];
+        if (!release_key_new(arg, pub, why, sizeof why)) {
+            fprintf(stderr, "%s\n", why);
+            return 1;
+        }
+        printf("The secret key is in %s (only you can read it): keep it, and a copy somewhere safe.\n"
+               "Put its contents into the GitHub secret HEMMA_SIGNING_KEY (Settings > Secrets and\n"
+               "variables > Actions), and this public key into core/release.c (RELEASE_KEYS):\n\n%s\n",
+               arg, pub);
+        return 0;
+    }
+    char sig[129];
+    if (!release_sign(plat_getenv("HEMMA_SIGNING_KEY"), arg, sig, why, sizeof why)) {
+        fprintf(stderr, "not signed: %s\n", why);
+        return 1;
+    }
+    printf("%s\n", sig);
     return 0;
 }
 
@@ -116,6 +174,9 @@ int main(int argc, char **argv) {
         } else if (str_eq(argv[i], "--version")) {
             printf("hemma %s\n", HEMMA_VERSION_FULL);
             return 0;
+        } else if (str_eq(argv[i], "--verify-release") || str_eq(argv[i], "--gen-signing-key") ||
+                   str_eq(argv[i], "--sign")) {
+            return release_cli(argc, argv);
         }
     }
     static char demo_dir[400], demo_env[440], demo_pw[16], demo_data[420];

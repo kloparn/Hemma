@@ -1,0 +1,12 @@
+# /etc/systemd/system/hemma-update.path — installed by deploy/install-pi.sh
+# An admin asked for something under System -> Updates: Hemma wrote it into its request file, and
+# hemma-update.service (root) does it.
+[Unit]
+Description=Hemma's updates: follow what Hemma asks
+
+[Path]
+PathModified=/var/lib/hemma/update/request
+Unit=hemma-update.service
+
+[Install]
+WantedBy=multi-user.target

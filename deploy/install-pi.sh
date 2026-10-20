@@ -9,9 +9,11 @@
 # salt) and the service. Folders after the binary are media library folders that
 # admins may upload into: they become writable for Hemma (re-run with the full
 # list to change them; with none, the current list is kept).
-# Then it (re)starts the service, waits up to 15 s until http://127.0.0.1:<port>/healthz
-# answers, and says where to open Hemma and what to do next - or, if it didn't come up,
-# shows its last log lines (exit status 1).
+# Then it (re)starts the service, waits up to 15 s (HEMMA_INSTALL_WAIT) until
+# http://127.0.0.1:<port>/healthz answers, and says where to open Hemma and what to do next - or,
+# if it didn't come up, shows its last log lines (exit status 1).
+# With hemma-upgrade and its units beside it, updates come from then on with one command
+# (sudo hemma-upgrade) or from Hemma's System page - checked against the project's signature.
 set -eu
 
 BIN=${1:-./hemma}
@@ -42,6 +44,19 @@ if [ -f "$HERE/hemma-setup.service" ] && [ -f "$HERE/hemma-setup.path" ]; then
     install -m 644 "$HERE/hemma-setup.service" "$HERE/hemma-setup.path" /etc/systemd/system/
     install -d -m 755 /etc/issue.d
     SETUP_UNITS=1
+fi
+# updates (issue #73): Hemma asks in /var/lib/hemma/update (its own), the root helper answers in
+# /var/lib/hemma-update (Hemma may read it, not change it)
+UPDATE_UNITS=0
+if [ -f "$HERE/hemma-upgrade" ] && [ -f "$HERE/hemma-update.service" ] && [ -f "$HERE/hemma-update.path" ]; then
+    install -d -m 755 /usr/local/sbin
+    # (a new file renamed into place: hemma-upgrade may be the one running this installer)
+    install -m 755 "$HERE/hemma-upgrade" /usr/local/sbin/.hemma-upgrade.new
+    mv -f /usr/local/sbin/.hemma-upgrade.new /usr/local/sbin/hemma-upgrade
+    install -m 644 "$HERE/hemma-update.service" "$HERE/hemma-update.path" /etc/systemd/system/
+    install -d -o hemma -g hemma -m 750 /var/lib/hemma/update
+    install -d -o root -g hemma -m 750 /var/lib/hemma-update
+    UPDATE_UNITS=1
 fi
 
 # media folders for uploads: writable for the hemma user + allowed by the service
@@ -128,6 +143,7 @@ if [ "$SETUP_UNITS" -eq 1 ]; then
     systemctl enable hemma-setup.service >/dev/null 2>&1 || true
     systemctl enable --now hemma-setup.path >/dev/null 2>&1 || true
 fi
+[ "$UPDATE_UNITS" -eq 0 ] || systemctl enable --now hemma-update.path >/dev/null 2>&1 || true
 
 # ---- start it (again), and wait until it answers -----------------------------------------
 setting() { # $1's value as Hemma reads it: the first line with a value, without quotes or " # note"
@@ -174,7 +190,9 @@ echo "Starting Hemma..."
 UP=0
 ACTIVE=0
 i=0
-while [ "$i" -lt 15 ]; do
+WAIT=${HEMMA_INSTALL_WAIT:-15}
+case "$WAIT" in '' | *[!0-9]*) WAIT=15 ;; esac
+while [ "$i" -lt "$WAIT" ]; do
     sleep 1
     i=$((i + 1))
     if systemctl is-active --quiet hemma; then ACTIVE=$((ACTIVE + 1)); else ACTIVE=0; fi
@@ -261,7 +279,11 @@ echo "  systemctl status hemma          is it running? (and its last lines)"
 echo "  journalctl -u hemma -f          follow the log (Ctrl+C stops watching)"
 echo "  sudo systemctl restart hemma    restart it, e.g. after changing the settings"
 echo "  sudo nano $ENVF   the settings"
-echo "  Update: copy the new program over, then run this installer again with it."
+if [ "$UPDATE_UNITS" -eq 1 ]; then
+    echo "  sudo hemma-upgrade              update to the newest release (or: System -> Updates in Hemma)"
+else
+    echo "  Update: copy the new program over, then run this installer again with it."
+fi
 echo "  Going back: sudo sh -c 'cd /opt/hemma && [ -f hemma.prev ] && mv hemma hemma.x && mv hemma.prev hemma && mv hemma.x hemma.prev'"
 echo "              then sudo systemctl restart hemma  (more: docs/raspberry-pi.md, \"Going back\")"
 echo "  Data: /var/lib/hemma (the database hemma.db, copies hemma.db.before-*, Hemma's own log hemma.log)"

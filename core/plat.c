@@ -873,3 +873,20 @@ void thread_background(void) {
 void lock_take(Lock *l) { pthread_mutex_lock(&l->l); }
 void lock_give(Lock *l) { pthread_mutex_unlock(&l->l); }
 #endif
+
+/* The release download this build is (tools/ci/bundle.sh's names): what System -> Updates asks for. */
+const char *plat_bundle(void) {
+#if defined(__APPLE__) && defined(__aarch64__)
+    return "hemma-mac-arm64";
+#elif defined(__APPLE__) && defined(__x86_64__)
+    return "hemma-mac-x64";
+#elif defined(__linux__) && defined(__aarch64__)
+    return "hemma-pi64";
+#elif defined(__linux__) && defined(__arm__)
+    return "hemma-pi32";
+#elif defined(__linux__) && defined(__x86_64__)
+    return "hemma-linux-x64";
+#else
+    return NULL; /* (Windows: no download yet - built from source) */
+#endif
+}

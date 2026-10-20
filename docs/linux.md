@@ -95,7 +95,10 @@ It creates a `hemma` system user, `/opt/hemma/hemma`, the database folder
 from now on), waits until it answers, and prints where to open it and the next steps - or,
 if it didn't come up, its last log lines ([troubleshooting.md](troubleshooting.md)).
 Running it again later updates the program and restarts the service, keeping your
-settings and data.
+settings and data. Installed from a download (0.21.0 or newer), later updates are one command,
+`sudo hemma-upgrade`, or **Install** under System → Updates in Hemma: only what the project
+signed goes in, and it goes back by itself if the new version doesn't start
+([raspberry-pi.md](raspberry-pi.md#6-everyday-care), "Update Hemma").
 
 Open `http://<server address>` in a browser and **create the admin account**. The welcome
 page asks for the **setup code** the installer showed in its last lines (also in

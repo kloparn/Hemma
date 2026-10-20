@@ -67,6 +67,25 @@ bool system_backup_due(int64_t now, int64_t last, int64_t started);
 /* The download: the backup at `path` as hemma.db + the password secret line, in a tar. */
 bool system_backup_bundle(const char *path, const char *salt, int64_t mtime, Buf *out);
 
+/* ---- updates (update.c, issue #73) ----
+   Hemma can't change its own program (hemma.service: user hemma, the system read-only), so an admin's
+   "check" / "install X.Y.Z" / an uploaded download goes as one line into <data>/update/request, and
+   the root helper deploy/hemma-upgrade (hemma-update.path) does it - only what the Hemma project
+   signed, with a way back - answering in /var/lib/hemma-update: latest ("<unix> <version>" or
+   "<unix> - <why>") and result ("<state> <unix> <version|-> <words>"). Both folders there = the
+   helper is installed (install-pi.sh from 0.21.0); else the tab says how to update by hand. */
+void system_update_start(void);
+void system_update_stop(void);
+void system_update_tick(int64_t now_ms); /* read the answers; the daily check; an upload that came in */
+void system_update_checks(Health *h);
+void system_update_page(Ctx *c, Buf *b); /* /system/updates */
+bool system_update_http(Ctx *c, Conn *conn, HttpReq *r); /* POST /system/update/plan, PUT/GET .../<batch>/0 */
+void system_update_act_check(Ctx *c, Fields *f);
+void system_update_act_auto(Ctx *c, Fields *f);
+void system_update_act_install(Ctx *c, Fields *f);
+void system_update_act_seen(Ctx *c, Fields *f);
+bool system_update_newer(const char *a, const char *b); /* MAJOR.MINOR.PATCH: is a newer than b? */
+
 /* ---- shared with backup.c (system.c) ---- */
 void system_when(int64_t t, int64_t now, char *out, size_t cap); /* "14:30" today, else "Mon 12 Oct 14:30" */
 bool system_restarts_itself(void); /* a service manager starts Hemma again when it stops (systemd, launchd) */
@@ -78,5 +97,8 @@ void system_log_set_limit(int64_t bytes);  /* rotate the file past this size (de
 /* Pretend the LAN addresses are these ("" = none found); NULL = ask the OS again (not under tests). */
 void system_test_addresses(const char *a, const char *b);
 void system_test_free_space(int64_t bytes); /* the data folder's disk has this much free (-1 = ask the disk) */
+/* After th_boot: the update helper's folders are these (NULL = the real ones), and the OS's own updates. */
+void system_test_update_dirs(const char *ask_dir, const char *answers);
+void system_test_update_os(bool apt, bool unattended, int64_t last);
 
 #endif
