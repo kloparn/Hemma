@@ -97,6 +97,7 @@ const char *media_kids_covered(const char *root, const char *dir); /* a marked f
 void media_kids_set(const char *root, const char *dir, bool on);
 int media_kids_count(void);
 bool media_kids_at(int i, char *root, size_t rcap, char *dir, size_t dcap);
+void media_test_mounts(const char *list); /* tests: the disks offered for the library (";" between; NULL = none) */
 void media_kids_init(void); /* (media's init and stop) */
 void media_kids_stop(void);
 

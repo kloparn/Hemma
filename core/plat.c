@@ -20,6 +20,9 @@
 #endif
 #ifdef __APPLE__
 #include <pthread/qos.h> /* thread_background */
+#include <sys/mount.h>   /* getmntinfo: plat_mounts */
+#include <sys/param.h>
+#include <sys/ucred.h>
 #endif
 #endif
 
@@ -591,6 +594,64 @@ bool path_disk_space(const char *path, int64_t *free_bytes, int64_t *total_bytes
 }
 
 bool path_free_space(const char *path, int64_t *free_bytes) { return path_disk_space(path, free_bytes, NULL); }
+
+int plat_parse_mounts(const char *text, char out[][300], int max) {
+    static const char *const virt[] = {"tmpfs",   "devtmpfs", "proc",       "sysfs",    "autofs",   "ramfs",
+                                       "overlay", "squashfs", "devpts",     "cgroup",   "cgroup2",  "debugfs",
+                                       "tracefs", "pstore",   "securityfs", "bpf",      "configfs", "fusectl",
+                                       "mqueue",  "nsfs",     "hugetlbfs",  "efivarfs", "binfmt_misc"};
+    int n = 0;
+    for (const char *line = text; line && *line && n < max;) {
+        const char *end = strchr(line, '\n');
+        char row[1024], dev[256], mnt[300], type[64], path[300];
+        str_ncopy(row, sizeof row, line, end ? (size_t)(end - line) : strlen(line));
+        line = end ? end + 1 : NULL;
+        if (sscanf(row, "%255s %299s %63s", dev, mnt, type) != 3) continue;
+        size_t o = 0; /* "\040" = a space: the kernel writes those four characters */
+        for (const char *p = mnt; *p && o + 1 < sizeof path; p++) {
+            if (p[0] == '\\' && p[1] >= '0' && p[1] <= '3' && p[2] >= '0' && p[2] <= '7' && p[3] >= '0' && p[3] <= '7') {
+                path[o++] = (char)((p[1] - '0') * 64 + (p[2] - '0') * 8 + (p[3] - '0'));
+                p += 3;
+            } else {
+                path[o++] = *p;
+            }
+        }
+        path[o] = '\0';
+        if (!str_starts(path, "/mnt/") && !str_starts(path, "/media/")) continue;
+        bool skip = false;
+        for (int k = 0; k < countof(virt) && !skip; k++) skip = str_eq(type, virt[k]);
+        for (int k = 0; k < n && !skip; k++) skip = str_eq(out[k], path); /* (mounted twice: once) */
+        if (!skip) str_copy(out[n++], 300, path);
+    }
+    return n;
+}
+
+int plat_mounts(char out[][300], int max) {
+    int n = 0;
+#ifdef _WIN32
+    wchar_t sys[MAX_PATH];
+    wchar_t own = GetSystemWindowsDirectoryW(sys, MAX_PATH) ? sys[0] : 0;
+    if (own >= L'a' && own <= L'z') own = (wchar_t)(own - 32);
+    DWORD drives = GetLogicalDrives();
+    for (int i = 0; i < 26 && n < max; i++) {
+        wchar_t root[4] = {(wchar_t)(L'A' + i), L':', L'\\', 0};
+        UINT type = (drives >> i) & 1 ? GetDriveTypeW(root) : DRIVE_NO_ROOT_DIR;
+        if ((type != DRIVE_FIXED && type != DRIVE_REMOVABLE) || root[0] == own) continue;
+        snprintf(out[n++], 300, "%c:/", 'A' + i);
+    }
+#elif defined(__APPLE__)
+    struct statfs *m = NULL;
+    int k = getmntinfo(&m, MNT_NOWAIT);
+    for (int i = 0; i < k && n < max; i++)
+        if (str_starts(m[i].f_mntonname, "/Volumes/") && !(m[i].f_flags & MNT_DONTBROWSE))
+            str_copy(out[n++], 300, m[i].f_mntonname);
+#else
+    Buf b = {0};
+    if (file_read_all("/proc/self/mounts", &b, 1 << 20)) n = plat_parse_mounts(buf_cstr(&b), out, max);
+    buf_free(&b);
+#endif
+    return n;
+}
 
 long file_sendfile(sock_t s, FILE *f, int64_t off, size_t n) {
 #ifdef __linux__

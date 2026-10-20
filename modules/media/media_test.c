@@ -975,3 +975,52 @@ TEST(media_someone_who_leaves) {
     CHECK(media_watch_get(adam, f->id) != NULL);
     th_halt();
 }
+
+/* Issue #27: the folders the installer was told about (HEMMA_MEDIA in the settings file) are offered with one tap -
+   no path typed from memory. One that isn't there isn't offered; one in the library already isn't either. */
+TEST(media_offers_the_folders_the_installer_knows) {
+    th_boot();
+    int adam = signing_admin("Adam", "adam"), eva = th_person("Eva");
+    char a[512], b2[512];
+    str_copy(a, sizeof a, test_tmpdir());
+    str_copy(b2, sizeof b2, test_tmpdir());
+    Buf told = {0}, form = {0};
+    buf_printf(&told, "%s; %s ;/no/such/folder", a, b2);
+    char disk[512];
+    str_copy(disk, sizeof disk, test_tmpdir());
+    media_test_mounts(disk); /* (a disk "this machine" has: offered while the library has no folders) */
+    plat_setenv("HEMMA_MEDIA", buf_cstr(&told), true);
+    const char *h = th_page(adam, "/media"); /* (no library folders yet: the first-run buttons) */
+    CHECK_HAS(h, "Use <code class=\"media-code\">");
+    CHECK_HAS(h, a);
+    CHECK_HAS(h, disk);
+    CHECK(!strstr(h, "/no/such/folder"));
+    h = th_page(adam, "/media/settings");
+    CHECK_HAS(h, "from the installer");
+    buf_puts(&form, "dir=");
+    url_encode(&form, a, false);
+    CHECK(!th_act(eva, "media.roots_add", buf_cstr(&form)).ok); /* (an admin's) */
+    CHECK(th_act(adam, "media.roots_add", buf_cstr(&form)).ok);
+    CHECK_STR(setting("media.roots", ""), a);
+    ThResult r = th_act(adam, "media.roots_add", buf_cstr(&form));
+    CHECK_HAS(r.toast, "in the library already");
+    h = th_page(adam, "/media/settings");
+    char label[600];
+    snprintf(label, sizeof label, "aria-label=\"Add %s\"", a);
+    CHECK(!strstr(h, label)); /* (taken) */
+    snprintf(label, sizeof label, "aria-label=\"Add %s\"", b2);
+    CHECK_HAS(h, label);      /* (the other one: still offered) */
+    CHECK(!strstr(h, disk));  /* (the library has a folder now: no more disks offered) */
+    buf_reset(&form);
+    buf_puts(&form, "dir=");
+    url_encode(&form, b2, false);
+    CHECK(th_act(adam, "media.roots_add", buf_cstr(&form)).ok);
+    Buf both = {0};
+    buf_printf(&both, "%s\n%s", a, b2);
+    CHECK_STR(setting("media.roots", ""), buf_cstr(&both));
+    plat_setenv("HEMMA_MEDIA", "", true);
+    buf_free(&told);
+    buf_free(&form);
+    buf_free(&both);
+    th_halt();
+}

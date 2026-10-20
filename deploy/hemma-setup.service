@@ -1,0 +1,29 @@
+# /etc/systemd/system/hemma-setup.service — installed by deploy/install-pi.sh
+#
+# The welcome page's setup code where a household can read it without a terminal (issue #72):
+# HEMMA-SETUP.txt on a Raspberry Pi's memory card (its boot partition is FAT: put the card in any
+# computer to read it) and a line on the Pi's console. Once the admin exists, both say the code is
+# used up. Runs at boot and whenever Hemma's own note changes (hemma-setup.path). Root, because those
+# two places are root's; from Hemma's data folder it takes only "open <code>" or "done". Elsewhere
+# than on a Pi it writes nothing.
+[Unit]
+Description=Hemma's setup note on the memory card
+After=local-fs.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/hemma/hemma --setup-note --data /var/lib/hemma --env /etc/hemma/hemma.env
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=-/boot/firmware -/boot -/etc/issue.d
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

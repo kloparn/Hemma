@@ -31,6 +31,10 @@ static void usage(void) {
             "                 the System page. It's checked, then waits in the data folder: Hemma puts it\n"
             "                 in place at its next start (what was there is kept). Give it the server's\n"
             "                 --data and --env and run it as the user Hemma runs as (docs/raspberry-pi.md)\n"
+            "  --setup-note   write the welcome page's setup code (or, once the admin exists, that it's used\n"
+            "                 up) to HEMMA-SETUP.txt on a Raspberry Pi's memory card and its console's login\n"
+            "                 screen, then exit. Run by hemma-setup.service as root (docs/raspberry-pi.md);\n"
+            "                 --boot DIR and --issue FILE write elsewhere instead\n"
             "  --verbose | --quiet | --version\n\n"
             "While it runs, Hemma logs here and to hemma.log in its data folder. Admins find checks\n"
             "(\"is everything working?\") and the live log on its System page. Scripts: GET /healthz.\n",
@@ -138,7 +142,8 @@ int main(int argc, char **argv) {
         .demo_password = demo ? demo_pw : NULL,
     };
     if (demo) cfg.data_dir = demo_data;
-    const char *reset_user = NULL, *restore_file = NULL;
+    const char *reset_user = NULL, *restore_file = NULL, *note_boot = NULL, *note_issue = NULL;
+    bool setup_note = false;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         const char *next = i + 1 < argc ? argv[i + 1] : NULL;
@@ -148,6 +153,9 @@ int main(int argc, char **argv) {
         else if (str_eq(a, "--web") && next) cfg.web_dir = argv[++i];
         else if (str_eq(a, "--reset-password") && next) reset_user = argv[++i];
         else if (str_eq(a, "--restore") && next) restore_file = argv[++i];
+        else if (str_eq(a, "--setup-note")) setup_note = true;
+        else if (str_eq(a, "--boot") && next) note_boot = argv[++i];
+        else if (str_eq(a, "--issue") && next) note_issue = argv[++i];
         else if (str_eq(a, "--env") && next) i++; /* handled above */
         else if (str_eq(a, "--demo")) continue;        /* (also above) */
         else if (str_eq(a, "--verbose")) g_log_level = LOG_DEBUG;
@@ -171,5 +179,12 @@ int main(int argc, char **argv) {
         return rc;
     }
     if (restore_file) return restore_cli(restore_file, cfg.data_dir, env_file);
+    if (setup_note) { /* (issue #72) */
+        Buf out = {0};
+        int rc = auth_setup_note_cli(cfg.data_dir, note_boot, note_issue, &out);
+        fputs(buf_cstr(&out), stdout);
+        buf_free(&out);
+        return rc;
+    }
     return app_main(&cfg);
 }

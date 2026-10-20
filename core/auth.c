@@ -3,6 +3,7 @@
 #include "codec.h"
 #include "db.h"
 #include "env.h"
+#include "lan.h"
 #include "plat.h"
 #include "ui.h"
 
@@ -753,6 +754,134 @@ const char *auth_setup_code(void) {
     return shown;
 }
 
+/* ------------------------------------------------- the setup note (issue #72) */
+
+/* "XXXX-XXXX" exactly: 8 of the alphabet, upper case, the dash in the middle */
+static bool setup_shape(const char *s) {
+    if (strlen(s) != SETUP_CHARS + 1 || s[4] != '-') return false;
+    for (int i = 0; i < SETUP_CHARS + 1; i++)
+        if (i != 4 && !strchr(CODE_ALPHABET, s[i])) return false;
+    return true;
+}
+
+int auth_setup_state_parse(const char *text, char code[16]) {
+    code[0] = '\0';
+    char line[32];
+    if (!text || strlen(text) >= sizeof line) return SETUP_NOTE_NONE;
+    str_copy(line, sizeof line, text);
+    size_t n = strlen(line);
+    if (n && line[n - 1] == '\n') line[--n] = '\0';
+    if (str_eq(line, "done")) return SETUP_NOTE_DONE;
+    if (str_starts(line, "open ") && setup_shape(line + 5)) {
+        str_copy(code, 16, line + 5);
+        return SETUP_NOTE_OPEN;
+    }
+    return SETUP_NOTE_NONE;
+}
+
+static void setup_state_path(const char *data_dir, char *out, size_t cap) { snprintf(out, cap, "%s/%s", data_dir, SETUP_STATE_FILE); }
+
+void auth_setup_state_write(void) {
+    const AppConfig *cfg = app_config();
+    if (!cfg || !cfg->data_dir) return;
+    char want[32], path[600];
+    if (auth_setup_open() && auth_setup_code()[0]) snprintf(want, sizeof want, "open %s\n", auth_setup_code());
+    else if (admin_can_sign_in() || setting_int(SET_BOOTSTRAPPED, 0)) str_copy(want, sizeof want, "done\n");
+    else return; /* (no secret yet, or a rescue to read first: nothing to say) */
+    setup_state_path(cfg->data_dir, path, sizeof path);
+    Buf now = {0};
+    bool same = file_read_all(path, &now, 64) && str_eq(buf_cstr(&now), want);
+    buf_free(&now);
+    if (!same && !file_write_atomic(path, want, strlen(want))) log_warn("couldn't write %s", path);
+}
+
+const char *auth_setup_note_found(void) {
+    static const char *const where[] = {"/boot/firmware/" SETUP_NOTE_FILE, "/boot/" SETUP_NOTE_FILE};
+    for (int i = 0; i < countof(where); i++)
+        if (path_stat(where[i], NULL, NULL, NULL)) return where[i];
+    return NULL;
+}
+
+void auth_setup_note_text(Buf *b, int state, const char *code, const char *name, const char *ip, int port) {
+    char at[160] = "", port_s[16] = "";
+    if (port && port != 80) snprintf(port_s, sizeof port_s, ":%d", port);
+    if (name && name[0] && ip && ip[0]) snprintf(at, sizeof at, "http://%s.local%s\r\n       (or http://%s%s)", name, port_s, ip, port_s);
+    else if (name && name[0]) snprintf(at, sizeof at, "http://%s.local%s\r\n       (or the Pi's number from your router, like http://192.168.1.50%s)", name, port_s, port_s);
+    else if (ip && ip[0]) snprintf(at, sizeof at, "http://%s%s", ip, port_s);
+    else snprintf(at, sizeof at, "the Pi's number from your router, like http://192.168.1.50%s", port_s);
+    if (state == SETUP_NOTE_OPEN) {
+        buf_printf(b,
+                   "HEMMA - SETTING UP\r\n==================\r\n\r\n"
+                   "1. On a phone or computer at home, open this in its browser (with http://):\r\n\r\n"
+                   "       %s\r\n\r\n"
+                   "2. The welcome page asks for this setup code:\r\n\r\n"
+                   "       %s\r\n\r\n"
+                   "3. Create the admin account - the person who adds everyone else - and keep\r\n"
+                   "   the recovery codes Hemma shows you afterwards.\r\n\r\n"
+                   "The code works once. When the admin exists, this file says so.\r\n"
+                   "Help: https://github.com/kloparn/Hemma/blob/main/docs/accounts.md\r\n",
+                   at, code);
+    } else {
+        buf_printf(b,
+                   "HEMMA IS SET UP\r\n===============\r\n\r\n"
+                   "Its admin account exists, so the setup code is used up.\r\n\r\n"
+                   "Open %s\r\nand sign in. The admin adds everyone else under Household -> Add someone.\r\n"
+                   "Forgot a password? https://github.com/kloparn/Hemma/blob/main/docs/accounts.md\r\n",
+                   at);
+    }
+}
+
+int auth_setup_note_cli(const char *data_dir, const char *boot_dir, const char *issue_file, Buf *out) {
+    char path[600], code[16];
+    if (!boot_dir) { /* a Raspberry Pi's memory card: its boot partition holds config.txt */
+        boot_dir = path_stat("/boot/firmware/config.txt", NULL, NULL, NULL) ? "/boot/firmware"
+                   : path_stat("/boot/config.txt", NULL, NULL, NULL)        ? "/boot"
+                                                                            : NULL;
+        if (!boot_dir) {
+            buf_puts(out, "No Raspberry Pi boot partition here (no config.txt in /boot/firmware or /boot): nothing written.\n");
+            return 0;
+        }
+        if (!issue_file && path_is_dir("/etc/issue.d")) issue_file = "/etc/issue.d/hemma.issue";
+    }
+    /* Hemma's note, two shapes only (this runs as root; Hemma's folder isn't) - else, before Hemma's first start,
+       the settings file's code */
+    setup_state_path(data_dir, path, sizeof path);
+    Buf st = {0};
+    int state = file_read_all(path, &st, 64) ? auth_setup_state_parse(buf_cstr(&st), code) : SETUP_NOTE_NONE;
+    buf_free(&st);
+    char norm[SETUP_CHARS + 1];
+    if (state == SETUP_NOTE_NONE && !path_stat(path, NULL, NULL, NULL) && symbols(env("HEMMA_SETUP_CODE", ""), norm, SETUP_CHARS)) {
+        snprintf(code, sizeof code, "%.4s-%.4s", norm, norm + 4);
+        state = SETUP_NOTE_OPEN;
+    }
+    if (state == SETUP_NOTE_NONE) {
+        buf_printf(out, "Nothing to say yet (%s isn't there or isn't Hemma's): nothing written.\n", path);
+        return 0;
+    }
+    char name[96] = "", ip[16] = "";
+    if (lan_mdns_announced() && gethostname(name, (int)sizeof name - 1) == 0) name[strcspn(name, ".")] = '\0';
+    LanIface ifc;
+    if (lan_iface(&ifc) && ifc.ip) ip_format(ifc.ip, ip);
+    int port = (int)env_int("HEMMA_PORT", 8080);
+    Buf note = {0};
+    auth_setup_note_text(&note, state, code, name, ip, port);
+    snprintf(path, sizeof path, "%s/%s", boot_dir, SETUP_NOTE_FILE);
+    if (file_write_atomic(path, note.p, note.len)) buf_printf(out, "Wrote %s (%s).\n", path, state == SETUP_NOTE_OPEN ? "the setup code" : "set up");
+    else buf_printf(out, "Couldn't write %s.\n", path);
+    buf_free(&note);
+    if (issue_file) { /* the console's login screen: agetty shows the files in /etc/issue.d (\4 = this machine's IPv4) */
+        char port_s[16] = "", line[200];
+        if (port != 80) snprintf(port_s, sizeof port_s, ":%d", port);
+        if (state == SETUP_NOTE_OPEN)
+            snprintf(line, sizeof line, "Hemma: open http://\\4%s in a browser at home. The welcome page's setup code: %s\n\n", port_s, code);
+        else
+            snprintf(line, sizeof line, "Hemma: open http://\\4%s in a browser at home.\n\n", port_s);
+        if (file_write_atomic(issue_file, line, strlen(line))) buf_printf(out, "Wrote %s.\n", issue_file);
+        else buf_printf(out, "Couldn't write %s.\n", issue_file);
+    }
+    return 0;
+}
+
 static void code_hash(int person, const char *norm, char out[65]) {
     char msg[64];
     int n = snprintf(msg, sizeof msg, "recovery:%d:%s", person, norm);
@@ -966,6 +1095,7 @@ void auth_start(void) {
         if (!p || !p->username[0] || p->role == ROLE_DISPLAY) tbl_del(&T_recovery, rc->id);
     }
     apply_resets();
+    auth_setup_state_write(); /* (the memory card's note follows: issue #72) */
 }
 
 /* SQLite bumps data_version when another connection (the command line) commits: only
@@ -1207,8 +1337,11 @@ static void setup_page(Ctx *c, Buf *b, bool others_can_sign_in) {
                 "password.</p>"
                 "<div class=\"notice mt\"><p><b>Where's the setup code?</b> It shows that you're the one setting Hemma "
                 "up - not just anyone on your Wi-Fi who opens this page first. You'll find it where Hemma was "
-                "installed:</p><ul class=\"small\">"
-                "<li><b>Raspberry Pi or Linux</b>: in the installer's last lines. Missed them? It's also in "
+                "installed:</p><ul class=\"small\">");
+    if (auth_setup_note_found()) /* (issue #72: a card any computer reads) */
+        buf_puts(b, "<li><b>On this Raspberry Pi's memory card</b>, in the file <code>" SETUP_NOTE_FILE "</code>: put "
+                    "the card in a computer and open it (then back in the Pi)</li>");
+    buf_puts(b, "<li><b>Raspberry Pi or Linux</b>: in the installer's last lines. Missed them? It's also in "
                 "<code>/etc/hemma/hemma.env</code>, or run <code>sudo journalctl -u hemma | grep \"setup code\"</code></li>"
                 "<li><b>Windows or Mac</b>: in Hemma's own window (or its log), right after it starts</li></ul>"
                 "<p class=\"small\">It works once: after this the welcome page and the code are gone for good.</p></div>");
@@ -1427,6 +1560,7 @@ static void setup_post(Conn *conn, HttpReq *r, Fields *f) {
             if (home[0]) setting_set("household.name", home);
         }
         db_commit();
+        if (id) auth_setup_state_write(); /* (the card's note: used up) */
         if (!id) err = "name";
     }
     if (err) {

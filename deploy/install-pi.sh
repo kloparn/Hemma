@@ -36,14 +36,21 @@ fi
 install -m 755 "$BIN" /opt/hemma/hemma
 install -d -o root -g hemma -m 750 /etc/hemma
 install -m 644 "$HERE/hemma.service" /etc/systemd/system/hemma.service
+# the setup code on the memory card and the console, for a household without a terminal (issue #72; a Pi only)
+SETUP_UNITS=0
+if [ -f "$HERE/hemma-setup.service" ] && [ -f "$HERE/hemma-setup.path" ]; then
+    install -m 644 "$HERE/hemma-setup.service" "$HERE/hemma-setup.path" /etc/systemd/system/
+    install -d -m 755 /etc/issue.d
+    SETUP_UNITS=1
+fi
 
 # media folders for uploads: writable for the hemma user + allowed by the service
 if [ $# -gt 0 ]; then
     RW=""
     for DIR in "$@"; do
         case "$DIR" in /*) ;; *) echo "media folders need absolute paths: $DIR" >&2; exit 1 ;; esac
-        # (", \ and % mean something in the systemd drop-in these paths go into)
-        case "$DIR" in *'"'* | *'\'* | *%*) echo "unsupported character (\", \\ or %) in: $DIR" >&2; exit 1 ;; esac
+        # (", \ and % mean something in the systemd drop-in these paths go into; ; and # in the settings line)
+        case "$DIR" in *'"'* | *'\'* | *%* | *';'* | *'#'*) echo "unsupported character (\", \\, %, ; or #) in: $DIR" >&2; exit 1 ;; esac
         [ -d "$DIR" ] || { echo "no folder at $DIR (mount the disk first)" >&2; exit 1; }
         FS=$(findmnt -no FSTYPE --target "$DIR" 2>/dev/null || echo unknown)
         case "$FS" in
@@ -64,6 +71,7 @@ if [ $# -gt 0 ]; then
             ;;
         esac
         RW="$RW \"-$DIR\""
+        MEDIA="${MEDIA:+$MEDIA;}$DIR"
     done
     install -d -m 755 /etc/systemd/system/hemma.service.d
     printf '# Media library folders Hemma may write to (uploads). Written by install-pi.sh.\n[Service]\nReadWritePaths=%s\n' \
@@ -110,6 +118,16 @@ EOF
 fi
 chown root:hemma "$ENVF"
 chmod 640 "$ENVF"
+# the media folders, where Hemma reads them too: Library settings offers them with one tap (issue #27)
+if [ -n "${MEDIA:-}" ]; then
+    sed -i '/^# The media folders given to install-pi.sh/d; /^[[:space:]]*HEMMA_MEDIA[[:space:]]*=/d' "$ENVF"
+    printf '# The media folders given to install-pi.sh: Library settings offers them with one tap.\nHEMMA_MEDIA=%s\n' \
+        "$MEDIA" >>"$ENVF"
+fi
+if [ "$SETUP_UNITS" -eq 1 ]; then
+    systemctl enable hemma-setup.service >/dev/null 2>&1 || true
+    systemctl enable --now hemma-setup.path >/dev/null 2>&1 || true
+fi
 
 # ---- start it (again), and wait until it answers -----------------------------------------
 setting() { # $1's value as Hemma reads it: the first line with a value, without quotes or " # note"
@@ -186,6 +204,9 @@ if [ "$UP" -ne 1 ]; then
     exit 1
 fi
 
+# the memory card's note as Hemma has it now (afterwards hemma-setup.path follows every change)
+[ "$SETUP_UNITS" -eq 1 ] && { systemctl start hemma-setup.service >/dev/null 2>&1 || true; }
+
 # ---- it's running: where to open it, what to do next, and the handy commands ---------------
 lan_ips() { # this machine's IPv4 addresses on the network (no loopback)
     { hostname -I 2>/dev/null || ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}'; } |
@@ -217,6 +238,10 @@ if [ -n "$SETUP" ]; then
     echo
     echo "         $SETUP"
     echo
+    if [ -f /boot/firmware/HEMMA-SETUP.txt ] || [ -f /boot/HEMMA-SETUP.txt ]; then
+        echo "     (also in HEMMA-SETUP.txt on the memory card: any computer can read it there)"
+        echo
+    fi
     n=$((n + 1))
     echo "  $n. Save the recovery codes Hemma shows you afterwards."
     n=$((n + 1))

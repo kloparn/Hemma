@@ -32,6 +32,9 @@ the sign-in page. Fill in:
 - **Setup code**, the one-time code from where you installed Hemma, like `7KQ4-M2XP`. It
   proves you're the person who installed it, not just anyone on your Wi-Fi who opened the
   page first. Where to find it:
+  - **Raspberry Pi**: the file `HEMMA-SETUP.txt` on its memory card (shut the Pi down, put the
+    card in any computer, open the file, put the card back), or the Pi's screen if one is
+    plugged in.
   - **Raspberry Pi or Linux (installer)**: the installer's last lines; also
     `sudo grep SETUP /etc/hemma/hemma.env`, or `sudo journalctl -u hemma | grep "setup code"`.
   - **Windows or Mac**: Hemma's own window (or its log) right after it starts:

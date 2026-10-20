@@ -4,6 +4,34 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 0.20.0 (2026-10-20)
+
+Easier setup: no paths typed from memory, and the setup code without a terminal (#27, #72).
+
+### New
+
+- **Your media folders, one tap.** The installer now notes the folders you give it
+  (`sudo sh install-pi.sh ./hemma-pi64 /mnt/media`) in the settings file as `HEMMA_MEDIA`. Until
+  they're in the library, Watch offers them as buttons - **Use /mnt/media** - and Library settings
+  as **+** buttons under the folder box. While the library has no folders yet, the disks Hemma can
+  see are offered too, with their size: under `/mnt` and `/media` on Linux, `/Volumes` on a Mac,
+  the other drives on Windows. Typing a folder still works.
+- **The setup code on the memory card.** On a Raspberry Pi, the welcome page's code is also in
+  `HEMMA-SETUP.txt` on the card: shut the Pi down, put the card in any computer and open the file.
+  A screen plugged into the Pi shows it on the login screen. As soon as the admin exists, both say
+  the code is used up. The welcome page says where to look. (A small helper, `hemma-setup`, writes
+  them - root's places; it takes nothing from Hemma but "the code" or "done".) **Needs an installer
+  run** (`sudo sh install-pi.sh ./hemma-pi64`): copying just the program leaves the helper out.
+
+### For developers
+
+- `HEMMA_MEDIA` (";" between folders); `plat_mounts()` / `plat_parse_mounts()` (core/plat);
+  media's `suggestions()` + action `media.roots_add`.
+- `hemma --setup-note [--boot DIR] [--issue FILE]` (auth_setup_note_cli); Hemma keeps
+  `<data>/hemma.setup` ("open XXXX-XXXX" / "done", auth_setup_state_write at start and after the
+  welcome page); deploy/hemma-setup.service (root oneshot, at boot) + hemma-setup.path
+  (PathModified on that file); both in the Pi/Linux downloads.
+
 ## 0.19.0 (2026-10-19)
 
 Uploads that convert on your computer no longer fill its disk.

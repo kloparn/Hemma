@@ -45,10 +45,10 @@ pack() {
 pi='Install (on the Pi):  sudo sh install-pi.sh ./PROG
 Media folders the uploads may write to can follow: sudo sh install-pi.sh ./PROG /srv/media
 It keeps the program it replaces as /opt/hemma/hemma.prev (going back: docs/raspberry-pi.md).'
-pack hemma-pi64 hemma-pi64 "$(echo "$pi" | sed 's/PROG/hemma-pi64/g')" deploy/install-pi.sh deploy/hemma.service
-pack hemma-pi32 hemma-pi32 "$(echo "$pi" | sed 's/PROG/hemma-pi32/g')" deploy/install-pi.sh deploy/hemma.service
+pack hemma-pi64 hemma-pi64 "$(echo "$pi" | sed 's/PROG/hemma-pi64/g')" deploy/install-pi.sh deploy/hemma.service deploy/hemma-setup.service deploy/hemma-setup.path
+pack hemma-pi32 hemma-pi32 "$(echo "$pi" | sed 's/PROG/hemma-pi32/g')" deploy/install-pi.sh deploy/hemma.service deploy/hemma-setup.service deploy/hemma-setup.path
 pack hemma-linux-x64 hemma-linux "$(echo "$pi" | sed 's/PROG/hemma-linux/g; s/on the Pi/any systemd Linux/')" \
-    deploy/install-pi.sh deploy/hemma.service
+    deploy/install-pi.sh deploy/hemma.service deploy/hemma-setup.service deploy/hemma-setup.path
 mac='Try it:  ./PROG --demo   (a made-up household), or just ./PROG and open http://localhost:8080
 macOS blocks programs from the internet that Apple has not checked. Once:
   xattr -d com.apple.quarantine PROG      (or right-click it in Finder -> Open)

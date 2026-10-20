@@ -5,6 +5,7 @@
 #include "auth.h"
 #include "db.h"
 #include "env.h"
+#include "plat.h"
 #include "server.h"
 
 static int with_login(const char *name, const char *user, const char *pw, int role) {
@@ -662,4 +663,95 @@ TEST(auth_setup_code_from_the_settings_file) {
     CHECK(made[4] == '-');
     plat_setenv("HEMMA_SETUP_CODE", "", true);
     th_halt();
+}
+
+/* ------------------------------------------- the setup note (issue #72) */
+
+static const char *read_text(const char *path) {
+    static Buf b;
+    buf_reset(&b);
+    if (!file_read_all(path, &b, 1 << 16)) return "";
+    return buf_cstr(&b);
+}
+
+/* What the root helper takes from Hemma's folder: two shapes, nothing else (it runs as root). */
+TEST(auth_setup_note_takes_two_shapes_only) {
+    char code[16];
+    CHECK_INT(auth_setup_state_parse("open 7KQ4-M2XP\n", code), SETUP_NOTE_OPEN);
+    CHECK_STR(code, "7KQ4-M2XP");
+    CHECK_INT(auth_setup_state_parse("done\n", code), SETUP_NOTE_DONE);
+    CHECK_STR(code, "");
+    CHECK_INT(auth_setup_state_parse("done", code), SETUP_NOTE_DONE);
+    CHECK_INT(auth_setup_state_parse("open 7kq4-m2xp", code), SETUP_NOTE_NONE); /* (exactly as Hemma writes it) */
+    CHECK_INT(auth_setup_state_parse("open 7KQ4M2XP", code), SETUP_NOTE_NONE);
+    CHECK_INT(auth_setup_state_parse("open 7KQ4-M2X1", code), SETUP_NOTE_NONE); /* (1 isn't in the alphabet) */
+    CHECK_INT(auth_setup_state_parse("open 7KQ4-M2XP\nmore", code), SETUP_NOTE_NONE);
+    CHECK_INT(auth_setup_state_parse("root:x:0:0:root:/root:/bin/bash", code), SETUP_NOTE_NONE);
+    CHECK_INT(auth_setup_state_parse("", code), SETUP_NOTE_NONE);
+    CHECK_INT(auth_setup_state_parse(NULL, code), SETUP_NOTE_NONE);
+}
+
+TEST(auth_setup_note_follows_the_welcome_page) {
+    th_boot();
+    auth_configure("pepper", 1000);
+    const char *data = app_config()->data_dir;
+    char state[700], boot[600], issue[700], note[700];
+    snprintf(state, sizeof state, "%s/%s", data, SETUP_STATE_FILE);
+    auth_setup_state_write(); /* (as at a start) */
+    char want[32];
+    snprintf(want, sizeof want, "open %s\n", auth_setup_code());
+    CHECK_STR(read_text(state), want);
+    /* the helper's note on a stand-in "card" */
+    str_copy(boot, sizeof boot, test_tmpdir());
+    snprintf(issue, sizeof issue, "%s/hemma.issue", boot);
+    snprintf(note, sizeof note, "%s/%s", boot, SETUP_NOTE_FILE);
+    Buf out = {0};
+    CHECK_INT(auth_setup_note_cli(data, boot, issue, &out), 0);
+    CHECK_HAS(buf_cstr(&out), "Wrote");
+    const char *t = read_text(note);
+    CHECK_HAS(t, "HEMMA - SETTING UP");
+    CHECK_HAS(t, auth_setup_code());
+    CHECK_HAS(t, "\r\n"); /* (Notepad) */
+    CHECK_HAS(read_text(issue), "http://\\4"); /* (agetty puts this machine's address there) */
+    CHECK_HAS(read_text(issue), auth_setup_code());
+    /* the admin exists: used up */
+    with_login("Alex", "alex", "long enough pw", ROLE_ADMIN);
+    setting_set("auth.bootstrapped", "1");
+    auth_setup_state_write();
+    CHECK_STR(read_text(state), "done\n");
+    buf_reset(&out);
+    auth_setup_note_cli(data, boot, issue, &out);
+    t = read_text(note);
+    CHECK_HAS(t, "HEMMA IS SET UP");
+    CHECK_HAS(t, "used up");
+    CHECK(!strstr(read_text(issue), "setup code"));
+    /* anything else in Hemma's file: nothing written over what's there */
+    CHECK(file_write_atomic(state, "open ../../etc/shadow\n", 22));
+    buf_reset(&out);
+    auth_setup_note_cli(data, boot, issue, &out);
+    CHECK_HAS(buf_cstr(&out), "nothing written");
+    CHECK_HAS(read_text(note), "HEMMA IS SET UP");
+    /* before Hemma's first start (no file of its own): the settings file's code */
+    file_remove(state);
+    plat_setenv("HEMMA_SETUP_CODE", "abcd-efgh", true);
+    buf_reset(&out);
+    auth_setup_note_cli(data, boot, issue, &out);
+    CHECK_HAS(read_text(note), "ABCD-EFGH");
+    plat_setenv("HEMMA_SETUP_CODE", "", true);
+    buf_free(&out);
+    th_halt();
+}
+
+/* The note's text: the .local name only when something answers for it, else the number; another port goes along. */
+TEST(auth_setup_note_text_names_the_way_in) {
+    Buf b = {0};
+    auth_setup_note_text(&b, SETUP_NOTE_OPEN, "7KQ4-M2XP", "smarthome", "192.168.1.50", 80);
+    CHECK_HAS(buf_cstr(&b), "http://smarthome.local\r\n       (or http://192.168.1.50)");
+    buf_reset(&b);
+    auth_setup_note_text(&b, SETUP_NOTE_OPEN, "7KQ4-M2XP", "", "192.168.1.50", 8080);
+    CHECK_HAS(buf_cstr(&b), "http://192.168.1.50:8080");
+    buf_reset(&b);
+    auth_setup_note_text(&b, SETUP_NOTE_DONE, "", "", "", 80);
+    CHECK_HAS(buf_cstr(&b), "the Pi's number from your router");
+    buf_free(&b);
 }
