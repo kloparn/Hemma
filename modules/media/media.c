@@ -13,6 +13,7 @@
 #include "room.h"
 #include "upload.h"
 #include "health.h"
+#include "drives.h"
 
 static int64_t g_disks_at; /* when the disks under the library were last measured (see "disk space") */
 
@@ -525,6 +526,10 @@ static bool library_empty_states(Ctx *c, Buf *b) {
         ui_empty(b, "🎬", "Point Hemma at your movies",
                  "Tell it which folders hold your movies and series — the drive on the Pi, a mounted share, "
                  "or a folder on this computer.");
+        if (media_drives_offer(c, b)) { /* (issue #74: a USB disk just plugged in) */
+            buf_puts(b, "<p class=\"media-center\"><a href=\"/media/settings\">Another folder</a></p>");
+            return true;
+        }
         Suggest s[4];
         int ns = suggestions(s, countof(s)); /* (issue #27: one tap, not a path typed from memory) */
         if (ns) {
@@ -1427,6 +1432,7 @@ static void page_settings(Ctx *c, Buf *b) {
         buf_puts(b, ".</p>");
     }
     ui_card_end(b);
+    media_drives_card(c, b); /* (issue #74: USB disks - new ones, and the library's own) */
 
     if (is_admin(c) && ix->nroots) {
         ui_card(b, "Add videos", "/media/upload", "Upload");
@@ -1496,6 +1502,7 @@ static void page_settings(Ctx *c, Buf *b) {
                 "itself.</li></ul></details>");
     ui_card_end(b);
     buf_puts(b, "</div>");
+    media_drives_dialog(c, b); /* (?format=<disk>) */
 }
 
 static void page(Ctx *c, Buf *b) {
@@ -1840,6 +1847,54 @@ static void act_roots(Ctx *c, Fields *f) {
     save_roots(c, fields_str(f, "roots"));
 }
 
+/* A folder more or less from outside an action (a movie disk the disk helper mounted or forgot, drives.c):
+   true = the folders changed (and a scan starts). */
+bool media_root_add(const char *dir) {
+    char roots[MEDIA_MAX_ROOTS][300];
+    int n = media_roots(roots, MEDIA_MAX_ROOTS);
+    if (n >= MEDIA_MAX_ROOTS || !path_is_dir(dir)) return false;
+    Buf all = {0};
+    for (int i = 0; i < n; i++) {
+        if (same_folder(roots[i], dir)) {
+            buf_free(&all);
+            return false;
+        }
+        buf_printf(&all, "%s\n", roots[i]);
+    }
+    buf_puts(&all, dir);
+    setting_set("media.roots", buf_cstr(&all));
+    buf_free(&all);
+    g_disks_at = 0;
+    media_health_reset();
+    if (app_testing()) media_scan_sync();
+    else media_scan_start();
+    return true;
+}
+
+bool media_root_drop(const char *dir) {
+    char roots[MEDIA_MAX_ROOTS][300];
+    int n = media_roots(roots, MEDIA_MAX_ROOTS);
+    Buf keep = {0};
+    bool dropped = false;
+    for (int i = 0; i < n; i++) {
+        if (same_folder(roots[i], dir)) {
+            dropped = true;
+            continue;
+        }
+        if (keep.len) buf_putc(&keep, '\n');
+        buf_puts(&keep, roots[i]);
+    }
+    if (dropped) {
+        setting_set("media.roots", keep.len ? buf_cstr(&keep) : "");
+        g_disks_at = 0;
+        media_health_reset();
+        if (app_testing()) media_scan_sync();
+        else media_scan_start();
+    }
+    buf_free(&keep);
+    return dropped;
+}
+
 /* One folder more (a suggestion's one tap, issue #27) - the ones there stay. */
 static void act_roots_add(Ctx *c, Fields *f) {
     if (!is_admin(c)) {
@@ -1921,6 +1976,8 @@ static const Action actions[] = {
     {"media.drop_originals", act_drop_originals}, {"media.drop_auto", act_drop_auto},
     {"media.rescanners", act_rescanners}, {"media.parts_remove", act_parts_remove},
     {"media.history_forget", act_history_forget},
+    {"media.drive_use", media_drives_act_use}, {"media.drive_format", media_drives_act_format},
+    {"media.drive_forget", media_drives_act_forget}, {"media.drive_seen", media_drives_act_seen},
     {0},
 };
 
@@ -1953,9 +2010,11 @@ static void start(void) {
     media_lib_start();
     media_health_reset();
     g_disks_at = 0; /* (a start measures afresh: a test before this one may have measured other folders) */
+    media_drives_start(); /* (after the library: a disk the helper just mounted becomes a folder of it) */
 }
 
 static void stop(void) {
+    media_drives_stop();
     media_stream_stop();
     upload_stop();
     convert_stop();
@@ -2024,6 +2083,7 @@ static void tick(int64_t now) {
     upload_tick(now);
     convert_tick(now);
     media_health_tick(now);
+    media_drives_tick(now);
     if (!g_disks_at || now - g_disks_at >= 30000) disks_refresh(now);
 }
 

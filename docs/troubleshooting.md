@@ -158,9 +158,16 @@ It only can on the home Wi-Fi (Hemma isn't on the internet), and phones choose w
 (an iPhone: Settings → Calendar → Accounts → Fetch New Data). Was a new link made, or the link
 turned off? Then add the new one under **Household → Your calendar on your phone**.
 
-**A library folder is missing.**
-The disk isn't plugged in or mounted. Plug it in (on a Pi, check `/etc/fstab` so it's
-mounted at every start), then rescan in **Watch → Library settings**.
+**A library folder is missing**, or **the movie disk is missing**.
+The disk isn't plugged in or mounted. A disk Hemma set up (**Use it for movies**) is mounted
+again by itself once it's plugged back in. One set up by hand: plug it in (on a Pi, check
+`/etc/fstab` so it's mounted at every start), then rescan in **Watch → Library settings**.
+
+**A new disk doesn't show up under Library settings → Disks.**
+Hemma offers USB disks only, not one it can see mounted already (then add its folder as a
+library folder), and not the memory card. `sudo hemma-disks` lists what the Pi sees. A disk
+with an Apple (APFS/HFS+) or encrypted file system can't be used; one with nothing on it is
+offered for formatting.
 
 ## A damaged database
 

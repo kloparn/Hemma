@@ -409,3 +409,12 @@
 .media-suggest .chip small { color: var(--muted); font-weight: 500; }
 .media-suggest-big { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 4px 0 10px; }
 .media-suggest-big .btn .media-code, .media-suggest .chip .media-code { background: none; color: inherit; padding: 0; font-weight: 650; }
+
+/* USB disks (issue #74) */
+.media-drives .row { align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.media-drives small { display: block; overflow-wrap: anywhere; }
+.media-drives form { margin: 0; }
+.media-drive-gone b { color: var(--warn); }
+.media-drive-note { margin-bottom: 12px; }
+.media-drive-note p { margin: 0 0 8px; }
+.media-drive-bad { border-color: var(--warn); }

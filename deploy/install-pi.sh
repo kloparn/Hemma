@@ -58,6 +58,17 @@ if [ -f "$HERE/hemma-upgrade" ] && [ -f "$HERE/hemma-update.service" ] && [ -f "
     install -d -o root -g hemma -m 750 /var/lib/hemma-update
     UPDATE_UNITS=1
 fi
+# movie disks (issue #74): Hemma asks in /var/lib/hemma/disks, the root helper answers in /var/lib/hemma-disks
+DISK_UNITS=0
+if [ -f "$HERE/hemma-disks" ] && [ -f "$HERE/hemma-disks.service" ] && [ -f "$HERE/hemma-disks.path" ]; then
+    install -d -m 755 /usr/local/sbin
+    install -m 755 "$HERE/hemma-disks" /usr/local/sbin/.hemma-disks.new
+    mv -f /usr/local/sbin/.hemma-disks.new /usr/local/sbin/hemma-disks
+    install -m 644 "$HERE/hemma-disks.service" "$HERE/hemma-disks.path" /etc/systemd/system/
+    install -d -o hemma -g hemma -m 750 /var/lib/hemma/disks
+    install -d -o root -g hemma -m 750 /var/lib/hemma-disks
+    DISK_UNITS=1
+fi
 
 # media folders for uploads: writable for the hemma user + allowed by the service
 if [ $# -gt 0 ]; then
@@ -144,6 +155,7 @@ if [ "$SETUP_UNITS" -eq 1 ]; then
     systemctl enable --now hemma-setup.path >/dev/null 2>&1 || true
 fi
 [ "$UPDATE_UNITS" -eq 0 ] || systemctl enable --now hemma-update.path >/dev/null 2>&1 || true
+[ "$DISK_UNITS" -eq 0 ] || systemctl enable --now hemma-disks.path >/dev/null 2>&1 || true
 
 # ---- start it (again), and wait until it answers -----------------------------------------
 setting() { # $1's value as Hemma reads it: the first line with a value, without quotes or " # note"
@@ -281,6 +293,7 @@ echo "  sudo systemctl restart hemma    restart it, e.g. after changing the sett
 echo "  sudo nano $ENVF   the settings"
 if [ "$UPDATE_UNITS" -eq 1 ]; then
     echo "  sudo hemma-upgrade              update to the newest release (or: System -> Updates in Hemma)"
+    [ "$DISK_UNITS" -eq 0 ] || echo "  sudo hemma-disks                the USB disks (a new one: Watch -> Library settings in Hemma)"
 else
     echo "  Update: copy the new program over, then run this installer again with it."
 fi

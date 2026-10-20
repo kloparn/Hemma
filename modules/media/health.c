@@ -13,6 +13,7 @@
 #include "../../core/plat.h"
 #include "convert.h"
 #include "room.h"
+#include "drives.h"
 
 #define FOLDERS_EVERY_MS 30000
 #define PROBE_EVERY_MS (10 * 60000)
@@ -106,6 +107,7 @@ static bool browser_converter(void) { /* av.wasm + its worker baked into this bi
 }
 
 void media_health(Ctx *c, Health *h) {
+    media_drives_health(h); /* (issue #74: a movie disk missing, a new one plugged in) */
     int64_t now = now_ms();
     HS.wanted_at = now ? now : 1;
     /* tests have no tick: they look at the folders (temporary ones) right away */

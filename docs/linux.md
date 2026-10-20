@@ -153,7 +153,8 @@ sudo setfacl -m u:hemma:x /home/you
 sudo setfacl -R -m u:hemma:rX /home/you/Videos
 ```
 
-**A USB disk** is mounted the same way as on a Pi; see
+**A USB disk**: plug it in and use it from **Watch → Library settings → Disks** (installed
+with the installer, 0.22.0 or newer), or mount it by hand as on a Pi; see
 [raspberry-pi.md](raspberry-pi.md#7-a-usb-disk-for-movies).
 
 **`.local` names** need an mDNS service. Most desktops have one; on a server, install it:

@@ -1,0 +1,393 @@
+#!/bin/sh
+# deploy/hemma-disks — movie disks for Hemma (issue #74): mount one, let Hemma write to it, tell Hemma.
+# install-pi.sh puts it in /usr/local/sbin. Run it as root:
+#
+#   sudo hemma-disks                  the USB disks, and Hemma's own
+#   sudo hemma-disks use UUID         mount it for movies at /mnt/<its name>, now and at every start
+#   sudo hemma-disks format DISK      an EMPTY USB disk only (sdb ...): a new ext4 file system, then use it
+#   sudo hemma-disks forget UUID      stop mounting it at start (its files stay as they are)
+#
+# Hemma's Library settings ask through hemma-disks.path: Hemma writes a line into /var/lib/hemma/disks/
+# request - "use <UUID> <nonce>", "format <disk> <bytes> <nonce>" or "forget <UUID> <nonce>" - and
+# hemma-disks.service runs this as `hemma-disks --from-hemma`. Answers in /var/lib/hemma-disks (root's;
+# Hemma may read it): result = "<state> <unix> <uuid|-> <path|-> <words>", state working | used |
+# forgotten | refused | failed; disks = Hemma's disks, "<uuid> <path> <fstype> <label>" a line. Hemma's
+# folder is only ever read, as Hemma's user.
+#
+# What it does: a disk goes into /etc/fstab by its UUID with nofail and a 10-second wait, so a missing
+# disk never stops the machine starting - two lines, the first "# hemma-disks: <name>", after a copy of
+# the file (/etc/fstab.before-hemma-disks-<when>, the newest 3 kept) and a check of the new line. Hemma
+# may write there: hemma.service.d/disks.conf (Wants/After the disk, ReadWritePaths), never the
+# installer's media.conf. ext4 and the like get Hemma's ownership (an empty disk) or an ACL (one with
+# files); exFAT, FAT and NTFS have no owners, so the mount says hemma. Then Hemma restarts to reach it.
+#
+# What it never does: touch the disk that holds /, /boot or swap, a disk that isn't on USB, anything
+# mounted, or a disk already in /etc/fstab by hand; format a disk on which anything has a file system.
+set -eu
+umask 022
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+DATA=/var/lib/hemma
+ASK=$DATA/disks               # Hemma's: request
+ANS=/var/lib/hemma-disks      # ours: result, disks, handled
+FSTAB=/etc/fstab
+DROPIN=/etc/systemd/system/hemma.service.d/disks.conf
+MARK='# hemma-disks:'
+ENVF=/etc/hemma/hemma.env
+
+FROM_HEMMA=0 WHY="" DEV="" DISK="" FSTYPE="" MP="" LABEL="" UUID="" WORK=""
+
+usage() {
+    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+    exit "${1:-2}"
+}
+say() { printf '%s\n' "$*"; }
+now() { date +%s; }
+
+answer() { # name line - written beside it, then renamed over it
+    [ -d "$ANS" ] || return 0
+    printf '%s\n' "$2" >"$ANS/.$1.new" && chmod 644 "$ANS/.$1.new" && mv -f "$ANS/.$1.new" "$ANS/$1"
+}
+result() { # state uuid path words
+    answer result "$1 $(now) ${2:--} ${3:--} $(printf '%s' "$4" | tr '\n\r' '  ' | cut -c1-300)"
+}
+as_hemma() {
+    if command -v setpriv >/dev/null 2>&1; then
+        timeout 30 setpriv --reuid=hemma --regid=hemma --clear-groups -- "$@"
+    else
+        timeout 30 runuser -u hemma -- "$@"
+    fi
+}
+
+# ---- what's what -------------------------------------------------------------------------------
+disk_of() { # a partition's disk (sda1 -> sda); a whole-disk file system is its own
+    d=$(lsblk -ndo PKNAME "$1" 2>/dev/null | head -n 1 | tr -d ' ')
+    [ -n "$d" ] && printf '%s\n' "$d" || basename "$1"
+}
+
+system_disks() { # the disks holding /, /boot, swap - never ours to touch
+    for m in / /boot /boot/firmware /boot/efi /usr /var /home; do
+        s=$(findmnt -no SOURCE "$m" 2>/dev/null || true)
+        case $s in /dev/*) disk_of "$s" ;; esac
+    done
+    swapon --show=NAME --noheadings 2>/dev/null | while read -r s; do
+        case $s in /dev/*) disk_of "$s" ;; esac
+    done
+}
+
+is_system() { system_disks | grep -qx "$1"; }
+
+on_usb() { [ "$(lsblk -ndo TRAN "/dev/$1" 2>/dev/null | tr -d ' ')" = usb ]; }
+
+mounted_where() { findmnt -rno TARGET -S "$1" 2>/dev/null | head -n 1; }
+
+hemma_uid() { id -u hemma; }
+hemma_gid() { id -g hemma; }
+
+# Hemma's disks from /etc/fstab: the line after each mark - "<uuid> <path> <fstype> <label>"
+mine() {
+    awk -v mark="$MARK" '
+        index($0, mark) == 1 { label = substr($0, length(mark) + 2); sub(/ \(added [^)]*\)$/, "", label); want = 1; next }
+        want && $1 ~ /^UUID=/ { u = substr($1, 6); t = $3; if (t == "ntfs3" || t == "ntfs-3g") t = "ntfs"
+                                if (t == "exfat-fuse") t = "exfat"
+                                print u, $2, t, label }
+        { want = 0 }' "$FSTAB"
+}
+mine_path() { mine | awk -v u="$1" '$1 == u { print $2; exit }'; }
+
+# a folder name from a label: lower case, letters, digits and dashes
+slug() {
+    s=$(printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9]\{1,\}/-/g; s/^-*//; s/-*$//' | cut -c1-24)
+    printf '%s\n' "${s:-movies}"
+}
+
+free_mount_point() { # /mnt/<name>, or <name>-2 ... when that's taken
+    base=/mnt/$(slug "$1")
+    p=$base
+    i=2
+    while [ -e "$p" ] && { mountpoint -q "$p" || [ -n "$(ls -A "$p" 2>/dev/null)" ] || grep -q "[[:space:]]$p[[:space:]]" "$FSTAB"; }; do
+        p=$base-$i
+        i=$((i + 1))
+    done
+    printf '%s\n' "$p"
+}
+
+# The mount's type and options for a file system (-> TYPE, OPTS, PASS), or WHY
+mount_kind() {
+    U=$(hemma_uid) G=$(hemma_gid)
+    BASE="defaults,nofail,noatime,x-systemd.device-timeout=10s"
+    OWNED="uid=$U,gid=$G,umask=0022"
+    case $1 in
+    ext4 | ext3 | ext2) TYPE=$1 OPTS=$BASE PASS=2 ;;
+    xfs | btrfs) TYPE=$1 OPTS=$BASE PASS=0 ;;
+    vfat) TYPE=vfat OPTS="$BASE,$OWNED,utf8" PASS=0 ;;
+    exfat)
+        if modprobe -n -q exfat 2>/dev/null || grep -qw exfat /proc/filesystems; then TYPE=exfat
+        elif command -v mount.exfat-fuse >/dev/null 2>&1; then TYPE=exfat-fuse
+        else WHY="exFAT needs a driver this system lacks (sudo apt install exfat-fuse)" && return 1; fi
+        OPTS="$BASE,$OWNED" PASS=0 ;;
+    ntfs)
+        if modprobe -n -q ntfs3 2>/dev/null || grep -qw ntfs3 /proc/filesystems; then TYPE=ntfs3
+        elif command -v ntfs-3g >/dev/null 2>&1; then TYPE=ntfs-3g
+        else WHY="NTFS needs a driver this system lacks (sudo apt install ntfs-3g)" && return 1; fi
+        OPTS="$BASE,$OWNED" PASS=0 ;;
+    *) WHY="Hemma can't keep movies on a ${1:-unknown} file system (ext4, exFAT, NTFS and FAT work)" && return 1 ;;
+    esac
+}
+
+# ---- the changes ---------------------------------------------------------------------------------
+fstab_backup() {
+    stamp=$(date '+%Y-%m-%d-%H%M%S')
+    cp -p "$FSTAB" "$FSTAB.before-hemma-disks-$stamp"
+    ls -1 "$FSTAB".before-hemma-disks-* 2>/dev/null | sort -r | tail -n +4 | while read -r old; do rm -f "$old"; done
+    BACKUP=$FSTAB.before-hemma-disks-$stamp
+}
+
+fstab_replace() { # a new whole file, renamed into place
+    install -m 644 "$1" "$FSTAB.hemma-disks.new"
+    mv -f "$FSTAB.hemma-disks.new" "$FSTAB"
+}
+
+write_dropin() { # every disk of Hemma's: mounted before Hemma starts, and Hemma may write to it
+    list=$(mine)
+    if [ -z "$list" ]; then
+        rm -f "$DROPIN"
+        return 0
+    fi
+    install -d -m 755 "$(dirname "$DROPIN")"
+    {
+        echo "# Written by hemma-disks: Hemma's movie disks are mounted before it starts (a missing one"
+        echo "# delays it 10 s at most) and Hemma may write to them. Change them in Hemma (Watch -> Library"
+        echo "# settings) or with hemma-disks, not here."
+        echo "[Unit]"
+        printf '%s\n' "$list" | while read -r u p t l; do
+            unit=$(systemd-escape -p --suffix=mount "$p")
+            echo "Wants=$unit"
+            echo "After=$unit"
+        done
+        echo "[Service]"
+        printf '%s\n' "$list" | while read -r u p t l; do echo "ReadWritePaths=-$p"; done
+    } >"$DROPIN.new"
+    mv -f "$DROPIN.new" "$DROPIN"
+}
+
+write_list() { answer disks "$(mine)"; }
+
+# Mounted by systemd (from /etc/fstab), so it's the whole system's mount - not one inside a service's
+# own namespace - and it's the same mount the next start makes.
+mount_it() {
+    systemctl daemon-reload
+    systemctl start "$(systemd-escape -p --suffix=mount "$1")" 2>/dev/null && mountpoint -q "$1"
+}
+
+restart_hemma() { systemctl restart hemma >/dev/null 2>&1 9>&- || true; }
+
+# Mount UUID for movies (or, one of Hemma's that came back, mount it again)
+use() {
+    printf '%s\n' "$1" | grep -Eqx '[A-Za-z0-9-]{4,64}' || { WHY="that isn't a disk's UUID" && return 1; }
+    UUID=$1
+    old=$(mine_path "$UUID")
+    DEV=$(blkid -U "$UUID" 2>/dev/null || true)
+    [ -n "$DEV" ] && [ -b "$DEV" ] || { WHY="no disk with that UUID is plugged in" && return 1; }
+    DISK=$(disk_of "$DEV")
+    is_system "$DISK" && { WHY="that's the disk the system runs from" && return 1; }
+    on_usb "$DISK" || { WHY="only USB disks are set up from here" && return 1; }
+    if [ -n "$old" ]; then # one of Hemma's, back again
+        at=$(mounted_where "$DEV")
+        if [ -z "$at" ]; then
+            mount_it "$old" || { WHY="it didn't mount (the system log says why: journalctl -b | grep -i mount)" && return 1; }
+        fi
+        MP=$old
+        return 0
+    fi
+    at=$(mounted_where "$DEV")
+    [ -z "$at" ] || { WHY="it's mounted at $at already - add that folder in Library settings instead" && return 1; }
+    LABEL=$(lsblk -ndo LABEL "$DEV" 2>/dev/null | head -n 1)
+    if grep -Ev '^[[:space:]]*#' "$FSTAB" | grep -Eq "(UUID=$UUID|$DEV)([[:space:]]|$)" ||
+        { [ -n "$LABEL" ] && grep -Ev '^[[:space:]]*#' "$FSTAB" | grep -Fq "LABEL=$LABEL"; }; then
+        WHY="it's in /etc/fstab already (set up by hand)"
+        return 1
+    fi
+    FSTYPE=$(lsblk -ndo FSTYPE "$DEV" 2>/dev/null | head -n 1)
+    mount_kind "$FSTYPE" || return 1
+    model=$(lsblk -ndo MODEL "/dev/$DISK" 2>/dev/null | head -n 1 | sed 's/[[:space:]]*$//')
+    name=${LABEL:-${model:-movies}}
+    name=$(printf '%s' "$name" | tr -d '\n\r' | tr -c 'A-Za-z0-9 ._()+-' ' ' | cut -c1-60)
+    MP=$(free_mount_point "${LABEL:-movies}")
+
+    fstab_backup
+    line="UUID=$UUID  $MP  $TYPE  $OPTS  0  $PASS"
+    printf '%s\n' "$line" >"$WORK/one"
+    install -d -m 755 "$MP"
+    # (an error that isn't "ntfs3 does not match with on-disk ntfs" - the driver's name, not a mistake)
+    if command -v findmnt >/dev/null 2>&1 && ! findmnt --verify --tab-file "$WORK/one" >"$WORK/verify" 2>&1 &&
+        grep -E '\[E\]|parse error' "$WORK/verify" | grep -Ev 'does not match with on-disk|0 parse errors' | grep -q .; then
+        WHY="the new /etc/fstab line didn't check out: $(grep -E '\[E\]' "$WORK/verify" | head -n 1 | sed 's/^[[:space:]]*//')"
+        rmdir "$MP" 2>/dev/null || true
+        return 1
+    fi
+    { cat "$FSTAB"; printf '%s %s (added %s)\n%s\n' "$MARK" "$name" "$(date '+%Y-%m-%d')" "$line"; } >"$WORK/fstab"
+    fstab_replace "$WORK/fstab"
+    if ! mount_it "$MP"; then
+        fstab_replace "$BACKUP"
+        systemctl daemon-reload
+        rmdir "$MP" 2>/dev/null || true
+        WHY="it didn't mount (the system log says why: journalctl -b | grep -i mount); /etc/fstab is as it was"
+        return 1
+    fi
+    case $FSTYPE in
+    ext4 | ext3 | ext2 | xfs | btrfs)
+        if [ -z "$(ls -A "$MP" | grep -vx 'lost+found')" ]; then # empty: Hemma's
+            chown hemma:hemma "$MP"
+        elif command -v setfacl >/dev/null 2>&1; then # files of someone's: Hemma may write too
+            setfacl -R -m u:hemma:rwX -m d:u:hemma:rwX "$MP" || true
+        else
+            chgrp hemma "$MP" && chmod g+rwx "$MP"
+        fi
+        ;;
+    esac
+    write_dropin
+    systemctl daemon-reload
+}
+
+# A new ext4 file system on an EMPTY USB disk, then use it
+format() {
+    disk=$1 bytes=$2
+    printf '%s\n' "$disk" | grep -Eqx 'sd[a-z]{1,2}' || { WHY="only USB disks (sd...) are formatted from here" && return 1; }
+    [ -b "/dev/$disk" ] || { WHY="that disk isn't plugged in any more" && return 1; }
+    [ "$(lsblk -ndbo TYPE "/dev/$disk" | tr -d ' ')" = disk ] || { WHY="that isn't a whole disk" && return 1; }
+    [ "$(lsblk -ndbo SIZE "/dev/$disk" | tr -d ' ')" = "$bytes" ] || { WHY="that disk isn't the one Hemma showed (its size differs)" && return 1; }
+    is_system "$disk" && { WHY="that's the disk the system runs from" && return 1; }
+    on_usb "$disk" || { WHY="only USB disks are formatted from here" && return 1; }
+    for p in $(lsblk -nrpo NAME "/dev/$disk"); do
+        [ -z "$(mounted_where "$p")" ] || { WHY="something on it is mounted" && return 1; }
+        t=$(blkid -p -o value -s TYPE "$p" 2>/dev/null || true)
+        [ -z "$t" ] || { WHY="it isn't empty: there's a $t file system on it, so it's never formatted from here" && return 1; }
+    done
+    grep -Ev '^[[:space:]]*#' "$FSTAB" | grep -q "/dev/$disk" && { WHY="it's in /etc/fstab (set up by hand)" && return 1; }
+    say "Formatting /dev/$disk ($bytes bytes)..."
+    wipefs -q -a "/dev/$disk"
+    printf 'label: gpt\ntype=linux\n' | sfdisk -q "/dev/$disk"
+    udevadm settle 2>/dev/null || true
+    part=/dev/${disk}1
+    i=0
+    while [ ! -b "$part" ] && [ "$i" -lt 20 ]; do sleep 0.5; i=$((i + 1)); done
+    [ -b "$part" ] || { WHY="the new partition didn't show up" && return 1; }
+    mkfs.ext4 -q -F -L movies -m 0 -T largefile "$part"
+    udevadm settle 2>/dev/null || true
+    uuid=$(blkid -p -s UUID -o value "$part" 2>/dev/null || true)
+    [ -n "$uuid" ] || { WHY="the new file system has no UUID" && return 1; }
+    use "$uuid"
+}
+
+forget() {
+    printf '%s\n' "$1" | grep -Eqx '[A-Za-z0-9-]{4,64}' || { WHY="that isn't a disk's UUID" && return 1; }
+    UUID=$1
+    MP=$(mine_path "$UUID")
+    [ -n "$MP" ] || { WHY="Hemma doesn't know that disk" && return 1; }
+    fstab_backup
+    awk -v mark="$MARK" -v u="UUID=$UUID" '
+        index($0, mark) == 1 { if (held != "") print held; held = $0; next }
+        held != "" { if ($1 != u) print held; held = ""; if ($1 == u) next }
+        { print }
+        END { if (held != "") print held }' "$FSTAB" >"$WORK/fstab"
+    fstab_replace "$WORK/fstab"
+    write_dropin
+    systemctl daemon-reload
+}
+
+# ---- what Hemma asked for --------------------------------------------------------------------------
+from_hemma() {
+    req=$(as_hemma head -c 200 "$ASK/request" 2>/dev/null | head -n 1 | tr -d '\r' || true)
+    [ -n "$req" ] || return 0
+    nonce=${req##* }
+    printf '%s\n' "$nonce" | grep -Eqx '[0-9a-f]{16}' || { result refused "" "" "Hemma's request wasn't understood" && return 0; }
+    [ "$nonce" != "$(cat "$ANS/handled" 2>/dev/null || true)" ] || return 0 # (done already)
+    printf '%s\n' "$nonce" >"$ANS/handled"
+    set -f # (the words as they are: no * or ? expanded)
+    # shellcheck disable=SC2086
+    set -- $req
+    set +f
+    case "$1 $#" in
+    "use 3" | "forget 3") arg=$2 ;;
+    "format 4") arg=$2 ;;
+    *) result refused "" "" "Hemma's request wasn't understood" && return 0 ;;
+    esac
+    result working "" "" "$1"
+    rc=0
+    case $1 in
+    use) use "$arg" || rc=$? ;;
+    format) format "$arg" "$3" || rc=$? ;;
+    forget) forget "$arg" || rc=$? ;;
+    esac
+    write_list
+    if [ "$rc" -ne 0 ]; then
+        result refused "${UUID:-}" "" "$WHY"
+        say "Not done: $WHY"
+        return 0
+    fi
+    if [ "$1" = forget ]; then
+        result forgotten "$UUID" "$MP" ""
+        say "Forgotten: $MP (still mounted until the next start; its files stay)"
+    else
+        result used "$UUID" "$MP" ""
+        say "In use for movies: $MP - Hemma restarts to reach it"
+        restart_hemma
+    fi
+}
+
+by_hand() {
+    case ${1:-list} in
+    list)
+        lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINT,TRAN,MODEL
+        echo
+        echo "Hemma's movie disks:"
+        mine | while read -r u p t l; do printf '  %s  %s  %s  %s\n' "$p" "$t" "$u" "$l"; done
+        ;;
+    use)
+        [ $# -eq 2 ] || usage
+        if use "$2"; then write_list && result used "$UUID" "$MP" "" && say "In use for movies: $MP" && restart_hemma
+        else say "Not done: $WHY" && return 1; fi ;;
+    format)
+        [ $# -eq 2 ] || usage
+        bytes=$(lsblk -ndbo SIZE "/dev/$2" 2>/dev/null | tr -d ' ' || true)
+        [ -n "$bytes" ] || { say "no disk /dev/$2" && return 1; }
+        printf 'Everything on /dev/%s (%s, %s bytes) is erased. Type ERASE to go on: ' "$2" \
+            "$(lsblk -ndo MODEL "/dev/$2" | sed 's/[[:space:]]*$//')" "$bytes"
+        read -r typed
+        [ "$typed" = ERASE ] || { say "Not formatted." && return 1; }
+        if format "$2" "$bytes"; then write_list && result used "$UUID" "$MP" "" && say "In use for movies: $MP" && restart_hemma
+        else say "Not done: $WHY" && return 1; fi ;;
+    forget)
+        [ $# -eq 2 ] || usage
+        if forget "$2"; then write_list && result forgotten "$UUID" "$MP" "" && say "Forgotten: $MP"
+        else say "Not done: $WHY" && return 1; fi ;;
+    -h | --help) usage 0 ;;
+    *) usage ;;
+    esac
+}
+
+main() {
+    [ "$(id -u)" -eq 0 ] || { say "run me with sudo" >&2 && exit 1; }
+    id hemma >/dev/null 2>&1 || { say "no hemma user - install Hemma with install-pi.sh first" >&2 && exit 1; }
+    install -d -o root -g hemma -m 750 "$ANS" 2>/dev/null || true
+    exec 9>/run/hemma-disks.lock
+    if command -v flock >/dev/null 2>&1 && ! flock -n 9; then say "the disk helper is busy" >&2 && exit 1; fi
+    WORK=$(mktemp -d "${TMPDIR:-/tmp}/hemma-disks.XXXXXX")
+    trap 'rm -rf "$WORK"' EXIT
+    trap 'exit 1' INT TERM HUP
+    if [ "$FROM_HEMMA" -eq 1 ]; then
+        from_hemma
+        return 0
+    fi
+    rc=0
+    by_hand "$@" || rc=$?
+    return "$rc"
+}
+
+if [ "${1:-}" = --from-hemma ]; then
+    FROM_HEMMA=1
+    shift
+fi
+# (all of it read before it runs: the installer may replace this very file)
+main "$@"; exit $?

@@ -1,0 +1,12 @@
+# /etc/systemd/system/hemma-disks.path — installed by deploy/install-pi.sh
+# An admin asked for something under Watch -> Library settings -> Disks: Hemma wrote it into its request
+# file, and hemma-disks.service (root) does it.
+[Unit]
+Description=Hemma's movie disks: follow what Hemma asks
+
+[Path]
+PathModified=/var/lib/hemma/disks/request
+Unit=hemma-disks.service
+
+[Install]
+WantedBy=multi-user.target
