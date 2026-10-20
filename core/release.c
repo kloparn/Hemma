@@ -170,7 +170,7 @@ static bool verify(const char *dir, bool partial, char *why, size_t cap, int *fi
     }
     snprintf(path, sizeof path, "%s/%s", dir, RELEASE_SIG);
     if (!file_read_all(path, &sigtext, 1024)) {
-        fail(why, cap, "no SHA256SUMS.sig in %s: releases are signed since Hemma 0.21.0", dir);
+        fail(why, cap, "no SHA256SUMS.sig in %s: releases are signed since Hemma 0.21.1", dir);
         goto done;
     }
     uint8_t sig[64];

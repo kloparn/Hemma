@@ -207,7 +207,7 @@ Hemma also keeps its own log in `/var/lib/hemma/hemma.log`. More in
 
 **Restart it:** `sudo systemctl restart hemma`
 
-**Update Hemma.** Installed from a download of 0.21.0 or newer? Then either:
+**Update Hemma.** Installed from a download of 0.21.1 or newer? Then either:
 
 - **In Hemma:** System → **Updates**. **Check now** asks github.com which version is newest (or
   tick **Check once a day**); **Install** puts it in. No internet on the Pi? Download

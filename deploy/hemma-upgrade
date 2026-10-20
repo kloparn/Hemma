@@ -139,7 +139,7 @@ download() { # version -> BUNDLE, the release's signature checked
         say "  downloading $f"
         if ! fetch "$base/$f" "$WORK/dl/$f"; then
             WHY="couldn't download $f of Hemma $1 from github.com"
-            [ "$f" != SHA256SUMS.sig ] || WHY="Hemma $1 isn't signed (releases are signed from 0.21.0 on)"
+            [ "$f" != SHA256SUMS.sig ] || WHY="Hemma $1 isn't signed (releases are signed from 0.21.1 on)"
             return 1
         fi
     done

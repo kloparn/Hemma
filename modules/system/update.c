@@ -10,7 +10,7 @@
  *
  * Nothing leaves the home on its own: the daily check is off until an admin turns it on, and then
  * the helper asks github.com one thing - which version is newest. Without the helper (Windows, a Mac,
- * Hemma started by hand, an install from before 0.21.0) the page says how to update that install. */
+ * Hemma started by hand, an install from before 0.21.1) the page says how to update that install. */
 #include "system.h"
 #include "../../core/http.h"
 #include "../../core/json.h"
@@ -367,7 +367,7 @@ void system_update_checks(Health *h) {
 static void how_by_hand(Buf *b) {
     const char *dl = plat_bundle();
     buf_puts(b, "<p>Updates from this page need Hemma installed with its installer (<code>install-pi.sh</code>, from "
-                "version 0.21.0) on a Raspberry Pi or another Linux with systemd: then a root helper installs what you "
+                "version 0.21.1) on a Raspberry Pi or another Linux with systemd: then a root helper installs what you "
                 "choose here.</p>");
     if (dl)
         H(b, "<p>Here: download <b>%s.tar.gz</b> from <a href=\"%s/latest\" target=\"_blank\" rel=\"noopener noreferrer\">"
