@@ -1,0 +1,12 @@
+# /etc/systemd/system/hemma-setup.path — installed by deploy/install-pi.sh
+# Hemma's note changed (the admin was just created, say): write the memory card's HEMMA-SETUP.txt
+# again right away (hemma-setup.service).
+[Unit]
+Description=Hemma's setup note: follow Hemma's own
+
+[Path]
+PathModified=/var/lib/hemma/hemma.setup
+Unit=hemma-setup.service
+
+[Install]
+WantedBy=multi-user.target

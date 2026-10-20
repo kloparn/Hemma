@@ -107,6 +107,23 @@ bool auth_admin_can_sign_in(void); /* some admin account has a username and pass
 const char *auth_setup_code(void);
 void auth_new_setup_code(char out[16]); /* a fresh one (hemma --gen-setup-code) */
 
+/* The setup code where a household finds it without a terminal (issue #72). Hemma - its own unprivileged user -
+   keeps <data>/hemma.setup = "open XXXX-XXXX" while the welcome page waits, "done" once an admin exists
+   (auth_setup_state_write: at start and when the welcome page made the admin; written only when it changed).
+   `hemma --setup-note`, run as root by deploy/hemma-setup.service (at boot, and by hemma-setup.path whenever
+   that file changes), turns it into HEMMA-SETUP.txt on a Raspberry Pi's boot partition - FAT, so any computer
+   reads the card - and a line on the Pi's console (/etc/issue.d/hemma.issue). From Hemma's folder it takes
+   those two shapes and nothing else; before Hemma's first start, the settings file's HEMMA_SETUP_CODE. */
+#define SETUP_STATE_FILE "hemma.setup"
+#define SETUP_NOTE_FILE "HEMMA-SETUP.txt"
+enum { SETUP_NOTE_NONE, SETUP_NOTE_OPEN, SETUP_NOTE_DONE };
+int auth_setup_state_parse(const char *text, char code[16]); /* SETUP_NOTE_*; code for OPEN */
+void auth_setup_state_write(void);
+const char *auth_setup_note_found(void); /* this machine's card has one (the welcome page says so): its path */
+void auth_setup_note_text(Buf *b, int state, const char *code, const char *name, const char *ip, int port);
+/* boot_dir / issue_file NULL = a Pi's own (none elsewhere: nothing written); what it did goes into out */
+int auth_setup_note_cli(const char *data_dir, const char *boot_dir, const char *issue_file, Buf *out);
+
 /* ---- recovery codes ---- */
 int auth_codes_left(int person);
 /* A fresh set for `person` (the old ones stop working). The plain codes stay in memory for

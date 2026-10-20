@@ -148,3 +148,28 @@ TEST(listen_rejects_bad_host) {
     CHECK(tcp_listen("not-an-ip", 0, err, sizeof err) == SOCK_BAD);
     CHECK_HAS(err, "bad listen address");
 }
+
+/* Issue #27: the disks a library might be on, from Linux's mount list (a real Pi's, with a USB disk and a
+   mergerfs pool, plus the kind of lines to leave out). */
+TEST(plat_parse_mounts_keeps_disks_under_mnt_and_media) {
+    const char *text = "/dev/mmcblk0p2 / ext4 rw,noatime 0 0\n"
+                       "proc /proc proc rw,nosuid 0 0\n"
+                       "/dev/mmcblk0p1 /boot/firmware vfat rw,relatime 0 0\n"
+                       "/dev/sda1 /mnt/disk1 ext4 rw,noatime 0 0\n"
+                       "disk1 /mnt/media fuse.mergerfs rw,relatime,user_id=0 0 0\n"
+                       "tmpfs /mnt/ram tmpfs rw 0 0\n"
+                       "/dev/sdb1 /media/anna/My\\040Films exfat rw 0 0\n"
+                       "/dev/sda1 /mnt/disk1 ext4 rw,noatime 0 0\n"
+                       "broken line\n"
+                       "/dev/sdc1 /mntx ext4 rw 0 0";
+    char out[8][300];
+    int n = plat_parse_mounts(text, out, 8);
+    CHECK_INT(n, 3);
+    CHECK_STR(out[0], "/mnt/disk1");
+    CHECK_STR(out[1], "/mnt/media");
+    CHECK_STR(out[2], "/media/anna/My Films");
+    CHECK_INT(plat_parse_mounts(text, out, 1), 1);
+    CHECK_INT(plat_parse_mounts("", out, 8), 0);
+    char real[8][300];
+    CHECK(plat_mounts(real, 8) >= 0); /* (whatever this machine has) */
+}

@@ -147,7 +147,12 @@ What the installer does:
 - creates `/etc/hemma/hemma.env`, the settings file, with a fresh secret
   `HEMMA_AUTH_SALT`, a one-time `HEMMA_SETUP_CODE` and `HEMMA_PORT=80` so the address
   needs no port number,
-- installs the service `hemma` (`/etc/systemd/system/hemma.service`).
+- installs the service `hemma` (`/etc/systemd/system/hemma.service`),
+- installs a small helper, `hemma-setup`, that writes the setup code into the file
+  `HEMMA-SETUP.txt` on the memory card (and onto a screen plugged into the Pi). Once the
+  admin exists, the file says the code is used up,
+- notes the media folders you gave it (as `HEMMA_MEDIA` in the settings file), so Hemma
+  can offer them in its Library settings.
 
 Then it starts Hemma (and makes it start on every boot), waits until it answers, and
 prints `Hemma is running.`, the addresses to open, the next steps and the handy commands.
@@ -157,8 +162,11 @@ last log lines - see [troubleshooting.md](troubleshooting.md).
 
 Now open **`http://hemma.local`** in a browser on any device at home, type the **setup
 code** and **create the admin account**. That's you: you'll add everyone else under
-**Household**. Lost the code? `sudo grep SETUP /etc/hemma/hemma.env` shows it. It works
-once: after that the welcome page and the code are gone. More about
+**Household**. Lost the code? It's also in **`HEMMA-SETUP.txt` on the memory card**: shut
+the Pi down, put the card in any computer, open the file, and put the card back. With a
+screen plugged into the Pi, it shows on the login screen too. Or, in a terminal:
+`sudo grep SETUP /etc/hemma/hemma.env`. It works once: after that the welcome page and
+the code are gone. More about
 accounts, recovery codes and forgotten passwords: [accounts.md](accounts.md).
 
 > **Prefer to set the admin up from the settings file?** (Handy on a server you set up
@@ -385,8 +393,10 @@ sudo systemctl start hemma
 
    Pass the program file you installed from (not `/opt/hemma/hemma` itself). List *all*
    your media folders each time. Run without folders, it keeps the current list.
-6. **Tell Hemma where it is:** in Hemma, open **Watch**, then the **Library settings**
-   button. Under **Folders**, enter `/srv/media` and press **Save & scan**.
+6. **Tell Hemma where it is:** in Hemma, open **Watch**. As long as it has no library
+   folders, it offers the ones the installer was given and the disks it can see, as
+   buttons: press **Use /srv/media**. (Under **Library settings** they show as **+**
+   buttons too, and you can type any other folder there and press **Save & scan**.)
 
 **NTFS or exFAT disks** (formatted on Windows or a Mac) don't have Linux permissions, so
 the owner comes from the mount options. When you run the installer with such a folder, it

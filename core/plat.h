@@ -92,6 +92,12 @@ bool dir_make(const char *path); /* mkdir -p */
 bool dir_remove(const char *path); /* an empty directory */
 bool path_free_space(const char *path, int64_t *free_bytes); /* on the volume holding path */
 bool path_disk_space(const char *path, int64_t *free_bytes, int64_t *total_bytes); /* either may be NULL */
+/* Disks a media library might live on (issue #27: suggestions on Library settings): Linux the mount points under
+   /mnt and /media (from /proc/self/mounts, file systems that hold files), macOS those under /Volumes, Windows the
+   fixed and removable drive letters but the system's ("D:/"). Returns how many. */
+int plat_mounts(char out[][300], int max);
+/* The Linux part on its own (any platform: tests): /proc/self/mounts' text -> those mount points. */
+int plat_parse_mounts(const char *text, char out[][300], int max);
 /* Zero-copy file -> socket (Linux sendfile): up to n bytes of f from offset
    `off`. Returns bytes sent, 0 when the socket would block, -1 on error or
    when the file ends early, -2 where unsupported (fall back to read + send). */

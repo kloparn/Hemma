@@ -403,3 +403,9 @@
 /* "Not for children" on the Folders tab (issue #44) */
 .media-kids { margin: -4px 0 14px; }
 .media-kids-on { margin: 0; color: var(--muted); font-size: 14px; }
+
+/* Folders found on this machine (issue #27): one tap adds one */
+.media-suggest { margin-top: 14px; }
+.media-suggest .chip small { color: var(--muted); font-weight: 500; }
+.media-suggest-big { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 4px 0 10px; }
+.media-suggest-big .btn .media-code, .media-suggest .chip .media-code { background: none; color: inherit; padding: 0; font-weight: 650; }

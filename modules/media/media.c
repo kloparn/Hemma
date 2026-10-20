@@ -5,6 +5,7 @@
  * background thread (library.c), files stream with Range support from worker
  * threads (stream.c) and every person's progress is remembered, so "continue
  * watching" works across the phone, the laptop and the TV's browser. */
+#include "../../core/env.h"
 #include "../../core/ui.h"
 #include "media.h"
 #include "convert.h"
@@ -433,6 +434,84 @@ static void batch_card(Buf *b, const MediaRecent *r) {
     H(b, "<span class=\"media-cap\">%s<small>%d new episodes</small></span></a>", s->title, r->n);
 }
 
+/* ------------------------------------------------- folders to suggest (issue #27) */
+
+/* What an admin can add with one tap instead of typing a path from memory: the folders the installer was told
+   about (HEMMA_MEDIA in the settings file, ";" between them) - until they're in the library - and, while the
+   library has no folders yet, the disks this machine has mounted (plat_mounts: under /mnt and /media, a Mac's
+   /Volumes, Windows' other drives). Each once, only folders that are there. */
+typedef struct {
+    char path[300];
+    bool installer; /* named by the installer (HEMMA_MEDIA) */
+    int64_t free, total;
+} Suggest;
+
+static void gb(int64_t n, char *out, size_t cap);
+
+static char g_test_mounts[600]; /* tests: the disks "this machine" has (";" between), instead of plat_mounts() */
+void media_test_mounts(const char *list) { str_copy(g_test_mounts, sizeof g_test_mounts, list ? list : ""); }
+
+static void same_slashes(char *p) {
+    for (; *p; p++)
+        if (*p == '\\') *p = '/';
+}
+
+static bool same_folder(const char *a, const char *b) {
+    size_t na = strlen(a), nb = strlen(b);
+    while (na > 1 && a[na - 1] == '/') na--;
+    while (nb > 1 && b[nb - 1] == '/') nb--;
+    return na == nb && strncmp(a, b, na) == 0;
+}
+
+static int suggestions(Suggest *out, int max) {
+    char roots[MEDIA_MAX_ROOTS][300], found[16][300];
+    int nroots = media_roots(roots, MEDIA_MAX_ROOTS), n = 0, nfound = 0;
+    const char *told = env("HEMMA_MEDIA", "");
+    while (*told && nfound < countof(found)) { /* "/mnt/media;/mnt/more" */
+        size_t len = strcspn(told, ";");
+        str_ncopy(found[nfound], sizeof found[0], told, len);
+        str_trim(found[nfound]);
+        if (found[nfound][0]) nfound++;
+        told += len + (told[len] == ';');
+    }
+    int ntold = nfound;
+    if (!nroots && !app_testing()) nfound += plat_mounts(found + nfound, countof(found) - nfound);
+    for (const char *t = g_test_mounts; !nroots && *t && nfound < countof(found);) { /* (tests: this machine's disks) */
+        size_t len = strcspn(t, ";");
+        str_ncopy(found[nfound++], sizeof found[0], t, len);
+        t += len + (t[len] == ';');
+    }
+    for (int i = 0; i < nfound && n < max; i++) {
+        same_slashes(found[i]);
+        bool skip = !path_is_dir(found[i]);
+        for (int k = 0; k < nroots && !skip; k++) skip = same_folder(roots[k], found[i]);
+        for (int k = 0; k < n && !skip; k++) skip = same_folder(out[k].path, found[i]);
+        if (skip) continue;
+        Suggest *s = &out[n++];
+        *s = (Suggest){.installer = i < ntold};
+        str_copy(s->path, sizeof s->path, found[i]);
+        path_disk_space(s->path, &s->free, &s->total);
+    }
+    return n;
+}
+
+/* One tap adds it (media.roots_add); `big` = the Watch page's first-run buttons, else chips. */
+static void suggestion_forms(Buf *b, const Suggest *s, int n, bool big) {
+    for (int i = 0; i < n; i++) {
+        char size[32] = "";
+        if (s[i].total > 0) gb(s[i].total, size, sizeof size);
+        ui_form(b, "media.roots_add", "inline");
+        ui_hidden(b, "dir", s[i].path);
+        if (big)
+            H(b, "<button class=\"btn primary\">Use <code class=\"media-code\">%s</code></button>", s[i].path);
+        else
+            H(b, "<button class=\"chip\" aria-label=\"Add %s\">+ <code class=\"media-code\">%s</code>%r%s%r</button>",
+              s[i].path, s[i].path, size[0] ? " <small>" : "", size,
+              s[i].installer ? " · from the installer</small>" : size[0] ? "</small>" : "");
+        ui_form_end(b);
+    }
+}
+
 static bool library_empty_states(Ctx *c, Buf *b) {
     const MediaIndex *ix = media_lib();
     if (ix->nroots == 0 && !is_admin(c)) {
@@ -446,6 +525,14 @@ static bool library_empty_states(Ctx *c, Buf *b) {
         ui_empty(b, "🎬", "Point Hemma at your movies",
                  "Tell it which folders hold your movies and series — the drive on the Pi, a mounted share, "
                  "or a folder on this computer.");
+        Suggest s[4];
+        int ns = suggestions(s, countof(s)); /* (issue #27: one tap, not a path typed from memory) */
+        if (ns) {
+            buf_puts(b, "<div class=\"media-center media-suggest-big\">");
+            suggestion_forms(b, s, ns, true);
+            buf_puts(b, "</div><p class=\"media-center\"><a href=\"/media/settings\">Another folder</a></p>");
+            return true;
+        }
         buf_puts(b, "<p class=\"media-center\"><a class=\"btn primary\" href=\"/media/settings\">Choose folders</a></p>");
         return true;
     }
@@ -1323,6 +1410,14 @@ static void page_settings(Ctx *c, Buf *b) {
                     "mounted, e.g. <code class=\"media-code\">/mnt/media</code>. A network share works too once it's "
                     "mounted.</p><div class=\"modal-f\"><button class=\"btn primary\">Save &amp; scan</button></div>");
         ui_form_end(b);
+        Suggest s[8];
+        int ns = suggestions(s, countof(s)); /* (issue #27) */
+        if (ns) {
+            buf_puts(b, "<div class=\"media-suggest\" id=\"media-suggest\"><p class=\"muted media-small\">Found on this "
+                        "machine - tap one to add it:</p><div class=\"chips\">");
+            suggestion_forms(b, s, ns, false);
+            buf_puts(b, "</div></div>");
+        }
     } else {
         buf_puts(b, "<ul class=\"rows\">");
         for (int r = 0; r < ix->nroots; r++) H(b, "<li class=\"row\"><code class=\"media-code\">%s</code></li>", ix->roots[r]);
@@ -1700,12 +1795,8 @@ static void act_rescanners(Ctx *c, Fields *f) {
     else ctx_ok(c, "Only admins may rescan the library");
 }
 
-static void act_roots(Ctx *c, Fields *f) {
-    if (!is_admin(c)) { /* server-side folders: admins only */
-        ctx_fail(c, "Only an admin can change the library folders");
-        return;
-    }
-    const char *s = fields_str(f, "roots");
+/* The library's folders, one per line (checked: each must be there): saved, then scanned. */
+static void save_roots(Ctx *c, const char *s) {
     Buf keep = {0};
     int n = 0;
     while (*s) {
@@ -1739,6 +1830,42 @@ static void act_roots(Ctx *c, Fields *f) {
     else media_scan_start();
     if (n) ctx_ok(c, "Saved — scanning %d folder%s", n, n == 1 ? "" : "s");
     else ctx_ok(c, "Saved — no folders");
+}
+
+static void act_roots(Ctx *c, Fields *f) {
+    if (!is_admin(c)) { /* server-side folders: admins only */
+        ctx_fail(c, "Only an admin can change the library folders");
+        return;
+    }
+    save_roots(c, fields_str(f, "roots"));
+}
+
+/* One folder more (a suggestion's one tap, issue #27) - the ones there stay. */
+static void act_roots_add(Ctx *c, Fields *f) {
+    if (!is_admin(c)) {
+        ctx_fail(c, "Only an admin can change the library folders");
+        return;
+    }
+    char dir[300], roots[MEDIA_MAX_ROOTS][300];
+    str_copy(dir, sizeof dir, fields_str(f, "dir"));
+    str_trim(dir);
+    same_slashes(dir);
+    int n = media_roots(roots, MEDIA_MAX_ROOTS);
+    Buf all = {0};
+    bool have = false;
+    for (int i = 0; i < n; i++) {
+        buf_printf(&all, "%s\n", roots[i]);
+        have |= same_folder(roots[i], dir);
+    }
+    if (!dir[0] || have) {
+        if (dir[0]) ctx_info(c, "%s is in the library already", dir);
+        else ctx_fail(c, "Pick a folder");
+        buf_free(&all);
+        return;
+    }
+    buf_puts(&all, dir);
+    save_roots(c, buf_cstr(&all));
+    buf_free(&all);
 }
 
 /* Mark a folder "Not for children", or open it to them again (issue #44): from the Folders tab (p = "<library
@@ -1787,7 +1914,7 @@ static void act_prefs(Ctx *c, Fields *f) {
 static const Action actions[] = {
     {"media.search", act_search, true, .may = ACT_ALL}, {"media.progress", act_progress, true, true, ACT_ALL},
     {"media.watched", act_watched, false, true, ACT_ALL},
-    {"media.rescan", act_rescan}, {"media.roots", act_roots},       {"media.prefs", act_prefs, .may = ACT_ALL},
+    {"media.rescan", act_rescan}, {"media.roots", act_roots}, {"media.roots_add", act_roots_add},       {"media.prefs", act_prefs, .may = ACT_ALL},
     {"media.upload_stop", upload_act_stop}, {"media.art_remove", act_art_remove},
     {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove},
     {"media.forget", act_forget, false, true, ACT_ALL}, {"media.kids", act_kids},
@@ -1820,6 +1947,7 @@ static int forget(Forget *f) {
 }
 
 static void start(void) {
+    media_test_mounts(NULL); /* (a test's disks end with its boot) */
     media_stream_resume();
     upload_start();
     media_lib_start();
