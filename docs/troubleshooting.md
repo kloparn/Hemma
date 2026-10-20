@@ -128,6 +128,22 @@ file, so Hemma may write there ([raspberry-pi.md](raspberry-pi.md#7-a-usb-disk-f
 DVD rips, MKV files and Dolby sound don't play everywhere. **Watch → Library settings**
 makes a copy of each that does.
 
+**A video plays, but without sound.**
+Its sound is most likely Dolby (Dolby Digital or Digital Plus - "DD5.1", "DDP5.1" in a file
+name): Chrome and Firefox play the picture and stay silent, Safari and Edge play it. The
+video's page says so under the player. Press **Fix the sound** there (or **Convert** on
+**Watch → Library settings** for every such video at once): Hemma makes a copy next to it with
+AAC sound, which every browser plays - the picture is copied as it is, so it's quick. Uploads
+from a browser make that copy before sending (the box *Make videos play everywhere on this
+device first*). If an upload couldn't, its card says which videos went up unconverted, and why.
+
+**Subtitles inside an MKV don't show.**
+Browsers can't read subtitles inside a video file, only separate ones. When Hemma converts an
+MKV (on the server or while uploading), it saves its text subtitles (SRT, ASS) as `.srt` files
+next to it - "Movie.en.srt" - and the player offers them. Subtitles that are pictures (PGS from
+Blu-rays, VobSub from DVDs) can't be turned into text yet; an `.srt` you put next to the video
+yourself works too.
+
 **"Database rescued" on the System page.**
 At the start, Hemma found its database damaged and rescued what it could still read; the
 check says how much of each kind of thing was kept. See [A damaged database](#a-damaged-database)

@@ -120,6 +120,7 @@ static int convert(const uint8_t *data, size_t size, Tally *t) {
     j.in = (MkvReader){&in, (int64_t)size, in_read};
     j.out = (Mp4Out){&out, out_write, out_write_at};
     j.max_samples = MAX_SAMPLES_EACH;
+    j.want_subs = true; /* text subtitle tracks too */
     bool ok = av_convert(&j);
     if (ok && (j.err[0] || j.permille != 1000 || j.out_bytes != (int64_t)out.len || !whole_mp4(&out))) {
         fprintf(stderr, "convfuzz: a success that didn't write a whole MP4 (%lld bytes reported, %zu written)\n",
@@ -130,6 +131,12 @@ static int convert(const uint8_t *data, size_t size, Tally *t) {
         fprintf(stderr, "convfuzz: failed without saying why\n");
         abort();
     }
+    for (int k = 0; k < j.nsubs; k++)
+        if (!j.subs[k].srt || strlen(j.subs[k].srt) != j.subs[k].len || j.subs[k].len > AV_CONV_SUB_BYTES) {
+            fprintf(stderr, "convfuzz: subtitle track %d isn't one NUL-terminated SRT text within its bound\n", k);
+            abort();
+        }
+    av_convert_free(&j);
     if (t) {
         t->runs++;
         if (ok) t->ok++;

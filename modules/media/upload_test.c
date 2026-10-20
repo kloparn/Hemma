@@ -580,6 +580,20 @@ TEST(upload_takes_copies_the_browser_makes) {
     CHECK(same_file(path, "copy-bytes", 10));
     CHECK(!exists(root, "Up/S/x.mkv")); /* the original never came */
 
+    /* the file's text subtitles, taken out by the browser's converter: saved next to the copy, once */
+    const char *srt = "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n";
+    snprintf(url, sizeof url, "/media/upload/%s/0?sub=1&lang=eng&name=English&forced=0", batch);
+    call("POST", url, adam, "Content-Type: text/plain; charset=utf-8\r\n", srt, strlen(srt), strlen(srt), &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    snprintf(path, sizeof path, "%s/Up/S/x.en.srt", root);
+    CHECK(same_file(path, srt, strlen(srt)));
+    call("POST", url, adam, "Content-Type: text/plain; charset=utf-8\r\n", "other", 5, 5, &r);
+    CHECK_HAS(body_of(&r), "\"skip\":true");
+    CHECK(same_file(path, srt, strlen(srt)));
+    snprintf(url, sizeof url, "/media/upload/%s/0?sub=1&lang=swe&forced=1", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    CHECK_HAS(buf_cstr(&r), "400");
+
     /* one the converter couldn't handle: the original goes under its own name */
     snprintf(url, sizeof url, "/media/upload/%s/1?original=1&why=Can%%27t+convert+V_MPEGH%%2FISO%%2FHEVC+video+yet", batch);
     call("POST", url, adam, NULL, "", 0, 0, &r);
@@ -589,6 +603,10 @@ TEST(upload_takes_copies_the_browser_makes) {
     CHECK_HAS(body_of(&r), "\"ok\":true");
     CHECK(exists(root, "Up/S/y.mkv"));
     CHECK(!exists(root, "Up/S/y.web.mp4"));
+    snprintf(url, sizeof url, "/media/upload/%s/1?sub=1&lang=eng", batch); /* no copy made of it: no subtitles */
+    call("POST", url, adam, NULL, srt, strlen(srt), strlen(srt), &r);
+    CHECK_HAS(buf_cstr(&r), "404");
+    CHECK(!exists(root, "Up/S/y.en.srt"));
     for (int i = 2; i <= 3; i++) {
         snprintf(url, sizeof url, "/media/upload/%s/%d?at=0", batch, i);
         call("PUT", url, adam, NULL, "1234567", i == 2 ? 5 : 7, i == 2 ? 5 : 7, &r);
@@ -601,6 +619,8 @@ TEST(upload_takes_copies_the_browser_makes) {
     CHECK_HAS(page, "Finished · 4 files sent");
     CHECK_HAS(page, "1 sent unconverted");
     CHECK_HAS(page, "S/y.mkv</code> — sent as it is: Can&#39;t convert V_MPEGH/ISO/HEVC video yet");
+    CHECK_HAS(page, "1 video couldn't be converted on this device and went up as it was - it may not play "
+                    "everywhere. Why: Can&#39;t convert V_MPEGH/ISO/HEVC video yet.</p>"); /* said, not only listed */
 
     /* again: what's there is skipped - the copy for x, the original for y */
     plan_for(adam, plan, &r, batch);

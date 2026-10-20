@@ -137,9 +137,13 @@ wsl -d Ubuntu-24.04 -u root -- sh -c "apt-get update && apt-get install -y build
 A few tests look at real media when you point them at it (they're skipped otherwise, and
 only read): `HEMMA_TEST_SHOW=<a show folder>` with the filter `media_real` prints how the
 library reads that folder; `HEMMA_TEST_MKV=<file.mkv>`, `HEMMA_TEST_AC3=<file>` and
-`HEMMA_TEST_CONVERT=<file.mkv>` run the demuxer, the AC-3 decoder and the converter (its
-first 30 s) over a real file. `AAC_VERBOSE=1` / `AC3_VERBOSE=1` print codec details in
-the codec tests.
+`HEMMA_TEST_CONVERT=<file.mkv>` run the demuxer, the AC-3 / E-AC-3 decoder and the converter
+(its first 30 s; it saves the file's subtitles next to it, so point it at a copy) over a real
+file. `AAC_VERBOSE=1` / `AC3_VERBOSE=1` print codec details in the codec tests.
+`tools/ac3dump.c` (build line at its top) decodes AC-3 and E-AC-3 from an MKV or a raw stream:
+`stats` reports which coding tools a stream uses and whether every frame parsed, and `f32 ...
+--native` writes every channel as raw floats in WAV order - what `ffmpeg -f f32le` writes, for
+comparing with another decoder (expect dither and noise to differ, nothing else).
 
 ## Versions and releases
 

@@ -121,6 +121,39 @@ TEST(srt_random_bytes_never_crash) {
     buf_free(&out);
 }
 
+/* What a subtitle track taken out of a video is saved as - and that its video takes it back. */
+TEST(subtitle_sidecar_names) {
+    char out[300], lang[16];
+    CHECK(media_sub_sidecar("/m/Show/x.mkv", "eng", "", false, out, sizeof out));
+    CHECK_STR(out, "/m/Show/x.en.srt");
+    CHECK(media_sub_sidecar("Show/x.web.mp4", "swe", NULL, true, out, sizeof out)); /* a copy: named for "x" */
+    CHECK_STR(out, "Show/x.sv.forced.srt");
+    CHECK(media_sub_sidecar("dir.v2/x", "en-US", "English (SDH)", false, out, sizeof out));
+    CHECK_STR(out, "dir.v2/x.en.sdh.srt");
+    CHECK(media_sub_sidecar("x.mkv", "und", "", false, out, sizeof out));
+    CHECK_STR(out, "x.srt");
+    CHECK(media_sub_sidecar("x.mkv", "hun", "Hungarian", false, out, sizeof out));
+    CHECK_STR(out, "x.hu.srt");
+    CHECK(media_sub_sidecar("x.mkv", "qaa", "", false, out, sizeof out)); /* a code we don't know: none */
+    CHECK_STR(out, "x.srt");
+    CHECK(media_sub_sidecar("x.mkv", "hi", "", false, out, sizeof out)); /* reads as "hearing impaired" */
+    CHECK_STR(out, "x.srt");
+    CHECK(media_sub_sidecar("x.mkv", "ENG", "Forced", false, out, sizeof out));
+    CHECK_STR(out, "x.en.forced.srt");
+    CHECK(media_sub_sidecar("x.mkv", "eng", "English, hearing impaired", false, out, sizeof out));
+    CHECK_STR(out, "x.en.sdh.srt");
+    CHECK(media_sub_sidecar("x.mkv", "eng", "Accented English", false, out, sizeof out)); /* "cc" inside a word: not CC */
+    CHECK_STR(out, "x.en.srt");
+    CHECK(!media_sub_sidecar("a-long-name.mkv", "eng", "", false, out, 12));
+    const char *names[] = {"x.en.srt", "x.sv.forced.srt", "x.en.sdh.srt", "x.hu.srt"};
+    const char *langs[] = {"en", "sv", "en", "hu"};
+    for (int i = 0; i < 4; i++) {
+        CHECK(media_sub_for("x.mkv", names[i], lang, sizeof lang));
+        CHECK_STR(lang, langs[i]);
+        CHECK(media_sub_for("x.web.mp4", names[i], lang, sizeof lang));
+    }
+}
+
 TEST(subtitle_matching_by_file_name) {
     char lang[16];
     CHECK(media_sub_for("Movie.mkv", "Movie.srt", lang, sizeof lang));

@@ -8,10 +8,13 @@
  *   ac3dump wav   FILE OUT.wav [--from S] [--to S] [--track N]     (stereo Lo/Ro, 16 bit)
  *   ac3dump bench FILE [--seconds S] [--track N] [--native]
  *   ac3dump raw   FILE OUT.ac3 [--from S] [--to S] [--track N]     (the track as an elementary stream)
+ *   ac3dump f32   FILE OUT.f32 [--from S] [--to S] [--track N] [--native]
+ *                 (raw 32-bit float PCM: stereo Lo/Ro, or with --native every channel in WAV order
+ *                  L R C LFE Ls Rs - what `ffmpeg -f f32le` writes, for comparing with it)
  *
- * FILE is a Matroska file (AC-3 frames come from a minimal block walker:
+ * FILE is a Matroska file (AC-3 or E-AC-3 frames come from a minimal block walker:
  * Tracks, Clusters, SimpleBlock/BlockGroup and all three lacings) or a raw
- * .ac3 stream (sync word + CRC scan).
+ * .ac3/.eac3 stream (sync word + CRC scan).
  *
  * `stats` decodes and reports: errors, per-channel level/peak/clipping, a
  * discontinuity measure at the 256-sample block edges (an IMDCT, window or
@@ -113,7 +116,7 @@ typedef struct {
     bool done;
     Frames *out;
     long gaps;
-    double last_t;
+    double last_t, last_secs;
 } Mkv;
 
 static int vlen(uint8_t b) {
@@ -161,10 +164,20 @@ static uint64_t read_uint(Rd *r, int64_t off, int64_t len) {
     return v;
 }
 
+static bool dolby(const char *codec) { return !strcmp(codec, "A_AC3") || !strcmp(codec, "A_EAC3"); }
+
 static bool is_ac3(const Mkv *m, int number) {
     for (int i = 0; i < m->ntracks; i++)
-        if (m->tracks[i].number == number) return !strcmp(m->tracks[i].codec, "A_AC3");
+        if (m->tracks[i].number == number) return dolby(m->tracks[i].codec);
     return false;
+}
+
+/* seconds of sound in the frame at p: 0 for E-AC-3 frames the decoder skips (other substreams) */
+static double frame_secs(const uint8_t *p, size_t n) {
+    Ac3Info in;
+    if (!ac3_parse_header(p, n, &in) || !in.sample_rate) return 0.032;
+    if (in.eac3 && (in.strmtyp == 1 || in.substreamid)) return 0;
+    return (double)in.samples / in.sample_rate;
 }
 
 static int track_index(const Mkv *m, int number) {
@@ -183,13 +196,14 @@ static void lace_frames(Mkv *m, const uint8_t *p, size_t n, double t) {
             m->done = true;
             return;
         }
+        double secs = frame_secs(p + i, (size_t)size);
         if (t >= m->from) {
-            if (m->last_t >= 0 && fabs(t - m->last_t - 0.032) > 0.0021) m->gaps++;
-            m->last_t = t;
+            if (m->last_t >= 0 && secs > 0 && fabs(t - m->last_t - m->last_secs) > 0.0021) m->gaps++;
+            if (secs > 0) m->last_t = t, m->last_secs = secs;
             add_frame(m->out, p + i, size, t);
         }
         i += (size_t)size;
-        t += 0.032;
+        t += secs;
     }
 }
 
@@ -249,8 +263,12 @@ static void block(Mkv *m, int64_t off, int64_t len) {
         if (sizes[k] > n - i) return;
         lace_frames(m, p + i, sizes[k], t);
         if (m->done) return;
-        int fs = ac3_frame_size(p + i, sizes[k]);
-        t += fs ? 0.032 * (double)(sizes[k] / (size_t)fs) : 0.032;
+        for (size_t j = 0; j + 6 <= sizes[k];) { /* the lace's length in time */
+            int fs = ac3_frame_size(p + i + j, sizes[k] - j);
+            if (!fs) break;
+            t += frame_secs(p + i + j, sizes[k] - j);
+            j += (size_t)fs;
+        }
         i += sizes[k];
     }
 }
@@ -332,8 +350,8 @@ static bool load(const char *path, const Opts *o, Frames *out, Mkv *m) {
     } else { /* raw AC-3: scan for frames */
         int64_t off = 0;
         double t = 0;
-        while (off < r.size && t < o->to) {
-            size_t n = (size_t)(r.size - off < (8 << 20) ? r.size - off : (8 << 20));
+        while (off < r.size && t < o->to) { /* small windows: at() keeps a 1 MB buffer, so most come from it */
+            size_t n = (size_t)(r.size - off < (64 << 10) ? r.size - off : (64 << 10));
             const uint8_t *q = at(&r, off, n);
             if (!q) break;
             long k = ac3_find_frame(q, n, off + (int64_t)n >= r.size);
@@ -347,7 +365,7 @@ static bool load(const char *path, const Opts *o, Frames *out, Mkv *m) {
                 continue;
             }
             if (t >= o->from) add_frame(out, q + k, size, t);
-            t += 0.032;
+            t += frame_secs(q + k, (size_t)size);
             off += k + size;
         }
     }
@@ -413,10 +431,10 @@ static void spectrum_block(Acc *a) {
     a->nspec++;
 }
 
-/* pcm: 1536 frames x ch interleaved; mask: the decoder's short_mask per block */
-static void analyse(Acc *a, const float *pcm, const uint8_t *short_mask, int rate) {
+/* pcm: `samples` frames x ch interleaved; mask: the decoder's short_mask per block */
+static void analyse(Acc *a, const float *pcm, int samples, const uint8_t *short_mask, int rate) {
     int ch = a->ch;
-    for (int n = 0; n < AC3_SAMPLES; n++) {
+    for (int n = 0; n < samples; n++) {
         bool edge = n % 256 == 0 && a->have_prev;
         int blk = n / 256;
         double mono = 0;
@@ -459,7 +477,7 @@ static void analyse(Acc *a, const float *pcm, const uint8_t *short_mask, int rat
         }
     }
     a->have_prev = true;
-    a->samples += AC3_SAMPLES;
+    a->samples += samples;
 }
 
 static double db(double x) { return x > 1e-20 ? 10 * log10(x) : -200; }
@@ -479,10 +497,11 @@ static double gated_loudness(const Acc *a) { /* EBU R128-style gating, unweighte
 
 /* ------------------------------------------------------------- commands */
 
-static int decode_all(const Frames *fr, bool native, bool report, FILE *wav, long *wav_samples) {
+static int decode_all(const Frames *fr, bool native, bool report, FILE *wav, long *wav_samples, FILE *f32) {
     Ac3Dec *d = ac3_open();
     if (!d) die("out of memory");
-    ac3_set_layout(d, native ? AC3_LAYOUT_NATIVE : AC3_LAYOUT_STEREO);
+    ac3_set_layout(d, f32 && native ? AC3_LAYOUT_WAV : native ? AC3_LAYOUT_NATIVE : AC3_LAYOUT_STEREO);
+    long skipped = 0, spx = 0, aht = 0;
     static float pcm[AC3_SAMPLES * AC3_MAX_CHANNELS];
     static int16_t s16[AC3_SAMPLES * AC3_MAX_CHANNELS];
     Acc *a = calloc(1, sizeof *a);
@@ -498,6 +517,7 @@ static int decode_all(const Frames *fr, bool native, bool report, FILE *wav, lon
         int ch = 0;
         int rc = ac3_decode(d, fr->data + fr->f[i].off, (size_t)fr->f[i].size, pcm, &ch, &info);
         if (rc < 0) errors[-rc]++;
+        if (rc == AC3_SKIP) skipped++;
         if (rc == AC3_ERR_BITSTREAM) {
             const Ac3Stats *st = ac3_stats(d);
             if (st->error_line > 0 && st->error_line < 4096) err_line[st->error_line]++;
@@ -512,29 +532,34 @@ static int decode_all(const Frames *fr, bool native, bool report, FILE *wav, lon
             if (st->bits_free < free_min) free_min = st->bits_free;
             if (st->bits_free > free_max) free_max = st->bits_free;
             short_blocks += st->blocks_short, cpl += st->blocks_cpl, remat += st->blocks_remat;
-            dba += st->blocks_dba, dith += st->blocks_dither, phase += st->blocks_phase;
+            dba += st->blocks_dba, dith += st->blocks_dither, phase += st->blocks_phase, spx += st->blocks_spx, aht += st->blocks_aht;
             for (int k = 0; k < 4; k++) exps[k] += st->exp_strategy[k];
             for (int k = 0; k < 16; k++) baps[k] += st->bap[k];
         }
         if (report) {
             a->ch = ch;
-            analyse(a, pcm, st->short_mask, info.sample_rate);
+            analyse(a, pcm, info.samples, st->short_mask, info.sample_rate);
         }
         if (wav) {
-            ac3_to_s16(pcm, s16, (size_t)AC3_SAMPLES * (size_t)ch);
-            fwrite(s16, sizeof(int16_t), (size_t)AC3_SAMPLES * (size_t)ch, wav);
-            *wav_samples += AC3_SAMPLES;
+            ac3_to_s16(pcm, s16, (size_t)info.samples * (size_t)ch);
+            fwrite(s16, sizeof(int16_t), (size_t)info.samples * (size_t)ch, wav);
+            *wav_samples += info.samples;
+        }
+        if (f32) {
+            fwrite(pcm, sizeof(float), (size_t)info.samples * (size_t)ch, f32);
+            *wav_samples += info.samples;
         }
     }
     if (report && ok) {
         int ch = a->ch;
         long good = ok - errors[4] - errors[5];
-        printf("stream     %d Hz, %d kbit/s, %s (acmod %d%s), dialnorm -%d dB, bsid %d, bsmod %d%s\n",
-               first.sample_rate, first.bitrate, ac3_acmod_name(first.acmod, first.lfe), first.acmod,
-               first.lfe ? " + LFE" : "", first.dialnorm, first.bsid, first.bsmod,
-               first.dsurmod == 2 ? ", Dolby Surround" : "");
-        printf("frames     %d decoded, %ld ok, CRC failures %ld, bitstream errors %ld, other %ld\n", ok, good,
-               errors[4], errors[5], errors[1] + errors[2] + errors[3]);
+        printf("stream     %s %d Hz, %d kbit/s, %s (acmod %d%s), dialnorm -%d dB, bsid %d, bsmod %d%s, %d blocks a frame\n",
+               first.eac3 ? "E-AC-3" : "AC-3", first.sample_rate, first.bitrate, ac3_acmod_name(first.acmod, first.lfe),
+               first.acmod, first.lfe ? " + LFE" : "", first.dialnorm, first.bsid, first.bsmod,
+               first.dsurmod == 2 ? ", Dolby Surround" : "", first.blocks);
+        printf("frames     %d decoded, %ld ok, CRC failures %ld, bitstream errors %ld, unsupported %ld, other %ld, "
+               "skipped (other substreams) %ld\n",
+               ok, good, errors[4], errors[5], errors[3], errors[1] + errors[2], skipped);
         if (errors[5]) {
             printf("errors at  blocks:");
             for (int k = 0; k < 6; k++) printf(" %ld", err_block[k]);
@@ -546,8 +571,8 @@ static int decode_all(const Frames *fr, bool native, bool report, FILE *wav, lon
         printf("parse      unused bits all zero in %ld/%ld frames (%.3f%%); free bits min %ld avg %.1f max %ld\n",
                tail_zero, good, good ? 100.0 * tail_zero / good : 0, free_min, good ? free_sum / good : 0, free_max);
         printf("tools      short blocks %ld ch-blocks, coupling %ld blocks (phase flags %ld), rematrixing %ld "
-               "blocks, delta alloc %ld, dither %ld ch-blocks\n",
-               short_blocks, cpl, phase, remat, dba, dith);
+               "blocks, delta alloc %ld, dither %ld ch-blocks, spectral extension %ld blocks, AHT %ld ch-blocks\n",
+               short_blocks, cpl, phase, remat, dba, dith, spx, aht);
         printf("exponents  reuse %ld, D15 %ld, D25 %ld, D45 %ld\n", exps[0], exps[1], exps[2], exps[3]);
         long total = 0;
         for (int k = 0; k < 16; k++) total += baps[k];
@@ -597,7 +622,7 @@ static int decode_all(const Frames *fr, bool native, bool report, FILE *wav, lon
             printf("comb       block-rate harmonics vs neighbours: mean %.2f, worst %.2f at %.0f Hz\n",
                    nh ? sum_ratio / nh : 0, worst, (double)worst_k * rate / 256);
         }
-        if (fr->n) printf("time       %.1f s .. %.1f s\n", fr->f[0].t, fr->f[fr->n - 1].t + 0.032);
+        if (fr->n) printf("time       %.1f s .. %.1f s\n", fr->f[0].t, fr->f[0].t + (double)a->samples / first.sample_rate);
     }
     free(a->blocks);
     free(a);
@@ -634,15 +659,15 @@ static void wav_header(FILE *f, int rate, int ch, long samples) {
 
 int main(int argc, char **argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: ac3dump info|stats|wav|bench FILE [OUT.wav] [--from S] [--to S] [--seconds S] "
+        fprintf(stderr, "usage: ac3dump info|stats|wav|f32|raw|bench FILE [OUT] [--from S] [--to S] [--seconds S] "
                         "[--track N] [--native]\n");
         return 2;
     }
     const char *cmd = argv[1], *path = argv[2], *out = NULL;
     Opts o = {0, 1e12, 0, false, false};
     int i = 3;
-    if (!strcmp(cmd, "wav") || !strcmp(cmd, "raw")) {
-        if (argc < 4) die("wav/raw need an output file");
+    if (!strcmp(cmd, "wav") || !strcmp(cmd, "raw") || !strcmp(cmd, "f32")) {
+        if (argc < 4) die("wav/raw/f32 need an output file");
         out = argv[3];
         i = 4;
     }
@@ -661,20 +686,20 @@ int main(int argc, char **argv) {
         if (!load(path, &o, &fr, &m)) die("cannot open the file");
         for (int t = 0; t < m.ntracks; t++)
             printf("track %d: %s%s\n", m.tracks[t].number, m.tracks[t].codec,
-                   !strcmp(m.tracks[t].codec, "A_AC3") ? "" : " (not AC-3)");
+                   dolby(m.tracks[t].codec) ? "" : " (not AC-3/E-AC-3)");
         Opts one = o;
         one.count_only = false;
         for (int t = 0; t < m.ntracks; t++) {
-            if (strcmp(m.tracks[t].codec, "A_AC3")) continue;
+            if (!dolby(m.tracks[t].codec)) continue;
             Frames f2 = {0};
             Mkv m2;
             one.track = m.tracks[t].number;
             load(path, &one, &f2, &m2);
             Ac3Info in;
             if (f2.n && ac3_parse_header(f2.data, (size_t)f2.f[0].size, &in))
-                printf("  AC-3 track %d: %d frames = %.1f s, %d Hz, %d kbit/s, %s, dialnorm -%d, timestamp gaps %ld\n",
-                       one.track, f2.n, f2.n * 0.032, in.sample_rate, in.bitrate, ac3_acmod_name(in.acmod, in.lfe),
-                       in.dialnorm, m2.gaps);
+                printf("  %s track %d: %d frames = %.1f s, %d Hz, %d kbit/s, %s, dialnorm -%d, timestamp gaps %ld\n",
+                       in.eac3 ? "E-AC-3" : "AC-3", one.track, f2.n, f2.f[f2.n - 1].t - f2.f[0].t, in.sample_rate,
+                       in.bitrate, ac3_acmod_name(in.acmod, in.lfe), in.dialnorm, m2.gaps);
             free(f2.data);
             free(f2.f);
         }
@@ -686,8 +711,8 @@ int main(int argc, char **argv) {
             load(path, &o, &fr, &m);
             Ac3Info in;
             if (fr.n && ac3_parse_header(fr.data, (size_t)fr.f[0].size, &in))
-                printf("raw AC-3: %d frames = %.1f s, %d Hz, %d kbit/s, %s\n", fr.n, fr.n * 0.032, in.sample_rate,
-                       in.bitrate, ac3_acmod_name(in.acmod, in.lfe));
+                printf("raw %s: %d frames = %.1f s, %d Hz, %d kbit/s, %s\n", in.eac3 ? "E-AC-3" : "AC-3", fr.n,
+                       fr.f[fr.n - 1].t - fr.f[0].t, in.sample_rate, in.bitrate, ac3_acmod_name(in.acmod, in.lfe));
         }
         return 0;
     }
@@ -695,7 +720,7 @@ int main(int argc, char **argv) {
     if (!fr.n) die("no AC-3 frames found");
     if (m.ntracks) printf("track      %d (of %d tracks), timestamp gaps %ld\n", m.want, m.ntracks, m.gaps);
     if (!strcmp(cmd, "stats")) {
-        decode_all(&fr, o.native, true, NULL, NULL);
+        decode_all(&fr, o.native, true, NULL, NULL, NULL);
     } else if (!strcmp(cmd, "raw")) { /* the track as a raw AC-3 elementary stream */
         FILE *f = fopen(out, "wb");
         if (!f) die("cannot create the output file");
@@ -708,24 +733,34 @@ int main(int argc, char **argv) {
         uint8_t zero[44] = {0};
         fwrite(zero, 1, 44, f);
         long samples = 0;
-        decode_all(&fr, false, false, f, &samples);
+        decode_all(&fr, false, false, f, &samples, NULL);
         wav_header(f, 48000, 2, samples);
         fclose(f);
         printf("wrote %s: %.1f s stereo\n", out, samples / 48000.0);
+    } else if (!strcmp(cmd, "f32")) {
+        FILE *f = fopen(out, "wb");
+        if (!f) die("cannot create the output file");
+        long samples = 0;
+        decode_all(&fr, o.native, false, NULL, &samples, f);
+        fclose(f);
+        printf("wrote %s: %.1f s, %s\n", out, samples / 48000.0, o.native ? "every channel (WAV order)" : "Lo/Ro");
     } else if (!strcmp(cmd, "bench")) {
         Ac3Dec *d = ac3_open();
         ac3_set_layout(d, o.native ? AC3_LAYOUT_NATIVE : AC3_LAYOUT_STEREO);
         static float pcm[AC3_SAMPLES * AC3_MAX_CHANNELS];
         clock_t t0 = clock();
         long frames = 0;
+        double audio = 0;
         do {
             for (int k = 0; k < fr.n; k++) {
                 int ch;
-                ac3_decode(d, fr.data + fr.f[k].off, (size_t)fr.f[k].size, pcm, &ch, NULL);
+                Ac3Info in = {0};
+                ac3_decode(d, fr.data + fr.f[k].off, (size_t)fr.f[k].size, pcm, &ch, &in);
+                if (ch) audio += (double)in.samples / in.sample_rate;
             }
             frames += fr.n;
         } while (clock() - t0 < 2 * CLOCKS_PER_SEC);
-        double secs = (double)(clock() - t0) / CLOCKS_PER_SEC, audio = frames * 0.032;
+        double secs = (double)(clock() - t0) / CLOCKS_PER_SEC;
         printf("bench      %ld frames (%.0f s of audio) in %.2f s: %.0fx real time, %.1f us per frame (%s)\n", frames,
                audio, secs, audio / secs, secs * 1e6 / frames, o.native ? "native layout" : "stereo downmix");
         ac3_close(d);

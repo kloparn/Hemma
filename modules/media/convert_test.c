@@ -32,6 +32,10 @@ TEST(convert_knows_what_each_file_needs) {
     CHECK_INT(convert_need(&f), CONV_REMUX);
     f = video("mkv", "hevc", "ac3");
     CHECK_INT(convert_need(&f), CONV_TRANSCODE);
+    f = video("mkv", "hevc", "eac3"); /* Dolby Digital Plus ("DDP5.1"): silent in Chrome until converted */
+    CHECK_INT(convert_need(&f), CONV_TRANSCODE);
+    f = video("mkv", "h264", "eac3");
+    CHECK_INT(convert_need(&f), CONV_TRANSCODE);
     f = video("mkv", "hevc", "dts");
     CHECK_INT(convert_need(&f), CONV_NONE);
     f = video("mkv", "av1", "aac");
@@ -344,7 +348,33 @@ TEST(convert_never_writes_over_a_copy) {
     CHECK(!path_stat(dst, NULL, NULL, NULL));
 }
 
-/* HEMMA_TEST_CONVERT=<an .mkv>: convert its first 30 s and check what came out. */
+/* Subtitles taken out of a file go next to it, named so the library pairs them with the video and
+   its copy - and never over a file that is there. */
+TEST(convert_saves_subtitles_next_to_the_original) {
+    char root[512], video[700], path[800];
+    str_copy(root, sizeof root, test_tmpdir());
+    snprintf(video, sizeof video, "%s/x.mkv", root);
+    CHECK(convert_save_sub(video, "eng", "English", false, "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n", 37));
+    snprintf(path, sizeof path, "%s/x.en.srt", root);
+    Buf got = {0};
+    CHECK(file_read_all(path, &got, 1000));
+    CHECK_INT((int)got.len, 37);
+    buf_free(&got);
+    CHECK(!convert_save_sub(video, "en-GB", "", false, "other", 5)); /* the same name: the first stays */
+    CHECK(file_read_all(path, &got, 1000) && got.len == 37);
+    buf_free(&got);
+    CHECK(convert_save_sub(video, "und", "English SDH", true, "x", 1));
+    snprintf(path, sizeof path, "%s/x.sdh.forced.srt", root);
+    CHECK(path_stat(path, NULL, NULL, NULL));
+    CHECK(!convert_save_sub(video, "swe", "", false, "", 0)); /* nothing to save */
+    char lang[16];
+    CHECK(media_sub_for("x.mkv", "x.en.srt", lang, sizeof lang) && str_eq(lang, "en"));
+    CHECK(media_sub_for("x.web.mp4", "x.en.srt", lang, sizeof lang) && str_eq(lang, "en"));
+    CHECK(media_sub_for("x.mkv", "x.sdh.forced.srt", lang, sizeof lang) && str_eq(lang, ""));
+}
+
+/* HEMMA_TEST_CONVERT=<an .mkv>: convert its first 30 s and check what came out (its text subtitles
+   land next to it as .srt: point it at a copy, not at a household's original). */
 TEST(convert_real_file_when_given) {
     const char *src = plat_getenv("HEMMA_TEST_CONVERT");
     if (!src || !*src) return;
@@ -360,10 +390,10 @@ TEST(convert_real_file_when_given) {
     MediaProbe p;
     CHECK(media_probe_file(j.dst, &p));
     CHECK_STR(p.container, "mp4");
-    CHECK_STR(p.vcodec, "h264");
+    CHECK(str_eq(p.vcodec, "h264") || str_eq(p.vcodec, "hevc")); /* (HEVC is copied) */
     CHECK_STR(p.acodec, "aac");
-    CHECK_INT(p.playable, PLAY_YES);
+    CHECK_INT(p.playable, str_eq(p.vcodec, "h264") ? PLAY_YES : PLAY_MAYBE);
     CHECK(p.duration_ms > 28000 && p.duration_ms < 32000);
-    fprintf(stderr, "    converted 30 s in %lld ms: %s, %lld KB, %dx%d -> %s\n", (long long)(now_ms() - t0), j.what,
-            (long long)(j.out_bytes >> 10), p.width, p.height, j.dst);
+    fprintf(stderr, "    converted 30 s in %lld ms: %s, %lld KB, %dx%d, %d subtitle track(s) saved -> %s\n",
+            (long long)(now_ms() - t0), j.what, (long long)(j.out_bytes >> 10), p.width, p.height, j.subs, j.dst);
 }

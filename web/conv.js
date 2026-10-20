@@ -5,7 +5,8 @@
 //   in:  {file, wasm}        a File and the module's URL
 //        {put, at}           send the copy, from byte `at`, to that address (a PUT)
 //   out: {pm}                progress, 0..1000
-//        {size}              the copy is made, this many bytes: it waits here to be sent
+//        {size, subs}        the copy is made, this many bytes: it waits here to be sent; subs = the
+//                            file's text subtitles as SRT, [{lang, name, forced, text}] (maybe none)
 //        {status, body}      the PUT's answer; status 0 = none came (the connection dropped)
 //        {lost: true}        the copy can't be read any more (the browser's disk filled up?)
 //        {error}             why there is none (the original is sent instead)
@@ -89,7 +90,13 @@ self.onmessage = async (e) => {
     fold();
     if (rc === 1) {
       made = new Blob([copy], { type: 'video/mp4' });
-      postMessage({ size: made.size });
+      const subs = [];
+      for (let i = 0; i < x.conv_subs(); i++) {
+        const at = x.conv_sub_text(i);
+        subs.push({ lang: text(x.conv_sub_lang(i)), name: text(x.conv_sub_name(i)), forced: !!x.conv_sub_forced(i),
+          text: new TextDecoder().decode(bytes().subarray(at, at + x.conv_sub_len(i))) });
+      }
+      postMessage({ size: made.size, subs });
     } else {
       postMessage({ error: text(x.conv_err()) });
     }

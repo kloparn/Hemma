@@ -874,7 +874,7 @@ static void judge(MediaProbe *o, bool parsed) {
         }
     } else if (!strcmp(ac, "ac3") || !strcmp(ac, "eac3")) {
         pa = PLAY_MAYBE;
-        set_str(wa, sizeof wa, "Dolby audio: Safari/Edge only");
+        set_str(wa, sizeof wa, "Dolby sound: Safari/Edge only - silent in Chrome and Firefox");
     } else if (!strcmp(ac, "dts")) {
         pa = PLAY_NO;
         set_str(wa, sizeof wa, "DTS audio isn't supported by browsers");
@@ -913,14 +913,17 @@ static void judge(MediaProbe *o, bool parsed) {
         set_str(wc, sizeof wc, "unknown container");
     }
 
-    /* most restrictive verdict wins; on ties codecs explain better than containers */
+    /* most restrictive verdict wins; on ties codecs explain better than containers, and sound that
+       plays silently is the bigger surprise than a picture needing new hardware */
     Playable best = pv;
     const char *why = wv;
-    if (severity(pa) > severity(best)) best = pa, why = wa;
+    if (severity(pa) > severity(best) || (pa == PLAY_MAYBE && pv == PLAY_MAYBE)) best = pa, why = wa;
     if (severity(pc) > severity(best)) best = pc, why = wc;
     o->playable = best;
     set_str(o->why, sizeof o->why, best == PLAY_YES ? "" : why);
 }
+
+void media_probe_judge(MediaProbe *p) { judge(p, true); }
 
 /* ===================================================================== API */
 

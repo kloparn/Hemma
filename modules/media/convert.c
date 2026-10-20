@@ -31,7 +31,7 @@ ConvertNeed convert_need(const MediaFile *f) {
     if (!f || f->type != MF_VIDEO || f->web || f->role == MF_WEBCOPY) return CONV_NONE;
     const MediaProbe *p = &f->probe;
     if (!container_is(p, "mkv", "webm")) return CONV_NONE; /* the demuxer we have */
-    bool aac = !p->acodec[0] || str_eq(p->acodec, "aac"), ac3 = str_eq(p->acodec, "ac3");
+    bool aac = !p->acodec[0] || str_eq(p->acodec, "aac"), ac3 = str_eq(p->acodec, "ac3") || str_eq(p->acodec, "eac3");
     if (str_eq(p->vcodec, "mpeg2") && (aac || ac3)) return CONV_TRANSCODE;
     if (str_eq(p->vcodec, "h264") && ac3) return CONV_TRANSCODE; /* picture copied, sound re-encoded */
     if (str_eq(p->vcodec, "h264") && aac) return CONV_REMUX;
@@ -94,6 +94,17 @@ static void on_progress(void *ctx, int permille) {
     watch_stop(io);
 }
 
+bool convert_save_sub(const char *video, const char *lang, const char *name, bool forced, const char *srt, size_t len) {
+    char path[1100];
+    if (!srt || !len || !media_sub_sidecar(video, lang, name, forced, path, sizeof path)) return false;
+    if (path_stat(path, NULL, NULL, NULL)) return false; /* there already: that one stays */
+    if (!file_write_atomic(path, srt, len)) {
+        log_warn("convert: couldn't save the subtitles %s", path);
+        return false;
+    }
+    return true;
+}
+
 bool convert_file(ConvertJob *j) {
     j->err[0] = j->what[0] = '\0';
     atomic_store(&j->permille, 0);
@@ -122,10 +133,15 @@ bool convert_file(ConvertJob *j) {
                     .quality = j->quality,
                     .audio_kbps = j->audio_kbps,
                     .limit_ns = j->limit_ns,
+                    .want_subs = true,
                     .stop = &io.halt,
                     .progress = on_progress,
                     .progress_ctx = &io};
     bool ok = av_convert(&av);
+    j->subs = 0;
+    for (int k = 0; ok && k < av.nsubs; k++) /* (next to the original: the library gives them to its copy too) */
+        j->subs += convert_save_sub(j->src, av.subs[k].lang, av.subs[k].name, av.subs[k].forced, av.subs[k].srt, av.subs[k].len);
+    av_convert_free(&av);
     str_copy(j->what, sizeof j->what, av.what);
     if (!ok) str_copy(j->err, sizeof j->err, av.err);
     if (ok && (fflush(io.dst) != 0 || !file_sync(io.dst))) { /* (a stopped or failed one goes: no fsync) */
@@ -384,7 +400,9 @@ static void worker(void *arg) {
     for (ConvItem *it; (it = pick()) != NULL;) {
         log_info("convert: %s", it->job.src);
         bool ok = convert_file(&it->job);
-        if (ok) log_info("convert: done %s (%s, %lld MB)", it->job.dst, it->job.what, (long long)(it->job.out_bytes >> 20));
+        if (ok)
+            log_info("convert: done %s (%s, %lld MB%s)", it->job.dst, it->job.what, (long long)(it->job.out_bytes >> 20),
+                     it->job.subs ? ", subtitles saved as .srt" : "");
         else log_warn("convert: %s - %s", it->job.src, it->job.err);
 
         lock_take(&g_cl);

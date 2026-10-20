@@ -217,7 +217,25 @@ typedef struct {
     const char *acodec; /* NULL: no sound */
     const uint8_t *apriv;
     size_t apriv_len;
+    struct { /* subtitle tracks 3 and 4 (codec NULL: none) */
+        const char *codec, *lang, *name;
+        bool forced;
+    } sub[2];
 } Tracks;
+
+/* a BlockGroup: a Block with its BlockDuration (subtitles come so) */
+static void w_group(W *w, int track, int ms, int dur_ms, const void *d, size_t n) {
+    size_t g = w_open(w, 0xA0);
+    w_id(w, 0xA1);
+    w_size8(w, 4 + n);
+    w_byte(w, 0x80 | track);
+    w_byte(w, (ms >> 8) & 0xFF);
+    w_byte(w, ms & 0xFF);
+    w_byte(w, 0);
+    w_put(w, d, n);
+    if (dur_ms) w_uint(w, 0x9B, (uint64_t)dur_ms);
+    w_close(w, g);
+}
 
 static size_t start_file(W *w, const Tracks *t, double ms) {
     memset(w, 0, sizeof *w);
@@ -254,6 +272,17 @@ static size_t start_file(W *w, const Tracks *t, double ms) {
         w_float(w, 0xB5, 48000.0);
         w_uint(w, 0x9F, 2);
         w_close(w, a);
+        w_close(w, tr);
+    }
+    for (int k = 0; k < 2; k++) {
+        if (!t->sub[k].codec) continue;
+        tr = w_open(w, 0xAE);
+        w_uint(w, 0xD7, (uint64_t)(3 + k));
+        w_uint(w, 0x83, 0x11);
+        w_bin(w, 0x86, t->sub[k].codec, strlen(t->sub[k].codec));
+        if (t->sub[k].lang) w_bin(w, 0x22B59C, t->sub[k].lang, strlen(t->sub[k].lang));
+        if (t->sub[k].name) w_bin(w, 0x536E, t->sub[k].name, strlen(t->sub[k].name));
+        if (t->sub[k].forced) w_uint(w, 0x55AA, 1);
         w_close(w, tr);
     }
     w_close(w, tracks);
@@ -494,7 +523,7 @@ TEST(conv_says_what_it_cannot_convert) {
     w_close(&in, seg);
     CHECK(!run(&in, &out, &j, &s));
     CHECK(j.unsupported);
-    CHECK_HAS(j.err, "V_AV1");
+    CHECK_HAS(j.err, "Its picture is AV1");
     CHECK_INT((int)out.len, 0); /* nothing written */
     free(in.p), free(out.p);
 
@@ -503,7 +532,7 @@ TEST(conv_says_what_it_cannot_convert) {
     w_close(&in, seg);
     CHECK(!run(&in, &out, &j, &s));
     CHECK(j.unsupported);
-    CHECK_HAS(j.err, "A_DTS sound");
+    CHECK_HAS(j.err, "Its sound is DTS");
     free(in.p), free(out.p);
 
     memset(&in, 0, sizeof in); /* not Matroska at all */
@@ -563,7 +592,7 @@ TEST(conv_turns_dolby_into_aac) {
         Seen s;
         CHECK(run(&in, &out, &j, &s));
         CHECK_STR(j.err, "");
-        CHECK_HAS(j.what, "Dolby → AAC");
+        CHECK_HAS(j.what, "Dolby Digital → AAC");
         int n[2];
         counts(&out, n);
         CHECK_INT(n[0], 23);
@@ -573,6 +602,90 @@ TEST(conv_turns_dolby_into_aac) {
         free(in.p), free(out.p);
     }
     CHECK_INT(aac[1], aac[0]); /* the hole became silence of the same length */
+}
+
+/* Dolby Digital Plus (E-AC-3, here in 3-block frames of 16 ms) becomes AAC too, and the file's text
+   subtitles - SRT and ASS - come back as SubRip texts on the copy's clock. */
+TEST(conv_turns_dolby_digital_plus_into_aac_and_keeps_text_subtitles) {
+    static uint8_t eac3[48 * 384];
+    size_t bytes = eac3_test_tone(eac3, sizeof eac3, 48);
+    int fsize = ac3_frame_size(eac3, bytes), nf = fsize > 0 ? (int)(bytes / (size_t)fsize) : 0;
+    CHECK_INT(fsize, 384);
+    CHECK_INT(nf, 48);
+    W in;
+    Tracks t = {"V_MPEG2", NULL, 0, 48, 32, "A_EAC3", NULL, 0,
+                {{"S_TEXT/UTF8", "eng", "English", false}, {"S_TEXT/ASS", "swe", NULL, true}}};
+    size_t seg = start_file(&in, &t, 768);
+    size_t cl = w_open(&in, 0x1F43B675);
+    w_uint(&in, 0xE7, 0);
+    w_group(&in, 3, 100, 1500, "Hello\r\nthere", 12);
+    const char *ass = "0,0,Default,,0,0,0,,{\\i1}Hej{\\i0}\\Nv\xC3\xA4rlden";
+    w_group(&in, 4, 200, 1000, ass, strlen(ass));
+    w_simple(&in, 3, 700, true, "Second", 6); /* no duration: 3 s */
+    w_group(&in, 3, 750, 500, "\n\n", 2);     /* nothing to show: left out */
+    static uint8_t pic[4096];
+    for (int k = 0, a = 0; k < 23 || a < nf;) {
+        if (k < 23 && (a >= nf || frame_ms(k) <= a * 16)) {
+            w_simple(&in, 1, frame_ms(k), true, pic, mpeg2_picture(pic, k));
+            k++;
+        } else {
+            w_simple(&in, 2, a * 16, true, eac3 + (size_t)a * fsize, (size_t)fsize);
+            a++;
+        }
+    }
+    w_close(&in, cl);
+    w_close(&in, seg);
+    for (int want = 0; want < 2; want++) {
+        W out;
+        AvConvJob j = {.want_subs = want};
+        Seen s;
+        CHECK(run(&in, &out, &j, &s));
+        CHECK_STR(j.err, "");
+        CHECK_HAS(j.what, "Dolby Digital Plus → AAC");
+        int n[2];
+        counts(&out, n);
+        CHECK(n[1] >= nf * 3 / 4 && n[1] <= nf * 3 / 4 + 3); /* 768 samples a frame, 1024 an AAC one */
+        CHECK(track_bytes(&out, 1) / n[1] > 40);             /* a tone, not silence */
+        CHECK_INT(j.nsubs, want ? 2 : 0);
+        if (want) {
+            CHECK_STR(j.subs[0].lang, "eng");
+            CHECK_STR(j.subs[0].name, "English");
+            CHECK(!j.subs[0].forced);
+            CHECK_INT(j.subs[0].cues, 2);
+            CHECK_STR(j.subs[0].srt, "1\n00:00:00,100 --> 00:00:01,600\nHello\nthere\n\n"
+                                     "2\n00:00:00,700 --> 00:00:03,700\nSecond\n\n");
+            CHECK_INT((int)j.subs[0].len, (int)strlen(j.subs[0].srt));
+            CHECK_STR(j.subs[1].lang, "swe");
+            CHECK(j.subs[1].forced);
+            CHECK_STR(j.subs[1].srt, "1\n00:00:00,200 --> 00:00:01,200\nHej\nv\xC3\xA4rlden\n\n");
+        }
+        av_convert_free(&j);
+        CHECK_INT(j.nsubs, 0);
+        free(out.p);
+    }
+    free(in.p);
+}
+
+/* Sound the converter can't change: said in words people know, and nothing is made. */
+TEST(conv_names_the_sound_it_cant_convert) {
+    W in;
+    Tracks t = {"V_MPEG2", NULL, 0, 48, 32, "A_DTS", NULL, 0, {{"S_TEXT/UTF8", "eng", NULL, false}}};
+    size_t seg = start_file(&in, &t, 100);
+    size_t cl = w_open(&in, 0x1F43B675);
+    w_uint(&in, 0xE7, 0);
+    static uint8_t pic[4096];
+    w_simple(&in, 1, 0, true, pic, mpeg2_picture(pic, 0));
+    w_group(&in, 3, 0, 500, "Hi", 2);
+    w_close(&in, cl);
+    w_close(&in, seg);
+    W out;
+    AvConvJob j = {.want_subs = true};
+    Seen s;
+    CHECK(!run(&in, &out, &j, &s));
+    CHECK(j.unsupported);
+    CHECK_STR(j.err, "Its sound is DTS, which the converter can't change yet (browsers play it silently)");
+    CHECK_INT(j.nsubs, 0);
+    free(in.p), free(out.p);
 }
 
 /* ------------------------------------------------- files built from streams of blocks */
@@ -934,15 +1047,37 @@ TEST(conv_fuzz_seeds) {
     static Stream v, a;
     static uint8_t ac3[4 * 768]; /* the test encoder is slow: 4 frames, sent in turn */
     CHECK_INT((int)ac3_test_tone(ac3, sizeof ac3, 4), 4 * 768);
+    static uint8_t eac3[8 * 384]; /* Dolby Digital Plus, 3-block frames */
+    CHECK_INT((int)eac3_test_tone(eac3, sizeof eac3, 8), 8 * 384);
     static const uint8_t hvcc[] = {1,    0x01, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 0x5D, 0xF0, 0, 0xFC,
                                    0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
-    for (int seed = 0; seed < 9; seed++) {
+    for (int seed = 0; seed < 10; seed++) {
         uint8_t avcc[256], asc[2];
         size_t avcc_len = 0;
         Tracks mp2 = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0}, t = mp2;
         const char *name = "";
-        bool fails = false, laced = false;
+        bool fails = false, laced = false, built = false;
+        W in, out;
         switch (seed) {
+        case 9: { /* Dolby Digital Plus and two text subtitle tracks (SRT, ASS) */
+            name = "mpeg2-eac3-subs.mkv";
+            t = (Tracks){"V_MPEG2", NULL, 0, 48, 32, "A_EAC3", NULL, 0,
+                         {{"S_TEXT/UTF8", "eng", "English", false}, {"S_TEXT/ASS", "swe", NULL, true}}};
+            size_t seg = start_file(&in, &t, 400), cl = w_open(&in, 0x1F43B675);
+            w_uint(&in, 0xE7, 0);
+            w_group(&in, 3, 10, 300, "Hello <i>there</i>", 18);
+            const char *ass = "0,0,Default,,0,0,0,,{\\an8}Hej\\Nd\xC3\xA5";
+            w_group(&in, 4, 20, 300, ass, strlen(ass));
+            static uint8_t pic[4096];
+            for (int k = 0, f = 0; k < 12 || f < 8;) {
+                if (k < 12 && (f >= 8 || frame_ms(k) <= f * 16)) w_simple(&in, 1, frame_ms(k), true, pic, mpeg2_picture(pic, k)), k++;
+                else w_simple(&in, 2, f * 16, true, eac3 + (size_t)f * 384, 384), f++;
+            }
+            w_close(&in, cl);
+            w_close(&in, seg);
+            built = true;
+            break;
+        }
         case 0:
             name = "mpeg2-aac.mkv";
             add_mpeg2(&v, 0, 30, 48, 32, false, 0, false);
@@ -991,14 +1126,16 @@ TEST(conv_fuzz_seeds) {
             t = (Tracks){"V_MPEGH/ISO/HEVC", hvcc, sizeof hvcc, 64, 48, NULL, NULL, 0};
         }
         }
-        W in, out;
-        if (laced) mux_laced(&in, &t, v.n * 33.4, &v, &a);
+        if (built) {
+        } else if (laced) mux_laced(&in, &t, v.n * 33.4, &v, &a);
         else mux(&in, &t, v.n * 33.4, &v, t.acodec ? &a : NULL);
-        AvConvJob j = {0};
+        AvConvJob j = {.want_subs = true};
         Seen s;
         bool ok = run(&in, &out, &j, &s);
         if (fails) CHECK(!ok && j.unsupported);
         else if (!ok) test_fail(__FILE__, __LINE__, "seed %s: %s", name, j.err);
+        if (built) CHECK_INT(j.nsubs, 2);
+        av_convert_free(&j);
         if (dir && *dir) {
             char path[1024];
             snprintf(path, sizeof path, "%s/%s", dir, name);
