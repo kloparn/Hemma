@@ -12,6 +12,41 @@ You'll need:
 - another computer (Windows, Mac or Linux) to set things up from,
 - a network cable to the router (recommended) or your Wi-Fi name and password.
 
+## The quick way: Hemma's ready-made image
+
+For a Pi 3, 4, 5 or Zero 2 W, every release has an image: Raspberry Pi OS Lite with Hemma
+ready to go. No terminal, no SSH.
+
+1. Download `hemma-<version>-pi.img.xz` from the
+   [newest release](https://github.com/kloparn/Hemma/releases/latest).
+2. In **Raspberry Pi Imager** (<https://www.raspberrypi.com/software/>): **Choose OS → Use
+   custom**, pick the file, choose your memory card (or a USB stick: a Pi 3B+, 4 and 5 start
+   from one too), and write it. Imager offers to customise it: set the Wi-Fi there if the Pi
+   won't have a network cable, and the time zone. Everything else is optional.
+3. Put the card in the Pi, plug in the network cable and then the power. The first start
+   takes a few minutes: the Pi grows the system to fill the card, then Hemma installs itself.
+4. Open **http://hemma.local** (a TV, or a phone that can't find it: the Pi's address from
+   your router's list of devices). The welcome page asks for the **setup code**. It's made on
+   your Pi at its first start, so it isn't in the image. Read it in one of two places:
+   - switch the Pi off, put the card in any computer, and open `HEMMA-SETUP.txt` on it;
+   - or plug a screen into the Pi: it's on the login screen.
+
+What the image adds to the official Raspberry Pi OS Lite, and what it doesn't:
+
+- Hemma, installed at the first start by its own installer, exactly as below. The password
+  secret and the setup code are made on your Pi, then.
+- Security updates for the system, installed by themselves every day (`unattended-upgrades`),
+  and Hemma's own updates under **System → Updates**.
+- The name `hemma` (`hemma.local`), unless you chose a name in Imager.
+- No users, no passwords, no SSH keys: Raspberry Pi OS makes its SSH keys at the first start,
+  and SSH stays off unless you turn it on in Imager.
+
+Then add the movie disk (step 7, from Hemma's page) and you're done. Steps 1 to 6 below are
+the same thing by hand, for a Pi that already runs Raspberry Pi OS or when you'd rather see
+each part.
+
+## The step-by-step way
+
 The Pi has no screen or keyboard in this setup. You'll talk to it from your computer over
 **SSH**. If that's new to you, read [SSH: talking to a computer without a screen](ssh.md)
 first. It's short.

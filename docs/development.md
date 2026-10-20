@@ -195,6 +195,32 @@ TweetNaCl) made with the project's secret key. The public half is built into the
 - **By hand:** unpack a download and run `hemma --verify-release <its folder>` with a Hemma you
   trust (exit 0 = signed by the project).
 
+### The Raspberry Pi image
+
+Every release also has `hemma-<version>-pi.img.xz` (issue #71): the official Raspberry Pi OS Lite
+(64-bit) with Hemma's Pi download and a first-start unit added. `tools/image/build.sh` makes it
+**without root**: it never mounts or runs anything from the image, it writes into the image's ext4
+partition with `debugfs`, so it builds on any Linux (CI's runner, WSL):
+
+```sh
+sh tools/ci/bundle.sh build dist            # the downloads, among them hemma-pi64.tar.gz
+HEMMA_IMAGE_CACHE=~/img-cache sh tools/image/build.sh dist/hemma-pi64.tar.gz dist
+```
+
+It checks the base image's SHA-256 (Raspberry Pi's, beside it), and fetches the few packages the
+image lacks for security updates (`unattended-upgrades`, `acl` and their dependencies -
+`tools/image/debs.awk` works out which) from Debian, checked against Debian's signed index with the
+keyring inside the image itself. At the first start, `hemma-firstboot.service` installs those,
+names the machine `hemma` unless Raspberry Pi Imager named it, and runs the bundled
+`install-pi.sh`: the password secret and the setup code are made on that Pi. Nothing secret is in
+the image (no users, no SSH host keys, `/etc/machine-id` unset). In CI, `HEMMA_IMAGE=1` makes
+bundle.sh build it, and the release's signed `SHA256SUMS` covers it. It adds a few minutes to a
+release (a 550 MB download, unpacking, packing 3 GB again with xz).
+
+**Only the newest release keeps its image:** once a release is out, release.yml deletes the
+`.img.xz` from every older one (only when the new one has its image). Their program downloads stay,
+and so do their `SHA256SUMS` - `hemma-upgrade` checks only the files it takes.
+
 ## Project layout (short)
 
 ```

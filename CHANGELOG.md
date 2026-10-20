@@ -4,6 +4,35 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 0.23.0 (2026-10-20)
+
+A ready-made Raspberry Pi image: write it, plug the Pi in, open http://hemma.local (#71).
+
+### New
+
+- **`hemma-<version>-pi.img.xz`** with every release: Raspberry Pi OS Lite (64-bit: Pi 3, 4, 5,
+  Zero 2) with Hemma ready to go. Write it to a memory card or USB stick with Raspberry Pi Imager
+  (**Use custom**), put it in the Pi, plug it in, and open `http://hemma.local` a few minutes
+  later. No terminal, no SSH, no installer to run.
+- **Made on your Pi, never in the image:** the password secret, the one-time setup code and the
+  SSH host keys are created at the first start; there are no users or passwords in it, and SSH
+  stays off unless you turn it on in Imager. Imager's settings (Wi-Fi, user, name, time zone)
+  still apply - the machine is named `hemma` only if you didn't choose a name.
+- **Security updates by themselves:** the image brings `unattended-upgrades` (installed at the
+  first start, no internet needed for that), and Hemma updates from System → Updates.
+- **Only the newest release has an image.** When a new release comes out, the image goes from
+  the older ones (their program downloads stay): nobody should start a new Pi from an old
+  Raspberry Pi OS and an old Hemma.
+
+### For developers
+
+- tools/image/build.sh (no root: debugfs writes into the image's ext4 partition) + debs.awk (the
+  .debs the image lacks, from Debian's index verified with the keyring inside the image) +
+  firstboot.sh / hemma-firstboot.service (runs the bundled install-pi.sh at the first start).
+  release.yml builds it with every release (bundle.sh with HEMMA_IMAGE=1) and the release's
+  SHA256SUMS covers it; after publishing, it deletes the `.img.xz` from every older release
+  (`gh release delete-asset`) - only when the new one has its image.
+
 ## 0.22.0 (2026-10-20)
 
 The movie disk from the browser: plug it in, press a button (#74).
