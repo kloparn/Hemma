@@ -48,7 +48,7 @@ pack() {
     echo "$ver" > "$d/VERSION" # (signed with the rest: hemma-upgrade reads the version here)
     chmod 644 "$d"/* # (whatever the checkout says - a Windows drive calls everything executable)
     chmod 755 "$d/$prog"
-    for x in install-pi.sh hemma-upgrade; do if [ -f "$d/$x" ]; then chmod 755 "$d/$x"; fi; done
+    for x in install-pi.sh hemma-upgrade hemma-disks; do if [ -f "$d/$x" ]; then chmod 755 "$d/$x"; fi; done
     printf 'Hemma %s - %s\n\n%s\n\nGuides: %s/tree/v%s/docs\n' "$ver" "$name" "$how" "$repo" "$ver" > "$d/README.txt"
     (cd "$d" && sha256sum -- * > SHA256SUMS)
     sign "$d"
@@ -60,7 +60,8 @@ Media folders the uploads may write to can follow: sudo sh install-pi.sh ./PROG 
 It keeps the program it replaces as /opt/hemma/hemma.prev (going back: docs/raspberry-pi.md).
 Later updates: sudo hemma-upgrade (installed with it), or System -> Updates in Hemma.'
 units="deploy/install-pi.sh deploy/hemma.service deploy/hemma-setup.service deploy/hemma-setup.path
-       deploy/hemma-upgrade deploy/hemma-update.service deploy/hemma-update.path"
+       deploy/hemma-upgrade deploy/hemma-update.service deploy/hemma-update.path
+       deploy/hemma-disks deploy/hemma-disks.service deploy/hemma-disks.path"
 # shellcheck disable=SC2086 # (the list splits on purpose)
 pack hemma-pi64 hemma-pi64 "$(echo "$pi" | sed 's/PROG/hemma-pi64/g')" $units
 # shellcheck disable=SC2086

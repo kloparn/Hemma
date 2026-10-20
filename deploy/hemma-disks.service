@@ -1,0 +1,17 @@
+# /etc/systemd/system/hemma-disks.service — installed by deploy/install-pi.sh
+#
+# Movie disks from Hemma's Library settings (issue #74). Mounting and formatting need root, and Hemma
+# stays without it (user hemma, the system read-only around it): Hemma writes what an admin asked for -
+# use a disk, format an EMPTY one, forget one - into /var/lib/hemma/disks/request, and hemma-disks.path
+# starts this helper. It looks at the disk again itself and never touches the system's own disk, a
+# disk that isn't on USB, anything mounted, or a disk with any file system when formatting. Answers go
+# to /var/lib/hemma-disks, which Hemma reads. The same helper by hand: sudo hemma-disks
+[Unit]
+Description=Hemma's movie disks
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/hemma-disks --from-hemma
+TimeoutStartSec=30min
+# No PrivateTmp/Protect*= here: they give the service a mount namespace of its own, and a disk mounted
+# in it would be gone for everyone else. (Mounts go through systemctl start <unit>.mount anyway.)

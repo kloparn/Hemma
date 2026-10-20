@@ -99,6 +99,10 @@ int media_kids_count(void);
 bool media_kids_at(int i, char *root, size_t rcap, char *dir, size_t dcap);
 void media_test_mounts(const char *list); /* tests: the disks offered for the library (";" between; NULL = none) */
 void media_kids_init(void); /* (media's init and stop) */
+/* A library folder more or less from outside an action (drives.c: a movie disk mounted or forgotten by the
+   disk helper): true = the folders changed, and a scan starts. */
+bool media_root_add(const char *dir);
+bool media_root_drop(const char *dir);
 void media_kids_stop(void);
 
 /* TV mode's pages (tiles.c) and the rows media offers to screens */

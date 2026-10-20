@@ -364,16 +364,47 @@ sudo systemctl start hemma
 
 ## 7. A USB disk for movies
 
-1. **Plug the disk in** (on a Pi 4/5, use a blue USB 3 port). A large 2.5" hard disk may
-   need more power than a Pi 3 can give; a powered USB hub solves that.
-2. **Find it:**
+**Plug the disk in** (on a Pi 4/5, use a blue USB 3 port). A large 2.5" hard disk may need
+more power than a Pi 3 can give; a powered USB hub solves that.
+
+Then, in Hemma, open **Watch → Library settings**. Within a few seconds a **Disks** card
+shows it (the System page says "New disk found" too):
+
+- **New disk found: Film disk** (exFAT, 2.0 TB) → **Use it for movies**. The Pi mounts it
+  at `/mnt/<its name>`, now and at every start (a missing disk never stops the Pi
+  starting), Hemma may save uploads and converted copies on it, and it becomes a library
+  folder. Hemma restarts once to reach it. Nothing on the disk is changed. ext4, exFAT,
+  NTFS and FAT disks work as they are.
+- **An empty disk** (nothing on it at all) → **Format for Hemma**, and type ERASE. It gets
+  one ext4 file system named `movies`, then the same as above. A disk with any file system
+  on it is never formatted from Hemma.
+- **Unplugged?** The System page says the movie disk is missing. Plug it back in and Hemma
+  mounts it again by itself. Not using it any more: **Forget** stops the Pi mounting it
+  (its files stay as they are) and takes it out of the library.
+
+This needs Hemma installed with its installer, 0.22.0 or newer: that brings the small root
+helper that does the mounting (Hemma itself never runs as root). It only ever touches USB
+disks, never the memory card, never anything mounted. The same from a terminal:
+
+```sh
+sudo hemma-disks                      # the disks, and Hemma's own
+sudo hemma-disks use <UUID>           # what "Use it for movies" does
+sudo hemma-disks format sdb           # an EMPTY disk only; asks you to type ERASE
+sudo hemma-disks forget <UUID>
+```
+
+### By hand
+
+For an older install, a disk somewhere else than USB, or when you'd rather do it yourself:
+
+1. **Find it:**
 
    ```sh
    lsblk -f
    ```
 
    Look for the disk's partition (often `sda1`), its type (`FSTYPE`) and its `UUID`.
-3. **A new or empty disk?** Format it as `ext4`, the Linux format, so uploads and
+2. **A new or empty disk?** Format it as `ext4`, the Linux format, so uploads and
    permissions just work. **This erases the disk**, so double-check the name:
 
    ```sh
@@ -382,7 +413,7 @@ sudo systemctl start hemma
 
    A disk that already has your movies on it (from a PC: NTFS or exFAT) can stay as it is.
    See the note below.
-4. **Mount it at a fixed place** every time the Pi starts:
+3. **Mount it at a fixed place** every time the Pi starts:
 
    ```sh
    sudo mkdir -p /srv/media
@@ -404,7 +435,7 @@ sudo systemctl start hemma
    df -h /srv/media          # shows the disk's size if it worked
    ```
 
-5. **Let Hemma use it.** Run the installer again with the folder. This allows uploads
+4. **Let Hemma use it.** Run the installer again with the folder. This allows uploads
    into it:
 
    ```sh
@@ -413,7 +444,7 @@ sudo systemctl start hemma
 
    Pass the program file you installed from (not `/opt/hemma/hemma` itself). List *all*
    your media folders each time. Run without folders, it keeps the current list.
-6. **Tell Hemma where it is:** in Hemma, open **Watch**. As long as it has no library
+5. **Tell Hemma where it is:** in Hemma, open **Watch**. As long as it has no library
    folders, it offers the ones the installer was given and the disks it can see, as
    buttons: press **Use /srv/media**. (Under **Library settings** they show as **+**
    buttons too, and you can type any other folder there and press **Save & scan**.)
@@ -424,7 +455,7 @@ prints the exact `/etc/fstab` line to use (with `uid=` and `gid=` for the `hemma
 Use the type `lsblk -f` shows (`ntfs3` for NTFS on current systems, or `exfat`).
 
 **A NAS or network share** works too: mount it (for example with `cifs` or `nfs` in
-`/etc/fstab`), then continue from step 5.
+`/etc/fstab`), then continue from step 4.
 
 ## Tips
 

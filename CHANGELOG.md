@@ -4,6 +4,42 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 0.22.0 (2026-10-20)
+
+The movie disk from the browser: plug it in, press a button (#74).
+
+### New
+
+- **"New disk found".** Plug a USB disk into the Pi: within seconds **Watch → Library
+  settings** shows it under **Disks** - its name, file system and size - and the System page
+  says so too. **Use it for movies** does the rest: the Pi mounts it at `/mnt/<its name>` now
+  and at every start (`nofail`: a missing disk never stops the Pi starting), Hemma may save
+  uploads and converted copies there, and it becomes a library folder. Hemma restarts once to
+  reach it. Nothing on the disk changes; ext4, exFAT, NTFS and FAT disks work as they are.
+- **Format for Hemma** - only for a disk with nothing on it at all, and only after typing
+  ERASE: one ext4 file system named `movies`, then used as above. A disk with any file system
+  on it is never formatted from Hemma.
+- **Missing disk.** Unplugged, the System page says "The movie disk … is missing" instead of
+  showing an empty library; plugged back in, Hemma has it mounted again by itself. **Forget**
+  stops the Pi mounting a disk you no longer use (its files stay).
+- **`sudo hemma-disks`** does the same from a terminal: list, `use`, `format`, `forget`.
+- **Needs an installer run** of this version (the update from System → Updates or `sudo
+  hemma-upgrade` is one): it brings the disk helper.
+
+### For developers
+
+- modules/media/drives.c: unprivileged detection (`/sys/block`, udev's `/run/udev/data`,
+  `/proc/self/mountinfo` - `media_drives_scan`, portable file reading, tested on a made-up
+  machine); the Disks card, the format dialog (`?format=<disk>`), the first-run offer, checks;
+  actions `media.drive_use/_format/_forget/_seen`; `media_root_add/_drop`.
+- deploy/hemma-disks (sh, root) + hemma-disks.service/.path: requests `use <UUID>`, `format
+  <disk> <bytes>`, `forget <UUID>` + a nonce in `/var/lib/hemma/disks/request`; answers in
+  `/var/lib/hemma-disks` (result, disks). Refuses the system's disk, non-USB disks, anything
+  mounted or in `/etc/fstab` by hand, and formatting anything with a file system. Writes
+  `/etc/fstab` (copied first, the new line checked with `findmnt --verify`, put back if the
+  mount fails) and `hemma.service.d/disks.conf` (never the installer's `media.conf`); mounts
+  through `systemctl start <unit>.mount`, so the mount is the system's, not the service's.
+
 ## 0.21.1 (2026-10-20)
 
 The first release with signed downloads - and so the first that updates itself (#73).
