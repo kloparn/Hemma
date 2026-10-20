@@ -8,7 +8,7 @@
    signing: the release that brings it is still signed with the old one, which every Hemma out there
    knows. A lost secret = the households install the next release by hand (docs/development.md). */
 static const char *const RELEASE_KEYS[] = {
-    NULL, /* (none yet: the maintainer's key goes here - until then nothing verifies) */
+    "4214322893363cf426f747cb7e425f6c12b481a52ecaca29b9088fb47cf9d4f7", /* the project's, since 0.21.1 */
 };
 
 static const uint8_t *g_test_key;
@@ -170,7 +170,7 @@ static bool verify(const char *dir, bool partial, char *why, size_t cap, int *fi
     }
     snprintf(path, sizeof path, "%s/%s", dir, RELEASE_SIG);
     if (!file_read_all(path, &sigtext, 1024)) {
-        fail(why, cap, "no SHA256SUMS.sig in %s: releases are signed since Hemma 0.21.0", dir);
+        fail(why, cap, "no SHA256SUMS.sig in %s: releases are signed since Hemma 0.21.1", dir);
         goto done;
     }
     uint8_t sig[64];

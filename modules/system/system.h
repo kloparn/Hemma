@@ -73,7 +73,7 @@ bool system_backup_bundle(const char *path, const char *salt, int64_t mtime, Buf
    the root helper deploy/hemma-upgrade (hemma-update.path) does it - only what the Hemma project
    signed, with a way back - answering in /var/lib/hemma-update: latest ("<unix> <version>" or
    "<unix> - <why>") and result ("<state> <unix> <version|-> <words>"). Both folders there = the
-   helper is installed (install-pi.sh from 0.21.0); else the tab says how to update by hand. */
+   helper is installed (install-pi.sh from 0.21.1); else the tab says how to update by hand. */
 void system_update_start(void);
 void system_update_stop(void);
 void system_update_tick(int64_t now_ms); /* read the answers; the daily check; an upload that came in */

@@ -4,6 +4,25 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 0.21.1 (2026-10-20)
+
+The first release with signed downloads - and so the first that updates itself (#73).
+
+0.21.0 was never published: its release stopped, as it should, because the project's signing
+key wasn't in place yet. This version carries the key, and everything 0.21.0 brought:
+
+- **`sudo hemma-upgrade`** on a Pi or any Linux installed with `install-pi.sh`: the newest
+  release, checked against the project's signature, with a way back if the new one doesn't start.
+- **System → Updates**: Check now (or once a day, if you turn it on), Install, and Install from
+  a file for a Pi without internet.
+- **Needs one installer run** from this download (`sudo sh install-pi.sh ./hemma-pi64`): it
+  brings `hemma-upgrade`. From then on, updates come from Hemma. More under 0.21.0 below.
+
+### For developers
+
+- The project's release key is in `RELEASE_KEYS` (core/release.c); CI signs with the matching
+  GitHub secret `HEMMA_SIGNING_KEY`.
+
 ## 0.21.0 (2026-10-20)
 
 Updates with one command or one tap - checked against the project's signature, with a way back

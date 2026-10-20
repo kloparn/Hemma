@@ -97,7 +97,7 @@ wget $repo/releases/download/v$ver/hemma-pi64.tar.gz
 tar xzf hemma-pi64.tar.gz && cd hemma-pi64
 sudo sh install-pi.sh ./hemma-pi64
 \`\`\`
-**Updating** a Hemma installed so (0.21.0 or newer): \`sudo hemma-upgrade\`, or System → Updates in Hemma.
+**Updating** a Hemma installed so (0.21.1 or newer): \`sudo hemma-upgrade\`, or System → Updates in Hemma.
 
 **Try it on a laptop first:** unpack it and start it with \`--demo\` for a made-up household
 (\`./hemma-mac-arm64 --demo\`), then open http://localhost:8080 - the login shows in its window.
