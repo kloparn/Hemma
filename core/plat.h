@@ -118,6 +118,7 @@ void dir_close(DirIter *it);
 bool thread_spawn(void (*fn)(void *), void *arg); /* detached */
 void thread_background(void); /* lower the calling thread's priority (long batch work) */
 int plat_cpu_count(void);     /* logical CPUs */
+const char *plat_bundle(void); /* the release download that is this build ("hemma-pi64" ...), NULL = none */
 
 typedef struct {
 #ifdef _WIN32

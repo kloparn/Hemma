@@ -160,8 +160,9 @@ CHANGELOG section, then every commit since the previous release. Nothing to tag 
 version without a CHANGELOG section stops it.
 
 A Mac, Linux or Pi download is a `.tar.gz` (it keeps the program executable), and a Linux or Pi
-one holds the installer and the service file too. Every download has a `SHA256SUMS` inside, and
-the release's own covers them all. There's no Windows download yet: Windows Defender's machine
+one holds the installer, the service files and `hemma-upgrade` too. Every download has a
+`SHA256SUMS` inside, and the release's own covers them all - each signed (below). There's no
+Windows download yet: Windows Defender's machine
 learning calls `hemma.exe` a trojan (a false positive), so it waits until the program is signed
 or cleared with Microsoft.
 
@@ -169,6 +170,30 @@ To see what a release would hold without publishing anything, start the workflow
 (Actions → release → Run workflow): the downloads are kept as an artifact of that run. Or pack
 them locally after `.\build.ps1 pi`, `pi32`, `linux` and `mac`, on Linux or in WSL:
 `sh tools/ci/bundle.sh build <output folder>`.
+
+### Signed releases
+
+Installed Hemmas update only to what the project signed (issue #73): every `SHA256SUMS` in a
+release has a `SHA256SUMS.sig` beside it, an Ed25519 signature (`core/ed25519.c`, ours, after
+TweetNaCl) made with the project's secret key. The public half is built into the program
+(`RELEASE_KEYS` in `core/release.c`), and `hemma-upgrade` asks the **installed** program,
+`hemma --verify-release <folder>`, before it installs anything.
+
+- **The key, once:** `hemma --gen-signing-key <file>` writes the secret (64 hex digits) into a new
+  file only you can read and prints the public half. Keep the file offline, with a copy
+  somewhere safe. The public half goes into `RELEASE_KEYS`; the file's contents into the GitHub
+  secret `HEMMA_SIGNING_KEY` (Settings → Secrets and variables → Actions).
+- **CI signs:** release.yml's publish job runs `tools/ci/bundle.sh` with `HEMMA_SIGNER` = the
+  Linux program it just built; `hemma --sign` refuses a key whose public half isn't built in, and
+  each signed folder is checked with `--verify-release` before it's packed. A release without the
+  secret fails; a dry run without it warns and packs unsigned.
+- **A new key:** add its public half beside the old one and release that version, signed with
+  the old key. Once households have it, sign with the new one (and later drop the old one).
+- **A lost or leaked secret:** release a version with a new key in place of the old one. A lost
+  one can't sign it, so `hemma-upgrade` refuses it: households then install that version once by
+  hand (the installer), as from 0.20.0.
+- **By hand:** unpack a download and run `hemma --verify-release <its folder>` with a Hemma you
+  trust (exit 0 = signed by the project).
 
 ## Project layout (short)
 

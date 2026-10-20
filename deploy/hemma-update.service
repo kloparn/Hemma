@@ -1,0 +1,24 @@
+# /etc/systemd/system/hemma-update.service — installed by deploy/install-pi.sh
+#
+# Updates from Hemma's System page (issue #73). Hemma may not change its own program (it runs as
+# the user hemma, the system read-only around it), so it writes what an admin asked for - check
+# for a new version, install one, install an uploaded download - into /var/lib/hemma/update, and
+# hemma-update.path starts this root helper. It installs only what the Hemma project signed (the
+# installed Hemma checks the signature), keeps the previous program and a copy of the database,
+# and goes back to them when the new Hemma doesn't answer within a minute. Answers go to
+# /var/lib/hemma-update, which Hemma reads. The same helper by hand: sudo hemma-upgrade
+[Unit]
+Description=Hemma's updates (checked, with a way back)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/hemma-upgrade --from-hemma
+TimeoutStartSec=20min
+Nice=5
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true

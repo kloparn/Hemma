@@ -4,6 +4,48 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 0.21.0 (2026-10-20)
+
+Updates with one command or one tap - checked against the project's signature, with a way back
+(#73).
+
+### New
+
+- **`sudo hemma-upgrade`** on a Pi (or any Linux installed with `install-pi.sh`) updates Hemma
+  to the newest release: `--check` only looks, `--dry-run` downloads and checks without
+  installing, `--file hemma-pi64.tar.gz` installs a download you brought on a USB stick.
+- **System → Updates.** The version you run; **Check now** (or **Check once a day** - off until
+  you turn it on: then github.com is asked which version is newest, nothing else); **Install**
+  when a newer one is out, with a link to what's new. No internet on the Pi? **Install from a
+  file**: choose the download on any computer. The System page's checks say when a new version
+  is out, when an update went in, and when one didn't.
+- **Only signed releases.** Every release is signed now (`SHA256SUMS.sig`, Ed25519). The key's
+  public half is built into Hemma, and the Hemma you have checks a download before anything of
+  it is installed: one that was changed, or isn't from the project, is refused and nothing
+  changes.
+- **A way back by itself.** An update keeps the program it replaces and a copy of the database;
+  if the new Hemma doesn't answer within a minute, both are put back and the old one starts
+  again. The Updates tab says so - nothing is lost.
+- **The operating system's updates** show there too: whether Debian installs its security
+  updates by itself (`unattended-upgrades`), and when it last looked.
+- **Needs one installer run** (`sudo sh install-pi.sh ./hemma-pi64` from this download): it
+  brings `hemma-upgrade` and its service. From then on, updates come from Hemma.
+
+### For developers
+
+- `core/ed25519.c` (Ed25519 after TweetNaCl, its constants worked out at the first use, RFC 8032
+  vectors + Node's as tests), SHA-512 in `core/codec.c`, `core/release.c`: `hemma
+  --gen-signing-key FILE`, `--sign FILE` (key in `$HEMMA_SIGNING_KEY`; refuses a key that isn't
+  built in), `--verify-release DIR [--partial]`; the public keys in `RELEASE_KEYS`.
+- release.yml signs every SHA256SUMS with the GitHub secret `HEMMA_SIGNING_KEY` (bundle.sh's
+  `HEMMA_SIGNER`) and refuses to publish without it; each download holds a `VERSION` file.
+- deploy/hemma-upgrade (sh, root) + hemma-update.service/.path: Hemma writes "check" / "install
+  X.Y.Z" / "install-file" + a nonce into `/var/lib/hemma/update/request`; the helper answers in
+  `/var/lib/hemma-update` (latest, result), reads Hemma's folder only as Hemma's user, unpacks
+  nothing it hasn't looked over, runs the download's own installer (`HEMMA_INSTALL_WAIT=60`).
+- modules/system/update.c: the tab, the actions `system.update_check/_auto/_install/_seen`, the
+  upload (`form[data-upload="/system/update"]`: one PUT, no resuming); `plat_bundle()`.
+
 ## 0.20.0 (2026-10-20)
 
 Easier setup: no paths typed from memory, and the setup code without a terminal (#27, #72).

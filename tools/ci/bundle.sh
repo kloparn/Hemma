@@ -5,6 +5,10 @@
 # machine learning flags hemma.exe: release.yml). Plus SHA256SUMS over all of them, and the release
 # notes (this version's CHANGELOG.md section, which must be there, how to start each download, and
 # the commits since the previous release - the newest v* tag before HEAD, or HEMMA_PREV).
+# SIGNED (issue #73): with HEMMA_SIGNER = a hemma program that runs here and HEMMA_SIGNING_KEY = the
+# project's secret key, every SHA256SUMS gets its SHA256SUMS.sig (hemma --sign) - each download's own
+# and the release's. Installed Hemmas take nothing else (hemma-upgrade, hemma --verify-release);
+# without them (a dry run, a local try) nothing is signed.
 #   sh tools/ci/bundle.sh PROGRAMS_DIR OUT_DIR [NOTES]   (PROGRAMS_DIR: what ./build.ps1 pi, pi32,
 #                                                       linux and mac made;
 #                                                       NOTES: where the release notes go, notes.md)
@@ -25,6 +29,13 @@ awk -v v="$ver" '
     on' CHANGELOG.md > "$work/changes.md"
 grep -q '[^[:space:]]' "$work/changes.md" || { echo "CHANGELOG.md has no section for $ver"; exit 1; }
 
+# SHA256SUMS.sig beside a folder's SHA256SUMS (and a check that the installed Hemmas will take it)
+sign() {
+    [ -n "${HEMMA_SIGNER:-}" ] || return 0
+    "$HEMMA_SIGNER" --sign "$1/SHA256SUMS" > "$1/SHA256SUMS.sig"
+    "$HEMMA_SIGNER" --verify-release "$1" > /dev/null
+}
+
 # name, program, what goes with it, and the few lines that say how to start it
 pack() {
     name=$1 prog=$2 how=$3
@@ -34,21 +45,28 @@ pack() {
     cp "$in/$prog" "$d/$prog"
     for f in "$@"; do cp "$f" "$d/"; done
     cp LICENSE "$d/"
+    echo "$ver" > "$d/VERSION" # (signed with the rest: hemma-upgrade reads the version here)
     chmod 644 "$d"/* # (whatever the checkout says - a Windows drive calls everything executable)
     chmod 755 "$d/$prog"
-    if [ -f "$d/install-pi.sh" ]; then chmod 755 "$d/install-pi.sh"; fi
+    for x in install-pi.sh hemma-upgrade; do if [ -f "$d/$x" ]; then chmod 755 "$d/$x"; fi; done
     printf 'Hemma %s - %s\n\n%s\n\nGuides: %s/tree/v%s/docs\n' "$ver" "$name" "$how" "$repo" "$ver" > "$d/README.txt"
     (cd "$d" && sha256sum -- * > SHA256SUMS)
+    sign "$d"
     tar -C "$work" -czf "$out/$name.tar.gz" "$name"
 }
 
 pi='Install (on the Pi):  sudo sh install-pi.sh ./PROG
 Media folders the uploads may write to can follow: sudo sh install-pi.sh ./PROG /srv/media
-It keeps the program it replaces as /opt/hemma/hemma.prev (going back: docs/raspberry-pi.md).'
-pack hemma-pi64 hemma-pi64 "$(echo "$pi" | sed 's/PROG/hemma-pi64/g')" deploy/install-pi.sh deploy/hemma.service deploy/hemma-setup.service deploy/hemma-setup.path
-pack hemma-pi32 hemma-pi32 "$(echo "$pi" | sed 's/PROG/hemma-pi32/g')" deploy/install-pi.sh deploy/hemma.service deploy/hemma-setup.service deploy/hemma-setup.path
-pack hemma-linux-x64 hemma-linux "$(echo "$pi" | sed 's/PROG/hemma-linux/g; s/on the Pi/any systemd Linux/')" \
-    deploy/install-pi.sh deploy/hemma.service deploy/hemma-setup.service deploy/hemma-setup.path
+It keeps the program it replaces as /opt/hemma/hemma.prev (going back: docs/raspberry-pi.md).
+Later updates: sudo hemma-upgrade (installed with it), or System -> Updates in Hemma.'
+units="deploy/install-pi.sh deploy/hemma.service deploy/hemma-setup.service deploy/hemma-setup.path
+       deploy/hemma-upgrade deploy/hemma-update.service deploy/hemma-update.path"
+# shellcheck disable=SC2086 # (the list splits on purpose)
+pack hemma-pi64 hemma-pi64 "$(echo "$pi" | sed 's/PROG/hemma-pi64/g')" $units
+# shellcheck disable=SC2086
+pack hemma-pi32 hemma-pi32 "$(echo "$pi" | sed 's/PROG/hemma-pi32/g')" $units
+# shellcheck disable=SC2086
+pack hemma-linux-x64 hemma-linux "$(echo "$pi" | sed 's/PROG/hemma-linux/g; s/on the Pi/any systemd Linux/')" $units
 mac='Try it:  ./PROG --demo   (a made-up household), or just ./PROG and open http://localhost:8080
 macOS blocks programs from the internet that Apple has not checked. Once:
   xattr -d com.apple.quarantine PROG      (or right-click it in Finder -> Open)
@@ -56,7 +74,8 @@ To keep it running: docs/macos.md (local.hemma.plist is here).'
 pack hemma-mac-arm64 hemma-mac-arm64 "$(echo "$mac" | sed 's/PROG/hemma-mac-arm64/g')" deploy/local.hemma.plist
 pack hemma-mac-x64 hemma-mac-x64 "$(echo "$mac" | sed 's/PROG/hemma-mac-x64/g')" deploy/local.hemma.plist
 
-(cd "$out" && sha256sum -- * > SHA256SUMS)
+(cd "$out" && sha256sum -- *.tar.gz > SHA256SUMS)
+sign "$out"
 
 # the notes: what changed, then the downloads
 {
@@ -78,6 +97,7 @@ wget $repo/releases/download/v$ver/hemma-pi64.tar.gz
 tar xzf hemma-pi64.tar.gz && cd hemma-pi64
 sudo sh install-pi.sh ./hemma-pi64
 \`\`\`
+**Updating** a Hemma installed so (0.21.0 or newer): \`sudo hemma-upgrade\`, or System → Updates in Hemma.
 
 **Try it on a laptop first:** unpack it and start it with \`--demo\` for a made-up household
 (\`./hemma-mac-arm64 --demo\`), then open http://localhost:8080 - the login shows in its window.
@@ -87,8 +107,10 @@ right-click it in Finder, then Open).
 **Windows:** no ready-made program yet - build it from the source in a few minutes:
 [docs/windows.md]($repo/blob/v$ver/docs/windows.md).
 
-Each download has a \`SHA256SUMS\` inside, and the release's own covers them all. The programs say
-which commit they were built from: \`hemma --version\`. What changed in every version:
+Each download has a \`SHA256SUMS\` inside, and the release's own covers them all - each signed with
+the project's key (\`SHA256SUMS.sig\`, Ed25519), which every Hemma has built in: an installed one
+checks a download with \`hemma --verify-release <its folder>\`, and updates take nothing else. The
+programs say which commit they were built from: \`hemma --version\`. What changed in every version:
 [CHANGELOG.md]($repo/blob/v$ver/CHANGELOG.md).
 EOF
     # every commit since the previous release (HEMMA_PREV: from another tag or commit instead)
