@@ -289,23 +289,7 @@ tables and CSS all come from there. The contract and an example are in
 
 ## Contributing
 
-Hemma lives on GitHub: [kloparn/Hemma](https://github.com/kloparn/Hemma).
-
-- **Found a bug, or have an idea?** Open an
-  [issue](https://github.com/kloparn/Hemma/issues). For a bug, say what you did, what you
-  expected and what happened instead, and the version (`hemma --version`, or the System
-  page). The log from the System page (**Download the log**) helps a lot.
-- **Found a security problem?** Please don't open a public issue: [SECURITY.md](../SECURITY.md)
-  says how to report it privately.
-- **Sending a change?** Open a pull request. Every pull request raises the version
-  ([VERSION](../VERSION): the last number for fixes, the middle one for something new or
-  changed) and adds its own section to [CHANGELOG.md](../CHANGELOG.md). The CI run
-  must be green. Contributions are under the project's license, Apache 2.0
-  ([LICENSE](../LICENSE)).
-
-Ground rules:
-
-- Everything is C. No JavaScript frameworks, npm or CDNs; app logic never goes in JS.
-- Pages work without JavaScript too (plain links and forms).
-- Zero compiler warnings (`-Wall -Wextra`). Every change comes with tests.
-- Keep it light: the target is a Raspberry Pi, and the event loop must never block.
+[CONTRIBUTING.md](../CONTRIBUTING.md) says how to report a problem, how to send a change and what a
+change needs before it's merged; [ARCHITECTURE.md](../ARCHITECTURE.md) is the map of the program, and
+[docs/decisions](decisions/README.md) holds the reasons behind its big choices. A security problem goes
+privately: [SECURITY.md](../SECURITY.md).

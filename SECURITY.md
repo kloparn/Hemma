@@ -21,7 +21,9 @@ release:
   [sqlite.org's release history](https://sqlite.org/changes.html) and update the
   amalgamation when a fix matters to Hemma.
 - The CI run of the release commit must be green (tests on Linux and macOS, the suite
-  under AddressSanitizer + UBSan, the converter fuzzer).
+  under AddressSanitizer + UBSan, the converter fuzzer, the browser tests), and a change to
+  `core/` has had a written review ([docs/decisions/0007](docs/decisions/0007-reviews-and-releases.md)).
+- The nightly fuzz runs (`.github/workflows/fuzz.yml`) have found nothing unfixed.
 
 ## What Hemma is built for
 

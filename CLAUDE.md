@@ -4,7 +4,9 @@ Hemma ("at home") is a self-hosted page for our home network: book shared things
 (car, laundry, guest room…), plan (chores, shopping list, calendar), a notice board,
 network/presence view, a media portal (movies/series from a local drive) and
 "90's TV channels" that run continuously on a shared clock. README.md is the
-owner-facing overview; this file is the working contract.
+owner-facing overview; this file is the working contract (for agents: every rule, in detail). For
+people: ARCHITECTURE.md (how it fits together), CONTRIBUTING.md (how to send a change),
+docs/decisions/ (why - one record per big choice).
 
 Runs on a Raspberry Pi in production; developed on Windows 11 with `zig cc`.
 
@@ -40,6 +42,15 @@ Runs on a Raspberry Pi in production; developed on Windows 11 with `zig cc`.
   dev PC, addresses, MACs, hostnames of anyone's machines, credentials or deployment diaries. The
   maintainer keeps those in private local notes (outside the repo).
 - Keep this file updated as things change (owner's request).
+- **A written review for `core/`** (issue #48, owner 2026-10-21; docs/decisions/0007): a PR changing core/
+  gets a review written on the PR before merging - an AI review counts when its findings are posted there
+  and answered. PRs aim under ~1,500 changed lines (translations, test data aside), features and refactors
+  apart; .github/pull_request_template.md holds the checklist. The branch's Pi build runs on the real Pi
+  before the merge (staged as usual), since merging releases it.
+- **Video formats grow with their fuzzing** (issue #50, owner 2026-10-21: "keep supporting more ... when
+  we need it, minor bumps"; docs/decisions/0006): a format the converter takes is listed in
+  modules/av/conv.h AV_CONV_CODECS (av_conv_codec() - the converter's checks consult it), and
+  conv_fuzz_seeds fails until a seed carries it; a new decoder gets an avfuzz target too.
 - **Every PR raises the version** (the VERSION file: MAJOR.MINOR.PATCH, digits only - semver.org; owner,
   2026-10-19: "easy to find") and gets its own CHANGELOG.md section
   (owner, 2026-10-12): **patch** = fixes only, **minor** = something new or changed, **major** = a big
@@ -726,6 +737,11 @@ docs/img/        the README's screenshots (WebP q88: phones 390x844@2, desktop/w
                  makes the same household's people and plans, without media or display accounts.
 VERSION          the version, MAJOR.MINOR.PATCH (semver.org) - raised in every PR (see Owner preferences)
 LICENSE          Apache 2.0 (owner's choice, 2026-10-14); SQLite is public domain
+ARCHITECTURE.md CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md   for people (issue #51): the map, how to send a change, how
+                 to behave, how to report a vulnerability. docs/decisions/NNNN-*.md = one record per big choice (status,
+                 context, decision, consequences; README.md indexes them) - a changed decision gets a NEW record.
+                 .github/ISSUE_TEMPLATE (bug report with the version + the log, feature request, security -> the
+                 private advisory) and pull_request_template.md (the checklist)
 build*/ data/ .env   generated / runtime / secrets (gitignored)
 ```
 
@@ -1322,88 +1338,34 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
   "<free> free on the disk with Hemma's data and the library (N% used). The library wants X free ...",
   sizes with one decimal under 100 GB (room_words) so the two numbers can't round alike.
 
-## Status (2026-10-12)
+## Where things stand
 
-Done 2026-10-12: GitHub issues #3-#15 (an outside review's findings; issue #3 the owner's own) with tests,
-then a second review of those fixes (also fixed): sign-in by name + "Not X?", admin sessions 30 days,
-hashing budget, slot eviction, signed-out WebSocket cap, live-action gating, /api owner rows, rescan
-permission, settings-file parsing, last-admin guard, converter size-change OOB read + sample bounds,
-CI sanitizers + converter fuzzing, conversions keep room + never share a .part with uploads, net list cap
-+ router/DNS hardening, quick-add date refusals/evening words/DST, Windows as Local Service, Pi clock sync,
-version 0.3.0 + commit stamp + CHANGELOG.md. New (owner asked): the System page (checks, getting started,
-live log, help), clearer installer and startup output, /healthz. 456 tests green (1.64M checks).
-0.3.0 merged to main (PR #16), not tagged yet (the owner runs `git tag v0.3.0` + a GitHub release from
-CHANGELOG.md). 0.4.0 (PR #17, the GUI redesign round 1) = Watch absorbs TV, Screens (the TV view with
-"Who's watching?"), grouped "Recently added", per-series poster colours, live TV can't be paused.
-0.5.0 (PR #18 + the version bump after it) = full screen survives the next episode, a "Next episode in N s"
-card, full screen for Live TV (survives programme and channel changes), Hemma's own player controls
-(ui_player + wire.js [data-player]) instead of each browser's, and the fix for live TV playing on, unseen,
-after leaving it. 0.6.0 (PR #76, merged 2026-10-13) = the wall as a Screen kind (top band, card columns, wall
-blocks from plan/book/board/home, seeded once, /wall forwards), the old wall module and WIDGET_WALL gone,
-plan's events in the shared agenda, address keys for TV players. An outside review then opened issues
-#19-#80 (2026-10-13), worked through in groups, one branch each: 0.6.1 (branch fix/hardening) = #32 slow
-readers, #33 only a TV picks who's watching, #34 typed names out of the log, #78 keys expire + bound to the
-screen's address, #79 browser-log limits per person an hour (PR #81). 0.7.0 (branch fix/database-safety) =
-#37 a damaged database is rescued (not half-loaded in silence), #38 data format + migrations + a downgrade
-guard + FIELD_WAS + the media cache's format + install-pi.sh keeps hemma.prev, #39 part 1 the time zone on
-System and a warning when it changes (PR #82). 0.7.1 (branch fix/library-keeps-progress) = #36 watch
-history follows videos to a new library folder, #40 unfinished uploads listed + removable, #28 left-out
-videos listed + long "sample..." films kept, #29 one rule for disk room (PR #83); 0.7.2 Live TV without scan lines (PR #84). 0.8.0 (branch fix/wall-and-display) = #80 the wall only shows (no links, dots, times), #77 the wall fits its screen (wire.js [data-fit]), #53 display accounts land on the wall + "+N more", #54 view-only pages carry no forms they cannot use, #59 Home groups new episodes (PR #85). 0.9.0 (branch fix/tv-remote-and-live) = #57 the remote's Back key + arrows to Back ([data-back]), #56 a new channel starts at once (lead-in) + On now labels intermissions, #61 Screens shows the address + a QR code (core/qr) (PR #86). 0.9.1 (branch docs/ready-for-newcomers, docs only) = #20 install guides clone github.com/kloparn/Hemma + Contributing, #22 README screenshots (docs/img), #23 posters paragraph, #24 README order (Why C? -> development.md), #25 Is Hemma for you?, #26 LICENSE Apache 2.0, #30 version-free example, #75 Chrome 154 warns only for public http sites (PR #104). Follow-up issues #87-#103 (a review of those fixes) come in groups too: 0.9.2 (branch fix/screens-and-tv-follow-ups) = #96 no links to dialogs a display can't use (ui_can, dialogs cut whole), #97 the wall laid out into the shortest column + fair row comeback + fitsay for admins + no Exit back to itself, #98 Back never grows the history (goBack), #99 listen_addr/app_local_only + .local only when announced, #101 "On TV" with intermissions last, #103 calendar stacks below 1200px (PR #105). 0.9.3 (pushed to main) = the player remembers the volume and mute per device. 0.9.4 (branch fix/database-recovery) = #87 a rescue that gets next to nothing back refuses (no new household over the data) + no welcome page after a rescue + the damaged page, #88 SQLite 3.54.1 + its recovery extension (orphans placed back), counts against the census in household words (Table.what), damaged copies pruned, #92 refusals in versions + into hemma.log + exit 78 (RestartPreventExitStatus), going back = a swap, the installer copies the database, FIELD_WAS needs its breaks_older migration (test). 0.10.0 (branch feat/backups) = #35 nightly checked backups (7 days, on the media disk by default), System → Backups (Back up now, Download with the secret, Go back to this + restart), hemma --restore, core/tar, docs for a new memory card (PR #107). 0.11.0 (branch fix/hardening-2) = #90 admins on the TV picker only when they opt in + an optional 4-digit PIN + display sign-ins end after 90 days, #91 a full server pushes out busy strangers (Conn.known), #100 typed names kept on the server for a minute instead of in the address, #102 left-out browser lines summed up from the tick + the note before the address (PR #109). 0.12.0 (branch fix/forms-and-wording) = #60 errors beside their field (ctx_fail_at, wire.js formErr) + toasts dodge the focused field + Undo instead of "are you sure?" (ctx_undo, core.undo), #43 someone else cancelling/moving your booking tells you (book_news, app_notify_but) + an admin's per-thing "only theirs" rule (Resource.own_only), #55 quick booking knows other names (starters' Swedish words + Resource.aliases) and says what can be booked, #58 members are told which admin to ask (ui_admins), #62 plain words (Address check, File details, What plays where, "Connected over Wi-Fi" via LanIface.link, the password secret; HealthItem.tech folded under "Technical details") (PR #110). 0.13.0 (branch fix/accessibility) = #63 dialogs take and keep the focus + inert behind + focus back to the opener, #64 the player's state in words + its bar stays under the keyboard + the "Next episode" card read out, #65 Add buttons named on phones, #66 contrast (--muted #6f675b, no faded done items, 12 px booking text), #67 44 px tap targets in Plan, #68 "Skip to content" + focus kept after a morph, #69 previews read out ([data-say]) + avatars named + list buttons name their item, #70 reduced motion + main landmarks on the sign-in pages. (PR #111). 0.13.1 (branch feat/tools-addition, tooling only, PR #112) = the Makefile builds one object per file (make -j), the suite runs in one process per core (runner --shard K/N, tests/parallel.sh, build.ps1 test), CI's Linux jobs locally (tools/ci/local.sh, ./build.ps1 ci in WSL), core/version.c holds the commit stamp, media's disk meter measures afresh at each start (a test leaned on another's leftovers), an upload PUT counts its file done BEFORE answering ok (upload.c put worker; a busy Pi answered "0 of 2 files" right after an ok). 0.14.0 (branch ci/releases) = #19 releases (release.yml + tools/ci/bundle.sh: bundles with the installer, checksums, notes with the commits since the last release), #52 a version per PR in the VERSION file, released when merged, #21 "Try it on your laptop first" + a download way at the top of the Pi/Linux/Mac guides (Gatekeeper click-through; no Windows download: Defender flags hemma.exe), #31 hemma --demo (core/demo.c). 0.16.0 (branch feat/household-basics) = #47 parts 1-2: chores that take turns (Task.turns/turn/swap, plan.task_swap, "@anna,@erik" in quick add) + repeating bookings and events (BookSeries / EventSeries making real rows ahead). 0.17.0 (branch feat/note-photos) = #47 part 3: photos on notes, shrunk in the browser ([data-shrink]) + the socket's 4 KB field cut fixed (json_value). 0.18.0 (branch feat/people-and-privacy) = #44 child and guest roles (Action.may, MOD_NO_CHILD/GUEST, Resource.kids/guests, Person.until + LOGIN_ENDED, media/kids.c "Not for children" folders), #45 moved out or erased (Module.forget, person_forget, the remove dialog, Person.left), #42 privacy under Your account (wall, doing, TV picker, home) + Your devices on /net; the README shows a child's phone (docs/img/child-*.webp). 0.20.0 (branch feat/easy-setup) = #27 the installer's media folders (HEMMA_MEDIA) and the disks Hemma sees, offered with one tap + #72 the setup code in HEMMA-SETUP.txt on the Pi's card and on its console (hemma --setup-note, deploy/hemma-setup.*). 0.21.0 (branch feat/appliance) = #73 updates: signed releases (core/ed25519, core/release, release.yml + the secret HEMMA_SIGNING_KEY), sudo hemma-upgrade + hemma-update.service/.path (a root helper; back by itself when the new one doesn't answer), System → Updates (opt-in daily check, Install, Install from a file, the OS's unattended-upgrades); merged as PR #121 but never published - its release stopped for want of the signing key, as designed. 0.21.1 (branch fix/release-key) = the project's public key in RELEASE_KEYS + the secret HEMMA_SIGNING_KEY: the first signed release. 0.23.0 (branch feat/pi-image) = #71 the ready-made Raspberry Pi image (tools/image: no root to build; first start runs the bundled installer, so secrets are per device). 0.24.0 (branch fix/video-sound-issues; no issue: the owner found a whole series silent in Chrome) = Dolby Digital Plus (E-AC-3) decoded in modules/av/ac3.c (SPX, AHT; checked against the spec, a test encoder and FFmpeg) so DDP files convert to AAC on the server and in the uploading browser, a file's text subtitles saved as .srt next to it (convert_save_sub, upload ?sub=1), the upload card says out loud what went up unconverted and why, the watch page says Dolby sound is silent in Chrome/Firefox (Fix the sound). 0.25.0 (branch feat/languages) = #46 English, Swedish and Spanish: core/i18n (T/TN/N_/TC, <id>_lang.c tables, i18n_pack for kept texts), the browser's language or each person's choice (Your account, an admin for display accounts, the sign-in pages' links, /lang), every module translated (about 2,080 entries in 16 tables, a th_untranslated test per module), Spanish quick-add words in core/when.c, a starter answers to its name in every language, the calendar feed in its person's language. 0.22.0 (branch feat/disks) = #74 the movie disk from the browser: "New disk found" + Use it for movies / Format for Hemma (empty disks only, typed ERASE) / missing disk / Forget, via the root helper deploy/hemma-disks (fstab by UUID with nofail, disks.conf drop-in), media/drives.c. 0.19.0 (branch fix/upload-locking-harddrive-space) = copies made by the uploading browser stay in their Worker and go once sent (a long upload had filled a PC's disk with 28 GB of them) + the "room" slider for copies waiting to be sent + wire.js input[data-show]. 0.15.0 (branch fix/all-day-dates) = #39 part 2 a new time zone keeps days on their days (core/zone.c, Module.rezone; typed times moved back on an admin's choice) + #41 a calendar feed per person (core/feed.c, /cal/<id>-<key>.ics, "Your calendar on your phone"). 0.10.1 (branch library-follow-ups) = #89 uploads write .hemma-part (torrents' .part left alone) + upload_claims by the video's name, #94 extras only after a separating mark + by length (40 min) + unknown length kept + episode codes never extras, #95 one "Disk space" row per disk (health_disk) + the library wants its biggest video + the reserve, #93 history follows by place, content (fp) or name (ident), away = an emptied library folder, filled from the cache at start, lost history listed + forgettable. Next ideas: calmer home cards (hide empty ones), touch on the wall
-(ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only).
+What each version changed is [CHANGELOG.md](CHANGELOG.md); why the big choices are what they are is
+[docs/decisions](docs/decisions/README.md) (0001-0008); how it fits together for humans is
+[ARCHITECTURE.md](ARCHITECTURE.md) and [CONTRIBUTING.md](CONTRIBUTING.md). This file keeps the working rules.
+(Issue #51, 2026-10-21: the dated Status diary that lived here - every version's work, review passes -
+is the CHANGELOG's now.) 1.0.0 (2026-10-21) = the outside reviews' issues (#3-#103) and the planned
+household features (#27 #39 #41-#47 #71-#74) all done, plus languages (#46), the browser's side tested
+(#49), reviews, releases and codec scope settled (#48 #50), docs for contributors (#51).
 
-Done: core (+ login with a first-run welcome page, recovery codes and a server-side reset, SQLite store,
-agenda, JSON API), people/household, home, book, plan, board, screens (TV + wall), net, media (library, player, Range
-streaming, progress, uploads that convert on the sending device, disc rips, pictures), tv.
-(2026-10-11: 398 tests green (1.6M checks)), incl. end-to-end socket tests (core/app_http_test.c, core/auth_setup_test.c;
-media/upload_test.c with a dropped-and-resumed 3 MB upload).
-Platforms: the Windows build and the Pi aarch64 build run in daily use (a Pi 3B+ since 2026-10-10).
-GitHub CI (.github/workflows/build.yml) runs `make` + `make test` on ubuntu-latest and macos-latest on
-every push (green). Pi armv6 builds compile without warnings but have never run.
-Review passes: core protocol, auth/app/wire, feature modules — all findings fixed with regression tests.
-Pre-publication sweep (2026-10-11, five reviewers: hygiene/docs, security, upload+converter, performance,
-quality/portability): no critical/high security issue; fixed with tests - a per-address sign-in budget
-checked before hashing, throttle tables that can't be flushed, a 32 MB budget for buffered bodies,
-nav/hello re-rendering only their screen, log lines can't be forged, /api closed to display accounts,
-admins change their own password only under Your account; uploads: stale .part files, late progress
-reports, failed files, room for the original, per-upload Stop, one file in one upload, copies folded
-into a Blob in the browser; converter: sound-track choice, AC-3 at 48 kHz only, no silent copies,
-index room cut from ~7 MB to ~1.6-3.8 MB per copy, ~4x faster comb detection; gzip assets, smaller
-binaries, faster morphs on old engines (gaps()), versioned pictures cached for good.
-Measured under pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s
-streams ≈10% of the core; ceiling ≈1.5 Gbit/s before CPU runs out — the network is the limit
-(Pi 3B 100 Mbit, 3B+ ~300 Mbit over USB 2 shared with the disk; Pi 4/5 gigabit for 4K remuxes);
-peak memory 8.6 MB. Real upload of 3.6 GB at disk speed (~112 MiB/s) in 9 MB RAM.
-Measured on a real Pi 3B+ over Wi-Fi: 8 viewers × 8 Mbit/s with 0 errors, 91 Mbit/s single stream,
-2.4 MB RAM; a 46 GB library of converted copies serves fine from its SD card.
-Converter: a 22-minute DVD episode takes ~282 s on one PC core natively, ~374 s as WebAssembly (Node and
-Chrome); copies are 190-480 MB per episode vs ~1 GB originals; video bit-identical native vs wasm, AAC
-differs only by float rounding. A whole 7-season show (171 files) converted with 0 failures, and its
-disc-rip numbering checked season by season against the originals (play-all headers keep featurettes
-out of the episodes when only copies are uploaded).
-Admin-only: people management, home name, media library folders + uploads, network discovery.
-Owner decisions (2026-10-11): the Network page's changes (device edits, owners, Wake-on-LAN, the
-presence window) are admin-only - members only look (done, net.c admin_only); the sign-in page keeps its
-"Welcome back" guess. Plain http on the LAN stays (HTTPS weighed - own domain + Let's Encrypt, a home CA,
-or a proxy, with mbedTLS for TLS - and declined for now; old TV browsers need http anyway).
-Done 2026-10-11: one-time setup code for the welcome page (owner asked; README explains it in detail):
-auth_setup_code() - 8 symbols of the recovery-code alphabet ("7KQ4-M2XP", 40 bits), HEMMA_SETUP_CODE from the
-settings file (install-pi.sh writes one via `hemma --gen-setup-code` and prints it) or Hemma's own in setting
-auth.setup_code, logged at start next to "No admin yet", never on a page; setup_post checks it first (ct_equal,
-throttled), success clears it.
-Done 2026-10-11: storage meter (owner asked: "used space - space left" above the profile) - media's `side`
-hook, admins only, links to /media/settings: free space + bar + "used of total" per disk holding a library
-folder (path_disk_space; folders on the same disk shown once), cached and refreshed every 30 s from tick
-(and right after the folders change); bar turns warn at 85 % used, danger at 95 % or under 2 GB free.
-Done 2026-10-11 (afternoon, owner asked): uploads skip episodes/films the library already has under another
-name; HEVC MKVs get a Convert button and become MP4 copies Safari plays (checked on a real 1080p x265 10-bit film:
-3.6 GB in 55 s, plays and seeks in Chrome); admins remove films from the watch page (media/remove.c); README
-has a "Why C?" section. Later: "keep only the most compatible version" of an original + its copy (button +
-optional automatic after converting; 53 of 53 real pairs matched), subtitles attach to copies-only videos (they
-didn't before), the copy's first read shows on the progress bar.
-Then: an x on "Continue watching" cards (/media shelf + the home card; media.c going_card, action media.forget)
-drops that person's progress in the video - others' stays; display accounts get no x.
-Settled by the owner (2026-10-14): license Apache 2.0 (LICENSE), no "Support the project" section for now,
-the project lives at https://github.com/kloparn/Hemma (the guides clone it).
-Next ideas: builder-style UI helpers / less raw HTML (owner asked), MKV→MP4 remux on the fly
-for Safari/iPhone, "Open in VLC" links, router integration, DLNA, recurring calendar events,
-API tokens for scripts, "tune in" on the TV's browser via QR code, HEVC/DTS in the converter.
+Keep new work within what's been measured:
+- pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
+  ≈1.5 Gbit/s before the CPU runs out - the network is the limit (Pi 3B 100 Mbit, 3B+ ~300 Mbit over USB 2
+  shared with the disk; Pi 4/5 gigabit for 4K remuxes); peak memory 8.6 MB; a 3.6 GB upload at disk speed in
+  9 MB RAM. A real Pi 3B+ over Wi-Fi: 8 viewers × 8 Mbit/s with 0 errors, 91 Mbit/s for one stream.
+- The converter: a 22-minute DVD episode ~282 s on one PC core natively, ~374 s as WebAssembly; video
+  bit-identical native vs wasm, AAC differs only by float rounding; copies 190-480 MB per episode vs ~1 GB
+  originals; a 7-season show (171 files) converted with 0 failures; E-AC-3 ~420× real time per PC core.
+- The program: ~3.3 MB for the Pi (0.25.0 added ~300 KB of translations); the suite ~10 s on a 20-thread PC.
+
+Owner decisions not in docs/decisions: the Network page's changes (device edits, owners, Wake-on-LAN, the
+presence window) are admin-only - members only look (2026-10-11); the sign-in page keeps its "Welcome back"
+guess; the licence is Apache 2.0 and there's no "Support the project" section for now (2026-10-14); the
+project lives at https://github.com/kloparn/Hemma (the guides clone it); no Windows download until hemma.exe
+is signed or cleared with Microsoft (see Owner preferences).
+
+Next ideas: builder-style UI helpers / less raw HTML (owner asked), calmer home cards (hide empty ones), touch
+on the wall (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only),
+MKV→MP4 remux on the fly for Safari/iPhone, "Open in VLC" links, router integration, DLNA, API tokens for
+scripts, "tune in" on the TV's browser via a QR code, more video formats as files need them (HEVC decoding,
+DTS - each with its fuzz seed: docs/decisions/0006).

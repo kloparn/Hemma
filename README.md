@@ -308,15 +308,18 @@ from command-line flags (`hemma --help`). [.env.example](.env.example) lists the
 
 Hemma is plain C11 with no dependencies beyond the bundled SQLite. It's built with `zig cc`
 (Windows, cross-compiling) or any `cc` with `make` (Linux, macOS). Each feature is a
-self-contained module under `modules/`, and the pages are drawn on the server. App logic
-never runs in the browser: it runs one small, generic script (`web/wire.js`), and uploads
-use a worker that runs Hemma's C video converter compiled to WebAssembly. There are over
-500 tests, run with `./build.ps1 test` or `make test`. Curious why it's written in C? See
-[Why C?](docs/development.md#why-c).
+self-contained module under `modules/`, and the pages are drawn on the server. The browser
+runs one script (`web/wire.js`): it keeps pages live, and holds the video player and the upload
+client - the only things that must run there; uploads convert with Hemma's C video converter
+compiled to WebAssembly. Nearly 700 tests run with `./build.ps1 test` or `make test`, the pages
+are tested in a real browser, and the video code is fuzzed every night. Curious why it's written
+in C? See [Why C?](docs/development.md#why-c).
 
-Start with [docs/development.md](docs/development.md): building, tests, the layout and how
-to report bugs or send changes. The full working contract (the architecture, how to write
-a module, conventions) is in [CLAUDE.md](CLAUDE.md).
+- [ARCHITECTURE.md](ARCHITECTURE.md): how the pieces fit together
+- [CONTRIBUTING.md](CONTRIBUTING.md): reporting a problem, sending a change
+- [docs/development.md](docs/development.md): building, testing, releasing
+- [docs/decisions](docs/decisions/README.md): why it's built the way it is
+- [CLAUDE.md](CLAUDE.md): the full working contract, rule by rule (written for AI agents, readable by anyone)
 
 ## License
 

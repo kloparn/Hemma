@@ -1,0 +1,27 @@
+name: Feature request
+description: An idea for Hemma
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Hemma is for households, runs on a small computer at home, and never sends anything out of the home
+        unasked - ideas that fit those go furthest ([why](https://github.com/kloparn/Hemma/tree/main/docs/decisions)).
+  - type: textarea
+    id: need
+    attributes:
+      label: What would you like to do?
+      description: The situation at home, in your own words - not yet how Hemma should do it.
+      placeholder: "We share one car and keep forgetting who has it on Saturdays ..."
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How it could work
+      description: Optional - a page, a button, a card on the wall tablet ...
+  - type: textarea
+    id: else
+    attributes:
+      label: Anything else
+      description: Who in the household would use it, how often, what you do today instead.
