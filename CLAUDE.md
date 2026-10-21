@@ -11,9 +11,15 @@ Runs on a Raspberry Pi in production; developed on Windows 11 with `zig cc`.
 ## Owner preferences (keep honouring these)
 
 - **Everything in C** — backend *and* frontend. No JS frameworks, no npm, no CDNs.
-  The browser runs `web/wire.js`: a small, *generic* transport (WebSocket, DOM
-  morphing, form/link interception). App logic never goes in JS. The one exception
-  in kind: uploads run Hemma's C converter compiled to WebAssembly (`av.wasm`, fed by
+  The browser runs `web/wire.js`: the transport (WebSocket, DOM morphing, form/link
+  interception) plus the two things only a browser can do - the video PLAYER (its own
+  controls, resume, progress reports, the next episode, Live TV's "now") and the UPLOAD
+  CLIENT (plan, PUTs, resuming, converting in Workers). Issue #49 (2026-10-21): that's ~1,700
+  lines, so it's linted (eslint) and tested in a real browser (tests/browser); the
+  household's rules live in C wherever they can - a page must work without wire.js (the
+  server puts a video's start in its address: `#t=`) - and the few that only the browser can
+  keep are listed under "the player" below and each has a browser test. No other app logic
+  goes in JS. Uploads run Hemma's C converter compiled to WebAssembly (`av.wasm`, fed by
   the tiny Worker `web/conv.js`) - still C, just running on the sending device.
 - **Server-driven UI**: C renders HTML; changes are pushed as DOM morphs over
   WebSocket to every open screen. Pages also work without JS (links + POST forms).
@@ -597,7 +603,18 @@ tools/h264check.c encode | synth | bench: MKV -> H.264 Annex-B + reconstruction 
                   modules/av/mpeg2.c core/base.c core/plat.c -lws2_32 -liphlpapi -lbcrypt)
 tools/convfuzz.c libFuzzer target over av_convert (MKV in memory -> MP4 in memory); -DCONVFUZZ_MAIN = a
                  replay/mutate driver that builds with zig on Windows (build lines at the top). Seeds:
-                 `HEMMA_FUZZ_SEEDS=<dir> ./build/test conv_fuzz_seeds` (generated, never committed)
+                 `HEMMA_FUZZ_SEEDS=<dir> HEMMA_FUZZ_RAW=<dir2> ./build/test conv_fuzz_seeds` (generated, never
+                 committed: the MKVs in <dir>, raw Dolby frames and MPEG-2 streams in <dir2>/ac3, /mpeg2)
+tools/avfuzz.c   three faster targets, one part alone each (issue #50): -DAVFUZZ_MKV the Matroska reader,
+                 -DAVFUZZ_AC3 the Dolby decoder (raw frames, CRC off), -DAVFUZZ_MPEG2 the MPEG-2 decoder (a raw
+                 stream in chunks of any size); an input's first byte picks options (layout, chunking, a reset).
+                 Measured in WSL: ~1.3M inputs a minute (mkv), 210k (ac3), 310k (mpeg2) vs 5.7k for convfuzz
+tools/ci/fuzz.sh TARGET [S] [JOBS]: builds + runs conv | mkv | ac3 | mpeg2 under ASan + UBSan from the tree's top
+                 after `make build/test` (seeds made when missing), corpus in build/fuzz-corpus-T, findings in
+                 build/fuzz-found-T (exit 1); JOBS > 1 = libFuzzer -fork, carrying on after a finding. Used by
+                 build.yml's fuzz job (conv, 90 s), fuzz.yml (NIGHTLY 01:17 UTC: the four side by side on their own
+                 runners, 170 min each with every core, the corpus cached night to night - owner, 2026-10-21:
+                 "about 3 hours"; a finding fails the job and keeps the files as an artifact) and local.sh
 tests/           test.h (framework), runner.c, harness.* (boot the core without a server; th_boot_in(dir) for a
                  data folder the test prepared - test_tmpdir() is a NEW folder each call). runner: `--shard K/N`
                  runs every Nth test from the Kth and ends with "shard K/N: R run, F failed, C checks, M ms";
@@ -630,7 +647,19 @@ tools/image/     THE RASPBERRY PI IMAGE (issue #71): build.sh BUNDLE OUT (no roo
                  retries at the next start). Base facts (2026-10 trixie Lite): no SSH host keys
                  (regenerate_ssh_host_keys), machine-id "uninitialized", avahi + cloud-init (Imager's settings)
                  + ntfs-3g + exfatprogs present, no unattended-upgrades/acl/python3-dbus/python3-distro-info.
-tools/ci/local.sh  CI's Linux jobs locally: test | asan | fuzz [S], on a fresh copy of the tree (stdin tar,
+tests/browser/   CI-ONLY Node (owner, 2026-10-21: "The CI can use node"; nothing ships): Playwright in Google
+                 Chrome (the bundled Chromium can't play H.264/AAC) against a real Hemma - server.mjs makes a fresh
+                 folder under the OS temp (hemma-browser-tests), test clips by `build/test av_test_clips` with
+                 HEMMA_TEST_CLIPS (modules/av/clips_test.c: H.264 + AAC MP4s from our own encoders, 64x48 - two
+                 100 s episodes, a 40 s film, an upload clip), an admin from the settings file, then build/hemma on
+                 127.0.0.1:18093; setup.mjs signs in, adds the library, waits for the scan. Specs: player (progress
+                 reported + resume, resume without wire.js via #t=, nothing in the last 5 s, the next episode in
+                 the SAME element), live (now, no pause/wind/speed, #t= without wire.js), upload (byte for byte),
+                 signin (Accept-Language, the language links). eslint.config.mjs (recommended rules) over
+                 web/*.js, run from the repo top (`npm run lint`). Locally: build (./build.ps1 build + test, or
+                 make), then `cd tests/browser && npm ci && npx playwright test`. Test-only modules' words etc.:
+                 see Tests. CI jobs: build.yml `browser` and `lint`
+tools/ci/local.sh  CI's Linux jobs locally: test | asan | fuzz [S] [conv|mkv|ac3|mpeg2], on a fresh copy of the tree (stdin tar,
                  --tar FILE, or this checkout) in /dev/shm, each job's build/ kept for the next run (only
                  what changed compiles); never deletes. Windows: ./build.ps1 ci [job] (WSL; $env:HEMMA_WSL)
 deploy/          hemma-disks (issue #74; sh, root, -> /usr/local/sbin): `sudo hemma-disks` [use UUID | format sdX | forget
@@ -716,7 +745,8 @@ build*/ data/ .env   generated / runtime / secrets (gitignored)
 - `$env:HEMMA_SKIP_MODULES="media,tv"` leaves module folders out (someone else's work in progress).
   media needs av and tv needs media: skipping one skips the ones that depend on it.
 - CI (.github/workflows/build.yml, every push): `make` + `make test` on Ubuntu and macOS; the suite again
-  under ASan + UBSan (clang, leak checks off); a 90 s libFuzzer run over the converter (tools/convfuzz.c).
+  under ASan + UBSan (clang, leak checks off); a 90 s libFuzzer run over the converter (tools/convfuzz.c);
+  the pages in Chrome (tests/browser) and eslint over web/*.js. Every night (fuzz.yml) ~3 h of fuzzing.
   The three Linux jobs run locally too, in about a minute: tools/ci/local.sh (Linux), ./build.ps1 ci (Windows,
   in WSL - zig has no ASan/libFuzzer); macOS only in CI. Run one before pushing. The Makefile builds one
   object per file (build/obj/h, build/obj/t; -MMD headers; .flags stamps rebuild on a new compiler or flags),
@@ -1130,7 +1160,13 @@ to base/<batch>/<i>?at=<offset>, resuming from GET base/<batch>/<i>; a todo entr
 only the bytes before `end`; `{i, f}` = convert file f here first (web/conv.js Workers, half the cores,
 max 8, a few ahead of the upload), POST ?size= / ?original=1, then PUT the result as entry i; a `conv`
 form field is dropped when the browser can't run WebAssembly; the server renders progress) ·
-`video[data-resume|data-report|data-next]` · `[data-start="id"]` (open a horizontal scroller at that
+`video[data-resume|data-report|data-next]` (THE PLAYER'S RULES - issue #49, each held by tests/browser:
+player.spec.mjs / live.spec.mjs: data-resume = where it starts once loaded, never in its last 5 s; data-report
+= media.progress (live) every 15 s of the video's own time, at a pause and at the end; ended -> data-next; the
+"next episode" card ([data-upnext="S"]) in the last S seconds of a video longer than 3 x S; live = data-resume
++ the time since the page came, a pause/seek/speed change snaps back. The server keeps its half: media.c
+media_resume_at() (over 10 s, not done, not in the last 5 s) and media_file_src_at() puts that, or a
+channel's offset, in the address as #t=<s> - a browser without wire.js starts there too) · `[data-start="id"]` (open a horizontal scroller at that
 child, once per URL — e.g. today's column on a phone) · `[data-fit="<id>"]` (a box of cards, its
 children, that must fit its CSS-bounded height - a wall tablet nobody scrolls. A bounded box (overflow
 hidden) is LAID OUT by wire.js ([data-fit-laid], app.css: absolute cards; issue #97 - CSS columns keep

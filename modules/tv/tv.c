@@ -450,8 +450,8 @@ static void screen(Ctx *c, Buf *b, const Channel *ch, const TvPlan *p, const cha
            player's live bar has the sound and full screen only. TV mode: OK on the remote = sound. */
         char key[48];
         snprintf(key, sizeof key, "%016llx-%lld", (unsigned long long)s.file, (long long)mark);
-        char src[100];
-        media_file_src(c, s.file, src, sizeof src);
+        char src[120]; /* (#t=: where the programme is now, also for a browser without wire.js - issue #49) */
+        media_file_src_at(c, s.file, s.offset, src, sizeof src);
         H(b,
           "<video id=\"tv-video\" class=\"tv-video\" src=\"%s\" autoplay playsinline preload=\"auto\" "
           "data-static=\"%s\" data-onair data-resume=\"%L\" data-next=\"/tv/%d%r\"></video>",

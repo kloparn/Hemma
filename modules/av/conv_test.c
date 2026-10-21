@@ -1049,6 +1049,33 @@ TEST(conv_fuzz_seeds) {
     CHECK_INT((int)ac3_test_tone(ac3, sizeof ac3, 4), 4 * 768);
     static uint8_t eac3[8 * 384]; /* Dolby Digital Plus, 3-block frames */
     CHECK_INT((int)eac3_test_tone(eac3, sizeof eac3, 8), 8 * 384);
+    const char *raw = getenv("HEMMA_FUZZ_RAW");
+    if (raw && *raw) { /* tools/avfuzz.c's seeds: raw Dolby frames and MPEG-2 streams, each after its options byte */
+        char path[1024];
+        Buf b = {0};
+        static uint8_t pic[4096];
+        for (int i = 0; i < 6; i++) {
+            static const char *const names[] = {"ac3/ac3-tone", "ac3/eac3-tone", "ac3/eac3-tone-wav-reset",
+                                                "mpeg2/progressive", "mpeg2/interlaced-in-pieces", "mpeg2/sizes-reset"};
+            static const uint8_t opts[] = {0, 2, 1 | 16, 128, 5, 128 | 1};
+            buf_reset(&b);
+            buf_putc(&b, (char)opts[i]);
+            if (i == 0) buf_put(&b, ac3, sizeof ac3);
+            else if (i < 3) buf_put(&b, eac3, sizeof eac3);
+            else
+                for (int k = 0; k < 8; k++)
+                    buf_put(&b, pic, i == 3   ? mpeg2_picture(pic, k)
+                                     : i == 4 ? mpeg2_picture_of(pic, k, 64, 32, true, 70)
+                                              : mpeg2_picture_of(pic, k, 48, k < 4 ? 32 : 16, false, 0));
+            snprintf(path, sizeof path, "%s/%s", raw, names[i]);
+            char folder[1024];
+            snprintf(folder, sizeof folder, "%s/%s", raw, names[i]);
+            *strrchr(folder, '/') = '\0'; /* (the name's own folder: ac3/, mpeg2/) */
+            CHECK(dir_make(folder));
+            CHECK(file_write_atomic(path, b.p, b.len));
+        }
+        buf_free(&b);
+    }
     static const uint8_t hvcc[] = {1,    0x01, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 0x5D, 0xF0, 0, 0xFC,
                                    0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
     for (int seed = 0; seed < 10; seed++) {

@@ -339,13 +339,14 @@ void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f) {
     bool fresh = str_eq(ctx_q(c, "auto"), "1"); /* came on after the previous episode: from the top */
     Buf go = {0};
     if (next) H(&go, "/media/watch/%X?tv=1&amp;auto=1&amp;back=%u", next->id, back);
-    char src[100];
-    media_file_src(c, f->id, src, sizeof src);
+    int at = fresh ? 0 : media_resume_at(w);
+    char src[120];
+    media_file_src_at(c, f->id, at, src, sizeof src);
     H(b, "<div class=\"media-tv-player\" id=\"media-box\"><video id=\"media-video\" class=\"media-tv-video\" "
          "src=\"%s\" controls autoplay playsinline preload=\"auto\" tabindex=\"0\" autofocus data-static=\"%X\" "
          "data-id=\"%X\" data-report=\"media.progress\"",
       src, f->id, f->id);
-    if (w && !w->done && w->pos > 10 && !fresh) H(b, " data-resume=\"%d\"", w->pos);
+    if (at) H(b, " data-resume=\"%d\"", at);
     if (next) H(b, " data-next=\"%r\"", buf_cstr(&go));
     uint64_t poster = media_picture(f);
     if (poster) {

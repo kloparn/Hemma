@@ -120,6 +120,18 @@ TEST(media_continue_watching_and_watched_ticks) {
     /* the player resumes */
     html = th_page(adam, url("/media/watch/%s", ep1->id));
     CHECK_HAS(html, "data-resume=\"120\"");
+    CHECK_HAS(html, "#t=120\""); /* (in its address too: without wire.js the browser starts there - issue #49) */
+    /* not in its last 5 seconds - that would end at once (the same rule as wire.js); a short clip, as
+       92% counts as watched */
+    const MediaFile *clip = find("Flower.mp4"); /* (a film: the series' next-up below stays as it is) */
+    CHECK(clip != NULL);
+    snprintf(form, sizeof form, "id=%016llx&pos=30&dur=40", (unsigned long long)clip->id);
+    CHECK(th_act(adam, "media.progress", form).ok);
+    CHECK_HAS(th_page(adam, url("/media/watch/%s", clip->id)), "data-resume=\"30\"");
+    snprintf(form, sizeof form, "id=%016llx&pos=36&dur=40", (unsigned long long)clip->id);
+    CHECK(th_act(adam, "media.progress", form).ok);
+    const char *end = th_page(adam, url("/media/watch/%s", clip->id));
+    CHECK(!strstr(end, "data-resume") && !strstr(end, "#t="));
     /* nobody else sees Adam's progress */
     int eva = th_person("Eva");
     CHECK(!strstr(th_page(eva, "/media"), "Continue watching"));

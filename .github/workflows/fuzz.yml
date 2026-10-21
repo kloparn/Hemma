@@ -1,0 +1,72 @@
+# Every night: libFuzzer over the video code for about three hours (issue #50) - the converter parses
+# files nobody controls (a library's MKVs, torrents included), on the Pi, in the process that serves the
+# whole household. The push workflow's 90 s only skims; hours reach the rare corners (Dolby Digital
+# Plus's tools, unusual MKV layouts, a picture size that changes part-way).
+#
+# Four targets side by side, each on its own runner with four processes (tools/ci/fuzz.sh): the whole
+# conversion (conv) and three parts alone, far faster per input (mkv, ac3, mpeg2). What each found so far
+# is kept between nights (a cache), so every night starts where the last one stopped. A finding fails
+# the job - GitHub mails whoever last edited this schedule - and the files that do it are kept with the
+# run: replay one with build/fuzz-<target> <file> (or, on Windows, tools/convfuzz.c's replay build),
+# fix it, and add the file to the seeds the tests make. Free on a public repository.
+name: fuzz
+
+on:
+  schedule:
+    - cron: '17 1 * * *' # 01:17 UTC
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: How long each target runs (minutes)
+        default: '170'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [conv, mkv, ac3, mpeg2]
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    env:
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+      MINUTES: ${{ inputs.minutes || '170' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Address-space randomisation ASan copes with
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Build the suite (it writes the seed files)
+        run: make -j"$(getconf _NPROCESSORS_ONLN)" build/test
+      - name: libFuzzer's runtime
+        run: |
+          echo 'int LLVMFuzzerTestOneInput(const unsigned char *d, unsigned long n) { return 0; }' > build/probe.c
+          clang -fsanitize=fuzzer build/probe.c -o build/probe || {
+            sudo apt-get update -q && sudo apt-get install -y "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"; }
+      - name: What earlier nights found
+        uses: actions/cache/restore@v4
+        with:
+          path: build/fuzz-corpus-${{ matrix.target }}
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ matrix.target }}-
+      - name: Fuzz ${{ matrix.target }}
+        run: sh tools/ci/fuzz.sh ${{ matrix.target }} "$((MINUTES * 60))" "$(getconf _NPROCESSORS_ONLN)"
+      - name: Keep what tonight found, for tomorrow
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: build/fuzz-corpus-${{ matrix.target }}
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+      - name: Keep the files that break it
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-found-${{ matrix.target }}
+          path: build/fuzz-found-${{ matrix.target }}/

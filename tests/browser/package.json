@@ -1,0 +1,16 @@
+{
+  "name": "hemma-browser-tests",
+  "private": true,
+  "description": "CI-only: Hemma's pages in a real browser (Playwright) and eslint over web/*.js. Nothing here ships.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "lint": "cd ../.. && eslint --config tests/browser/eslint.config.mjs web"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.1",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0"
+  }
+}
