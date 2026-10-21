@@ -12,7 +12,10 @@
  * on its disk next to what running uploads and conversions may still write (room.h), and
  * never while an upload is bringing the same copy. upload.c in turn leaves alone a copy being
  * made here (convert_making), and takes over one only queued (convert_give_way: it leaves the
- * queue - the upload brings it). A crash's leftover ".conv.part" goes at the next scan. */
+ * queue - the upload brings it). A crash's leftover ".conv.part" goes at the next scan.
+ *
+ * Words (issue #46): a job's err is English (marked N_ here; the av library's own are its data) and
+ * is translated where the card shows it; "no room" keeps its numbers, and the words are made then. */
 #include "../../core/ui.h"
 #include "../av/conv.h"
 #include "convert.h"
@@ -112,20 +115,20 @@ bool convert_file(ConvertJob *j) {
     char part[1100];
     convert_part_path(j->dst, part, sizeof part);
     if (path_stat(j->dst, NULL, NULL, NULL)) { /* made since it was queued (by hand?): that one stays */
-        str_copy(j->err, sizeof j->err, "Its play-everywhere copy is there already");
+        str_copy(j->err, sizeof j->err, N_("Its play-everywhere copy is there already"));
         return false;
     }
     int64_t size = 0;
     Io io = {.src = file_open(j->src, "rb"), .j = j};
     if (!io.src || !path_stat(j->src, &size, NULL, NULL)) {
         if (io.src) fclose(io.src);
-        str_copy(j->err, sizeof j->err, "Can't open the original");
+        str_copy(j->err, sizeof j->err, N_("Can't open the original"));
         return false;
     }
     io.dst = file_open(part, "wb");
     if (!io.dst) {
         fclose(io.src);
-        str_copy(j->err, sizeof j->err, "Can't create the new file next to the original");
+        str_copy(j->err, sizeof j->err, N_("Can't create the new file next to the original"));
         return false;
     }
     AvConvJob av = {.in = {&io, size, src_read},
@@ -145,17 +148,17 @@ bool convert_file(ConvertJob *j) {
     str_copy(j->what, sizeof j->what, av.what);
     if (!ok) str_copy(j->err, sizeof j->err, av.err);
     if (ok && (fflush(io.dst) != 0 || !file_sync(io.dst))) { /* (a stopped or failed one goes: no fsync) */
-        str_copy(j->err, sizeof j->err, "Couldn't save the new file");
+        str_copy(j->err, sizeof j->err, N_("Couldn't save the new file"));
         ok = false;
     }
     fclose(io.dst);
     fclose(io.src);
     if (ok && path_stat(j->dst, NULL, NULL, NULL)) { /* never over a copy that arrived meanwhile */
-        str_copy(j->err, sizeof j->err, "Another play-everywhere copy arrived meanwhile - that one stays");
+        str_copy(j->err, sizeof j->err, N_("Another play-everywhere copy arrived meanwhile - that one stays"));
         ok = false;
     }
     if (ok && !file_replace(part, j->dst)) {
-        str_copy(j->err, sizeof j->err, "Couldn't rename the finished file");
+        str_copy(j->err, sizeof j->err, N_("Couldn't rename the finished file"));
         ok = false;
     }
     if (!ok) file_remove(part);
@@ -178,6 +181,7 @@ typedef struct {
     ConvertJob job; /* a running worker writes job.permille / out_mb / err / what; the rest only under g_cl */
     char root[300]; /* its library folder: the disk its copy goes on */
     int64_t need;   /* the most its copy can take: the original's size */
+    int64_t spare, held; /* CQ_NOROOM: the room there was on its disk then (the words come when shown) */
     int64_t started, ended; /* unix seconds */
     bool settled; /* done, and its original dealt with ("delete each original once its copy is made") */
 } ConvItem;
@@ -318,14 +322,20 @@ static void judge(Want *w, int n, const MediaHold *holds, int nh) {
     }
 }
 
-/* "needs up to 1.0 GB, and the drive has 400 MB to spare (Hemma keeps 1 GB free)" */
 static void set_no_room(ConvItem *it, const Want *w) { /* g_cl held */
-    char need[24], tail[200];
-    media_size_text(w->need, need, sizeof need);
-    media_room_text(tail, sizeof tail, w->spare, w->held);
-    snprintf(it->job.err, sizeof it->job.err, "needs up to %s, and %s", need, tail);
+    it->spare = w->spare;
+    it->held = w->held;
     it->state = CQ_NOROOM;
     it->ended = now_sec();
+}
+
+/* "Show S01E03 needs up to 1.0 GB, and the drive has 400 MB to spare (Hemma keeps 1 GB free)" - in the
+   language in use. g_cl held. */
+static void no_room_text(const ConvItem *it, char *out, size_t cap) {
+    char need[24], tail[300];
+    media_size_text(it->need, need, sizeof need);
+    media_room_text(tail, sizeof tail, it->spare, it->held);
+    snprintf(out, cap, T("%s needs up to %s, and %s"), it->name, need, tail);
 }
 
 /* Does running `it` still fit, counted next to everything else that holds room now? */
@@ -491,7 +501,7 @@ static int set_aside(char *why, size_t cap) {
         ConvItem *it = w[i].need > w[i].spare ? waiting_item(w[i].id) : NULL;
         if (!it) continue;
         set_no_room(it, &w[i]);
-        if (!out++) snprintf(why, cap, "%s %s", it->name, it->job.err);
+        if (!out++) no_room_text(it, why, cap); /* (in the language of whoever pressed Convert) */
     }
     lock_give(&g_cl);
     free(w);
@@ -507,7 +517,7 @@ static void settle_finished(void);
 
 void convert_act_start(Ctx *c, Fields *f) {
     if (!is_admin(c)) {
-        ctx_fail(c, "Only an admin can convert videos");
+        ctx_fail(c, "%s", T("Only an admin can convert videos"));
         return;
     }
     const MediaIndex *ix = media_lib();
@@ -535,7 +545,7 @@ void convert_act_start(Ctx *c, Fields *f) {
         free(ep);
     }
     int added = got[EQ_ADDED], noroom = 0;
-    char why[300] = "";
+    char why[600] = "";
     if (idle && added) noroom = set_aside(why, sizeof why);
 
     lock_take(&g_cl);
@@ -551,22 +561,30 @@ void convert_act_start(Ctx *c, Fields *f) {
     lock_give(&g_cl);
 
     if (noroom && noroom == added) {
-        if (noroom == 1) ctx_fail(c, "Not enough room on the drive: %s", why);
-        else ctx_fail(c, "Not enough room on the drive for %d videos: %s", noroom, why);
+        if (noroom == 1) ctx_fail(c, T("Not enough room on the drive: %s"), why);
+        else ctx_fail(c, T("Not enough room on the drive for %d videos: %s"), noroom, why); /* (2 or more) */
     } else if (added) {
-        char also[64] = "";
-        if (noroom) snprintf(also, sizeof also, " - %d more %s on the drive", noroom, noroom == 1 ? "doesn't fit" : "don't fit");
-        ctx_ok(c, "Converting %d video%s, %d at a time%s", added - noroom, added - noroom == 1 ? "" : "s", at_once, also);
+        char said[200], also[120] = "";
+        int n = added - noroom;
+        snprintf(said, sizeof said, TN(n, "Converting %d video, %d at a time", "Converting %d videos, %d at a time"), n,
+                 at_once);
+        if (noroom) {
+            str_copy(also, sizeof also, " - ");
+            snprintf(also + 3, sizeof also - 3,
+                     TN(noroom, "%d more doesn't fit on the drive", "%d more don't fit on the drive"), noroom);
+        }
+        ctx_ok(c, "%s%s", said, also);
     } else if (single && got[EQ_UPLOAD]) {
-        ctx_info(c, "An upload is bringing this video's play-everywhere copy right now");
+        ctx_info(c, "%s", T("An upload is bringing this video's play-everywhere copy right now"));
     } else if (single && got[EQ_THERE]) {
-        ctx_info(c, "Its play-everywhere copy is there already - the library shows it in a moment");
+        ctx_info(c, "%s", T("Its play-everywhere copy is there already - the library shows it in a moment"));
         media_scan_start();
     } else if (single) {
-        ctx_info(c, "That video plays everywhere already (or is on its way)");
+        ctx_info(c, "%s", T("That video plays everywhere already (or is on its way)"));
     } else {
-        ctx_info(c, got[EQ_UPLOAD] ? "Nothing to convert - the rest is being uploaded with copies right now"
-                                   : "Nothing needs converting");
+        ctx_info(c, "%s",
+                 got[EQ_UPLOAD] ? T("Nothing to convert - the rest is being uploaded with copies right now")
+                                : T("Nothing needs converting"));
     }
     app_wake_in(500);
 }
@@ -574,14 +592,14 @@ void convert_act_start(Ctx *c, Fields *f) {
 void convert_act_stop(Ctx *c, Fields *f) {
     (void)f;
     if (!is_admin(c)) {
-        ctx_fail(c, "Only an admin can do that");
+        ctx_fail(c, "%s", T("Only an admin can do that"));
         return;
     }
     atomic_store(&g_cstop, 1);
     lock_take(&g_cl);
     drop_items(CQ_WAITING);
     lock_give(&g_cl);
-    ctx_ok(c, "Stopping - finished videos stay, the one in progress is dropped");
+    ctx_ok(c, "%s", T("Stopping - finished videos stay, the one in progress is dropped"));
 }
 
 bool convert_replace_original(uint64_t id, const char *src, const char *dst) {
@@ -715,6 +733,13 @@ void convert_test_finish(bool ok) {
 
 /* ===================================================================== page */
 
+static void gb_text(int64_t bytes, char *out, size_t cap) { /* "12 GB", "1.5 GB" (a decimal comma in sv/es) */
+    double gb = (double)bytes / 1073741824.0;
+    snprintf(out, cap, gb >= 10 ? "%.0f GB" : "%.1f GB", gb);
+    char *dot = strchr(out, '.');
+    if (dot) *dot = i18n_decimal();
+}
+
 void convert_card(Ctx *c, Buf *b) {
     if (!is_admin(c)) return;
     const MediaIndex *ix = media_lib();
@@ -736,9 +761,11 @@ void convert_card(Ctx *c, Buf *b) {
         lock_give(&g_cl);
         return;
     }
-    ui_card(b, "Play everywhere", NULL, NULL);
+    ui_card(b, T("Play everywhere"), NULL, NULL);
     if (waiting + running) {
-        H(b, "<p><b>Converting · %d of %d done</b></p><ul class=\"rows media-conv\">", done, done + waiting + running + failed);
+        buf_puts(b, "<p><b>");
+        H(b, T("Converting · %d of %d done"), done, done + waiting + running + failed);
+        buf_puts(b, "</b></p><ul class=\"rows media-conv\">");
         for (int i = 0; i < g_nitems; i++) {
             const ConvItem *it = g_items[i];
             if (it->state != CQ_RUNNING) continue;
@@ -749,25 +776,35 @@ void convert_card(Ctx *c, Buf *b) {
         buf_puts(b, "</ul>");
     } else if (need) {
         char sz[24];
-        double gb = (double)bytes / 1073741824.0;
-        snprintf(sz, sizeof sz, gb >= 10 ? "%.0f GB" : "%.1f GB", gb);
-        H(b, "<p>%d video%s (%s) %s in a format that browsers, iPhones or TVs can't all play.</p>", need,
-          need == 1 ? "" : "s", sz, need == 1 ? "is" : "are");
-        H(b, "<p class=\"muted media-small\">Hemma can make a copy of each that plays everywhere - once, next to the "
-             "original (<code class=\"media-code\">name.web.mp4</code>). %s It runs in the background, %d at a time.</p>",
-          remux == need ? "These only need a new container: quick, nothing is re-encoded."
-                        : "DVD video is re-encoded to H.264 and Dolby sound to AAC; copies are about a third of the size.",
-          workers_wanted());
+        gb_text(bytes, sz, sizeof sz);
+        buf_puts(b, "<p>");
+        H(b,
+          TN(need, "%d video (%s) is in a format that browsers, iPhones or TVs can't all play.",
+             "%d videos (%s) are in a format that browsers, iPhones or TVs can't all play."),
+          need, sz);
+        buf_puts(b, "</p><p class=\"muted media-small\">");
+        H(b, "%r %r ",
+          T("Hemma can make a copy of each that plays everywhere - once, next to the original (<code "
+            "class=\"media-code\">name.web.mp4</code>)."),
+          remux == need ? T("These only need a new container: quick, nothing is re-encoded.")
+                        : T("DVD video is re-encoded to H.264 and Dolby sound to AAC; copies are about a third of the "
+                            "size."));
+        H(b, T("It runs in the background, %d at a time."), workers_wanted());
+        buf_puts(b, "</p>");
     }
     if (done || failed) {
-        H(b, "<p class=\"muted media-small\">%d converted", done);
-        if (failed) H(b, ", %d failed", failed);
+        buf_puts(b, "<p class=\"muted media-small\">");
+        H(b, T("%d converted"), done);
+        if (failed) {
+            buf_puts(b, ", ");
+            H(b, T("%d failed"), failed);
+        }
         buf_puts(b, ".</p>");
         if (failed) {
             buf_puts(b, "<ul class=\"media-up-list\">");
-            for (int i = 0; i < g_nitems; i++)
+            for (int i = 0; i < g_nitems; i++) /* (the av library's own reasons are English: its data) */
                 if (g_items[i]->state == CQ_FAILED)
-                    H(b, "<li class=\"bad\">%s — %s</li>", g_items[i]->name, g_items[i]->job.err);
+                    H(b, "<li class=\"bad\">%s — %s</li>", g_items[i]->name, T(g_items[i]->job.err));
             buf_puts(b, "</ul>");
         }
     }
@@ -775,16 +812,21 @@ void convert_card(Ctx *c, Buf *b) {
         const ConvItem *first = NULL;
         for (int i = 0; i < g_nitems && !first; i++)
             if (g_items[i]->state == CQ_NOROOM) first = g_items[i];
-        H(b, "<p class=\"notice bad\" id=\"media-conv-room\">%d video%s didn't fit on the drive: %s %s. Make room, then "
-             "convert again.</p>",
-          noroom, noroom == 1 ? "" : "s", first->name, first->job.err);
+        char why[600];
+        no_room_text(first, why, sizeof why);
+        buf_puts(b, "<p class=\"notice bad\" id=\"media-conv-room\">");
+        H(b,
+          TN(noroom, "%d video didn't fit on the drive: %s. Make room, then convert again.",
+             "%d videos didn't fit on the drive: %s. Make room, then convert again."),
+          noroom, why);
+        buf_puts(b, "</p>");
     }
     lock_give(&g_cl);
     buf_puts(b, "<div class=\"modal-f\">");
-    if (waiting + running) ui_act(b, "media.convert_stop", "btn", "Stop", NULL, NULL, NULL);
+    if (waiting + running) ui_act(b, "media.convert_stop", "btn", T("Stop"), NULL, NULL, NULL);
     else if (need) {
-        char label[64];
-        snprintf(label, sizeof label, "Convert %d video%s", need, need == 1 ? "" : "s");
+        char label[120];
+        snprintf(label, sizeof label, TN(need, "Convert %d video", "Convert %d videos"), need);
         ui_act(b, "media.convert", "btn primary", label, NULL, NULL, NULL);
     }
     buf_puts(b, "</div>");
@@ -792,25 +834,32 @@ void convert_card(Ctx *c, Buf *b) {
     /* originals their copies can stand in for: a button for those there, a setting for the next */
     buf_puts(b, "<div class=\"media-orig\">");
     if (extra) {
-        char sz[24], q[240];
-        double gb = (double)extra_bytes / 1073741824.0;
-        snprintf(sz, sizeof sz, gb >= 10 ? "%.0f GB" : "%.1f GB", gb);
-        H(b, "<p>%d video%s %s two versions, the original and a converted copy. The less compatible one%s "
-             "take%s %s.</p>",
-          extra, extra == 1 ? "" : "s", extra == 1 ? "has" : "have", extra == 1 ? "" : "s", extra == 1 ? "s" : "", sz);
-        snprintf(q, sizeof q, "Delete %d file%s (%s)? For each video the version that plays in the most places "
-                              "stays, and everyone's progress stays with it. This can't be undone.",
-                 extra, extra == 1 ? "" : "s", sz);
+        char sz[24], q[400];
+        gb_text(extra_bytes, sz, sizeof sz);
+        buf_puts(b, "<p>");
+        H(b,
+          TN(extra,
+             "%d video has two versions, the original and a converted copy. The less compatible one takes %s.",
+             "%d videos have two versions, the original and a converted copy. The less compatible ones take %s."),
+          extra, sz);
+        buf_puts(b, "</p>");
+        snprintf(q, sizeof q,
+                 TN(extra,
+                    "Delete %d file (%s)? For each video the version that plays in the most places stays, and "
+                    "everyone's progress stays with it. This can't be undone.",
+                    "Delete %d files (%s)? For each video the version that plays in the most places stays, and "
+                    "everyone's progress stays with it. This can't be undone."),
+                 extra, sz);
         ui_form_confirm(b, "media.drop_originals", "inline", q);
-        buf_puts(b, "<button class=\"btn danger\">Keep only the most compatible version</button>");
+        H(b, "<button class=\"btn danger\">%s</button>", T("Keep only the most compatible version"));
         ui_form_end(b);
     }
     ui_form(b, "media.drop_auto", "inline");
-    H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"on\" value=\"1\" data-auto%r> Do that by itself "
-         "after each conversion</label>",
-      setting_int("media.drop_originals", 0) == 1 ? " checked" : "");
+    H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"on\" value=\"1\" data-auto%r> %s</label>",
+      setting_int("media.drop_originals", 0) == 1 ? " checked" : "", T("Do that by itself after each conversion"));
     ui_form_end(b);
-    buf_puts(b, "<p class=\"muted media-small\">A copy keeps the picture and one sound track: other sound tracks (a "
-                "director's commentary, other languages) go with the original.</p></div>");
+    H(b, "<p class=\"muted media-small\">%r</p></div>",
+      T("A copy keeps the picture and one sound track: other sound tracks (a director's commentary, other languages) "
+        "go with the original."));
     ui_card_end(b);
 }

@@ -30,7 +30,7 @@ Table T_book_series = TABLE("booking_series", BookSeries, series_fields);
 
 static const FieldDef news_fields[] = {
     FIELD(BookNews, id, F_INT),     FIELD(BookNews, person, F_INT), FIELD(BookNews, ts, F_I64),
-    FIELD(BookNews, text, F_STR),   FIELD(BookNews, link, F_STR),
+    FIELD(BookNews, text, F_STR),   FIELD(BookNews, link, F_STR),   FIELD(BookNews, msg, F_STR),
 };
 Table T_book_news = TABLE("book_news", BookNews, news_fields);
 
@@ -123,19 +123,29 @@ void book_snap(const Resource *r, int64_t *start, int64_t *end) {
     if (*end <= *start) *end = res_daily(r) ? add_days(*start, 1) : *start + step_of(r);
 }
 
+void book_day(Buf *b, int64_t day, int64_t now) {
+    if (i18n_lang() == LANG_EN) ui_day(b, day, now);
+    else ui_day_inline(b, day, now);
+}
+
+/* "Friday 14:00–17:00", "Fri 16 Oct – Sun 18 Oct" - mostly said inside a sentence (a toast, a reason, news) */
 void book_span_text(const Resource *r, int64_t start, int64_t end, int64_t now, Buf *b) {
-    ui_day(b, start, now);
+    /* a whole day of an hourly thing open around the clock (no thing: as if it were) */
+    bool whole = start == day_start(start) && end == add_days(start, 1);
+    if (whole && (!r || (!res_daily(r) && around_the_clock(r)))) {
+        Buf day = {0};
+        book_day(&day, start, now);
+        buf_printf(b, T("%s, all day"), buf_cstr(&day));
+        buf_free(&day);
+        return;
+    }
+    book_day(b, start, now);
     if (r && res_daily(r)) {
         int64_t last = add_days(end, -1);
         if (day_start(last) != day_start(start)) {
             buf_puts(b, " – ");
-            ui_day(b, last, now);
+            book_day(b, last, now);
         }
-        return;
-    }
-    if (around_the_clock(r ? r : &(Resource){.close_min = 1440}) && start == day_start(start) &&
-        end == add_days(start, 1)) {
-        buf_puts(b, ", all day");
         return;
     }
     buf_putc(b, ' ');
@@ -148,22 +158,23 @@ void book_span_text(const Resource *r, int64_t start, int64_t end, int64_t now, 
     } else {
         ui_hm(b, start);
         buf_puts(b, " – ");
-        ui_day(b, end, now);
+        book_day(b, end, now);
         buf_putc(b, ' ');
         ui_hm(b, end);
     }
 }
 
-/* Everything except "is it in the past". */
+/* Everything except "is it in the past". (A reason in the language in use: a request's, or - for a
+   repeating booking's left-out one - the person's it's for.) */
 static const char *check_rules(const Resource *r, int64_t s, int64_t e, int except, int64_t now) {
     static char msg[200];
-    if (e <= s) return "The end has to be after the start";
+    if (e <= s) return T("The end has to be after the start");
     if (!res_daily(r) && !around_the_clock(r)) {
         DateTime ds = dt_local(s), de = dt_local(e);
         int sm = ds.hour * 60 + ds.min;
         int em = (day_start(e) != day_start(s)) ? 1440 + de.hour * 60 + de.min : de.hour * 60 + de.min;
         if (day_start(e - 1) != day_start(s) || sm < r->open_min || em > r->close_min) {
-            snprintf(msg, sizeof msg, "%s can be booked %02d:%02d–%02d:%02d", r->name, r->open_min / 60,
+            snprintf(msg, sizeof msg, T("%s can be booked %02d:%02d–%02d:%02d"), r->name, r->open_min / 60,
                      r->open_min % 60, r->close_min / 60, r->close_min % 60);
             return msg;
         }
@@ -171,7 +182,7 @@ static const char *check_rules(const Resource *r, int64_t s, int64_t e, int exce
     if (r->max_min > 0 && e - s > (int64_t)r->max_min * 60) {
         Buf d = {0};
         ui_duration(&d, (int64_t)r->max_min * 60);
-        snprintf(msg, sizeof msg, "%s can be booked for at most %s", r->name, buf_cstr(&d));
+        snprintf(msg, sizeof msg, T("%s can be booked for at most %s"), r->name, buf_cstr(&d));
         buf_free(&d);
         return msg;
     }
@@ -180,7 +191,7 @@ static const char *check_rules(const Resource *r, int64_t s, int64_t e, int exce
         Person *p = person_get(cb->who);
         Buf span = {0};
         book_span_text(r, cb->start, cb->end, now, &span);
-        snprintf(msg, sizeof msg, "%s has %s %s", p ? p->name : "Someone", r->name, buf_cstr(&span));
+        snprintf(msg, sizeof msg, T("%s has %s %s"), p ? p->name : T("Someone"), r->name, buf_cstr(&span));
         buf_free(&span);
         return msg;
     }
@@ -188,15 +199,15 @@ static const char *check_rules(const Resource *r, int64_t s, int64_t e, int exce
 }
 
 const char *book_check(const Resource *r, int64_t s, int64_t e, int except, int64_t now) {
-    if (!r) return "Pick something to book";
-    if (r->archived) return "That can't be booked any more";
-    if (e <= s) return "The end has to be after the start";
-    if (e <= now) return "That's already over";
+    if (!r) return T("Pick something to book");
+    if (r->archived) return T("That can't be booked any more");
+    if (e <= s) return T("The end has to be after the start");
+    if (e <= now) return T("That's already over");
     int64_t grace = res_daily(r) ? now - day_start(now) : step_of(r);
     /* a booking under way may still be extended or ended early, as long as its start stays put */
     Booking *own = except ? book_get(except) : NULL;
     bool same_start = own && own->res == r->id && own->start == s;
-    if (s < now - grace && !same_start) return "That has already started — pick a later time";
+    if (s < now - grace && !same_start) return T("That has already started — pick a later time");
     return check_rules(r, s, e, except, now);
 }
 
@@ -282,8 +293,10 @@ static void match_names(const Tokens *t, int id, const char *list, Match *m) {
     }
 }
 
-/* Find the resource named in the tokens - by its emoji, its name, its other names, and the Swedish
-   words of the starter it's named like ("Sauna": "bastu") - and mark them used. */
+static void match_starter(const Tokens *t, int id, const char *name, Match *m);
+
+/* Find the resource named in the tokens - by its emoji, its name, its other names, and the starter it's
+   named like: its name in every language and its Swedish words ("Sauna": "bastu") - and mark them used. */
 static int match_resource(Tokens *t) {
     Match m = {0};
     for (int ri = 0; ri < tbl_count(&T_resource); ri++) {
@@ -293,7 +306,7 @@ static int match_resource(Tokens *t) {
             if (!t->used[i] && r->emoji[0] && str_eq(t->raw[i], r->emoji) && 100 > m.score) m = (Match){r->id, 100, i, 1};
         match_name(t, r->id, r->name, &m);
         match_names(t, r->id, r->aliases, &m);
-        match_names(t, r->id, book_starter_aliases(r->name), &m);
+        match_starter(t, r->id, r->name, &m);
     }
     for (int k = 0; m.id && k < m.len; k++) t->used[m.from + k] = true;
     return m.id;
@@ -304,9 +317,11 @@ static void bookable_list(char *out, size_t cap) {
     Resource *rs[8];
     int n = res_list(rs, countof(rs), false), total = 0;
     for (int i = 0; i < tbl_count(&T_resource); i++) total += !((const Resource *)tbl_at(&T_resource, i))->archived;
-    size_t at = (size_t)snprintf(out, cap, "You can book: ");
-    for (int i = 0; i < n && at < cap; i++) at += (size_t)snprintf(out + at, cap - at, "%s%s", i ? ", " : "", rs[i]->name);
-    if (at < cap) snprintf(out + at, cap - at, "%s", total > n ? " …" : ".");
+    char names[400] = "";
+    size_t at = 0;
+    for (int i = 0; i < n && at < sizeof names; i++)
+        at += (size_t)snprintf(names + at, sizeof names - at, "%s%s", i ? ", " : "", rs[i]->name);
+    snprintf(out, cap, total > n ? T("You can book: %s …") : T("You can book: %s."), names);
 }
 
 static void take_person(Tokens *t, int *who) {
@@ -348,11 +363,11 @@ void book_quick_parse(const char *q, int default_res, int64_t now, Quick *out) {
         if (word[0] && n) { /* issue #55: "bastu" met a thing called "Sauna" and was only told to start with one */
             char list[400], msg[512]; /* (room for 8 names of 40 bytes: only str_copy cuts, never mid-letter) */
             bookable_list(list, sizeof list);
-            snprintf(msg, sizeof msg, "I don't know “%s”. %s", word, list);
+            snprintf(msg, sizeof msg, T("I don't know “%s”. %s"), word, list);
             str_copy(out->problem, sizeof out->problem, msg);
         } else {
-            snprintf(out->problem, sizeof out->problem, "Start with what to book, e.g. “%s fri 14-17”",
-                     n ? first[0]->name : "car");
+            snprintf(out->problem, sizeof out->problem, T("Start with what to book, e.g. “%s fri 14-17”"),
+                     n ? first[0]->name : T("car"));
         }
         out->res = 0;
         return;
@@ -362,19 +377,20 @@ void book_quick_parse(const char *q, int default_res, int64_t now, Quick *out) {
         return;
     }
     if (!out->has_when) {
-        snprintf(out->problem, sizeof out->problem, "When? Add a day%s, e.g. “%s fri%s”",
-                 res_daily(r) ? "" : " and a time", r->name, res_daily(r) ? "-sun" : " 14-17");
+        snprintf(out->problem, sizeof out->problem,
+                 res_daily(r) ? T("When? Add a day, e.g. “%s fri-sun”") : T("When? Add a day and a time, e.g. “%s fri 14-17”"),
+                 r->name);
         return;
     }
     int64_t s, e;
     bool timed = w.has_start || w.now || w.rel_min;
     if (!res_daily(r) && !timed && !around_the_clock(r)) {
-        snprintf(out->problem, sizeof out->problem, "What time? e.g. “%s sat 10-13”", r->name);
+        snprintf(out->problem, sizeof out->problem, T("What time? e.g. “%s sat 10-13”"), r->name);
         return;
     }
     int dflt = r->default_min > 0 ? r->default_min : (res_daily(r) ? 1440 : 60);
     if (!when_resolve(&w, now, dflt, &s, &e)) { /* never with has_when - but s and e would be garbage */
-        snprintf(out->problem, sizeof out->problem, "When? e.g. “%s fri 14-17”", r->name);
+        snprintf(out->problem, sizeof out->problem, T("When? e.g. “%s fri 14-17”"), r->name);
         return;
     }
     if (!res_daily(r) && !timed) { /* around-the-clock thing for a whole day/span */
@@ -399,8 +415,18 @@ void book_quick_parse(const char *q, int default_res, int64_t now, Quick *out) {
 
 /* ================================================================ actions */
 
-/* Keep a line for someone whose booking changed (and toast it on their open screens). */
-static void news_add(int person, const char *link, const char *text) {
+/* The language a line for someone is made in (the days and reasons inside it): theirs when they chose one,
+   else the one in use (issue #46). */
+static Lang lang_of(int person) {
+    Lang l;
+    return i18n_parse(pref(person, PREF_LANG, ""), &l) ? l : i18n_lang();
+}
+
+/* Keep a line for someone whose booking changed (and toast it on their open screens): fmt is English, marked
+   N_(), with up to five values (texts; NULL past the format's own) - kept with them, so each reader gets it in
+   their language. */
+static void news_add(int person, const char *link, const char *fmt, const char *v1, const char *v2, const char *v3,
+                     const char *v4, const char *v5) {
     int64_t now = now_sec();
     int mine = 0, oldest = 0;
     int64_t oldest_ts = INT64_MAX;
@@ -416,10 +442,11 @@ static void news_add(int person, const char *link, const char *text) {
     }
     if (mine >= NEWS_MAX && oldest) tbl_del(&T_book_news, oldest);
     BookNews n = {.person = person, .ts = now};
-    str_copy(n.text, sizeof n.text, text);
+    snprintf(n.text, sizeof n.text, fmt, v1, v2, v3, v4, v5); /* (printf leaves extra values alone) */
+    if (!i18n_pack(n.msg, sizeof n.msg, fmt, v1, v2, v3, v4, v5)) n.msg[0] = '\0'; /* too long: the text as it is */
     str_copy(n.link, sizeof n.link, link);
     tbl_put(&T_book_news, &n);
-    app_notify_person(person, TOAST_INFO, "%s", text);
+    app_notify_person(person, TOAST_INFO, fmt, v1, v2, v3, v4, v5);
 }
 
 /* ======================================================= repeating bookings */
@@ -448,20 +475,18 @@ const BookSeries *book_series_of(const Booking *b) { return b->series ? tbl_get(
 void book_series_label(Buf *b, const BookSeries *s) {
     int wday = dt_local(s->start).wday;
     switch (s->repeat) {
-    case REPEAT_DAILY: buf_puts(b, "every day"); break;
-    case REPEAT_WEEKLY: buf_printf(b, "every %s", weekday_name(wday, false)); break;
-    case REPEAT_BIWEEKLY: buf_printf(b, "every other %s", weekday_name(wday, false)); break;
-    case REPEAT_MONTHLY: buf_printf(b, "every month on the %d", dt_local(s->start).day); break;
+    case REPEAT_DAILY: buf_puts(b, T("every day")); break;
+    case REPEAT_WEEKLY: buf_printf(b, T("every %s"), weekday_name(wday, false)); break;
+    case REPEAT_BIWEEKLY: buf_printf(b, T("every other %s"), weekday_name(wday, false)); break;
+    case REPEAT_MONTHLY: buf_printf(b, T("every month on the %d"), dt_local(s->start).day); break;
     default: break;
     }
-    if (s->stopped) buf_puts(b, ", stopped");
+    if (s->stopped) buf_puts(b, T(", stopped"));
     else if (s->until) {
         DateTime u = dt_local(s->until);
-        buf_printf(b, ", until %d %s", u.day, month_name(u.mon, true));
+        buf_printf(b, T(", until %d %s"), u.day, month_name(u.mon, true));
     }
 }
-
-static void news_add(int person, const char *link, const char *text);
 
 int book_series_fill(int64_t now) {
     int made = 0;
@@ -487,19 +512,21 @@ int book_series_fill(int64_t now) {
             s.made++;
             changed = true;
             if (e <= now) continue; /* (time that passed while Hemma was off: nothing to book) */
-            const char *why = book_check(r, st, e, 0, now);
-            if (why) { /* taken (or outside the hours now): left out, and whoever it's for hears of it */
-                Buf span = {0}, rep = {0}, text = {0}, link = {0};
+            if (book_check(r, st, e, 0, now)) { /* taken (or outside the hours now): left out, and whoever it's for hears */
+                Lang was = i18n_use(lang_of(s.who)); /* (the day, the repeat and the reason in their words) */
+                char why[200];
+                str_copy(why, sizeof why, book_check(r, st, e, 0, now));
+                Buf span = {0}, rep = {0}, link = {0};
                 book_span_text(r, st, e, now, &span);
                 book_series_label(&rep, &s);
-                buf_printf(&text, "Your %s %s: %s isn't booked - %s", r->name, buf_cstr(&rep), buf_cstr(&span), why);
+                i18n_use(was);
                 char ymd[11];
                 fmt_ymd(st, ymd);
                 buf_printf(&link, "/book/%d?w=%s", r->id, ymd);
-                news_add(s.who, buf_cstr(&link), buf_cstr(&text));
+                news_add(s.who, buf_cstr(&link), N_("Your %s %s: %s isn't booked - %s"), r->name, buf_cstr(&rep),
+                         buf_cstr(&span), why, NULL);
                 buf_free(&span);
                 buf_free(&rep);
-                buf_free(&text);
                 buf_free(&link);
                 continue;
             }
@@ -513,16 +540,28 @@ int book_series_fill(int64_t now) {
     return made;
 }
 
+/* What happened to a booking - each with its own words (word order differs between languages) */
+enum { DID_BOOK, DID_MOVE, DID_CANCEL, DID_STOP };
+
+/* To the person it was for, to whoever made it for them, and the same when they made it for someone else -
+   a moved one says where it went and where it was. */
+static const char *const TELL[3][3] = {
+    {N_("%s moved your %s booking · now %s (was %s)"), N_("%s moved the %s booking you made · now %s (was %s)"),
+     N_("%s moved the %s booking you made for %s · now %s (was %s)")},
+    {N_("%s cancelled your %s booking · %s"), N_("%s cancelled the %s booking you made · %s"),
+     N_("%s cancelled the %s booking you made for %s · %s")},
+    {N_("%s stopped repeating your %s booking · %s"), N_("%s stopped repeating the %s booking you made · %s"),
+     N_("%s stopped repeating the %s booking you made for %s · %s")},
+};
+
 /* Someone else cancelled or moved a booking (issue #43): the person it was for and whoever made it
    hear about it - a toast now, and a line that waits on their Bookings page and home card. Who was
    told this way is in *told (0 = nobody), so the household's toast leaves them out. */
-static void tell(Ctx *c, const char *verb, const Resource *r, const Booking *was, const Booking *now_b, int told[2]) {
+static void tell(Ctx *c, int did, const Resource *r, const Booking *was, const Booking *now_b, int told[2]) {
     told[0] = told[1] = 0;
     int me = c->me ? c->me->id : 0;
-    const char *name = c->me ? c->me->name : "Someone";
-    Buf old = {0}, nw = {0}, link = {0}, text = {0};
-    book_span_text(r, was->start, was->end, c->now, &old);
-    if (now_b) book_span_text(r, now_b->start, now_b->end, c->now, &nw);
+    const char *name = c->me ? c->me->name : T("Someone");
+    Buf old = {0}, nw = {0}, link = {0};
     char ymd[11];
     fmt_ymd(now_b ? now_b->start : was->start, ymd);
     buf_printf(&link, "/book/%d?w=%s", r->id, ymd);
@@ -530,28 +569,41 @@ static void tell(Ctx *c, const char *verb, const Resource *r, const Booking *was
     for (int k = 0; k < 2; k++) {
         Person *p = person_real(who[k]);
         if (!p || p->id == me) continue;
-        buf_reset(&text);
+        Lang lang = i18n_use(lang_of(p->id)); /* (the days in their words) */
+        buf_reset(&old);
+        buf_reset(&nw);
+        book_span_text(r, was->start, was->end, c->now, &old);
+        if (now_b) book_span_text(r, now_b->start, now_b->end, c->now, &nw);
+        i18n_use(lang);
         Person *for_p = person_get(was->who);
-        if (k == 0) buf_printf(&text, "%s %s your %s booking", name, verb, r->name);
-        else if (me == was->who || !for_p) buf_printf(&text, "%s %s the %s booking you made", name, verb, r->name);
-        else buf_printf(&text, "%s %s the %s booking you made for %s", name, verb, r->name, for_p->name);
-        if (now_b) buf_printf(&text, " · now %s (was %s)", buf_cstr(&nw), buf_cstr(&old));
-        else buf_printf(&text, " · %s", buf_cstr(&old));
-        news_add(p->id, buf_cstr(&link), buf_cstr(&text));
+        int form = k == 0 ? 0 : me == was->who || !for_p ? 1 : 2;
+        const char *v[5] = {name, r->name, NULL, NULL, NULL};
+        int n = 2;
+        if (form == 2) v[n++] = for_p->name;
+        if (now_b) v[n++] = buf_cstr(&nw);
+        v[n++] = buf_cstr(&old);
+        news_add(p->id, buf_cstr(&link), TELL[did - DID_MOVE][form], v[0], v[1], v[2], v[3], v[4]);
         told[k] = p->id;
     }
     buf_free(&old);
     buf_free(&nw);
     buf_free(&link);
-    buf_free(&text);
 }
 
-static void announce(Ctx *c, const char *verb, const Resource *r, const Booking *b, const int told[2]) {
+/* The household's Latest line: for someone else, or for themselves; and everyone's toast (the thing's emoji too) */
+static const char *const ANNOUNCE_FOR[4] = {N_("%s booked %s for %s · %s"), N_("%s moved %s for %s · %s"),
+                                            N_("%s cancelled %s for %s · %s"), N_("%s stopped repeating %s for %s · %s")};
+static const char *const ANNOUNCE[4] = {N_("%s booked %s · %s"), N_("%s moved %s · %s"), N_("%s cancelled %s · %s"),
+                                        N_("%s stopped repeating %s · %s")};
+static const char *const ANNOUNCE_ALL[4] = {N_("%s booked %s %s · %s"), N_("%s moved %s %s · %s"),
+                                            N_("%s cancelled %s %s · %s"), N_("%s stopped repeating %s %s · %s")};
+
+static void announce(Ctx *c, int did, const Resource *r, const Booking *b, const int told[2]) {
     Person *who = person_get(b->who);
     Buf span = {0}, link = {0};
     book_span_text(r, b->start, b->end, c->now, &span);
     const BookSeries *series = book_series_of(b);
-    if (series && str_eq(verb, "booked")) {
+    if (series && did == DID_BOOK) {
         buf_puts(&span, ", ");
         book_series_label(&span, series);
     }
@@ -559,37 +611,45 @@ static void announce(Ctx *c, const char *verb, const Resource *r, const Booking 
     char ymd[11];
     fmt_ymd(b->start, ymd);
     buf_puts(&link, ymd);
-    const char *me = c->me ? c->me->name : "Someone";
+    const char *me = c->me ? c->me->name : T("Someone");
     if (who && c->me && who->id != c->me->id)
-        activity_add(c->me->id, r->emoji[0] ? r->emoji : "📅", buf_cstr(&link), "%s %s %s for %s · %s", me, verb, r->name,
-                     who->name, buf_cstr(&span));
+        activity_add(c->me->id, r->emoji[0] ? r->emoji : "📅", buf_cstr(&link), ANNOUNCE_FOR[did], me, r->name, who->name,
+                     buf_cstr(&span));
     else
-        activity_add(c->me ? c->me->id : 0, r->emoji[0] ? r->emoji : "📅", buf_cstr(&link), "%s %s %s · %s", me, verb,
-                     r->name, buf_cstr(&span));
-    app_notify_but(c, told ? told[0] : 0, told ? told[1] : 0, TOAST_INFO, "%s %s %s %s · %s", me, verb, r->emoji, r->name,
+        activity_add(c->me ? c->me->id : 0, r->emoji[0] ? r->emoji : "📅", buf_cstr(&link), ANNOUNCE[did], me, r->name,
+                     buf_cstr(&span));
+    app_notify_but(c, told ? told[0] : 0, told ? told[1] : 0, TOAST_INFO, ANNOUNCE_ALL[did], me, r->emoji, r->name,
                    buf_cstr(&span));
     buf_free(&span);
     buf_free(&link);
 }
 
 /* "Only Eva, Adam or an admin can cancel this booking" - false (and said) when the thing's rule keeps c out. */
-static bool may_change_or_say(Ctx *c, const Resource *r, const Booking *b, const char *what) {
+static bool may_change_or_say(Ctx *c, const Resource *r, const Booking *b, bool cancel) {
     if (book_may_change(c, r, b)) return true;
     Person *who = person_get(b->who), *by = person_get(b->by);
-    if (by && by != who) ctx_fail(c, "Only %s, %s or an admin can %s this booking", who ? who->name : "the person it's for", by->name, what);
-    else ctx_fail(c, "Only %s or an admin can %s this booking", who ? who->name : "the person it's for", what);
+    const char *whose = who ? who->name : T("the person it's for");
+    if (by && by != who)
+        ctx_fail(c,
+                 cancel ? T("Only %s, %s or an admin can cancel this booking")
+                        : T("Only %s, %s or an admin can move this booking"),
+                 whose, by->name);
+    else
+        ctx_fail(c,
+                 cancel ? T("Only %s or an admin can cancel this booking") : T("Only %s or an admin can move this booking"),
+                 whose);
     return false;
 }
 
 static bool save_booking(Ctx *c, Resource *r, int id, int who, int64_t s, int64_t e, const char *note, int repeat,
                          int64_t until) {
     if (r && !book_open_to(c, r)) { /* children and guests: what an admin opened to them (issue #44) */
-        if (is_child(c)) ctx_fail(c, "Ask a grown-up to book the %s", r->name);
-        else ctx_fail(c, "The %s isn't open to guests", r->name);
+        if (is_child(c)) ctx_fail(c, T("Ask a grown-up to book the %s"), r->name);
+        else ctx_fail(c, T("The %s isn't open to guests"), r->name);
         return false;
     }
     if ((is_child(c) || is_guest(c)) && who && who != c->me->id) {
-        ctx_fail(c, "You can book for yourself");
+        ctx_fail(c, "%s", T("You can book for yourself"));
         return false;
     }
     const char *why = book_check(r, s, e, id, c->now);
@@ -601,10 +661,10 @@ static bool save_booking(Ctx *c, Resource *r, int id, int who, int64_t s, int64_
     if (id) {
         Booking *old = book_get(id);
         if (!old) {
-            ctx_fail(c, "That booking is gone");
+            ctx_fail(c, "%s", T("That booking is gone"));
             return false;
         }
-        if (!may_change_or_say(c, res_get(old->res), old, "move")) return false;
+        if (!may_change_or_say(c, res_get(old->res), old, false)) return false;
         b = was = *old;
     } else {
         b.by = c->me ? c->me->id : 0;
@@ -631,16 +691,16 @@ static bool save_booking(Ctx *c, Resource *r, int id, int who, int64_t s, int64_
     if (ser) {
         Buf rep = {0};
         book_series_label(&rep, ser);
-        ctx_ok(c, "Booked %s · %s, %s - the next %d weeks are booked, later ones as they come", r->name, buf_cstr(&span),
-               buf_cstr(&rep), SERIES_AHEAD_DAYS / 7);
+        ctx_ok(c, T("Booked %s · %s, %s - the next %d weeks are booked, later ones as they come"), r->name,
+               buf_cstr(&span), buf_cstr(&rep), SERIES_AHEAD_DAYS / 7);
         buf_free(&rep);
     } else {
-        ctx_ok(c, "%s %s · %s", id ? "Moved" : "Booked", r->name, buf_cstr(&span));
+        ctx_ok(c, id ? T("Moved %s · %s") : T("Booked %s · %s"), r->name, buf_cstr(&span));
     }
     buf_free(&span);
     int told[2] = {0, 0};
-    if (id && (was.start != b.start || was.end != b.end || was.res != b.res)) tell(c, "moved", r, &was, &b, told);
-    announce(c, id ? "moved" : "booked", r, &b, told);
+    if (id && (was.start != b.start || was.end != b.end || was.res != b.res)) tell(c, DID_MOVE, r, &was, &b, told);
+    announce(c, id ? DID_MOVE : DID_BOOK, r, &b, told);
     return true;
 }
 
@@ -650,7 +710,7 @@ static void act_quick(Ctx *c, Fields *f) {
     Quick q;
     book_quick_parse(fields_str(f, "q"), (int)fields_int(f, "res", 0), c->now, &q);
     if (!q.has_when && !q.res && str_blank(fields_str(f, "q"))) {
-        ctx_fail(c, "Type what to book, e.g. “car fri 14-17”");
+        ctx_fail(c, "%s", T("Type what to book, e.g. “car fri 14-17”"));
         return;
     }
     if (q.problem[0]) {
@@ -672,14 +732,14 @@ static bool read_span(Ctx *c, Fields *f, Resource *r, int64_t *s, int64_t *e) {
     } else {
         int y, m, d;
         if (!parse_ymd(fields_str(f, "date"), &y, &m, &d)) {
-            ctx_fail_at(c, "date", "Pick a day");
+            ctx_fail_at(c, "date", "%s", T("Pick a day"));
             return false;
         }
         if (res_daily(r)) {
             int y2 = y, m2 = m, d2 = d;
             const char *to = fields_str(f, "date_to");
             if (*to && !parse_ymd(to, &y2, &m2, &d2)) {
-                ctx_fail_at(c, "date_to", "That end date doesn't look right");
+                ctx_fail_at(c, "date_to", "%s", T("That end date doesn't look right"));
                 return false;
             }
             *s = dt_make(y, m, d, 0, 0);
@@ -687,7 +747,7 @@ static bool read_span(Ctx *c, Fields *f, Resource *r, int64_t *s, int64_t *e) {
         } else {
             int a, b;
             if (!parse_hm(fields_str(f, "from"), &a) || !parse_hm(fields_str(f, "to"), &b)) {
-                ctx_fail_at(c, "from", "Pick a start and an end time");
+                ctx_fail_at(c, "from", "%s", T("Pick a start and an end time"));
                 return false;
             }
             *s = dt_make(y, m, d, a / 60, a % 60);
@@ -704,7 +764,7 @@ static bool read_span(Ctx *c, Fields *f, Resource *r, int64_t *s, int64_t *e) {
 static void act_create(Ctx *c, Fields *f) {
     Resource *r = res_get((int)fields_int(f, "res", 0));
     if (!r) {
-        ctx_fail(c, "Pick something to book");
+        ctx_fail(c, "%s", T("Pick something to book"));
         return;
     }
     int64_t s, e;
@@ -715,7 +775,7 @@ static void act_create(Ctx *c, Fields *f) {
     if (rep && fields_str(f, "rep_until")[0]) {
         int y, m, d;
         if (!parse_ymd(fields_str(f, "rep_until"), &y, &m, &d) || dt_make(y, m, d, 0, 0) < day_start(s)) {
-            ctx_fail_at(c, "rep_until", "Repeat until a day on or after the first one");
+            ctx_fail_at(c, "rep_until", "%s", T("Repeat until a day on or after the first one"));
             return;
         }
         until = dt_make(y, m, d, 0, 0);
@@ -731,12 +791,12 @@ static void act_create(Ctx *c, Fields *f) {
 static void act_cancel(Ctx *c, Fields *f) {
     Booking *b = book_get((int)fields_int(f, "id", 0));
     if (!b) {
-        ctx_fail(c, "That booking is already gone");
+        ctx_fail(c, "%s", T("That booking is already gone"));
         return;
     }
     Booking copy = *b;
     Resource *r = res_get(copy.res);
-    if (!may_change_or_say(c, r, &copy, "cancel")) return;
+    if (!may_change_or_say(c, r, &copy, true)) return;
     BookSeries *sp = copy.series ? tbl_get(&T_book_series, copy.series) : NULL;
     bool later = sp && str_eq(fields_str(f, "later"), "1");
     if (later) { /* stop repeating: this one and every later one go */
@@ -750,15 +810,16 @@ static void act_cancel(Ctx *c, Fields *f) {
             tbl_del(&T_booking, x->id);
             n++;
         }
-        ctx_ok(c, "Stopped repeating: %d %s booking%s cancelled", n, r ? r->name : "", n == 1 ? "" : "s");
+        ctx_ok(c, TN(n, "Stopped repeating: %d %s booking cancelled", "Stopped repeating: %d %s bookings cancelled"), n,
+               r ? r->name : "");
     } else {
         tbl_del(&T_booking, copy.id);
-        ctx_ok(c, "Cancelled");
+        ctx_ok(c, "%s", T("Cancelled"));
     }
     if (r) {
         int told[2];
-        tell(c, later ? "stopped repeating" : "cancelled", r, &copy, NULL, told);
-        announce(c, later ? "stopped repeating" : "cancelled", r, &copy, told);
+        tell(c, later ? DID_STOP : DID_CANCEL, r, &copy, NULL, told);
+        announce(c, later ? DID_STOP : DID_CANCEL, r, &copy, told);
         char ymd[11];
         fmt_ymd(copy.start, ymd);
         ctx_redirect(c, "/book/%d?w=%s", r->id, ymd);
@@ -775,21 +836,40 @@ typedef struct {
     bool kids, guests;   /* open to children / guests from the start (issue #44; an admin changes it) */
 } Preset;
 
+/* A starter's name and rules (English, the form's value) become the new thing's in the words of the admin who
+   adds it (issue #46) - the household's own data from then on. */
 static const Preset PRESETS[] = {
-    {"Car", "🚗", 205, 30, 0, 1440, 120, 0, "Fill up when it's below a quarter tank", "bil", false, false},
-    {"Laundry", "🧺", 175, 60, 7 * 60, 22 * 60, 180, 240, "Clean the lint filter afterwards", "tvätt, tvättstuga",
-     false, true},
-    {"Guest room", "🛏️", 25, 1440, 0, 1440, 1440, 0, "", "gästrum", false, true},
-    {"Sauna", "🧖", 15, 30, 6 * 60, 24 * 60, 90, 180, "", "bastu", true, true},
-    {"TV room", "📺", 255, 30, 0, 1440, 120, 0, "", "tv-rum, tv-rummet", true, true},
-    {"Cargo bike", "🚲", 90, 30, 0, 1440, 120, 0, "", "lådcykel", false, false},
-    {"Workshop", "🔧", 45, 60, 8 * 60, 21 * 60, 120, 0, "", "verkstad", false, false},
-    {"Office", "💻", 220, 60, 7 * 60, 20 * 60, 240, 0, "Quiet please", "kontor, arbetsrum", true, false},
+    {N_("Car"), "🚗", 205, 30, 0, 1440, 120, 0, N_("Fill up when it's below a quarter tank"), "bil", false, false},
+    {N_("Laundry"), "🧺", 175, 60, 7 * 60, 22 * 60, 180, 240, N_("Clean the lint filter afterwards"),
+     "tvätt, tvättstuga", false, true},
+    {N_("Guest room"), "🛏️", 25, 1440, 0, 1440, 1440, 0, "", "gästrum", false, true},
+    {N_("Sauna"), "🧖", 15, 30, 6 * 60, 24 * 60, 90, 180, "", "bastu", true, true},
+    {N_("TV room"), "📺", 255, 30, 0, 1440, 120, 0, "", "tv-rum, tv-rummet", true, true},
+    {N_("Cargo bike"), "🚲", 90, 30, 0, 1440, 120, 0, "", "lådcykel", false, false},
+    {N_("Workshop"), "🔧", 45, 60, 8 * 60, 21 * 60, 120, 0, "", "verkstad", false, false},
+    {N_("Office"), "💻", 220, 60, 7 * 60, 20 * 60, 240, 0, N_("Quiet please"), "kontor, arbetsrum", true, false},
 };
 
+/* A starter is named in its adder's language - but a household that speaks two still books the "Car" as
+   "coche" or "bil" (issue #46). */
+static void match_starter(const Tokens *t, int id, const char *name, Match *m) {
+    for (int i = 0; i < countof(PRESETS); i++) {
+        const char *en = PRESETS[i].name, *sv = T_in(LANG_SV, en), *es = T_in(LANG_ES, en);
+        if (!str_ieq(en, name) && !str_ieq(sv, name) && !str_ieq(es, name)) continue;
+        match_name(t, id, en, m);
+        match_name(t, id, sv, m);
+        match_name(t, id, es, m);
+        match_names(t, id, PRESETS[i].aliases, m);
+        return;
+    }
+}
+
+/* (a starter named in English, Swedish or Spanish - whoever added it) */
 const char *book_starter_aliases(const char *name) {
     for (int i = 0; i < countof(PRESETS); i++)
-        if (str_ieq(PRESETS[i].name, name)) return PRESETS[i].aliases;
+        if (str_ieq(PRESETS[i].name, name) || str_ieq(T_in(LANG_SV, PRESETS[i].name), name) ||
+            str_ieq(T_in(LANG_ES, PRESETS[i].name), name))
+            return PRESETS[i].aliases;
     return "";
 }
 
@@ -798,7 +878,7 @@ static void act_preset(Ctx *c, Fields *f) {
     for (int i = 0; i < countof(PRESETS); i++) {
         if (!str_eq(PRESETS[i].name, name)) continue;
         Resource r = {0};
-        str_copy(r.name, sizeof r.name, PRESETS[i].name);
+        str_copy(r.name, sizeof r.name, T(PRESETS[i].name));
         str_copy(r.emoji, sizeof r.emoji, PRESETS[i].emoji);
         r.hue = PRESETS[i].hue;
         r.slot = PRESETS[i].slot;
@@ -806,17 +886,17 @@ static void act_preset(Ctx *c, Fields *f) {
         r.close_min = PRESETS[i].close;
         r.default_min = PRESETS[i].dflt;
         r.max_min = PRESETS[i].max;
-        str_copy(r.rules, sizeof r.rules, PRESETS[i].rules);
+        str_copy(r.rules, sizeof r.rules, PRESETS[i].rules[0] ? T(PRESETS[i].rules) : "");
         r.kids = PRESETS[i].kids;
         r.guests = PRESETS[i].guests;
         r.sort = tbl_count(&T_resource) + 1;
         tbl_put(&T_resource, &r);
-        activity_add(c->me ? c->me->id : 0, r.emoji, "/book", "%s added %s to bookings", c->me ? c->me->name : "Someone",
-                     r.name);
-        ctx_ok(c, "%s added", r.name);
+        activity_add(c->me ? c->me->id : 0, r.emoji, "/book", N_("%s added %s to bookings"),
+                     c->me ? c->me->name : T("Someone"), r.name);
+        ctx_ok(c, T("%s added"), r.name);
         return;
     }
-    ctx_fail(c, "Unknown suggestion");
+    ctx_fail(c, "%s", T("Unknown suggestion"));
 }
 
 static void act_res_save(Ctx *c, Fields *f) {
@@ -825,7 +905,7 @@ static void act_res_save(Ctx *c, Fields *f) {
     if (id) {
         Resource *old = res_get(id);
         if (!old) {
-            ctx_fail(c, "Unknown thing");
+            ctx_fail(c, "%s", T("Unknown thing"));
             return;
         }
         r = *old;
@@ -834,7 +914,7 @@ static void act_res_save(Ctx *c, Fields *f) {
     str_copy(name, sizeof name, fields_str(f, "name"));
     str_trim(name);
     if (!name[0]) {
-        ctx_fail_at(c, "name", "Give it a name");
+        ctx_fail_at(c, "name", "%s", T("Give it a name"));
         return;
     }
     str_copy(r.name, sizeof r.name, name);
@@ -849,7 +929,7 @@ static void act_res_save(Ctx *c, Fields *f) {
         bool ok = parse_hm(fields_str(f, "open"), &open) && parse_hm(fields_str(f, "close"), &close);
         if (ok && close == 0) close = 1440; /* "until 00:00" = until midnight */
         if (!ok || close <= open) {
-            ctx_fail_at(c, "open", "Opening hours look odd — from must be before until");
+            ctx_fail_at(c, "open", "%s", T("Opening hours look odd — from must be before until"));
             return;
         }
     }
@@ -868,7 +948,7 @@ static void act_res_save(Ctx *c, Fields *f) {
     }
     if (!id) r.sort = tbl_count(&T_resource) + 1;
     tbl_put(&T_resource, &r);
-    ctx_ok(c, id ? "Saved %s" : "Added %s", r.name);
+    ctx_ok(c, id ? T("Saved %s") : T("Added %s"), r.name);
     ctx_redirect(c, "/book/%d", r.id);
 }
 
@@ -878,19 +958,19 @@ static void act_news_seen(Ctx *c, Fields *f) {
         BookNews *n = tbl_at(&T_book_news, i);
         if (n->person == c->me->id) tbl_del(&T_book_news, n->id);
     }
-    ctx_ok(c, "Noted");
+    ctx_ok(c, "%s", T("Noted"));
 }
 
 static void act_res_archive(Ctx *c, Fields *f) {
     Resource *r = res_get((int)fields_int(f, "id", 0));
     if (!r) {
-        ctx_fail(c, "Unknown thing");
+        ctx_fail(c, "%s", T("Unknown thing"));
         return;
     }
     Resource copy = *r;
     copy.archived = !copy.archived;
     tbl_put(&T_resource, &copy);
-    ctx_ok(c, copy.archived ? "%s hidden from bookings" : "%s is back", copy.name);
+    ctx_ok(c, copy.archived ? T("%s hidden from bookings") : T("%s is back"), copy.name);
     ctx_redirect(c, "/book");
 }
 
@@ -930,7 +1010,7 @@ static bool row_now(Ctx *c, Buf *b, int kind, const char *arg) {
 }
 
 static const Block blocks[] = {
-    {"book.now", "Bookings", SCREEN_WALL, row_now, NULL},
+    {"book.now", N_("Bookings"), SCREEN_WALL, row_now, NULL},
     {0},
 };
 
@@ -951,7 +1031,7 @@ static void agenda(Ctx *c, int64_t from, int64_t to, Agenda *out) {
         fmt_ymd(bk->start, ymd);
         snprintf(it.link, sizeof it.link, "/book/%d?w=%s&b=%d", r->id, ymd, bk->id);
         it.who = bk->who;
-        str_copy(it.kind, sizeof it.kind, "Booking");
+        str_copy(it.kind, sizeof it.kind, N_("Booking")); /* (English: core/feed.c tells bookings by it; said where shown) */
         agenda_add(out, &it);
     }
 }
@@ -995,11 +1075,14 @@ static int forget(Forget *f) {
         news++;
         if (f->apply) tbl_del(&T_book_news, x->id);
     }
-    if (ahead) forget_note(f, "%d booking%s still to come %s cancelled", ahead, ahead == 1 ? "" : "s", ahead == 1 ? "is" : "are");
-    if (series) forget_note(f, "%d repeating booking%s stop%s", series, series == 1 ? "" : "s", series == 1 ? "s" : "");
-    if (past) forget_note(f, "%d past booking%s %s deleted", past, past == 1 ? "" : "s", past == 1 ? "is" : "are");
-    if (by) forget_note(f, "%d booking%s they made for others stay%s, without their name", by, by == 1 ? "" : "s",
-                        by == 1 ? "s" : "");
+    if (ahead)
+        forget_note(f, TN(ahead, "%d booking still to come is cancelled", "%d bookings still to come are cancelled"), ahead);
+    if (series) forget_note(f, TN(series, "%d repeating booking stops", "%d repeating bookings stop"), series);
+    if (past) forget_note(f, TN(past, "%d past booking is deleted", "%d past bookings are deleted"), past);
+    if (by)
+        forget_note(f, TN(by, "%d booking they made for others stays, without their name",
+                          "%d bookings they made for others stay, without their name"),
+                    by);
     return ahead + past + by + series + news;
 }
 
@@ -1037,7 +1120,7 @@ static int rezone(Rezone *z) {
         if (!rezone_span(z, r && res_daily(r), typed, &bk.start, &bk.end)) continue;
         n++;
         if (z->apply) tbl_put(&T_booking, &bk);
-        else if (!z->days) rezone_note(z, r ? r->name : "A booking", was, bk.start);
+        else if (!z->days) rezone_note(z, r ? r->name : T("A booking"), was, bk.start);
     }
     for (int i = 0; i < tbl_count(&T_book_series); i++) { /* what the bookings still to be made follow (#47) */
         BookSeries s = *(BookSeries *)tbl_at(&T_book_series, i);
@@ -1051,7 +1134,7 @@ static int rezone(Rezone *z) {
 
 static const Module book = {
     .id = "book",
-    .title = "Book",
+    .title = N_("Book"),
     .icon = "calendar",
     .nav = 2,
     .init = init,

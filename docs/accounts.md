@@ -155,6 +155,21 @@ Under **Household → Your account → Privacy** everyone chooses for themselves
 Which devices count as yours is the admin's to set on the **Network** page; there, under
 **Your devices**, you can rename yours or say one isn't yours.
 
+## Language: English, Swedish or Spanish
+
+Hemma speaks the language your browser asks for (the one your phone or computer is set to), and
+English when that's none of the three. Everyone can choose their own under **Household → Your
+account → Language** - it follows you to every device you sign in on. **Automatic** goes back to
+the browser's.
+
+The sign-in page has **English · Svenska · Español** at the bottom, for a browser that asks for
+something else. A TV or a wall tablet signed in with a display account can't change anything
+itself: an admin picks its language in its dialog under **Household**.
+
+Quick text works in all three: *"car fri 14-17"*, *"bastu ikväll 19"*, *"coche mañana de 14 a 17"*.
+The calendar on your phone comes in your language too. The server's log, the command line and
+these guides stay in English.
+
 ## A TV: "Who's watching?"
 
 A TV everyone shares gets a **Display** sign-in of its own, set up once:

@@ -64,20 +64,22 @@ static void item_row(Buf *b, const Item *it) {
     ui_form(b, "plan.shop_toggle", "inline plan-shop-f");
     ui_hidden_int(b, "id", it->id);
     H(b, "<button class=\"plan-shop-btn\" aria-pressed=\"%r\" aria-label=\"%s %s\"><span class=\"tick%r\">",
-      it->done ? "true" : "false", it->done ? "Put back:" : "Got it:", it->text, it->done ? " on" : "");
+      it->done ? "true" : "false", it->done ? T("Put back:") : T("Got it:"), it->text, it->done ? " on" : "");
     ui_icon(b, "check");
     H(b, "</span><span class=\"plan-shop-t\">%s</span></button>", it->text);
     ui_form_end(b);
     Person *p = person_get(it->by);
     if (p && !it->done) {
-        buf_puts(b, "<span class=\"plan-shop-by\"><span class=\"sr-only\">added by </span>"); /* (issue #69) */
+        H(b, "<span class=\"plan-shop-by\"><span class=\"sr-only\">%s </span>", T("added by")); /* (issue #69) */
         ui_avatar(b, p, "xs");
         buf_puts(b, "</span>");
     }
     if (!it->done) {
         ui_form(b, "plan.shop_delete", "inline");
         ui_hidden_int(b, "id", it->id);
-        H(b, "<button class=\"icon-btn\" title=\"Remove\" aria-label=\"Remove %s\">", it->text);
+        char label[160];
+        snprintf(label, sizeof label, T("Remove %s"), it->text);
+        H(b, "<button class=\"icon-btn\" title=\"%s\" aria-label=\"%s\">", T("Remove"), label);
         ui_icon(b, "x");
         buf_puts(b, "</button>");
         ui_form_end(b);
@@ -91,46 +93,47 @@ static void preview(Ctx *c, Buf *b) {
     char items[MAX_ITEMS][100];
     int n = plan_split_items(q, items, MAX_ITEMS);
     if (!n) return;
-    buf_puts(b, "<div class=\"preview ok\" data-say><span>Adding</span>");
+    H(b, "<div class=\"preview ok\" data-say><span>%s</span>", T("Adding"));
     for (int i = 0; i < n; i++) {
         bool dup = item_named(items[i], false) != NULL;
-        H(b, "<span class=\"chip%r\">%s%r</span>", dup ? " plan-dup" : "", items[i],
-          dup ? " <small>already on the list</small>" : "");
+        H(b, "<span class=\"chip%r\">%s", dup ? " plan-dup" : "", items[i]);
+        if (dup) H(b, " <small>%s</small>", T("already on the list"));
+        buf_puts(b, "</span>");
     }
     buf_puts(b, "</div>");
 }
 
 void plan_shop_page(Ctx *c, Buf *b) {
-    ctx_title(c, "Shopping");
+    ctx_title(c, "%s", T("Shopping"));
     Buf sub = {0};
     plan_subtitle(c, &sub);
-    ui_head(b, "Plan", buf_cstr(&sub));
+    ui_head(b, T("Plan"), buf_cstr(&sub));
     plan_tabs(c, b, 1);
     ui_head_end(b);
     buf_free(&sub);
 
     ui_form(b, "plan.shop_add", "quick plan-quick");
-    buf_puts(b, "<div class=\"quick-row\"><input name=\"q\" required maxlength=\"500\" autocomplete=\"off\" "
-                "enterkeyhint=\"done\" data-live=\"plan.shop_preview\" data-key=\"/\" aria-label=\"Add to the shopping "
-                "list\" placeholder=\"Add items — “milk, eggs, 2 bread”\"><button class=\"btn primary\" "
-                "aria-label=\"Add items\">"); /* (on phones only the + shows: issue #65) */
+    H(b, "<div class=\"quick-row\"><input name=\"q\" required maxlength=\"500\" autocomplete=\"off\" "
+         "enterkeyhint=\"done\" data-live=\"plan.shop_preview\" data-key=\"/\" aria-label=\"%s\" placeholder=\"%s\">"
+         "<button class=\"btn primary\" aria-label=\"%s\">", /* (on phones only the + shows: issue #65) */
+      T("Add to the shopping list"), T("Add items — “milk, eggs, 2 bread”"), T("Add items"));
     ui_icon(b, "plus");
-    buf_puts(b, "<span>Add</span></button></div>");
+    H(b, "<span>%s</span></button></div>", T("Add"));
     preview(c, b);
     ui_form_end(b);
 
     int sug[10];
     int ns = suggestions(sug, countof(sug));
     if (ns) {
-        buf_puts(b, "<div class=\"chips plan-shop-sug\" aria-label=\"Often bought\"><span class=\"plan-shop-sug-l\">"
-                    "Often bought</span>");
+        H(b, "<div class=\"chips plan-shop-sug\" aria-label=\"%s\"><span class=\"plan-shop-sug-l\">%s</span>",
+          T("Often bought"), T("Often bought"));
         Buf label = {0};
         for (int i = 0; i < ns; i++) {
             Bought *x = tbl_at(&T_bought, sug[i]);
             buf_reset(&label);
             H(&label, "<span aria-hidden=\"true\">+</span> %s", x->text);
             char title[140];
-            snprintf(title, sizeof title, "Add %s", x->text);
+            snprintf(title, sizeof title, T("Add %s"), x->text);
             ui_act(b, "plan.shop_add", "chip", buf_cstr(&label), "q", x->text, title);
         }
         buf_free(&label);
@@ -140,10 +143,10 @@ void plan_shop_page(Ctx *c, Buf *b) {
     int open = plan_open_items();
     buf_puts(b, "<div class=\"plan-shop-cols\"><section class=\"card plan-shop-list\">");
     if (!open) {
-        ui_empty(b, "🛒", "The list is empty", "Add what you need — several things at once, separated by commas.");
+        ui_empty(b, "🛒", T("The list is empty"), T("Add what you need — several things at once, separated by commas."));
     } else {
-        H(b, "<header class=\"card-h\"><h2>To buy <span class=\"plan-n\">%d</span></h2></header><ul class=\"plan-shop\">",
-          open);
+        H(b, "<header class=\"card-h\"><h2>%s <span class=\"plan-n\">%d</span></h2></header><ul class=\"plan-shop\">",
+          T("To buy"), open);
         for (int i = 0; i < tbl_count(&T_item); i++) {
             Item *it = tbl_at(&T_item, i);
             if (!it->done) item_row(b, it);
@@ -158,10 +161,13 @@ void plan_shop_page(Ctx *c, Buf *b) {
         if (((Item *)tbl_at(&T_item, i))->done) idx[nd++] = i;
     if (nd) {
         qsort(idx, (size_t)nd, sizeof *idx, cmp_done_item);
-        H(b, "<section class=\"card plan-shop-basket\"><header class=\"card-h\"><h2>In the basket <span "
+        H(b, "<section class=\"card plan-shop-basket\"><header class=\"card-h\"><h2>%s <span "
              "class=\"plan-n\">%d</span></h2>",
-          nd);
-        ui_act(b, "plan.shop_clear", "btn sm", "Clear", NULL, NULL, "Remove everything in the basket");
+          T("In the basket"), nd);
+        Buf clear = {0}; /* (ui_act's label is HTML) */
+        H(&clear, "%s", T("Clear"));
+        ui_act(b, "plan.shop_clear", "btn sm", buf_cstr(&clear), NULL, NULL, T("Remove everything in the basket"));
+        buf_free(&clear);
         buf_puts(b, "</header><ul class=\"plan-shop\">");
         for (int k = 0; k < nd && k < 40; k++) item_row(b, tbl_at(&T_item, idx[k]));
         buf_puts(b, "</ul></section>");
@@ -180,17 +186,21 @@ int plan_shop_items(Buf *b, int max) {
         shown++;
     }
     buf_puts(b, "</ul>");
-    if (open > max) H(b, "<p class=\"muted plan-more\" data-fit-more=\"%d\">+%d more</p>", open - max, open - max);
+    if (open > max) {
+        H(b, "<p class=\"muted plan-more\" data-fit-more=\"%d\">", open - max);
+        H(b, T("+%d more"), open - max);
+        buf_puts(b, "</p>");
+    }
     return open;
 }
 
 void plan_shop_widget(Ctx *c, Buf *b) {
     (void)c;
     int open = plan_open_items();
-    buf_puts(b, "<section class=\"card plan-w\"><header class=\"card-h\"><h2>Shopping list");
+    H(b, "<section class=\"card plan-w\"><header class=\"card-h\"><h2>%s", T("Shopping list"));
     if (open) H(b, " <span class=\"plan-n\">%d</span>", open);
-    buf_puts(b, "</h2><a class=\"more\" href=\"/plan/shop\">Open</a></header>");
-    if (!plan_shop_items(b, 8)) buf_puts(b, "<p class=\"muted plan-w-empty\">Nothing on the list</p>");
+    H(b, "</h2><a class=\"more\" href=\"/plan/shop\">%s</a></header>", T("Open"));
+    if (!plan_shop_items(b, 8)) H(b, "<p class=\"muted plan-w-empty\">%s</p>", T("Nothing on the list"));
     buf_puts(b, "</section>");
 }
 
@@ -202,7 +212,7 @@ void plan_act_shop_add(Ctx *c, Fields *f) {
     char items[MAX_ITEMS][100];
     int n = plan_split_items(fields_str(f, "q"), items, MAX_ITEMS);
     if (!n) {
-        ctx_fail(c, "What do we need?");
+        ctx_fail(c, "%s", T("What do we need?"));
         return;
     }
     Buf added = {0};
@@ -224,21 +234,28 @@ void plan_act_shop_add(Ctx *c, Fields *f) {
     }
     ctx_set_live(c, "plan.sq", "");
     if (!count) {
-        ctx_info(c, n == 1 ? "Already on the list" : "All of that is already on the list");
+        ctx_info(c, "%s", n == 1 ? T("Already on the list") : T("All of that is already on the list"));
         buf_free(&added);
         return;
     }
-    if (count > 3) buf_printf(&added, " and %d more", count - 3);
-    activity_add(c->me->id, "🛒", "/plan/shop", "%s added %s to the shopping list", c->me->name, buf_cstr(&added));
-    if (already) ctx_ok(c, "Added %s · %d already on the list", buf_cstr(&added), already);
-    else ctx_ok(c, "Added %s", buf_cstr(&added));
+    char what[400]; /* the first three, "and N more" */
+    if (count > 3) {
+        snprintf(what, sizeof what, T("%s and %d more"), buf_cstr(&added), count - 3);
+        activity_add(c->me->id, "🛒", "/plan/shop", N_("%s added %s and %d more to the shopping list"), c->me->name,
+                     buf_cstr(&added), count - 3);
+    } else {
+        str_copy(what, sizeof what, buf_cstr(&added));
+        activity_add(c->me->id, "🛒", "/plan/shop", N_("%s added %s to the shopping list"), c->me->name, buf_cstr(&added));
+    }
+    if (already) ctx_ok(c, T("Added %s · %d already on the list"), what, already);
+    else ctx_ok(c, T("Added %s"), what);
     buf_free(&added);
 }
 
 void plan_act_shop_toggle(Ctx *c, Fields *f) {
     Item *row = tbl_get(&T_item, (int)fields_int(f, "id", 0));
     if (!row) {
-        ctx_fail(c, "That item is gone");
+        ctx_fail(c, "%s", T("That item is gone"));
         return;
     }
     Item it = *row;
@@ -251,11 +268,11 @@ void plan_act_shop_toggle(Ctx *c, Fields *f) {
 void plan_act_shop_delete(Ctx *c, Fields *f) {
     Item *it = tbl_get(&T_item, (int)fields_int(f, "id", 0));
     if (!it) {
-        ctx_fail(c, "That item is gone");
+        ctx_fail(c, "%s", T("That item is gone"));
         return;
     }
     ctx_undo(c, &T_item, it->id); /* the × is instant: the toast's Undo puts it back (issue #60) */
-    ctx_ok(c, "Removed %s", it->text);
+    ctx_ok(c, T("Removed %s"), it->text);
     tbl_del(&T_item, it->id);
 }
 
@@ -269,6 +286,6 @@ void plan_act_shop_clear(Ctx *c, Fields *f) {
             n++;
         }
     }
-    if (n) ctx_ok(c, "Cleared %d item%s", n, n == 1 ? "" : "s");
-    else ctx_info(c, "The basket is already empty");
+    if (n) ctx_ok(c, TN(n, "Cleared %d item", "Cleared %d items"), n);
+    else ctx_info(c, "%s", T("The basket is already empty"));
 }

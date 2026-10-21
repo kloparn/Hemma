@@ -85,6 +85,19 @@ static const struct {
     {"meeting", "👥"},    {"möte", "👥"},      {"haircut", "💇"},    {"frisör", "💇"},     {"movie", "🎬"},
     {"bio ", "🎬"},       {"film", "🎬"},      {"concert", "🎵"},    {"konsert", "🎵"},    {"grandma", "👵"},
     {"mormor", "👵"},     {"farmor", "👵"},    {"grandpa", "👴"},    {"morfar", "👴"},     {"farfar", "👴"},
+    /* Spanish (issue #46) */
+    {"aspira", "🧹"},     {"barrer", "🧹"},    {"regar ", "🪴"},     {"basura", "🗑️"},     {"recicla", "♻️"},
+    {"colada", "🧺"},     {"lavadora", "🧺"},  {"platos", "🍽️"},     {"fregar", "🧽"},     {"limpia", "🧽"},
+    {"perro", "🐕"},      {"gato", "🐈"},      {"veterinari", "🐾"}, {"cocinar", "🍳"},    {"cena", "🍳"},
+    {"almuerzo", "🥪"},   {"desayuno", "🥐"},  {"tarta", "🍰"},      {"pastel", "🍰"},     {"compra", "🛒"},
+    {"baño", "🛁"},       {"sábanas", "🛏️"},   {"llamar", "📞"},     {"pagar", "💸"},      {"factura", "💸"},
+    {"coche", "🚗"},      {"deberes", "📚"},   {"estudiar", "📚"},   {"correo", "✉️"},     {"paquete", "📦"},
+    {"césped", "🌱"},     {"jardín", "🌱"},    {"hojas", "🍂"},      {"nieve", "❄️"},      {"arreglar", "🔧"},
+    {"bombilla", "💡"},   {"dentista", "🦷"},  {"médico", "🩺"},     {"cumpleaños", "🎂"}, {"fiesta", "🎉"},
+    {"correr", "🏃"},     {"fútbol", "⚽"},    {"nadar", "🏊"},      {"natación", "🏊"},   {"vuelo", "✈️"},
+    {"viaje", "🧳"},      {"maleta", "🧳"},    {"colegio", "🏫"},    {"escuela", "🏫"},    {"reunión", "👥"},
+    {"peluquer", "💇"},   {"cine", "🎬"},      {"película", "🎬"},   {"concierto", "🎵"},  {"abuela", "👵"},
+    {"abuelo", "👴"},
 };
 
 const char *plan_task_icon(const char *title) {
@@ -103,16 +116,16 @@ const char *plan_task_icon(const char *title) {
 
 void plan_repeat_label(Buf *b, int repeat, int rep_day) {
     switch (repeat) {
-    case REPEAT_DAILY: buf_puts(b, "every day"); break;
+    case REPEAT_DAILY: buf_puts(b, T("every day")); break;
     case REPEAT_WEEKLY:
-        if (rep_day >= 1 && rep_day <= 7) buf_printf(b, "every %s", weekday_name(rep_day - 1, false));
-        else buf_puts(b, "every week");
+        if (rep_day >= 1 && rep_day <= 7) buf_printf(b, T("every %s"), weekday_name(rep_day - 1, false));
+        else buf_puts(b, T("every week"));
         break;
     case REPEAT_BIWEEKLY:
-        if (rep_day >= 1 && rep_day <= 7) buf_printf(b, "every other %s", weekday_name(rep_day - 1, false));
-        else buf_puts(b, "every 2 weeks");
+        if (rep_day >= 1 && rep_day <= 7) buf_printf(b, T("every other %s"), weekday_name(rep_day - 1, false));
+        else buf_puts(b, T("every 2 weeks"));
         break;
-    case REPEAT_MONTHLY: buf_puts(b, "every month"); break;
+    case REPEAT_MONTHLY: buf_puts(b, T("every month")); break;
     default: break;
     }
 }
@@ -121,12 +134,12 @@ int plan_mine(const Ctx *c) { return is_child(c) ? c->me->id : 0; }
 
 void plan_tabs(Ctx *c, Buf *b, int active) {
     static const char *hrefs[] = {"/plan", "/plan/shop", "/plan/cal"};
-    static const char *labels[] = {"To-dos", "Shopping", "Calendar"};
+    static const char *labels[] = {N_("To-dos"), N_("Shopping"), N_("Calendar")};
     if (is_guest(c)) return; /* (only the shopping list: issue #44) */
     int counts[3] = {plan_open_tasks(plan_mine(c)), plan_open_items(), 0};
-    buf_puts(b, "<nav class=\"seg plan-tabs\" aria-label=\"Plan sections\">");
+    H(b, "<nav class=\"seg plan-tabs\" aria-label=\"%s\">", T("Plan sections"));
     for (int i = 0; i < 3; i++) {
-        H(b, "<a href=\"%s\"%r>%s", hrefs[i], i == active ? " class=\"on\" aria-current=\"page\"" : "", labels[i]);
+        H(b, "<a href=\"%s\"%r>%s", hrefs[i], i == active ? " class=\"on\" aria-current=\"page\"" : "", T(labels[i]));
         if (counts[i]) H(b, " <span class=\"plan-n\">%d</span>", counts[i]);
         buf_puts(b, "</a>");
     }
@@ -136,12 +149,12 @@ void plan_tabs(Ctx *c, Buf *b, int active) {
 void plan_subtitle(Ctx *c, Buf *b) {
     int t = is_guest(c) ? 0 : plan_open_tasks(plan_mine(c)), s = plan_open_items();
     if (!t && !s) {
-        buf_puts(b, "All clear — nothing waiting");
+        buf_puts(b, T("All clear — nothing waiting"));
         return;
     }
-    if (t) buf_printf(b, "%d to-do%s", t, t == 1 ? "" : "s");
+    if (t) buf_printf(b, TN(t, "%d to-do", "%d to-dos"), t);
     if (t && s) buf_puts(b, " · ");
-    if (s) buf_printf(b, "%d on the shopping list", s);
+    if (s) buf_printf(b, T("%d on the shopping list"), s);
 }
 
 /* =============================================================== parsing */
@@ -194,7 +207,7 @@ bool plan_parse_task(const char *text, int64_t now, TaskDraft *out, char *err, s
     tok_rest(&t, out->title, sizeof out->title);
     str_trim(out->title);
     if (!out->title[0]) {
-        snprintf(err, errcap, "What needs doing?");
+        snprintf(err, errcap, "%s", T("What needs doing?"));
         return false;
     }
     plan_capitalise(out->title);
@@ -213,14 +226,14 @@ bool plan_parse_event(const char *text, int64_t now, EventDraft *out, char *err,
     tok_rest(&t, out->title, sizeof out->title);
     str_trim(out->title);
     if (!out->title[0]) {
-        snprintf(err, errcap, "What's happening?");
+        snprintf(err, errcap, "%s", T("What's happening?"));
         return false;
     }
     plan_capitalise(out->title);
     int64_t s = 0, e = 0;
     if (!timed || !when_resolve(&w, now, 60, &s, &e)) {
         if (w.refused[0]) snprintf(err, errcap, "%s", w.refused); /* "31 sep", an end before the start */
-        else snprintf(err, errcap, "When? Try “fri 18:00” or “sat-sun”");
+        else snprintf(err, errcap, "%s", T("When? Try “fri 18:00” or “sat-sun”"));
         return false;
     }
     out->allday = !w.has_start && !w.now && !w.rel_min && !w.has_end && !w.dur_min;
@@ -396,7 +409,12 @@ int plan_series_fill(int64_t now) {
     return made;
 }
 
-static const char *ordinal(int d) { /* 1st 2nd 3rd 4th ... 11th 12th 13th ... 21st */
+/* The day of the month's ending, in the language in use: 1st 2nd 3rd 4th ... 11th ... 21st; Swedish 1:a 2:a 3:e
+   ... 11:e 12:e ... 21:a; Spanish none ("el día 21"). */
+static const char *ordinal(int d) {
+    Lang l = i18n_lang();
+    if (l == LANG_ES) return "";
+    if (l == LANG_SV) return (d % 10 == 1 || d % 10 == 2) && d % 100 != 11 && d % 100 != 12 ? ":a" : ":e";
     if (d % 100 >= 11 && d % 100 <= 13) return "th";
     return d % 10 == 1 ? "st" : d % 10 == 2 ? "nd" : d % 10 == 3 ? "rd" : "th";
 }
@@ -404,20 +422,20 @@ static const char *ordinal(int d) { /* 1st 2nd 3rd 4th ... 11th 12th 13th ... 21
 void plan_series_label(Buf *b, const EventSeries *s) {
     int wday = dt_local(s->start).wday;
     switch (s->repeat) {
-    case REPEAT_DAILY: buf_puts(b, "every day"); break;
-    case REPEAT_WEEKLY: buf_printf(b, "every %s", weekday_name(wday, false)); break;
-    case REPEAT_BIWEEKLY: buf_printf(b, "every other %s", weekday_name(wday, false)); break;
+    case REPEAT_DAILY: buf_puts(b, T("every day")); break;
+    case REPEAT_WEEKLY: buf_printf(b, T("every %s"), weekday_name(wday, false)); break;
+    case REPEAT_BIWEEKLY: buf_printf(b, T("every other %s"), weekday_name(wday, false)); break;
     case REPEAT_MONTHLY: {
         int d = dt_local(s->start).day;
-        buf_printf(b, "every month on the %d%s", d, ordinal(d));
+        buf_printf(b, T("every month on the %d%s"), d, ordinal(d));
         break;
     }
     default: break;
     }
-    if (s->stopped) buf_puts(b, ", stopped");
+    if (s->stopped) buf_puts(b, T(", stopped"));
     else if (s->until) {
         DateTime u = dt_local(s->until);
-        buf_printf(b, ", until %d %s", u.day, month_name(u.mon, true));
+        buf_printf(b, T(", until %d %s"), u.day, month_name(u.mon, true));
     }
 }
 
@@ -499,11 +517,12 @@ static void widget(Ctx *c, Buf *b, int where) {
         plan_shop_widget(c, b);
         return;
     }
-    buf_puts(b, "<section class=\"card plan-w\"><header class=\"card-h\"><h2>Today</h2><a class=\"more\" "
-                "href=\"/plan\">Plan</a></header>");
+    H(b, "<section class=\"card plan-w\"><header class=\"card-h\"><h2>%s</h2><a class=\"more\" href=\"/plan\">%s</a>"
+         "</header>",
+      T("Today"), T("Plan"));
     int n = plan_today_events(c, b, false);
     n += plan_today_tasks(c, b, false);
-    if (!n) buf_puts(b, "<p class=\"muted plan-w-empty\">Nothing due today ✨</p>");
+    if (!n) H(b, "<p class=\"muted plan-w-empty\">%s</p>", T("Nothing due today ✨"));
     buf_puts(b, "</section>");
     plan_shop_widget(c, b);
 }
@@ -541,9 +560,9 @@ static bool row_shop(Ctx *c, Buf *b, int kind, const char *arg) {
 }
 
 static const Block blocks[] = {
-    {"plan.today", "Today", SCREEN_WALL, row_today, NULL},
-    {"plan.days", "Coming days", SCREEN_WALL, row_days, NULL},
-    {"plan.shop", "Shopping list", SCREEN_WALL, row_shop, NULL},
+    {"plan.today", N_("Today"), SCREEN_WALL, row_today, NULL},
+    {"plan.days", N_("Coming days"), SCREEN_WALL, row_days, NULL},
+    {"plan.shop", N_("Shopping list"), SCREEN_WALL, row_shop, NULL},
     {0},
 };
 
@@ -630,14 +649,23 @@ static int forget(Forget *f) {
         it.by = 0;
         if (f->apply) tbl_put(&T_item, &it);
     }
-    if (anyone) forget_note(f, "%d open to-do%s of theirs go%s to anyone", anyone, anyone == 1 ? "" : "s", anyone == 1 ? "es" : "");
-    if (lines) forget_note(f, "%d chore%s taking turns go%s on without them", lines, lines == 1 ? "" : "s", lines == 1 ? "es" : "");
-    if (ahead) forget_note(f, "%d event%s of theirs still to come %s deleted", ahead, ahead == 1 ? "" : "s", ahead == 1 ? "is" : "are");
-    if (series) forget_note(f, "%d repeating event%s of theirs stop%s", series, series == 1 ? "" : "s", series == 1 ? "s" : "");
-    if (done) forget_note(f, "%d done to-do%s of theirs %s deleted", done, done == 1 ? "" : "s", done == 1 ? "is" : "are");
-    if (past) forget_note(f, "%d past event%s of theirs %s deleted", past, past == 1 ? "" : "s", past == 1 ? "is" : "are");
-    if (made) forget_note(f, "%d thing%s they added for everyone stay%s, without their name", made, made == 1 ? "" : "s",
-                          made == 1 ? "s" : "");
+    if (anyone)
+        forget_note(f, TN(anyone, "%d open to-do of theirs goes to anyone", "%d open to-dos of theirs go to anyone"), anyone);
+    if (lines)
+        forget_note(f, TN(lines, "%d chore taking turns goes on without them", "%d chores taking turns go on without them"),
+                    lines);
+    if (ahead)
+        forget_note(f, TN(ahead, "%d event of theirs still to come is deleted",
+                          "%d events of theirs still to come are deleted"),
+                    ahead);
+    if (series)
+        forget_note(f, TN(series, "%d repeating event of theirs stops", "%d repeating events of theirs stop"), series);
+    if (done) forget_note(f, TN(done, "%d done to-do of theirs is deleted", "%d done to-dos of theirs are deleted"), done);
+    if (past) forget_note(f, TN(past, "%d past event of theirs is deleted", "%d past events of theirs are deleted"), past);
+    if (made)
+        forget_note(f, TN(made, "%d thing they added for everyone stays, without their name",
+                          "%d things they added for everyone stay, without their name"),
+                    made);
     return n + done + ahead + past + series + made;
 }
 
@@ -673,7 +701,7 @@ static int rezone(Rezone *z) {
 
 static const Module plan = {
     .id = "plan",
-    .title = "Plan",
+    .title = N_("Plan"),
     .icon = "list",
     .nav = 3,
     .init = init,

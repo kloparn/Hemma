@@ -50,3 +50,8 @@
 .people-gone .row-main small { color: var(--muted); }
 .people-gone-a { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .people-privacy { margin-top: 12px; }
+
+/* Language (issue #46): Automatic, then each language named in itself */
+.people-lang-f { border: 0; padding: 0; margin: 0; display: grid; gap: 10px; }
+.people-lang-f .check { flex-wrap: wrap; }
+.people-lang-f .check small { font-weight: 400; }

@@ -78,8 +78,10 @@ bool store_damaged(void);  /* ... and SQLite said the file is damaged: a restart
 /* What the last store_open did about a damaged database, for people ("" = nothing), e.g.
    "2026-10-14 10:02: Hemma's data was damaged (parts of it couldn't be read). Nothing was deleted: the
    damaged file is kept as hemma.db.damaged-2026-10-14-1002. 2,944 of 3,000 rows were kept - notes on
-   the board: 2,944 of 3,000." (SQLite's own words are in the log.) */
+   the board: 2944 of 3000." (SQLite's own words are in the log.) In English, for the log; _packed =
+   the same kept for people (i18n_pack_add: show it with i18n_unpack, in the reader's language). */
 const char *store_rescue_report(void);
+const char *store_rescue_packed(void);
 /* store_open left the data alone on purpose - a rescue that got next to nothing back, or data from a
    newer Hemma - and store_refusal() says why, for people (it ends up in the log file too); restarting
    won't change it (the program exits with its own code, HEMMA_EXIT_DATA). */
@@ -106,8 +108,9 @@ bool store_restore_waiting(const char *data_dir, char *label, size_t cap); /* on
 void store_unstage_restore(const char *data_dir);                           /* ... not any more */
 /* What the last store_open did about a staged backup, for people ("" = nothing), e.g. "2026-10-17
    09:30: the backup hemma-2026-10-16-0330.db was put back (812 rows). What was there before is kept
-   as hemma.db.before-restore-2026-10-17-0930." */
+   as hemma.db.before-restore-2026-10-17-0930." _packed: for people, as store_rescue_packed. */
 const char *store_restore_report(void);
+const char *store_restore_packed(void);
 
 /* The data format (PRAGMA user_version): numbered migrations, oldest first. A start runs the ones
    past the file's format (a copy of the file is kept first, hemma.db.before-format-<n>, when one

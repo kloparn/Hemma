@@ -1029,3 +1029,37 @@ TEST(app_wire_fields_keep_their_whole_length) {
     buf_free(&r);
     th_halt();
 }
+
+TEST(app_http_language_comes_from_the_browser_or_its_switcher) {
+    /* issue #46: Accept-Language picks the language until the sign-in page's links set a cookie */
+    th_boot();
+    CHECK(server_listen("127.0.0.1", 0));
+    int port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    Buf r = {0};
+    request(port, "GET /login HTTP/1.1\r\nHost: t\r\nAccept-Language: sv-SE,sv;q=0.9,en;q=0.5\r\nConnection: close\r\n\r\n",
+            &r);
+    CHECK_HAS(buf_cstr(&r), "<html lang=\"sv\"");
+    request(port, "GET /login HTTP/1.1\r\nHost: t\r\nAccept-Language: de-DE\r\nConnection: close\r\n\r\n", &r);
+    CHECK_HAS(buf_cstr(&r), "<html lang=\"en\"");
+    request(port, "GET /lang?to=es&next=%2Flogin%3Fother%3D1 HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", &r);
+    CHECK_HAS(buf_cstr(&r), "303");
+    CHECK_HAS(buf_cstr(&r), "Set-Cookie: hemma_lang=es; Path=/; Max-Age=31536000");
+    CHECK_HAS(buf_cstr(&r), "Location: /login?other=1\r\n");
+    request(port, "GET /login HTTP/1.1\r\nHost: t\r\nCookie: hemma_lang=es\r\nAccept-Language: sv\r\nConnection: close\r\n\r\n",
+            &r);
+    CHECK_HAS(buf_cstr(&r), "<html lang=\"es\""); /* the switcher's choice beats the browser's */
+    request(port, "GET /lang?to=auto&next=//elsewhere.example/ HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", &r);
+    CHECK_HAS(buf_cstr(&r), "Set-Cookie: hemma_lang=; Path=/; Max-Age=0");
+    CHECK_HAS(buf_cstr(&r), "Location: /\r\n"); /* never another site */
+    request(port, "GET /lang?to=sv&next=/%0D%0ASet-Cookie:%20x=1 HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", &r);
+    CHECK_HAS(buf_cstr(&r), "Location: /\r\n");
+    CHECK(!strstr(buf_cstr(&r), "x=1"));
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    th_halt();
+}

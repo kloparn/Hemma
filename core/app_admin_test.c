@@ -45,6 +45,10 @@ static const Module backstage = {
     .side = backstage_side,
 };
 
+/* (it stays in the navigation of later tests in this process: in their languages too - issue #46) */
+static const Tr BACKSTAGE_TR[] = {{"Backstage", "Bakom scenen", "Entre bastidores"}};
+TRANSLATIONS(app_admin_test, BACKSTAGE_TR)
+
 static void with_backstage(void) { /* registered once, before a boot (it stays: last in the nav, admins only) */
     static bool done;
     if (!done) module_register(&backstage);

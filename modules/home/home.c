@@ -20,11 +20,11 @@ static void people_strip(Ctx *c, Buf *b) {
         H(b, "<a class=\"strip-p %s\" href=\"/people\">", state);
         ui_avatar_deco(b, p, "md");
         H(b, "<span><b>%s</b><small>", p->name);
-        if (home) buf_puts(b, "home");
+        if (home) H(b, "%s", T("home"));
         else if (screens) {
-            const char *where = presence_page(p->id);
-            H(b, "on %s", where ? where : "Hemma");
-        } else if (known) buf_puts(b, "away");
+            const char *where = presence_page(p->id); /* (a section's title: English, marked where it's set) */
+            H(b, T("on %s"), where ? T(where) : "Hemma");
+        } else if (known) H(b, "%s", T("away"));
         else buf_puts(b, "&nbsp;");
         buf_puts(b, "</small></span></a>");
     }
@@ -41,23 +41,27 @@ static bool for_them(const Ctx *c, const Activity *a) {
 }
 
 static void activity_card(Ctx *c, Buf *b) {
-    ui_card(b, "Latest", NULL, NULL);
+    ui_card(b, T("Latest"), NULL, NULL);
     int n = tbl_count(&T_activity);
     if (!n) {
-        buf_puts(b, "<p class=\"muted\">Things people do show up here.</p>");
+        H(b, "<p class=\"muted\">%s</p>", T("Things people do show up here."));
     } else {
         buf_puts(b, "<ul class=\"feed\">");
+        Buf line = {0};
         for (int i = n - 1, shown = 0; i >= 0 && shown < 10; i--) {
             Activity *a = tbl_at(&T_activity, i);
             if (!for_them(c, a)) continue;
             shown++;
+            buf_reset(&line);
+            activity_text(a, &line); /* (in the reader's language: issue #46) */
             H(b, "<li><span class=\"feed-i\">%s</span><span class=\"feed-t\">", a->icon[0] ? a->icon : "•");
-            if (a->link[0]) H(b, "<a href=\"%s\">%s</a>", a->link, a->text);
-            else html_esc(b, a->text);
+            if (a->link[0]) H(b, "<a href=\"%s\">%s</a>", a->link, buf_cstr(&line));
+            else html_esc(b, buf_cstr(&line));
             buf_puts(b, "</span><time>");
             ui_ago(b, a->ts, c->now);
             buf_puts(b, "</time></li>");
         }
+        buf_free(&line);
         buf_puts(b, "</ul>");
     }
     ui_card_end(b);
@@ -68,43 +72,55 @@ static void activity_card(Ctx *c, Buf *b) {
 static bool row_latest(Ctx *c, Buf *b, int kind, const char *arg) {
     (void)kind, (void)arg;
     int shown = 0;
+    Buf line = {0};
     for (int i = tbl_count(&T_activity) - 1; i >= 0 && shown < 6; i--) {
         Activity *a = tbl_at(&T_activity, i);
         if (!a->who) continue;
         if (!shown++) buf_puts(b, "<ul class=\"feed home-wall-feed\">");
-        H(b, "<li><span class=\"feed-i\">%s</span><span class=\"feed-t\">%s</span><time>", a->icon[0] ? a->icon : "•", a->text);
+        buf_reset(&line);
+        activity_text(a, &line);
+        H(b, "<li><span class=\"feed-i\">%s</span><span class=\"feed-t\">%s</span><time>", a->icon[0] ? a->icon : "•",
+          buf_cstr(&line));
         ui_ago(b, a->ts, c->now);
         buf_puts(b, "</time></li>");
     }
+    buf_free(&line);
     if (shown) buf_puts(b, "</ul>");
     return shown > 0;
 }
 
 static const Block blocks[] = {
-    {"home.latest", "Latest", SCREEN_WALL, row_latest, NULL},
+    {"home.latest", N_("Latest"), SCREEN_WALL, row_latest, NULL},
     {0},
 };
 
 static void page(Ctx *c, Buf *b) {
-    ctx_title(c, "Home");
+    ctx_title(c, "%s", T("Home"));
     DateTime d = dt_local(c->now);
-    const char *greet = d.hour < 5    ? "Good night"
-                        : d.hour < 10 ? "Good morning"
-                        : d.hour < 17 ? "Hello"
-                        : d.hour < 22 ? "Good evening"
-                                      : "Good night";
-    char title[120], sub[120];
-    snprintf(title, sizeof title, "%s, %s", greet, c->me ? c->me->name : "there");
-    snprintf(sub, sizeof sub, "%s %d %s · week %d", weekday_name(d.wday, false), d.day, month_name(d.mon, false),
+    /* one whole greeting each (word order differs between languages) */
+    const char *greet = c->me ? (d.hour < 5    ? T("Good night, %s")
+                                 : d.hour < 10 ? T("Good morning, %s")
+                                 : d.hour < 17 ? T("Hello, %s")
+                                 : d.hour < 22 ? T("Good evening, %s")
+                                               : T("Good night, %s"))
+                              : (d.hour < 5    ? T("Good night")
+                                 : d.hour < 10 ? T("Good morning")
+                                 : d.hour < 17 ? T("Hello")
+                                 : d.hour < 22 ? T("Good evening")
+                                               : T("Good night"));
+    char title[160], sub[160];
+    snprintf(title, sizeof title, greet, c->me ? c->me->name : "");
+    snprintf(sub, sizeof sub, T("%s %d %s · week %d"), weekday_name(d.wday, false), d.day, month_name(d.mon, false),
              iso_week(c->now, NULL));
+    if (sub[0] >= 'a' && sub[0] <= 'z') sub[0] = (char)(sub[0] - 'a' + 'A'); /* ("tisdag", "martes": a line's start) */
     ui_head(b, title, sub);
     bool guest = is_guest(c); /* a guest: their own things - not who's where, nor the household's news (#44) */
     const Module *screens = module_find("screens");
     if (screens && module_visible(screens, c)) {
         /* /wall is the household's first wall screen (modules/screens answers it): a full load */
-        H(b, "<a class=\"btn ghost\" href=\"/wall\" data-native title=\"Wall display\">");
+        H(b, "<a class=\"btn ghost\" href=\"/wall\" data-native title=\"%s\">", T("Wall display"));
         ui_icon(b, "monitor");
-        buf_puts(b, "<span>Wall</span></a>");
+        H(b, "<span>%s</span></a>", T("Wall"));
     }
     ui_head_end(b);
 
@@ -123,7 +139,7 @@ static void page(Ctx *c, Buf *b) {
 
 static const Module home = {
     .id = "home",
-    .title = "Home",
+    .title = N_("Home"),
     .icon = "home",
     .nav = 1,
     .page = page,

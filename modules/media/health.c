@@ -116,35 +116,35 @@ void media_health(Ctx *c, Health *h) {
 
     /* the library folders */
     if (!HS.n) {
-        health_add(h, HEALTH_INFO, "Films and series", "No library folders yet.",
-                   "Add the folders with your videos under Watch → Library settings.", "/media/settings");
+        health_add(h, HEALTH_INFO, T("Films and series"), T("No library folders yet."),
+                   T("Add the folders with your videos under Watch → Library settings."), "/media/settings");
     } else {
         int trouble = 0;
         int64_t least = -1;
         for (int i = 0; i < HS.n; i++) {
             const RootFacts *r = &HS.r[i];
             if (!r->exists) {
-                snprintf(d, sizeof d, "Hemma can't find the library folder %s.", r->path);
-                health_add(h, HEALTH_BAD, "Library folder missing", d,
-                           "Is the disk plugged in and mounted? Then rescan under Watch → Library settings.",
+                snprintf(d, sizeof d, T("Hemma can't find the library folder %s."), r->path);
+                health_add(h, HEALTH_BAD, T("Library folder missing"), d,
+                           T("Is the disk plugged in and mounted? Then rescan under Watch → Library settings."),
                            "/media/settings");
                 trouble++;
                 continue;
             }
             if (!r->readable) {
-                snprintf(d, sizeof d, "Hemma isn't allowed to look inside %s.", r->path);
-                health_add(h, HEALTH_BAD, "Library folder locked", d,
-                           "Let the user Hemma runs as read that folder (on a Pi: run the installer again with it).",
+                snprintf(d, sizeof d, T("Hemma isn't allowed to look inside %s."), r->path);
+                health_add(h, HEALTH_BAD, T("Library folder locked"), d,
+                           T("Let the user Hemma runs as read that folder (on a Pi: run the installer again with it)."),
                            "/media/settings");
                 trouble++;
                 continue;
             }
             if (r->writable == 0) {
-                snprintf(d, sizeof d, "Hemma may only read %s: uploads and converted copies can't be saved there.",
+                snprintf(d, sizeof d, T("Hemma may only read %s: uploads and converted copies can't be saved there."),
                          r->path);
-                health_add(h, HEALTH_INFO, "Read-only library folder", d,
-                           "Fine for watching. For uploads, run the installer again with this folder (docs/"
-                           "raspberry-pi.md, step 7).",
+                health_add(h, HEALTH_INFO, T("Read-only library folder"), d,
+                           T("Fine for watching. For uploads, run the installer again with this folder (docs/"
+                             "raspberry-pi.md, step 7)."),
                            NULL);
             }
             if (r->free >= 0) {
@@ -156,12 +156,12 @@ void media_health(Ctx *c, Health *h) {
                 int64_t big = biggest_video(r->path), want = CLAMP(big + MEDIA_RESERVE, 2LL << 30, 20LL << 30);
                 char why[200], bg[24];
                 media_size_text(big, bg, sizeof bg);
-                if (big > 0) snprintf(why, sizeof why, "to upload or convert a video as big as its biggest (%s)", bg);
-                else snprintf(why, sizeof why, "for new videos");
-                HealthDisk disk = {.what = "the library", .path = r->path, .free = r->free, .total = r->total,
+                if (big > 0) snprintf(why, sizeof why, T("to upload or convert a video as big as its biggest (%s)"), bg);
+                else snprintf(why, sizeof why, "%s", T("for new videos"));
+                HealthDisk disk = {.what = T("the library"), .path = r->path, .free = r->free, .total = r->total,
                                    .data_disk = r->data_disk, .want = want, .why = why,
-                                   .todo = "Delete or move some videos - or keep only the most compatible version of "
-                                           "converted ones (Library settings).",
+                                   .todo = T("Delete or move some videos - or keep only the most compatible version of "
+                                             "converted ones (Library settings)."),
                                    .link = "/media/settings"};
                 health_disk(h, &disk);
                 if (least < 0 || r->free < least) least = r->free;
@@ -170,15 +170,19 @@ void media_health(Ctx *c, Health *h) {
         if (!trouble) {
             const MediaIndex *ix = media_lib();
             int videos = ix->nmovies + ix->nothers + ix->nepisodes;
-            int n = snprintf(d, sizeof d, "%d folder%s, %d video%s%s", HS.n, HS.n == 1 ? "" : "s", videos,
-                             videos == 1 ? "" : "s", media_scanning() ? " so far (looking through them now)" : "");
+            char nf[48], nv[48];
+            snprintf(nf, sizeof nf, TN(HS.n, "%d folder", "%d folders"), HS.n);
+            snprintf(nv, sizeof nv, TN(videos, "%d video", "%d videos"), videos);
+            int n = snprintf(d, sizeof d, media_scanning() ? T("%s, %s so far (looking through them now)") : "%s, %s", nf, nv);
             if (least >= 0 && n > 0 && (size_t)n < sizeof d) {
                 media_size_text(least, sz, sizeof sz);
-                snprintf(d + n, sizeof d - (size_t)n, "; %s free%s.", sz, HS.n > 1 ? " on the fullest disk" : "");
+                char room[80];
+                snprintf(room, sizeof room, HS.n > 1 ? T("%s free on the fullest disk") : T("%s free"), sz);
+                snprintf(d + n, sizeof d - (size_t)n, "; %s.", room);
             } else if (n > 0 && (size_t)n + 1 < sizeof d) {
                 snprintf(d + n, sizeof d - (size_t)n, ".");
             }
-            health_add(h, HEALTH_OK, "Films and series", d, NULL, "/media/settings");
+            health_add(h, HEALTH_OK, T("Films and series"), d, NULL, "/media/settings");
         }
     }
 
@@ -187,38 +191,46 @@ void media_health(Ctx *c, Health *h) {
     bool away = false;
     int lost = media_history_lost(labels, countof(labels), &away);
     if (lost && !away) {
-        int k = snprintf(d, sizeof d, "The history of %d video%s couldn't be matched to one in the library", lost,
-                         lost == 1 ? "" : "s");
-        for (int i = 0, shown = 0; i < lost && i < countof(labels) && k > 0 && (size_t)k < sizeof d; i++) {
+        int k = snprintf(d, sizeof d,
+                         TN(lost, "The history of %d video couldn't be matched to one in the library",
+                            "The history of %d videos couldn't be matched to one in the library"),
+                         lost);
+        int shown = 0;
+        for (int i = 0; i < lost && i < countof(labels) && k > 0 && (size_t)k < sizeof d; i++) {
             if (!labels[i][0]) continue;
             k += snprintf(d + k, sizeof d - (size_t)k, "%s%s", shown++ ? ", " : ": ", labels[i]);
         }
-        if (k > 0 && (size_t)k < sizeof d) snprintf(d + k, sizeof d - (size_t)k, "%s.", lost > countof(labels) ? "..." : "");
-        health_add(h, HEALTH_INFO, "Watch history", d,
-                   "Deleted or replaced on purpose? Library settings can forget it.", "/media/settings");
+        if (k > 0 && (size_t)k < sizeof d) /* ("..." only after names: "library...." once) */
+            snprintf(d + k, sizeof d - (size_t)k, "%s.", shown && lost > shown ? "..." : "");
+        health_add(h, HEALTH_INFO, T("Watch history"), d,
+                   T("Deleted or replaced on purpose? Library settings can forget it."), "/media/settings");
     }
 
     /* making videos play everywhere */
     int noroom = 0, failed = 0;
     convert_trouble(&noroom, &failed);
     if (noroom) {
-        snprintf(d, sizeof d, "%d video%s didn't fit on the drive, so %s converted.", noroom, noroom == 1 ? "" : "s",
-                 noroom == 1 ? "it wasn't" : "they weren't");
-        health_add(h, HEALTH_WARN, "Not enough room to convert", d,
-                   "Make room on that drive, then convert again under Watch → Library settings.", "/media/settings");
+        snprintf(d, sizeof d,
+                 TN(noroom, "%d video didn't fit on the drive, so it wasn't converted.",
+                    "%d videos didn't fit on the drive, so they weren't converted."),
+                 noroom);
+        health_add(h, HEALTH_WARN, T("Not enough room to convert"), d,
+                   T("Make room on that drive, then convert again under Watch → Library settings."), "/media/settings");
     }
     if (failed) {
-        snprintf(d, sizeof d, "%d conversion%s failed.", failed, failed == 1 ? "" : "s");
-        health_add(h, HEALTH_WARN, "Conversions failed", d, "Library settings lists them, each with the reason.",
+        snprintf(d, sizeof d, TN(failed, "%d conversion failed.", "%d conversions failed."), failed);
+        health_add(h, HEALTH_WARN, T("Conversions failed"), d, T("Library settings lists them, each with the reason."),
                    "/media/settings");
     }
     bool here = browser_converter();
-    snprintf(t, sizeof t, "Built in: videos that not every phone or TV plays can get a copy that plays everywhere. %s",
-             here ? "Uploads convert on the sending device first."
-                  : "This build has no converter for browsers, so uploads send videos as they are.");
-    health_add(h, here ? HEALTH_OK : HEALTH_INFO, "Play everywhere", t, NULL, NULL);
+    snprintf(t, sizeof t, "%s",
+             here ? T("Built in: videos that not every phone or TV plays can get a copy that plays everywhere. Uploads "
+                      "convert on the sending device first.")
+                  : T("Built in: videos that not every phone or TV plays can get a copy that plays everywhere. This "
+                      "build has no converter for browsers, so uploads send videos as they are."));
+    health_add(h, here ? HEALTH_OK : HEALTH_INFO, T("Play everywhere"), t, NULL, NULL);
 
-    health_step(h, HS.n > 0, "Add your films and series",
-                "Point Hemma at the folders with your videos - or send them from a computer or phone.",
+    health_step(h, HS.n > 0, T("Add your films and series"),
+                T("Point Hemma at the folders with your videos - or send them from a computer or phone."),
                 "/media/settings");
 }

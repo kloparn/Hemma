@@ -66,6 +66,9 @@ const MediaFile *media_next_up(const Ctx *c, const MediaSeries *s); /* what the 
 int media_episodes_in(const MediaSeries *s); /* both halves of a "S01E01-E02" count */
 void media_ep_code(Buf *b, const MediaFile *f); /* "S01E02", "S01E01–E02" */
 void media_ep_title(Buf *b, const MediaFile *f); /* its title, or "Episode 3" */
+/* Its title as shown: name.title, but a disc extra's in the reader's language ("70's Show – säsong 1, skiva 4:
+   alla avsnitt"); out, returned. */
+const char *media_title(const MediaFile *f, char *out, size_t cap);
 void media_tracks(const Ctx *c, Buf *b, const MediaFile *f); /* <track>s of its subtitles */
 /* A video's / a subtitle's address with its key (ctx_url_key), for src="...": a TV's video player
    fetches without the page's cookies. "/media/file/<id>?k=..." and "/media/sub/<id>.vtt?k=..." */

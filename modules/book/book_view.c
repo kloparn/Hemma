@@ -24,22 +24,32 @@ static void res_status(Ctx *c, Buf *b, const Resource *r) {
     Booking *cur = book_current(r->id, c->now);
     if (cur) {
         Person *p = person_get(cur->who);
-        buf_puts(b, "<span class=\"book-st book-busy\">Busy until ");
-        if (day_start(cur->end - 1) == day_start(c->now) && !res_daily(r)) ui_hm(b, cur->end);
-        else ui_day(b, res_daily(r) ? add_days(cur->end, -1) : cur->end, c->now);
-        H(b, "</span> · %s", p ? p->name : "someone");
+        buf_puts(b, "<span class=\"book-st book-busy\">");
+        if (day_start(cur->end - 1) == day_start(c->now) && !res_daily(r)) {
+            DateTime e = dt_local(cur->end); /* (a clock time: "hasta las 16:00") */
+            H(b, T("Busy until %02d:%02d"), e.hour, e.min);
+        } else {
+            Buf day = {0};
+            book_day(&day, res_daily(r) ? add_days(cur->end, -1) : cur->end, c->now);
+            H(b, T("Busy until %s"), buf_cstr(&day));
+            buf_free(&day);
+        }
+        H(b, "</span> · %s", p ? p->name : T("someone"));
         return;
     }
-    buf_puts(b, "<span class=\"book-st book-free\">Free now</span>");
+    H(b, "<span class=\"book-st book-free\">%s</span>", T("Free now"));
     Booking *nx = book_next(r->id, c->now);
     if (nx && nx->start < add_days(c->now, 14)) {
         Person *p = person_get(nx->who);
-        buf_puts(b, " · next ");
-        ui_day(b, nx->start, c->now);
+        Buf when = {0};
+        book_day(&when, nx->start, c->now);
         if (!res_daily(r)) {
-            buf_putc(b, ' ');
-            ui_hm(b, nx->start);
+            buf_putc(&when, ' ');
+            ui_hm(&when, nx->start);
         }
+        buf_puts(b, " · ");
+        H(b, T("next %s"), buf_cstr(&when));
+        buf_free(&when);
         if (p) H(b, " (%s)", p->name);
     }
 }
@@ -53,25 +63,26 @@ static void quick_bar(Ctx *c, Buf *b, int res) {
     buf_puts(b, "<div class=\"quick-row\">");
     H(b,
       "<input name=\"q\" autocomplete=\"off\" data-live=\"book.preview\" data-key=\"/\" value=\"%s\" "
-      "placeholder=\"Book something… e.g. “car fri 14-17 ikea trip”\" aria-label=\"Quick booking\">"
-      "<button class=\"btn primary\">Book</button></div>",
-      q);
+      "placeholder=\"%s\" aria-label=\"%s\"><button class=\"btn primary\">%s</button></div>",
+      q, T("Book something… e.g. “car fri 14-17 ikea trip”"), T("Quick booking"), T("Book"));
     if (str_blank(q) && (is_child(c) || is_guest(c))) { /* (for themselves: issue #44) */
-        buf_puts(b, "<p class=\"quick-hint\">Type what and when: <i>sauna tomorrow 18-19</i>, <i>bastu ikväll 19</i>. "
-                    "Press <span class=\"kbd\">/</span> to start typing.</p>");
+        H(b, "<p class=\"quick-hint\">%r</p>",
+          T("Type what and when: <i>sauna tomorrow 18-19</i>, <i>bastu ikväll 19</i>. Press <span class=\"kbd\">/</span> "
+            "to start typing."));
     } else if (str_blank(q)) {
-        buf_puts(b, "<p class=\"quick-hint\">Type what, when and (optionally) for whom: <i>laundry tomorrow 18-21</i>, "
-                    "<i>guest room fri-sun @eva</i>, <i>bastu ikväll 19</i>. Press <span class=\"kbd\">/</span> to "
-                    "start typing.</p>");
+        H(b, "<p class=\"quick-hint\">%r</p>",
+          T("Type what, when and (optionally) for whom: <i>laundry tomorrow 18-21</i>, <i>guest room fri-sun @eva</i>, "
+            "<i>bastu ikväll 19</i>. Press <span class=\"kbd\">/</span> to start typing."));
     } else {
         Quick k;
         book_quick_parse(q, res, c->now, &k);
         Resource *r = res_get(k.res);
         char no[120] = ""; /* a child's, a guest's: what they may book, for themselves (issue #44) */
         if (r && !book_open_to(c, r))
-            snprintf(no, sizeof no, is_child(c) ? "Ask a grown-up to book the %s" : "The %s isn't open to guests", r->name);
+            snprintf(no, sizeof no, is_child(c) ? T("Ask a grown-up to book the %s") : T("The %s isn't open to guests"),
+                     r->name);
         else if ((is_child(c) || is_guest(c)) && k.who && k.who != c->me->id)
-            snprintf(no, sizeof no, "You can book for yourself");
+            snprintf(no, sizeof no, "%s", T("You can book for yourself"));
         bool ok = !k.problem[0] && r && !no[0];
         H(b, "<div class=\"preview %s\" data-say>", ok ? "ok" : "bad"); /* read out once typing pauses (#69) */
         if (r && k.has_when && k.start) {
@@ -94,10 +105,11 @@ static void quick_bar(Ctx *c, Buf *b, int res) {
         if (r && k.has_when && k.start) buf_puts(b, "<span class=\"sr-only\">. </span>"); /* (read as a pause: #69) */
         if (k.problem[0]) H(b, "<span class=\"book-why\">%s</span>", k.problem);
         else if (no[0]) H(b, "<span class=\"book-why\">%s</span>", no);
-        else if (k.repeat)
-            H(b, "<span class=\"book-why ok\">The first one is free — press Enter to book it and the next %d weeks</span>",
-              SERIES_AHEAD_DAYS / 7);
-        else buf_puts(b, "<span class=\"book-why ok\">Free — press Enter to book</span>");
+        else if (k.repeat) {
+            buf_puts(b, "<span class=\"book-why ok\">");
+            H(b, T("The first one is free — press Enter to book it and the next %d weeks"), SERIES_AHEAD_DAYS / 7);
+            buf_puts(b, "</span>");
+        } else H(b, "<span class=\"book-why ok\">%s</span>", T("Free — press Enter to book"));
         buf_puts(b, "</div>");
     }
     ui_form_end(b);
@@ -115,9 +127,12 @@ static void quick_bar(Ctx *c, Buf *b, int res) {
             ui_hidden(b, "note", k.note);
             buf_puts(b, "<button class=\"btn\">");
             ui_icon(b, "sparkle");
-            buf_puts(b, "<span>Book ");
-            book_span_text(r, k.alt_start, k.alt_end, c->now, b);
-            buf_puts(b, " instead</span></button>");
+            Buf span = {0};
+            book_span_text(r, k.alt_start, k.alt_end, c->now, &span);
+            buf_puts(b, "<span>");
+            H(b, T("Book %s instead"), buf_cstr(&span));
+            buf_puts(b, "</span></button>");
+            buf_free(&span);
             ui_form_end(b);
         }
     }
@@ -130,15 +145,23 @@ static void news(Ctx *c, Buf *b) {
     for (int i = 0; i < tbl_count(&T_book_news); i++) n += ((BookNews *)tbl_at(&T_book_news, i))->person == c->me->id;
     if (!n) return;
     buf_puts(b, "<div class=\"notice book-news\" id=\"book-news\" role=\"status\"><ul>");
+    Buf text = {0};
     for (int i = tbl_count(&T_book_news) - 1; i >= 0; i--) {
         BookNews *x = tbl_at(&T_book_news, i);
         if (x->person != c->me->id) continue;
-        H(b, "<li id=\"book-news-%d\"><a href=\"%s\">%s</a> <small class=\"muted\">", x->id, x->link, x->text);
+        buf_reset(&text);
+        if (x->msg[0]) i18n_unpack(&text, x->msg); /* in the reader's language */
+        else buf_puts(&text, x->text);            /* (a line from before: as it was written) */
+        H(b, "<li id=\"book-news-%d\"><a href=\"%s\">%s</a> <small class=\"muted\">", x->id, x->link, buf_cstr(&text));
         ui_ago(b, x->ts, c->now);
         buf_puts(b, "</small></li>");
     }
+    buf_free(&text);
     buf_puts(b, "</ul>");
-    ui_act(b, "book.news_seen", "btn sm", "Got it", NULL, NULL, NULL);
+    Buf got = {0}; /* (ui_act's label is HTML) */
+    H(&got, "%s", T("Got it"));
+    ui_act(b, "book.news_seen", "btn sm", buf_cstr(&got), NULL, NULL, NULL);
+    buf_free(&got);
     buf_puts(b, "</div>");
 }
 
@@ -158,41 +181,40 @@ static void booking_form(Ctx *c, Buf *b, Resource *r, Booking *edit, int64_t at)
     fmt_ymd(add_days(e, -1), ymd2);
     buf_puts(b, "<div class=\"field-row\">");
     H(b, "<label class=\"field\"><span>%s</span><input type=\"date\" name=\"date\" value=\"%s\" required></label>",
-      res_daily(r) ? "First day" : "Day", ymd);
+      res_daily(r) ? T("First day") : T("Day"), ymd);
     if (res_daily(r)) {
-        H(b, "<label class=\"field\"><span>Last day</span><input type=\"date\" name=\"date_to\" value=\"%s\"></label>",
-          ymd2);
+        H(b, "<label class=\"field\"><span>%s</span><input type=\"date\" name=\"date_to\" value=\"%s\"></label>",
+          T("Last day"), ymd2);
     } else {
         int step = r->slot * 60;
         H(b,
-          "<label class=\"field\"><span>From</span><input type=\"time\" name=\"from\" value=\"%s\" step=\"%d\" "
-          "required></label><label class=\"field\"><span>Until</span><input type=\"time\" name=\"to\" value=\"%s\" "
+          "<label class=\"field\"><span>%s</span><input type=\"time\" name=\"from\" value=\"%s\" step=\"%d\" "
+          "required></label><label class=\"field\"><span>%s</span><input type=\"time\" name=\"to\" value=\"%s\" "
           "step=\"%d\" required></label>",
-          hm1, step, hm2, step);
+          T("From"), hm1, step, T("Until"), hm2, step);
     }
     if (is_child(c) || is_guest(c)) { /* they book for themselves (issue #44) */
         buf_puts(b, "</div>");
         ui_hidden_int(b, "who", c->me->id);
     } else {
-        buf_puts(b, "</div><label class=\"field\"><span>For</span>");
+        H(b, "</div><label class=\"field\"><span>%s</span>", T("For"));
         ui_person_select(b, "who", edit ? edit->who : (c->me ? c->me->id : 0), NULL);
         buf_puts(b, "</label>");
     }
     H(b,
-      "<label class=\"field\"><span>Note</span><input name=\"note\" maxlength=\"100\" value=\"%s\" "
-      "placeholder=\"Optional — where, why…\"></label>",
-      edit ? edit->note : "");
+      "<label class=\"field\"><span>%s</span><input name=\"note\" maxlength=\"100\" value=\"%s\" "
+      "placeholder=\"%s\"></label>",
+      T("Note"), edit ? edit->note : "", T("Optional — where, why…"));
     if (!edit) { /* (issue #47; one of a series is moved on its own) */
-        buf_puts(b, "<div class=\"field-row\"><label class=\"field\"><span>Repeat</span><select name=\"rep\">");
-        static const char *const reps[] = {"Never", "Every day", "Every week", "Every 2 weeks", "Every month"};
-        for (int i = 0; i < countof(reps); i++) H(b, "<option value=\"%d\">%s</option>", i, reps[i]);
-        buf_puts(b, "</select></label><label class=\"field\"><span>Repeat until</span><input type=\"date\" "
-                    "name=\"rep_until\"></label></div>");
+        H(b, "<div class=\"field-row\"><label class=\"field\"><span>%s</span><select name=\"rep\">", T("Repeat"));
+        static const char *const reps[] = {N_("Never"), N_("Every day"), N_("Every week"), N_("Every 2 weeks"),
+                                           N_("Every month")};
+        for (int i = 0; i < countof(reps); i++) H(b, "<option value=\"%d\">%s</option>", i, T(reps[i]));
+        H(b, "</select></label><label class=\"field\"><span>%s</span><input type=\"date\" name=\"rep_until\"></label></div>",
+          T("Repeat until"));
     }
     if (r->rules[0]) H(b, "<p class=\"book-rules\">%s</p>", r->rules);
-    buf_puts(b, "<div class=\"modal-f\"><button class=\"btn primary\">");
-    buf_puts(b, edit ? "Save changes" : "Book it");
-    buf_puts(b, "</button></div>");
+    H(b, "<div class=\"modal-f\"><button class=\"btn primary\">%s</button></div>", edit ? T("Save changes") : T("Book it"));
     ui_form_end(b);
 }
 
@@ -209,77 +231,92 @@ static void booking_modal(Ctx *c, Buf *b, Booking *bk, const char *close) {
     }
     buf_puts(b, "<div class=\"book-bk-detail\">");
     ui_avatar_deco(b, who, "lg");
-    H(b, "<div><b class=\"book-bk-who\">%s</b><div class=\"book-bk-when\">", who ? who->name : "Someone");
-    book_span_text(r, bk->start, bk->end, c->now, b);
+    H(b, "<div><b class=\"book-bk-who\">%s</b><div class=\"book-bk-when\">", who ? who->name : T("Someone"));
+    Buf when = {0};
+    book_span_text(r, bk->start, bk->end, c->now, &when);
+    if (when.len && when.p[0] >= 'a' && when.p[0] <= 'z') when.p[0] = (char)(when.p[0] - 'a' + 'A'); /* (a line) */
+    buf_puts(b, buf_cstr(&when));
+    buf_free(&when);
     buf_puts(b, "</div>");
     if (bk->note[0]) H(b, "<p class=\"book-bk-note\">%s</p>", bk->note);
     const BookSeries *series = book_series_of(bk);
     if (series) {
-        buf_puts(b, "<p class=\"book-bk-rep\">↻ Repeats ");
-        book_series_label(b, series);
+        Buf lab = {0};
+        book_series_label(&lab, series);
+        buf_puts(b, "<p class=\"book-bk-rep\">↻ ");
+        H(b, T("Repeats %s"), buf_cstr(&lab));
         buf_puts(b, "</p>");
+        buf_free(&lab);
     }
-    buf_puts(b, "<small class=\"muted\">Booked ");
-    if (by && by != who) H(b, "by %s ", by->name);
-    ui_ago(b, bk->created, c->now);
+    Buf ago = {0};
+    ui_ago(&ago, bk->created, c->now);
+    buf_puts(b, "<small class=\"muted\">");
+    if (by && by != who) H(b, T("Booked by %s %s"), by->name, buf_cstr(&ago));
+    else H(b, T("Booked %s"), buf_cstr(&ago));
     buf_puts(b, "</small></div></div>");
+    buf_free(&ago);
     /* the thing's rule: only theirs to change (issue #43). A display account keeps the forms below,
        so the core cuts the dialog whole (issue #96). */
     if (!may && ui_can("book.cancel")) {
-        buf_puts(b, "<p class=\"muted small\">Only ");
-        if (by && by != who) H(b, "%s, %s", who ? who->name : "the person it's for", by->name);
-        else H(b, "%s", who ? who->name : "the person it's for");
-        buf_puts(b, " or an admin can cancel or move it.</p>");
+        const char *whose = who ? who->name : T("the person it's for");
+        buf_puts(b, "<p class=\"muted small\">");
+        if (by && by != who) H(b, T("Only %s, %s or an admin can cancel or move it."), whose, by->name);
+        else H(b, T("Only %s or an admin can cancel or move it."), whose);
+        buf_puts(b, "</p>");
         ui_modal_end(b);
         return;
     }
     buf_puts(b, "<div class=\"modal-f spread\">");
     ui_form(b, "book.cancel", "inline");
     ui_hidden_int(b, "id", bk->id);
-    H(b, "<button class=\"btn danger\">%s</button>", series ? "Cancel this one" : "Cancel booking");
+    H(b, "<button class=\"btn danger\">%s</button>", series ? T("Cancel this one") : T("Cancel booking"));
     ui_form_end(b);
     if (series && !series->stopped) { /* the rest of a repeating booking: asked first (more than one) */
-        ui_form_confirm(b, "book.cancel", "inline", "Cancel this one and every later one, and stop repeating?");
+        ui_form_confirm(b, "book.cancel", "inline", T("Cancel this one and every later one, and stop repeating?"));
         ui_hidden_int(b, "id", bk->id);
         ui_hidden(b, "later", "1");
-        buf_puts(b, "<button class=\"btn danger\">Stop repeating</button>");
+        H(b, "<button class=\"btn danger\">%s</button>", T("Stop repeating"));
         ui_form_end(b);
     }
     Buf u = {0};
     ctx_url(c, &u, "edit", "1", NULL);
-    H(b, "<a class=\"btn\" href=\"%s\">Change</a></div>", buf_cstr(&u));
+    H(b, "<a class=\"btn\" href=\"%s\">%s</a></div>", buf_cstr(&u), T("Change"));
     buf_free(&u);
     ui_modal_end(b);
 }
 
 static void resource_modal(Ctx *c, Buf *b, Resource *r, const char *close) {
-    ui_modal(b, r ? "Edit" : "Something new to book", close);
+    ui_modal(b, r ? T("Edit") : T("Something new to book"), close);
     if (!r) {
-        buf_puts(b, "<p class=\"muted\">Quick picks:</p><div class=\"chips book-presets\">");
+        H(b, "<p class=\"muted\">%s</p><div class=\"chips book-presets\">", T("Quick picks:"));
         for (int i = 0; i < book_presets_count(); i++) {
             ui_form(b, "book.preset", "inline");
-            ui_hidden(b, "name", book_presets_name(i));
-            H(b, "<button class=\"chip\">%s %s</button>", book_presets_emoji(i), book_presets_name(i));
+            ui_hidden(b, "name", book_presets_name(i)); /* (English: which one) */
+            H(b, "<button class=\"chip\">%s %s</button>", book_presets_emoji(i), T(book_presets_name(i)));
             ui_form_end(b);
         }
-        buf_puts(b, "</div><h3 class=\"mt\">Or describe it</h3>");
+        H(b, "</div><h3 class=\"mt\">%s</h3>", T("Or describe it"));
     }
     ui_form(b, "book.res_save", "stack");
     if (r) ui_hidden_int(b, "id", r->id);
     H(b,
-      "<div class=\"field-row\"><label class=\"field grow\"><span>Name</span><input name=\"name\" required "
-      "maxlength=\"36\" value=\"%s\" placeholder=\"Car, laundry room, sauna…\"%r></label>"
-      "<label class=\"field narrow\"><span>Emoji</span><input name=\"emoji\" maxlength=\"8\" value=\"%s\" "
+      "<div class=\"field-row\"><label class=\"field grow\"><span>%s</span><input name=\"name\" required "
+      "maxlength=\"36\" value=\"%s\" placeholder=\"%s\"%r></label>"
+      "<label class=\"field narrow\"><span>%s</span><input name=\"emoji\" maxlength=\"8\" value=\"%s\" "
       "placeholder=\"🚗\"></label></div>",
-      r ? r->name : "", r ? "" : " autofocus", r ? r->emoji : "");
+      T("Name"), r ? r->name : "", T("Car, laundry room, sauna…"), r ? "" : " autofocus", T("Emoji"), r ? r->emoji : "");
     /* what quick booking also knows it by (issue #55: "bastu ikväll 19" and a thing called "Sauna") */
     const char *starter = r ? book_starter_aliases(r->name) : "";
     H(b,
-      "<label class=\"field\"><span>Other names (optional)</span><input name=\"aliases\" maxlength=\"110\" "
-      "value=\"%s\" placeholder=\"bastu, the cabin…\" aria-describedby=\"book-aliases-h\"><small class=\"muted\" "
-      "id=\"book-aliases-h\">Quick booking knows it by these too, comma-separated.",
-      r ? r->aliases : "");
-    if (starter[0]) H(b, " It already knows “%s”.", starter);
+      "<label class=\"field\"><span>%s</span><input name=\"aliases\" maxlength=\"110\" "
+      "value=\"%s\" placeholder=\"%s\" aria-describedby=\"book-aliases-h\"><small class=\"muted\" "
+      "id=\"book-aliases-h\">%s",
+      T("Other names (optional)"), r ? r->aliases : "", T("bastu, the cabin…"),
+      T("Quick booking knows it by these too, comma-separated."));
+    if (starter[0]) {
+        buf_putc(b, ' ');
+        H(b, T("It already knows “%s”."), starter);
+    }
     buf_puts(b, "</small></label>");
     bool daily = r && res_daily(r);
     bool always = !r || (r->open_min <= 0 && r->close_min >= 1440);
@@ -289,51 +326,51 @@ static void resource_modal(Ctx *c, Buf *b, Resource *r, const char *close) {
     int cm = !r ? 22 * 60 : r->close_min < 1440 ? r->close_min : 0;
     snprintf(close_hm, sizeof close_hm, "%02d:%02d", cm / 60, cm % 60);
     H(b,
-      "<div class=\"field\"><span>Booked by</span><div class=\"chips\">"
-      "<label class=\"chip-r\"><input type=\"radio\" name=\"kind\" value=\"hourly\"%r><span>The hour</span></label>"
-      "<label class=\"chip-r\"><input type=\"radio\" name=\"kind\" value=\"daily\"%r><span>Whole days</span></label>"
+      "<div class=\"field\"><span>%s</span><div class=\"chips\">"
+      "<label class=\"chip-r\"><input type=\"radio\" name=\"kind\" value=\"hourly\"%r><span>%s</span></label>"
+      "<label class=\"chip-r\"><input type=\"radio\" name=\"kind\" value=\"daily\"%r><span>%s</span></label>"
       "</div></div>",
-      daily ? "" : " checked", daily ? " checked" : "");
-    buf_puts(b, "<div class=\"field-row\"><label class=\"field\"><span>Steps</span><select name=\"slot\">");
+      T("Booked by"), daily ? "" : " checked", T("The hour"), daily ? " checked" : "", T("Whole days"));
+    H(b, "<div class=\"field-row\"><label class=\"field\"><span>%s</span><select name=\"slot\">", T("Steps"));
     static const int slots[] = {15, 30, 60};
     for (int i = 0; i < 3; i++)
         H(b, "<option value=\"%d\"%r>%d min</option>", slots[i], (r ? r->slot : 30) == slots[i] ? " selected" : "",
           slots[i]);
     H(b,
-      "</select></label><label class=\"field\"><span>Usual length (min)</span><input type=\"number\" name=\"dflt\" "
-      "min=\"15\" step=\"15\" value=\"%d\"></label><label class=\"field\"><span>Max (min, 0 = none)</span>"
+      "</select></label><label class=\"field\"><span>%s</span><input type=\"number\" name=\"dflt\" "
+      "min=\"15\" step=\"15\" value=\"%d\"></label><label class=\"field\"><span>%s</span>"
       "<input type=\"number\" name=\"max\" min=\"0\" step=\"15\" value=\"%d\"></label></div>",
-      r && !res_daily(r) ? r->default_min : 120, r ? r->max_min : 0);
+      T("Usual length (min)"), r && !res_daily(r) ? r->default_min : 120, T("Max (min, 0 = none)"), r ? r->max_min : 0);
     H(b,
-      "<div class=\"field\"><span>Hours</span><label class=\"check\"><input type=\"checkbox\" name=\"always\" "
-      "value=\"1\"%r> Around the clock</label><div class=\"field-row\"><label class=\"field\"><span>From</span>"
-      "<input type=\"time\" name=\"open\" value=\"%s\"></label><label class=\"field\"><span>Until</span>"
+      "<div class=\"field\"><span>%s</span><label class=\"check\"><input type=\"checkbox\" name=\"always\" "
+      "value=\"1\"%r> %s</label><div class=\"field-row\"><label class=\"field\"><span>%s</span>"
+      "<input type=\"time\" name=\"open\" value=\"%s\"></label><label class=\"field\"><span>%s</span>"
       "<input type=\"time\" name=\"close\" value=\"%s\"></label></div></div>",
-      always ? " checked" : "", open, close_hm);
+      T("Hours"), always ? " checked" : "", T("Around the clock"), T("From"), open, T("Until"), close_hm);
     H(b,
-      "<label class=\"field\"><span>House rules (optional)</span><input name=\"rules\" maxlength=\"150\" "
-      "value=\"%s\" placeholder=\"Fill up the tank, clean the filter…\"></label>",
-      r ? r->rules : "");
+      "<label class=\"field\"><span>%s</span><input name=\"rules\" maxlength=\"150\" "
+      "value=\"%s\" placeholder=\"%s\"></label>",
+      T("House rules (optional)"), r ? r->rules : "", T("Fill up the tank, clean the filter…"));
     if (is_admin(c)) { /* issue #43: in a household, usually anyone may - an admin can make it stricter */
-        H(b,
-          "<label class=\"check\"><input type=\"checkbox\" name=\"own_only\" value=\"1\"%r> Only the person a booking "
-          "is for, whoever made it, or an admin can cancel or move it</label>",
-          r && r->own_only ? " checked" : "");
+        H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"own_only\" value=\"1\"%r> %s</label>",
+          r && r->own_only ? " checked" : "",
+          T("Only the person a booking is for, whoever made it, or an admin can cancel or move it"));
         H(b, /* issue #44: who else may book it */
-          "<label class=\"check\"><input type=\"checkbox\" name=\"kids\" value=\"1\"%r> Children may book it</label>"
-          "<label class=\"check\"><input type=\"checkbox\" name=\"guests\" value=\"1\"%r> Guests may book it</label>",
-          r && r->kids ? " checked" : "", r && r->guests ? " checked" : "");
+          "<label class=\"check\"><input type=\"checkbox\" name=\"kids\" value=\"1\"%r> %s</label>"
+          "<label class=\"check\"><input type=\"checkbox\" name=\"guests\" value=\"1\"%r> %s</label>",
+          r && r->kids ? " checked" : "", T("Children may book it"), r && r->guests ? " checked" : "",
+          T("Guests may book it"));
     } else if (r && r->own_only)
-        buf_puts(b, "<p class=\"muted small\">Only the person a booking is for, whoever made it, or an admin can cancel "
-                    "or move it (an admin's choice).</p>");
-    buf_puts(b, "<div class=\"field\"><span>Colour</span>");
+        H(b, "<p class=\"muted small\">%r</p>", /* (our own words: raw, the apostrophe as it is) */
+          T("Only the person a booking is for, whoever made it, or an admin can cancel or move it (an admin's choice)."));
+    H(b, "<div class=\"field\"><span>%s</span>", T("Colour"));
     ui_hue_picker(b, "hue", r ? r->hue : 200);
-    buf_puts(b, "</div><div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>");
+    H(b, "</div><div class=\"modal-f\"><button class=\"btn primary\">%s</button></div>", T("Save"));
     ui_form_end(b);
     if (r) {
         ui_form(b, "book.res_archive", "danger-zone");
         ui_hidden_int(b, "id", r->id);
-        H(b, "<button class=\"btn danger\">%s</button>", r->archived ? "Make bookable again" : "Hide from bookings");
+        H(b, "<button class=\"btn danger\">%s</button>", r->archived ? T("Make bookable again") : T("Hide from bookings"));
         ui_form_end(b);
     }
     ui_modal_end(b);
@@ -351,17 +388,20 @@ static void week_nav(Ctx *c, Buf *b, int64_t ws, bool daily) {
     ctx_url(c, &un, "w", next, "new", NULL, "b", NULL, NULL);
     ctx_url(c, &ut, "w", today, "new", NULL, "b", NULL, NULL);
     DateTime a = dt_local(ws), z = dt_local(add_days(ws, daily ? 34 : 6));
-    H(b, "<div class=\"book-wk-nav\"><a class=\"icon-btn\" href=\"%s\" aria-label=\"Earlier\">", buf_cstr(&up));
+    H(b, "<div class=\"book-wk-nav\"><a class=\"icon-btn\" href=\"%s\" aria-label=\"%s\">", buf_cstr(&up), T("Earlier"));
     ui_icon(b, "left");
-    H(b, "</a><a class=\"icon-btn\" href=\"%s\" aria-label=\"Later\">", buf_cstr(&un));
+    H(b, "</a><a class=\"icon-btn\" href=\"%s\" aria-label=\"%s\">", buf_cstr(&un), T("Later"));
     ui_icon(b, "right");
     buf_puts(b, "</a><b class=\"book-wk-range\">");
-    if (!daily) buf_printf(b, "Week %d · ", iso_week(ws, NULL));
+    if (!daily) {
+        buf_printf(b, T("Week %d"), iso_week(ws, NULL));
+        buf_puts(b, " · ");
+    }
     if (a.mon == z.mon) buf_printf(b, "%d–%d %s", a.day, z.day, month_name(a.mon, false));
     else buf_printf(b, "%d %s – %d %s", a.day, month_name(a.mon, true), z.day, month_name(z.mon, true));
     bool here = c->now >= ws && c->now < add_days(ws, daily ? 35 : 7);
     buf_puts(b, "</b></div>");
-    if (!here) H(b, "<a class=\"btn sm\" href=\"%s\">Today</a>", buf_cstr(&ut));
+    if (!here) H(b, "<a class=\"btn sm\" href=\"%s\">%s</a>", buf_cstr(&ut), T("Today"));
     buf_free(&up);
     buf_free(&un);
     buf_free(&ut);
@@ -453,7 +493,7 @@ static void hourly_grid(Ctx *c, Buf *b, Resource *r, int64_t ws) {
               (a - vis_from) / slot, (a - vis_from) % slot * 100 / slot, (z - a) / slot, (z - a) % slot * 100 / slot);
             buf_free(&at);
             buf_free(&u);
-            H(b, "<b>%s</b><small>", p ? p->name : "Someone");
+            H(b, "<b>%s</b><small>", p ? p->name : T("Someone"));
             ui_span(b, bk->start, bk->end);
             buf_puts(b, "</small>");
             if (bk->note[0] && z - a >= 2 * slot) H(b, "<small class=\"book-n\">%s</small>", bk->note);
@@ -496,7 +536,7 @@ static void daily_grid(Ctx *c, Buf *b, Resource *r, int64_t ws) {
             else H(b, "<div class=\"book-mo-b hued%r\" style=\"--h:%d\">", first ? " book-first" : "", p ? p->hue : 210);
             if (first) ui_avatar_deco(b, p, "xs"); /* (the name follows) */
             else ui_avatar(b, p, "xs");
-            H(b, "<span>%s</span>%r", first ? (p ? p->name : "Someone") : "", can ? "</a>" : "</div>");
+            H(b, "<span>%s</span>%r", first ? (p ? p->name : T("Someone")) : "", can ? "</a>" : "</div>");
             buf_free(&u);
         } else if (!past && can) { /* (a display account only looks - issue #96) */
             Buf u = {0};
@@ -538,7 +578,7 @@ static void upcoming(Ctx *c, Buf *b, int only_res, int max, bool links) {
         list[j] = bk;
     }
     if (!n) {
-        buf_puts(b, "<p class=\"muted\">Nothing booked. Everything's free!</p>");
+        H(b, "<p class=\"muted\">%r</p>", T("Nothing booked. Everything's free!")); /* (our own words: raw) */
         return;
     }
     int64_t last_day = -1;
@@ -564,11 +604,12 @@ static void upcoming(Ctx *c, Buf *b, int only_res, int max, bool links) {
         if (links) H(b, "<li><a class=\"book-up-row%r\" href=\"%s\">", now ? " book-now" : "", buf_cstr(&u));
         else H(b, "<li><div class=\"book-up-row%r\">", now ? " book-now" : "");
         buf_puts(b, "<span class=\"book-up-t\">");
-        if (res_daily(r)) buf_puts(b, "all day");
+        if (res_daily(r)) buf_puts(b, T("all day"));
         else ui_span(b, bk->start, bk->end);
         buf_puts(b, "</span><span class=\"book-up-r\">");
         res_title(b, r);
-        if (bk->series) buf_puts(b, " <span class=\"book-rep\" aria-hidden=\"true\">↻</span><span class=\"sr-only\">, repeats</span>");
+        if (bk->series)
+            H(b, " <span class=\"book-rep\" aria-hidden=\"true\">↻</span><span class=\"sr-only\">%s</span>", T(", repeats"));
         if (bk->note[0]) H(b, " <small>· %s</small>", bk->note);
         buf_puts(b, "</span>");
         ui_person(b, p);
@@ -577,35 +618,37 @@ static void upcoming(Ctx *c, Buf *b, int only_res, int max, bool links) {
     }
     /* more than fit: say so, rather than letting them go unseen (issue #53: Friday's car vanished) */
     if (all > n) {
-        if (links && !str_starts(c->path, "/book")) H(b, "<li class=\"book-up-more\" data-fit-keep><a href=\"/book\">+%d more</a></li>", all - n);
-        else H(b, "<li class=\"book-up-more\" data-fit-keep data-fit-more=\"%d\">+%d more</li>", all - n, all - n);
+        if (links && !str_starts(c->path, "/book")) buf_puts(b, "<li class=\"book-up-more\" data-fit-keep><a href=\"/book\">");
+        else H(b, "<li class=\"book-up-more\" data-fit-keep data-fit-more=\"%d\">", all - n);
+        H(b, T("+%d more"), all - n);
+        buf_puts(b, links && !str_starts(c->path, "/book") ? "</a></li>" : "</li>");
     }
     buf_puts(b, "</ul>");
 }
 
 static void overview(Ctx *c, Buf *b) {
-    ctx_title(c, "Bookings");
+    ctx_title(c, "%s", T("Bookings"));
     Resource *rs[64];
     int n = book_res_list(c, rs, 64);
-    ui_head(b, "Bookings", n ? "What's booked and what's free" : NULL);
+    ui_head(b, T("Bookings"), n ? T("What's booked and what's free") : NULL);
     if (ui_can("book.res_save")) { /* (a display account only looks: issue #96) */
         buf_puts(b, "<a class=\"btn\" href=\"/book?res=new\">");
         ui_icon(b, "plus");
-        buf_puts(b, "<span>Add a thing</span></a>");
+        H(b, "<span>%s</span></a>", T("Add a thing"));
     }
     ui_head_end(b);
     news(c, b);
     if (!n && (is_child(c) || is_guest(c))) {
-        ui_empty(b, "🗝️", "Nothing to book yet",
-                 is_child(c) ? "A grown-up decides what children may book." : "An admin decides what guests may book.");
+        ui_empty(b, "🗝️", T("Nothing to book yet"),
+                 is_child(c) ? T("A grown-up decides what children may book.") : T("An admin decides what guests may book."));
     } else if (!n) {
-        ui_empty(b, "🗝️", "What do you share at home?",
-                 "Add the things people take turns with — then anyone can book them from their phone.");
+        ui_empty(b, "🗝️", T("What do you share at home?"),
+                 T("Add the things people take turns with — then anyone can book them from their phone."));
         buf_puts(b, "<div class=\"chips book-presets center\">");
         for (int i = 0; i < book_presets_count(); i++) {
             ui_form(b, "book.preset", "inline");
-            ui_hidden(b, "name", book_presets_name(i));
-            H(b, "<button class=\"chip\">%s %s</button>", book_presets_emoji(i), book_presets_name(i));
+            ui_hidden(b, "name", book_presets_name(i)); /* (English: which one) */
+            H(b, "<button class=\"chip\">%s %s</button>", book_presets_emoji(i), T(book_presets_name(i)));
             ui_form_end(b);
         }
         buf_puts(b, "</div>");
@@ -621,7 +664,7 @@ static void overview(Ctx *c, Buf *b) {
             buf_puts(b, "</small></a>");
         }
         buf_puts(b, "</div>");
-        ui_card(b, "Coming up", NULL, NULL);
+        ui_card(b, TC("bookings", "Coming up"), NULL, NULL);
         upcoming(c, b, 0, 30, ui_can("book.cancel"));
         ui_card_end(b);
     }
@@ -641,7 +684,9 @@ static void resource_page(Ctx *c, Buf *b, Resource *r) {
     if (r->rules[0]) H(b, "<p class=\"sub\">%s</p>", r->rules);
     buf_puts(b, "</div><div class=\"ph-a\">");
     if (ui_can("book.res_save")) {
-        H(b, "<a class=\"icon-btn\" href=\"/book/%d?res=%d\" aria-label=\"Edit %s\">", r->id, r->id, r->name);
+        char label[80];
+        snprintf(label, sizeof label, T("Edit %s"), r->name);
+        H(b, "<a class=\"icon-btn\" href=\"/book/%d?res=%d\" aria-label=\"%s\">", r->id, r->id, label);
         ui_icon(b, "settings");
         buf_puts(b, "</a>");
     }
@@ -652,7 +697,7 @@ static void resource_page(Ctx *c, Buf *b, Resource *r) {
         fmt_ymd(free_at, w);
         H(b, "<a class=\"btn primary\" href=\"/book/%d?w=%s&new=%s\">", r->id, w, at);
         ui_icon(b, "plus");
-        buf_puts(b, "<span>Book</span></a>");
+        H(b, "<span>%s</span></a>", T("Book"));
     }
     buf_puts(b, "</div></header>");
     buf_free(&title);
@@ -679,7 +724,7 @@ static void resource_page(Ctx *c, Buf *b, Resource *r) {
     else hourly_grid(c, b, r, ws);
     buf_puts(b, "</div>");
 
-    ui_card(b, "Coming up", NULL, NULL);
+    ui_card(b, TC("bookings", "Coming up"), NULL, NULL);
     upcoming(c, b, r->id, 12, ui_can("book.cancel"));
     ui_card_end(b);
 
@@ -693,7 +738,7 @@ static void resource_page(Ctx *c, Buf *b, Resource *r) {
     else if (bid && book_get(bid)) booking_modal(c, b, book_get(bid), buf_cstr(&close));
     else if (at > 0) {
         Buf t = {0};
-        buf_printf(&t, "Book %s", r->name);
+        buf_printf(&t, T("Book %s"), r->name);
         ui_modal(b, buf_cstr(&t), buf_cstr(&close));
         booking_form(c, b, r, NULL, (int64_t)at);
         ui_modal_end(b);
@@ -708,9 +753,9 @@ void book_page(Ctx *c, Buf *b) {
     Resource *r = res_get(id);
     if (r && !book_open_to(c, r)) { /* a child's, a guest's (issue #44) */
         ctx_title(c, "%s", r->name);
-        ui_empty(b, "🔒", is_child(c) ? "Not for children" : "Not open to guests",
-                 is_child(c) ? "A grown-up books this one." : "Ask someone in the household about it.");
-        buf_puts(b, "<p class=\"center\"><a class=\"btn\" href=\"/book\">What you can book</a></p>");
+        ui_empty(b, "🔒", is_child(c) ? T("Not for children") : T("Not open to guests"),
+                 is_child(c) ? T("A grown-up books this one.") : T("Ask someone in the household about it."));
+        H(b, "<p class=\"center\"><a class=\"btn\" href=\"/book\">%s</a></p>", T("What you can book"));
         return;
     }
     if (r) resource_page(c, b, r);
@@ -730,7 +775,7 @@ static void now_pills(Ctx *c, Buf *b, Resource **rs, int n) {
         Booking *cur = book_current(rs[i]->id, c->now);
         Person *p = cur ? person_get(cur->who) : NULL;
         H(b, "<a class=\"book-res-pill%r\" href=\"/book/%d\" title=\"%s\">%s<span>%s</span>", cur ? " book-busy" : "", rs[i]->id,
-          rs[i]->name, rs[i]->emoji[0] ? rs[i]->emoji : "📅", cur ? (p ? p->name : "busy") : "free");
+          rs[i]->name, rs[i]->emoji[0] ? rs[i]->emoji : "📅", cur ? (p ? p->name : T("busy")) : T("free"));
         buf_puts(b, "</a>");
     }
     buf_puts(b, "</div>");
@@ -741,11 +786,11 @@ void book_widget(Ctx *c, Buf *b, int where) {
     Resource *rs[64];
     int n = book_res_list(c, rs, 64);
     if (!n && (is_child(c) || is_guest(c))) return; /* (nothing they may book: no card) */
-    ui_card(b, "Bookings", "/book", n ? "Book" : "Set up");
+    ui_card(b, T("Bookings"), "/book", n ? T("Book") : T("Set up"));
     news(c, b);
     if (!n) {
-        buf_puts(b, "<p class=\"muted\">Share the car, the laundry room or the guest room — add them under "
-                    "<a href=\"/book\">Book</a>.</p>");
+        H(b, "<p class=\"muted\">%r</p>",
+          T("Share the car, the laundry room or the guest room — add them under <a href=\"/book\">Book</a>."));
         ui_card_end(b);
         return;
     }
@@ -765,14 +810,18 @@ bool book_wall(Ctx *c, Buf *b) {
         Person *p = cur ? person_get(cur->who) : NULL;
         H(b, "<li class=\"%s\"><span class=\"book-wall-e\">%s</span><b>%s</b><span class=\"book-wall-s\">",
           cur ? "book-busy" : "book-free", rs[i]->emoji[0] ? rs[i]->emoji : "📅", rs[i]->name);
-        if (!cur) buf_puts(b, "Free");
+        if (!cur) buf_puts(b, T("Free"));
         else { /* "until 17:00", another day "until Tomorrow 02:00" (issue #80: the time went missing) */
-            H(b, "%s · until ", p ? p->name : "Busy");
+            H(b, "%s · ", p ? p->name : T("Busy"));
+            DateTime e = dt_local(cur->end); /* (clock times: "hasta las 17:00") */
             if (day_start(cur->end) != day_start(c->now)) {
-                ui_day(b, cur->end, c->now);
-                buf_putc(b, ' ');
+                Buf day = {0};
+                book_day(&day, cur->end, c->now);
+                H(b, T("until %s %02d:%02d"), buf_cstr(&day), e.hour, e.min);
+                buf_free(&day);
+            } else {
+                H(b, T("until %02d:%02d"), e.hour, e.min);
             }
-            ui_hm(b, cur->end);
         }
         buf_puts(b, "</span></li>");
     }

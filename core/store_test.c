@@ -1,6 +1,7 @@
 #include "../tests/test.h"
 #include "db.h"
 #include "plat.h"
+#include "i18n.h"
 #include "store.h"
 #include "tar.h"
 
@@ -286,9 +287,16 @@ TEST(store_rescues_what_a_damaged_database_still_holds) {
     CHECK_HAS(store_rescue_report(), "Hemma's data was damaged (parts of it couldn't be read). Nothing was deleted: "
                                      "the damaged file is kept as hemma.db.damaged-");
     char want[80];
-    snprintf(want, sizeof want, "%d,%03d of 3,000 rows were kept - note: %d,%03d of 3,000.", n / 1000, n % 1000,
-             n / 1000, n % 1000);
+    snprintf(want, sizeof want, "%d,%03d of 3,000 rows were kept - note: %d of 3000.", n / 1000, n % 1000, n);
     CHECK_HAS(store_rescue_report(), want);
+    Buf sv = {0}; /* (people read it in their language: issue #46) */
+    Lang was = i18n_use(LANG_SV);
+    i18n_unpack(&sv, store_rescue_packed());
+    i18n_use(was);
+    snprintf(want, sizeof want, "%d\xC2\xA0%03d av 3\xC2\xA0" "000 rader behölls - note: %d of 3000.", n / 1000, n % 1000, n);
+    CHECK_HAS(buf_cstr(&sv), want);
+    CHECK_HAS(buf_cstr(&sv), "Hemmas data var skadad");
+    buf_free(&sv);
     CHECK_INT(damaged_copy(dir), (int)f.len); /* the damaged file, kept as it was */
     Note x = {0};
     tbl_put(&t2, &x);

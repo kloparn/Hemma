@@ -1,0 +1,527 @@
+/* modules/media's uploads, conversions and USB disks (upload.c, convert.c, drives.c) in Swedish and
+   Spanish (issue #46; core/i18n.h says how). */
+#include "../../core/i18n.h"
+
+static const Tr TR[] = {
+    /* the upload page */
+    {"Add videos", "Lägg till videor", "Añadir vídeos"},
+    {"Library", "Bibliotek", "Biblioteca"},
+    {"Library settings", "Biblioteksinställningar", "Ajustes de la biblioteca"},
+    {"Send movies and series from this device to the library",
+     "Skicka filmer och serier från den här enheten till biblioteket",
+     "Envía películas y series desde este dispositivo a la biblioteca"},
+    {"Admins only", "Bara för administratörer", "Solo para administradores"},
+    {"Ask %r to add videos to the library.", "Be %r att lägga till videor i biblioteket.",
+     "Pide a %r que añada vídeos a la biblioteca."},
+    {"Choose a library folder first", "Välj en biblioteksmapp först", "Elige primero una carpeta de la biblioteca"},
+    {"Uploads go into one of the library's folders. Add one in the library settings.",
+     "Uppladdningar hamnar i en av bibliotekets mappar. Lägg till en i biblioteksinställningarna.",
+     "Las subidas van a una de las carpetas de la biblioteca. Añade una en los ajustes de la biblioteca."},
+    {"Upload", "Ladda upp", "Subir"},
+    {"Save into", "Spara i", "Guardar en"},
+    {"Inside the folder (optional)", "Inuti mappen (valfritt)", "Dentro de la carpeta (opcional)"},
+    {"e.g. Series", "t.ex. Serier", "p. ej. Series"},
+    {"A whole folder", "En hel mapp", "Una carpeta entera"},
+    {"…or single files", "…eller enstaka filer", "…o archivos sueltos"},
+    {"Make videos play everywhere on this device first (recommended)",
+     "Gör så att videorna spelas överallt på den här enheten först (rekommenderas)",
+     "Hacer primero en este dispositivo que los vídeos se reproduzcan en todas partes (recomendado)"},
+    {"Room on this device for copies waiting to be sent: <b id=\"media-room-n\">%d</b> GB",
+     "Plats på den här enheten för kopior som väntar på att skickas: <b id=\"media-room-n\">%d</b> GB",
+     "Espacio en este dispositivo para copias que esperan a enviarse: <b id=\"media-room-n\">%d</b> GB"},
+    {"More room lets more videos convert side by side - DVD rips take minutes each. A copy leaves this device's disk "
+     "as soon as it's sent.",
+     "Mer plats låter fler videor konverteras samtidigt - DVD-rippar tar några minuter var. En kopia försvinner från "
+     "enhetens disk så fort den är skickad.",
+     "Más espacio permite convertir más vídeos a la vez - los vídeos de DVD tardan minutos cada uno. Una copia sale "
+     "del disco de este dispositivo en cuanto se envía."},
+    {"Also send the originals", "Skicka originalen också", "Enviar también los originales"},
+    {"Also send episodes and films the library already has under another name",
+     "Skicka även avsnitt och filmer som biblioteket redan har under ett annat namn",
+     "Enviar también episodios y películas que la biblioteca ya tiene con otro nombre"},
+    {"A folder keeps its layout, so <code class=\"media-code\">My Show/Season 1/…</code> arrives just like that. Files "
+     "already on the server are skipped - and so are episodes and films the library already has under another name "
+     "(the same show, season and episode; the same film, year and part), before anything is converted. If the "
+     "connection drops it carries on where it stopped.",
+     "En mapp behåller sin struktur, så <code class=\"media-code\">Min serie/Säsong 1/…</code> kommer fram precis så. "
+     "Filer som redan finns på servern hoppas över - och det gör även avsnitt och filmer som biblioteket redan har "
+     "under ett annat namn (samma serie, säsong och avsnitt; samma film, år och del), innan något konverteras. Om "
+     "anslutningen bryts fortsätter den där den stannade.",
+     "Una carpeta conserva su estructura, así que <code class=\"media-code\">Mi serie/Temporada 1/…</code> llega tal "
+     "cual. Los archivos que ya están en el servidor se omiten - y también los episodios y películas que la biblioteca "
+     "ya tiene con otro nombre (la misma serie, temporada y episodio; la misma película, año y parte), antes de "
+     "convertir nada. Si se corta la conexión, sigue donde se quedó."},
+    {"Videos that not every phone, TV or browser can play (DVD rips, MKV files, Dolby sound) are converted right here, "
+     "on this device, and only the converted copy is sent: about a third of the size, and it plays everywhere. That "
+     "keeps this device busy while it runs - a computer does it much faster than a phone.",
+     "Videor som inte alla telefoner, tv-apparater eller webbläsare kan spela (DVD-rippar, MKV-filer, Dolby-ljud) "
+     "konverteras här, på den här enheten, och bara den konverterade kopian skickas: ungefär en tredjedel så stor, och "
+     "den spelas överallt. Det håller enheten upptagen medan det pågår - en dator gör det mycket snabbare än en "
+     "telefon.",
+     "Los vídeos que no todos los móviles, televisores o navegadores pueden reproducir (vídeos de DVD, archivos MKV, "
+     "sonido Dolby) se convierten aquí mismo, en este dispositivo, y solo se envía la copia convertida: más o menos un "
+     "tercio del tamaño, y se reproduce en todas partes. Eso mantiene ocupado este dispositivo mientras dura - un "
+     "ordenador lo hace mucho más rápido que un móvil."},
+    {"This Hemma was built without the video converter, so videos are sent as they are (convert them under Library "
+     "settings afterwards).",
+     "Den här Hemma byggdes utan videokonverteraren, så videor skickas som de är (konvertera dem under "
+     "Biblioteksinställningar efteråt).",
+     "Este Hemma se compiló sin el conversor de vídeo, así que los vídeos se envían tal cual (conviértelos después en "
+     "Ajustes de la biblioteca)."},
+    {"A folder that already holds a converted <code class=\"media-code\">x.web.mp4</code> sends just that. A DVD's "
+     "\"play all\" title (every episode again, in one file) stays behind: only its first MB goes, so the library can "
+     "still tell episodes from bonus clips. Keep this tab open while it runs - you can use other pages meanwhile.",
+     "En mapp som redan har en konverterad <code class=\"media-code\">x.web.mp4</code> skickar bara den. En DVD:s "
+     "\"spela alla\"-titel (alla avsnitt igen, i en fil) stannar kvar: bara dess första MB skickas, så att biblioteket "
+     "ändå kan skilja avsnitt från extramaterial. Håll den här fliken öppen medan det pågår - du kan använda andra "
+     "sidor under tiden.",
+     "Una carpeta que ya tiene un <code class=\"media-code\">x.web.mp4</code> convertido envía solo eso. El título "
+     "\"reproducir todo\" de un DVD (todos los episodios otra vez, en un archivo) se queda atrás: solo se envía su "
+     "primer MB, para que la biblioteca pueda seguir distinguiendo los episodios de los extras. Mantén esta pestaña "
+     "abierta mientras dura - puedes usar otras páginas mientras tanto."},
+    {"Upload anyway, alongside the upload that's running (its files are left to it)",
+     "Ladda upp ändå, vid sidan av uppladdningen som pågår (dess filer lämnas åt den)",
+     "Subir de todos modos, junto a la subida en curso (sus archivos se le dejan a ella)"},
+    {"Your upload", "Din uppladdning", "Tu subida"},
+    {"Someone", "Någon", "Alguien"},
+
+    /* an upload's card */
+    {"Stopped · %d of %d file sent", "Stoppad · %d av %d fil skickad", "Detenida · %d de %d archivo enviado"},
+    {"Stopped · %d of %d files sent", "Stoppad · %d av %d filer skickade", "Detenida · %d de %d archivos enviados"},
+    {"Finished · %d file sent", "Klar · %d fil skickad", "Terminada · %d archivo enviado"},
+    {"Finished · %d files sent", "Klar · %d filer skickade", "Terminada · %d archivos enviados"},
+    {"Waiting for the browser · %d of %d file sent", "Väntar på webbläsaren · %d av %d fil skickad",
+     "Esperando al navegador · %d de %d archivo enviado"},
+    {"Waiting for the browser · %d of %d files sent", "Väntar på webbläsaren · %d av %d filer skickade",
+     "Esperando al navegador · %d de %d archivos enviados"},
+    {"Uploading · %d of %d file", "Laddar upp · %d av %d fil", "Subiendo · %d de %d archivo"},
+    {"Uploading · %d of %d files", "Laddar upp · %d av %d filer", "Subiendo · %d de %d archivos"},
+    {"%s of about %s", "%s av ungefär %s", "%s de unos %s"},
+    {"about %s left", "ungefär %s kvar", "quedan unos %s"},
+    {"took %d s", "tog %d s", "tardó %d s"},
+    {"took %s", "tog %s", "tardó %s"},
+    {"Now: <code class=\"media-code\">%s</code> · %d%%", "Nu: <code class=\"media-code\">%s</code> · %d%%",
+     "Ahora: <code class=\"media-code\">%s</code> · %d%%"},
+    {"Made on the sending device: %d of %d play-everywhere copy ready",
+     "Görs på enheten som skickar: %d av %d kopia som spelas överallt klar",
+     "Hechas en el dispositivo que envía: %d de %d copia que se reproduce en todas partes lista"},
+    {"Made on the sending device: %d of %d play-everywhere copies ready",
+     "Görs på enheten som skickar: %d av %d kopior som spelas överallt klara",
+     "Hechas en el dispositivo que envía: %d de %d copias que se reproducen en todas partes listas"},
+    {"If the browser that started it was closed, choose the same folder again below - what's already on the server is "
+     "skipped, and half-sent files continue where they stopped.",
+     "Om webbläsaren som startade den stängdes, välj samma mapp igen nedan - det som redan finns på servern hoppas "
+     "över, och halvskickade filer fortsätter där de stannade.",
+     "Si se cerró el navegador que la empezó, elige otra vez la misma carpeta abajo - lo que ya está en el servidor se "
+     "omite, y los archivos a medio enviar siguen donde se quedaron."},
+    {"%d video couldn't be converted on this device and went up as it was - it may not play everywhere. Why: %s.",
+     "%d video kunde inte konverteras på den här enheten och laddades upp som den var - den kanske inte spelas "
+     "överallt. Varför: %s.",
+     "%d vídeo no se pudo convertir en este dispositivo y se subió tal cual - puede que no se reproduzca en todas "
+     "partes. Motivo: %s."},
+    {"%d videos couldn't be converted on this device and went up as they were - they may not play everywhere. Why: %s "
+     "(each one's reason is in the list below).",
+     "%d videor kunde inte konverteras på den här enheten och laddades upp som de var - de kanske inte spelas "
+     "överallt. Varför: %s (varje videos skäl står i listan nedan).",
+     "%d vídeos no se pudieron convertir en este dispositivo y se subieron tal cual - puede que no se reproduzcan en "
+     "todas partes. Motivo: %s (el motivo de cada uno está en la lista de abajo)."},
+    {"%d skipped", "%d hoppades över", "%d sin subir"},
+    {"%d play-all header", "%d \"spela alla\"-filhuvud", "%d cabecera de \"reproducir todo\""},
+    {"%d play-all headers", "%d \"spela alla\"-filhuvuden", "%d cabeceras de \"reproducir todo\""},
+    {"%d sent unconverted", "%d skickades utan konvertering", "%d sin convertir"},
+    {"%d failed", "%d misslyckades", "%d con error"},
+    {"sent as it is: %s", "skickades som den var: %s", "enviado tal cual: %s"},
+    {"only its first MB: it looks like a \"play all\" copy of the episodes next to it (if it isn't, upload it on its "
+     "own)",
+     "bara den första MB:n: den ser ut som en \"spela alla\"-kopia av avsnitten bredvid (om den inte är det, ladda "
+     "upp den för sig)",
+     "solo su primer MB: parece una copia \"reproducir todo\" de los episodios de al lado (si no lo es, súbelo por "
+     "separado)"},
+    {"Stop the upload? Everything already sent stays on the server.",
+     "Stoppa uppladdningen? Allt som redan skickats finns kvar på servern.",
+     "¿Detener la subida? Todo lo ya enviado se queda en el servidor."},
+    {"Stop", "Stoppa", "Detener"},
+    {"Uploading now: %d of %d file sent.", "Laddar upp nu: %d av %d fil skickad.",
+     "Subiendo ahora: %d de %d archivo enviado."},
+    {"Uploading now: %d of %d files sent.", "Laddar upp nu: %d av %d filer skickade.",
+     "Subiendo ahora: %d de %d archivos enviados."},
+    {"Only an admin can do that", "Bara en administratör kan göra det", "Solo un administrador puede hacer eso"},
+    {"Upload stopped - what was sent stays", "Uppladdningen stoppad - det som skickats finns kvar",
+     "Subida detenida - lo enviado se conserva"},
+    {"Nothing is uploading", "Inget laddas upp", "No se está subiendo nada"},
+    {"Upload finished: %d file added", "Uppladdningen är klar: %d fil tillagd", "Subida terminada: %d archivo añadido"},
+    {"Upload finished: %d files added", "Uppladdningen är klar: %d filer tillagda",
+     "Subida terminada: %d archivos añadidos"},
+
+    /* why a file was skipped, sent as it is, or failed (the list on the card) */
+    {"goes with %s, which the library has", "hör till %s, som biblioteket redan har",
+     "va con %s, que ya está en la biblioteca"},
+    {"looks like a \"play all\" copy of the %d episodes next to it",
+     "ser ut som en \"spela alla\"-kopia av de %d avsnitten bredvid",
+     "parece una copia \"reproducir todo\" de los %d episodios de al lado"},
+    {"a different file with that name is already there", "en annan fil med det namnet finns redan där",
+     "ya hay otro archivo con ese nombre"},
+    {"a \"play all\" copy of the %d episodes next to it - its header is there",
+     "en \"spela alla\"-kopia av de %d avsnitten bredvid - dess filhuvud finns redan där",
+     "una copia \"reproducir todo\" de los %d episodios de al lado - su cabecera ya está ahí"},
+    {"its play-everywhere copy (.web.mp4) goes instead", "dess kopia som spelas överallt (.web.mp4) skickas i stället",
+     "se envía en su lugar su copia que se reproduce en todas partes (.web.mp4)"},
+    {"its play-everywhere copy is already there", "dess kopia som spelas överallt finns redan där",
+     "su copia que se reproduce en todas partes ya está ahí"},
+    {"Hemma is making its play-everywhere copy on the server right now",
+     "Hemma gör dess kopia som spelas överallt på servern just nu",
+     "Hemma está haciendo su copia que se reproduce en todas partes en el servidor ahora mismo"},
+    {"another upload is sending its copy right now", "en annan uppladdning skickar dess kopia just nu",
+     "otra subida está enviando su copia ahora mismo"},
+    {"Hemma is making this copy on the server right now", "Hemma gör den här kopian på servern just nu",
+     "Hemma está haciendo esta copia en el servidor ahora mismo"},
+    {"Hemma started making this copy on the server meanwhile", "Hemma började göra den här kopian på servern under tiden",
+     "Mientras tanto, Hemma empezó a hacer esta copia en el servidor"},
+    {"the browser didn't say how big it is", "webbläsaren sa inte hur stor den är", "el navegador no dijo qué tamaño tiene"},
+    {"its name has characters a disk can't store", "namnet har tecken som en disk inte kan lagra",
+     "su nombre tiene caracteres que un disco no puede guardar"},
+    {"the path is too long", "sökvägen är för lång", "la ruta es demasiado larga"},
+    {"a system file", "en systemfil", "un archivo del sistema"},
+    {"not a video, subtitle or poster", "inte en video, undertext eller affisch", "no es un vídeo, subtítulo ni póster"},
+    {"it's on the list twice", "den finns två gånger i listan", "está dos veces en la lista"},
+    {"another upload is sending it right now", "en annan uppladdning skickar den just nu",
+     "otra subida lo está enviando ahora mismo"},
+    {"a folder on the server has that name", "en mapp på servern har det namnet", "una carpeta del servidor tiene ese nombre"},
+    {"it's already there", "den finns redan där", "ya está ahí"},
+    {"the library has it: %s", "biblioteket har den: %s", "ya está en la biblioteca: %s"},
+    {"not enough room on the drive (Hemma keeps 1 GB free)",
+     "inte tillräckligt med plats på disken (Hemma håller 1 GB ledigt)",
+     "no hay espacio suficiente en el disco (Hemma deja 1 GB libre)"},
+    {"couldn't be converted here - its original is on the list", "kunde inte konverteras här - originalet finns i listan",
+     "no se pudo convertir aquí - su original está en la lista"},
+    {"couldn't be converted here, and a different file has its name",
+     "kunde inte konverteras här, och en annan fil har dess namn",
+     "no se pudo convertir aquí, y otro archivo tiene su nombre"},
+    {"couldn't be converted here, and its original is already there",
+     "kunde inte konverteras här, och originalet finns redan där",
+     "no se pudo convertir aquí, y su original ya está ahí"},
+    {"the converter couldn't read it", "konverteraren kunde inte läsa den", "el conversor no pudo leerlo"},
+    {"Couldn't create the folder on the server", "Kunde inte skapa mappen på servern",
+     "No se pudo crear la carpeta en el servidor"},
+    {"Couldn't create the file on the server", "Kunde inte skapa filen på servern",
+     "No se pudo crear el archivo en el servidor"},
+    {"Couldn't continue the file", "Kunde inte fortsätta på filen", "No se pudo continuar el archivo"},
+    {"The server's disk is full", "Serverns disk är full", "El disco del servidor está lleno"},
+    {"The connection dropped", "Anslutningen bröts", "Se cortó la conexión"},
+    {"Nothing arrived for a minute", "Inget kom fram på en minut", "No llegó nada en un minuto"},
+    {"The server couldn't save the file", "Servern kunde inte spara filen", "El servidor no pudo guardar el archivo"},
+    {"That file isn't a JPEG, PNG or WebP picture", "Den filen är ingen JPEG-, PNG- eller WebP-bild",
+     "Ese archivo no es una imagen JPEG, PNG ni WebP"},
+    {"A file with that name appeared meanwhile", "En fil med det namnet dök upp under tiden",
+     "Mientras tanto apareció un archivo con ese nombre"},
+    {"Couldn't finish the file", "Kunde inte göra klart filen", "No se pudo terminar el archivo"},
+
+    /* what the browser hears (it shows these) */
+    {"No room for the rest of this file: it needs %s, and %s",
+     "Det finns inte plats för resten av filen: den behöver %s, och %s",
+     "No hay espacio para el resto de este archivo: necesita %s, y %s"},
+    {"No room for the copy: it needs %s, and %s", "Det finns inte plats för kopian: den behöver %s, och %s",
+     "No hay espacio para la copia: necesita %s, y %s"},
+    {"No room for the original: it needs %s, and %s", "Det finns inte plats för originalet: det behöver %s, och %s",
+     "No hay espacio para el original: necesita %s, y %s"},
+    {"Not enough room: this needs %s, and %s", "Inte tillräckligt med plats: det här behöver %s, och %s",
+     "No hay espacio suficiente: esto necesita %s, y %s"},
+    {"Pictures go with a series or a film in the library - this one isn't there any more",
+     "Bilder hör till en serie eller en film i biblioteket - den här finns inte där längre",
+     "Las imágenes van con una serie o una película de la biblioteca - esta ya no está"},
+    {"Choose just one picture", "Välj bara en bild", "Elige solo una imagen"},
+    {"Choose a picture first", "Välj en bild först", "Elige primero una imagen"},
+    {"Pictures can be JPEG, PNG or WebP", "Bilder kan vara JPEG, PNG eller WebP", "Las imágenes pueden ser JPEG, PNG o WebP"},
+    {"That picture is too big - 25 MB at most", "Bilden är för stor - högst 25 MB",
+     "Esa imagen es demasiado grande - 25 MB como máximo"},
+    {"That picture is empty", "Bilden är tom", "Esa imagen está vacía"},
+    {"That upload list didn't make sense (more than %d files?)",
+     "Uppladdningslistan gick inte att förstå (fler än %d filer?)",
+     "Esa lista de subida no tenía sentido (¿más de %d archivos?)"},
+    {"Choose which library folder to upload into", "Välj vilken biblioteksmapp du laddar upp till",
+     "Elige en qué carpeta de la biblioteca subir"},
+    {"Can't reach the library folder %s right now", "Kommer inte åt biblioteksmappen %s just nu",
+     "No se puede acceder ahora a la carpeta de la biblioteca %s"},
+    {"The folder name \"%.80s\" has characters a disk can't store",
+     "Mappnamnet \"%.80s\" har tecken som en disk inte kan lagra",
+     "El nombre de carpeta \"%.80s\" tiene caracteres que un disco no puede guardar"},
+    {"No files were chosen", "Inga filer valdes", "No se eligió ningún archivo"},
+    {"That's more than %d files - upload a few folders at a time", "Det är fler än %d filer - ladda upp några mappar i taget",
+     "Son más de %d archivos - sube unas pocas carpetas cada vez"},
+    {"Your upload is still running (%d of %d file, in another tab?) - let it finish, stop it, or tick \"Upload "
+     "anyway\"",
+     "Din uppladdning pågår fortfarande (%d av %d fil, i en annan flik?) - låt den bli klar, stoppa den eller kryssa "
+     "i \"Ladda upp ändå\"",
+     "Tu subida sigue en curso (%d de %d archivo, ¿en otra pestaña?) - deja que termine, detenla o marca \"Subir de "
+     "todos modos\""},
+    {"Your upload is still running (%d of %d files, in another tab?) - let it finish, stop it, or tick \"Upload "
+     "anyway\"",
+     "Din uppladdning pågår fortfarande (%d av %d filer, i en annan flik?) - låt den bli klar, stoppa den eller kryssa "
+     "i \"Ladda upp ändå\"",
+     "Tu subida sigue en curso (%d de %d archivos, ¿en otra pestaña?) - deja que termine, detenla o marca \"Subir de "
+     "todos modos\""},
+    {"%s's upload is running (%d of %d file) - let it finish, stop it, or tick \"Upload anyway\"",
+     "Uppladdningen från %s pågår (%d av %d fil) - låt den bli klar, stoppa den eller kryssa i \"Ladda upp ändå\"",
+     "La subida de %s está en curso (%d de %d archivo) - deja que termine, detenla o marca \"Subir de todos modos\""},
+    {"%s's upload is running (%d of %d files) - let it finish, stop it, or tick \"Upload anyway\"",
+     "Uppladdningen från %s pågår (%d av %d filer) - låt den bli klar, stoppa den eller kryssa i \"Ladda upp ändå\"",
+     "La subida de %s está en curso (%d de %d archivos) - deja que termine, detenla o marca \"Subir de todos modos\""},
+    {"Someone's upload is running (%d of %d file) - let it finish, stop it, or tick \"Upload anyway\"",
+     "Någons uppladdning pågår (%d av %d fil) - låt den bli klar, stoppa den eller kryssa i \"Ladda upp ändå\"",
+     "La subida de alguien está en curso (%d de %d archivo) - deja que termine, detenla o marca \"Subir de todos "
+     "modos\""},
+    {"Someone's upload is running (%d of %d files) - let it finish, stop it, or tick \"Upload anyway\"",
+     "Någons uppladdning pågår (%d av %d filer) - låt den bli klar, stoppa den eller kryssa i \"Ladda upp ändå\"",
+     "La subida de alguien está en curso (%d de %d archivos) - deja que termine, detenla o marca \"Subir de todos "
+     "modos\""},
+    {"Too many uploads at once - try again in a while", "För många uppladdningar på en gång - försök igen om en stund",
+     "Demasiadas subidas a la vez - vuelve a intentarlo dentro de un rato"},
+    {"That upload is over - start it again to continue", "Den uppladdningen är över - starta den igen för att fortsätta",
+     "Esa subida ha terminado - vuelve a empezarla para continuar"},
+    {"That file isn't part of the upload", "Den filen ingår inte i uppladdningen", "Ese archivo no forma parte de la subida"},
+    {"That copy isn't made yet", "Den kopian är inte gjord än", "Esa copia aún no está hecha"},
+    {"resume from %lld", "fortsätt från %lld", "continúa desde %lld"},
+    {"Hemma was updated meanwhile - reload the page and start the upload again",
+     "Hemma uppdaterades under tiden - ladda om sidan och starta uppladdningen igen",
+     "Mientras tanto se actualizó Hemma - recarga la página y vuelve a empezar la subida"},
+    {"The file changed size since the upload started - start it again",
+     "Filen har ändrat storlek sedan uppladdningen startade - starta den igen",
+     "El archivo cambió de tamaño desde que empezó la subida - vuelve a empezarla"},
+    {"That upload is over", "Den uppladdningen är över", "Esa subida ha terminado"},
+    {"That file has no copy made here", "Den filen har ingen kopia gjord här", "Ese archivo no tiene una copia hecha aquí"},
+    {"No subtitles came", "Inga undertexter kom", "No llegaron subtítulos"},
+    {"That file isn't waiting for a copy", "Den filen väntar inte på någon kopia", "Ese archivo no está esperando una copia"},
+    {"That file is going as it is", "Den filen skickas som den är", "Ese archivo se envía tal cual"},
+    {"The browser's copy came out empty", "Webbläsarens kopia blev tom", "La copia del navegador salió vacía"},
+    {"Only an admin can add videos", "Bara en administratör kan lägga till videor", "Solo un administrador puede añadir vídeos"},
+    {"No such upload", "Ingen sådan uppladdning", "No existe esa subida"},
+
+    /* a picture for a series or film (its dialog) */
+    {"Saved - the new picture shows everywhere in a moment.", "Sparat - den nya bilden syns överallt om en stund.",
+     "Guardado - la nueva imagen se verá en todas partes en un momento."},
+    {"Sending the picture… %d%%", "Skickar bilden… %d%%", "Enviando la imagen… %d%%"},
+
+    /* converting on the server (Library settings: "Play everywhere") */
+    {"Play everywhere", "Spela överallt", "Reproducir en todas partes"},
+    {"Converting · %d of %d done", "Konverterar · %d av %d klara", "Convirtiendo · %d de %d hechos"},
+    {"%d video (%s) is in a format that browsers, iPhones or TVs can't all play.",
+     "%d video (%s) har ett format som inte alla webbläsare, iPhones eller tv-apparater kan spela.",
+     "%d vídeo (%s) está en un formato que no todos los navegadores, iPhones o televisores pueden reproducir."},
+    {"%d videos (%s) are in a format that browsers, iPhones or TVs can't all play.",
+     "%d videor (%s) har ett format som inte alla webbläsare, iPhones eller tv-apparater kan spela.",
+     "%d vídeos (%s) están en un formato que no todos los navegadores, iPhones o televisores pueden reproducir."},
+    {"Hemma can make a copy of each that plays everywhere - once, next to the original (<code "
+     "class=\"media-code\">name.web.mp4</code>).",
+     "Hemma kan göra en kopia av var och en som spelas överallt - en gång, bredvid originalet (<code "
+     "class=\"media-code\">name.web.mp4</code>).",
+     "Hemma puede hacer de cada uno una copia que se reproduce en todas partes - una vez, junto al original (<code "
+     "class=\"media-code\">name.web.mp4</code>)."},
+    {"These only need a new container: quick, nothing is re-encoded.",
+     "De här behöver bara en ny behållare: snabbt, inget kodas om.",
+     "Estos solo necesitan un contenedor nuevo: rápido, no se recodifica nada."},
+    {"DVD video is re-encoded to H.264 and Dolby sound to AAC; copies are about a third of the size.",
+     "DVD-video kodas om till H.264 och Dolby-ljud till AAC; kopiorna blir ungefär en tredjedel så stora.",
+     "El vídeo de DVD se recodifica a H.264 y el sonido Dolby a AAC; las copias ocupan más o menos un tercio."},
+    {"It runs in the background, %d at a time.", "Det sker i bakgrunden, %d åt gången.",
+     "Se hace en segundo plano, %d a la vez."},
+    {"%d converted", "%d har konverterats", "Convertidos: %d"},
+    {"%d video didn't fit on the drive: %s. Make room, then convert again.",
+     "%d video fick inte plats på disken: %s. Gör plats och konvertera sedan igen.",
+     "%d vídeo no cupo en el disco: %s. Libera espacio y vuelve a convertir."},
+    {"%d videos didn't fit on the drive: %s. Make room, then convert again.",
+     "%d videor fick inte plats på disken: %s. Gör plats och konvertera sedan igen.",
+     "%d vídeos no cupieron en el disco: %s. Libera espacio y vuelve a convertir."},
+    {"%s needs up to %s, and %s", "%s behöver upp till %s, och %s", "%s necesita hasta %s, y %s"},
+    {"Convert %d video", "Konvertera %d video", "Convertir %d vídeo"},
+    {"Convert %d videos", "Konvertera %d videor", "Convertir %d vídeos"},
+    {"%d video has two versions, the original and a converted copy. The less compatible one takes %s.",
+     "%d video har två versioner, originalet och en konverterad kopia. Den mindre kompatibla tar %s.",
+     "%d vídeo tiene dos versiones, el original y una copia convertida. La menos compatible ocupa %s."},
+    {"%d videos have two versions, the original and a converted copy. The less compatible ones take %s.",
+     "%d videor har två versioner, originalet och en konverterad kopia. De mindre kompatibla tar %s.",
+     "%d vídeos tienen dos versiones, el original y una copia convertida. Las menos compatibles ocupan %s."},
+    {"Delete %d file (%s)? For each video the version that plays in the most places stays, and everyone's progress "
+     "stays with it. This can't be undone.",
+     "Ta bort %d fil (%s)? För varje video blir den version som spelas på flest ställen kvar, och den behåller hur "
+     "långt alla har kommit. Det går inte att ångra.",
+     "¿Eliminar %d archivo (%s)? De cada vídeo se queda la versión que se reproduce en más sitios, y el progreso de "
+     "todos se queda con ella. No se puede deshacer."},
+    {"Delete %d files (%s)? For each video the version that plays in the most places stays, and everyone's progress "
+     "stays with it. This can't be undone.",
+     "Ta bort %d filer (%s)? För varje video blir den version som spelas på flest ställen kvar, och den behåller hur "
+     "långt alla har kommit. Det går inte att ångra.",
+     "¿Eliminar %d archivos (%s)? De cada vídeo se queda la versión que se reproduce en más sitios, y el progreso de "
+     "todos se queda con ella. No se puede deshacer."},
+    {"Keep only the most compatible version", "Behåll bara den mest kompatibla versionen",
+     "Conservar solo la versión más compatible"},
+    {"Do that by itself after each conversion", "Gör det automatiskt efter varje konvertering",
+     "Hacerlo automáticamente después de cada conversión"},
+    {"A copy keeps the picture and one sound track: other sound tracks (a director's commentary, other languages) go "
+     "with the original.",
+     "En kopia behåller bilden och ett ljudspår: andra ljudspår (en regissörskommentar, andra språk) försvinner med "
+     "originalet.",
+     "Una copia conserva la imagen y una pista de sonido: las demás pistas (un comentario del director, otros idiomas) "
+     "se van con el original."},
+    {"Only an admin can convert videos", "Bara en administratör kan konvertera videor",
+     "Solo un administrador puede convertir vídeos"},
+    {"Not enough room on the drive: %s", "Inte tillräckligt med plats på disken: %s",
+     "No hay espacio suficiente en el disco: %s"},
+    {"Not enough room on the drive for %d videos: %s", "Inte tillräckligt med plats på disken för %d videor: %s",
+     "No hay espacio suficiente en el disco para %d vídeos: %s"},
+    {"Converting %d video, %d at a time", "Konverterar %d video, %d åt gången", "Convirtiendo %d vídeo, %d a la vez"},
+    {"Converting %d videos, %d at a time", "Konverterar %d videor, %d åt gången", "Convirtiendo %d vídeos, %d a la vez"},
+    {"%d more doesn't fit on the drive", "%d till får inte plats på disken", "%d más no cabe en el disco"},
+    {"%d more don't fit on the drive", "%d till får inte plats på disken", "%d más no caben en el disco"},
+    {"An upload is bringing this video's play-everywhere copy right now",
+     "En uppladdning tar hit videons kopia som spelas överallt just nu",
+     "Una subida está trayendo ahora mismo la copia de este vídeo que se reproduce en todas partes"},
+    {"Its play-everywhere copy is there already - the library shows it in a moment",
+     "Dess kopia som spelas överallt finns redan - biblioteket visar den om en stund",
+     "Su copia que se reproduce en todas partes ya existe - la biblioteca la mostrará en un momento"},
+    {"That video plays everywhere already (or is on its way)", "Den videon spelas redan överallt (eller är på väg)",
+     "Ese vídeo ya se reproduce en todas partes (o está en camino)"},
+    {"Nothing to convert - the rest is being uploaded with copies right now",
+     "Inget att konvertera - resten laddas upp med kopior just nu",
+     "Nada que convertir - el resto se está subiendo con copias ahora mismo"},
+    {"Nothing needs converting", "Inget behöver konverteras", "No hace falta convertir nada"},
+    {"Stopping - finished videos stay, the one in progress is dropped",
+     "Stoppar - färdiga videor finns kvar, den som pågår slängs",
+     "Deteniendo - los vídeos terminados se quedan, el que está en curso se descarta"},
+    /* why a conversion failed (the card's list) */
+    {"Its play-everywhere copy is there already", "Dess kopia som spelas överallt finns redan",
+     "Su copia que se reproduce en todas partes ya existe"},
+    {"Can't open the original", "Kan inte öppna originalet", "No se puede abrir el original"},
+    {"Can't create the new file next to the original", "Kan inte skapa den nya filen bredvid originalet",
+     "No se puede crear el archivo nuevo junto al original"},
+    {"Couldn't save the new file", "Kunde inte spara den nya filen", "No se pudo guardar el archivo nuevo"},
+    {"Another play-everywhere copy arrived meanwhile - that one stays",
+     "En annan kopia som spelas överallt kom under tiden - den får vara kvar",
+     "Mientras tanto llegó otra copia que se reproduce en todas partes - esa se queda"},
+    {"Couldn't rename the finished file", "Kunde inte byta namn på den färdiga filen",
+     "No se pudo cambiar el nombre del archivo terminado"},
+
+    /* USB disks (Library settings, the System page, Watch's first page) */
+    {"USB disk", "USB-disk", "Disco USB"},
+    {"Disk", "Hårddisk", "Disco"},
+    {"APFS (a Mac's)", "APFS (en Macs)", "APFS (de un Mac)"},
+    {"HFS+ (a Mac's)", "HFS+ (en Macs)", "HFS+ (de un Mac)"},
+    {"encrypted", "krypterad", "cifrado"},
+    {"part of a RAID", "del av en RAID", "parte de un RAID"},
+    {"%s added the movie disk \"%s\"", "%s lade till filmdisken \"%s\"", "%s añadió el disco de películas \"%s\""},
+    {"Someone added the movie disk \"%s\"", "Någon lade till filmdisken \"%s\"",
+     "Alguien añadió el disco de películas \"%s\""},
+    {"<b>%s is ready.</b> It's mounted at <code class=\"media-code\">%s</code> and in the library; Hemma may save "
+     "uploads and copies on it.",
+     "<b>%s är klar.</b> Den är monterad på <code class=\"media-code\">%s</code> och finns i biblioteket; Hemma får "
+     "spara uppladdningar och kopior på den.",
+     "<b>%s está listo.</b> Está montado en <code class=\"media-code\">%s</code> y en la biblioteca; Hemma puede "
+     "guardar subidas y copias en él."},
+    {"<b>The disk is ready.</b> It's mounted at <code class=\"media-code\">%s</code> and in the library; Hemma may "
+     "save uploads and copies on it.",
+     "<b>Disken är klar.</b> Den är monterad på <code class=\"media-code\">%s</code> och finns i biblioteket; Hemma "
+     "får spara uppladdningar och kopior på den.",
+     "<b>El disco está listo.</b> Está montado en <code class=\"media-code\">%s</code> y en la biblioteca; Hemma "
+     "puede guardar subidas y copias en él."},
+    {"<b>Forgotten.</b> The Pi won't mount <code class=\"media-code\">%s</code> at start any more, and it's out of the "
+     "library. Its files are untouched.",
+     "<b>Glömd.</b> Pi:n monterar inte <code class=\"media-code\">%s</code> vid start längre, och den är borta ur "
+     "biblioteket. Filerna på den är orörda.",
+     "<b>Olvidado.</b> La Pi ya no montará <code class=\"media-code\">%s</code> al arrancar, y ya no está en la "
+     "biblioteca. Sus archivos siguen intactos."},
+    {"<b>Not done:</b> %s. Nothing on the disk was changed.", "<b>Inte gjort:</b> %s. Inget på disken ändrades.",
+     "<b>No se hizo:</b> %s. No se cambió nada en el disco."},
+    {"<b>Not done:</b> the disk helper said no. Nothing on the disk was changed.",
+     "<b>Inte gjort:</b> diskhjälpprogrammet sa nej. Inget på disken ändrades.",
+     "<b>No se hizo:</b> el programa auxiliar de discos dijo que no. No se cambió nada en el disco."},
+    {"Use it for movies", "Använd den för filmer", "Usarlo para películas"},
+    {"empty: nothing on it Hemma can read", "tom: inget på den som Hemma kan läsa", "vacío: nada que Hemma pueda leer"},
+    {"Format for Hemma", "Formatera för Hemma", "Formatear para Hemma"},
+    {"Hemma can't keep movies on that (ext4, exFAT, NTFS and FAT disks work)",
+     "Hemma kan inte ha filmer på det (ext4-, exFAT-, NTFS- och FAT-diskar fungerar)",
+     "Hemma no puede guardar películas en eso (funcionan los discos ext4, exFAT, NTFS y FAT)"},
+    {"New disk found: %s", "Ny disk hittad: %s", "Disco nuevo encontrado: %s"},
+    {"%s free of %s", "%s ledigt av %s", "%s libres de %s"},
+    {"plugged in - mounting it…", "ansluten - monterar den…", "conectado - montándolo…"},
+    {"missing: plug it back in", "saknas: anslut den igen", "no está: vuelve a conectarlo"},
+    {"Forget the disk \"%s\"? The Pi stops mounting it at start and it leaves the library. The files on it stay as they "
+     "are.",
+     "Glöm disken \"%s\"? Pi:n slutar montera den vid start och den lämnar biblioteket. Filerna på den förblir som de "
+     "är.",
+     "¿Olvidar el disco \"%s\"? La Pi deja de montarlo al arrancar y sale de la biblioteca. Los archivos que tiene se "
+     "quedan como están."},
+    {"Forget", "Glöm", "Olvidar"},
+    {"Disks", "Diskar", "Discos"},
+    {"Setting up the disk… Hemma restarts once to reach it; this page comes back on its own.",
+     "Ställer in disken… Hemma startar om en gång för att nå den; sidan kommer tillbaka av sig själv.",
+     "Configurando el disco… Hemma se reinicia una vez para llegar a él; esta página vuelve sola."},
+    {"The disk helper didn't answer. On the Pi: <code>sudo systemctl enable --now hemma-disks.path</code>.",
+     "Diskhjälpprogrammet svarade inte. På Pi:n: <code>sudo systemctl enable --now hemma-disks.path</code>.",
+     "El programa auxiliar de discos no respondió. En la Pi: <code>sudo systemctl enable --now hemma-disks.path</code>."},
+    {"To use a disk from here, Hemma needs its disk helper: install Hemma with its installer (0.22.0 or newer, which "
+     "brings it), or set the disk up by hand (docs/raspberry-pi.md, step 7).",
+     "För att använda en disk härifrån behöver Hemma sitt diskhjälpprogram: installera Hemma med dess "
+     "installationsprogram (0.22.0 eller nyare, som tar med det), eller ställ in disken för hand "
+     "(docs/raspberry-pi.md, steg 7).",
+     "Para usar un disco desde aquí, Hemma necesita su programa auxiliar de discos: instala Hemma con su instalador "
+     "(0.22.0 o posterior, que lo trae), o configura el disco a mano (docs/raspberry-pi.md, paso 7)."},
+    {"Use it for movies: the Pi mounts it now and at every start (a missing disk never stops it starting), Hemma may "
+     "save uploads and copies on it, and it becomes a library folder. Nothing on it is changed.",
+     "Använd den för filmer: Pi:n monterar den nu och vid varje start (en disk som saknas hindrar aldrig starten), "
+     "Hemma får spara uppladdningar och kopior på den, och den blir en biblioteksmapp. Inget på den ändras.",
+     "Usarlo para películas: la Pi lo monta ahora y en cada arranque (un disco que falte nunca le impide arrancar), "
+     "Hemma puede guardar subidas y copias en él, y pasa a ser una carpeta de la biblioteca. No se cambia nada de lo "
+     "que tiene."},
+    {"<b>%s</b> (%s) gets a new, empty file system for movies (ext4). Hemma sees nothing on it now - but if it ever "
+     "held something, that's gone for good.",
+     "<b>%s</b> (%s) får ett nytt, tomt filsystem för filmer (ext4). Hemma ser inget på den nu - men om den någonsin "
+     "har haft något på sig är det borta för gott.",
+     "<b>%s</b> (%s) recibe un sistema de archivos nuevo y vacío para películas (ext4). Hemma no ve nada en él ahora - "
+     "pero si alguna vez tuvo algo, se perderá para siempre."},
+    {"Type ERASE to format it", "Skriv ERASE för att formatera den", "Escribe ERASE para formatearlo"},
+    {"Keep it as it is", "Låt den vara som den är", "Dejarlo como está"},
+    {"Format and use it", "Formatera och använd den", "Formatear y usarlo"},
+    {"<b>New disk found:</b> %s (%s, %s)", "<b>Ny disk hittad:</b> %s (%s, %s)",
+     "<b>Disco nuevo encontrado:</b> %s (%s, %s)"},
+    {"The movie disk \"%s\" is plugged in but not mounted yet.", "Filmdisken \"%s\" är ansluten men inte monterad än.",
+     "El disco de películas \"%s\" está conectado pero aún no montado."},
+    {"The movie disk \"%s\" (%s) is missing.", "Filmdisken \"%s\" (%s) saknas.",
+     "Falta el disco de películas \"%s\" (%s)."},
+    {"Movie disk", "Filmdisk", "Disco de películas"},
+    {"Hemma asks for it to be mounted by itself - give it a minute.",
+     "Hemma ber själv om att den monteras - ge det en minut.", "Hemma pide por sí solo que se monte - dale un minuto."},
+    {"Plug it back in: Hemma finds it again by itself. Not using it any more? Forget it under Watch → Library "
+     "settings.",
+     "Anslut den igen: Hemma hittar den själv. Använder du den inte längre? Glöm den under Titta → "
+     "Biblioteksinställningar.",
+     "Vuelve a conectarlo: Hemma lo encuentra solo. ¿Ya no lo usas? Olvídalo en Ver → Ajustes de la biblioteca."},
+    {"On the Pi: %s", "På Pi:n: %s", "En la Pi: %s"},
+    {"Disk helper", "Diskhjälpprogram", "Programa auxiliar de discos"},
+    {"The disk helper didn't answer.", "Diskhjälpprogrammet svarade inte.",
+     "El programa auxiliar de discos no respondió."},
+    {"An empty USB disk is plugged in: %s (%s).", "En tom USB-disk är ansluten: %s (%s).",
+     "Hay un disco USB vacío conectado: %s (%s)."},
+    {"New disk found", "Ny disk hittad", "Disco nuevo encontrado"},
+    {"Format it for movies under Watch → Library settings.", "Formatera den för filmer under Titta → Biblioteksinställningar.",
+     "Formatéalo para películas en Ver → Ajustes de la biblioteca."},
+    {"A USB disk is plugged in: %s (%s, %s).", "En USB-disk är ansluten: %s (%s, %s).",
+     "Hay un disco USB conectado: %s (%s, %s)."},
+    {"Use it for movies under Watch → Library settings.", "Använd den för filmer under Titta → Biblioteksinställningar.",
+     "Úsalo para películas en Ver → Ajustes de la biblioteca."},
+    {"This install has no disk helper - see docs/raspberry-pi.md, step 7",
+     "Den här installationen har inget diskhjälpprogram - se docs/raspberry-pi.md, steg 7",
+     "Esta instalación no tiene programa auxiliar de discos - mira docs/raspberry-pi.md, paso 7"},
+    {"The disk helper is busy - give it a moment", "Diskhjälpprogrammet är upptaget - ge det en stund",
+     "El programa auxiliar de discos está ocupado - dale un momento"},
+    {"That disk isn't here any more - or it's in use", "Den disken finns inte här längre - eller så används den",
+     "Ese disco ya no está - o está en uso"},
+    {"Couldn't ask the disk helper (see the log)", "Kunde inte fråga diskhjälpprogrammet (se loggen)",
+     "No se pudo preguntar al programa auxiliar de discos (mira el registro)"},
+    {"Setting up \"%s\"…", "Ställer in \"%s\"…", "Configurando \"%s\"…"},
+    {"That disk isn't here any more - or it isn't empty", "Den disken finns inte här längre - eller så är den inte tom",
+     "Ese disco ya no está - o no está vacío"},
+    {"Formatting \"%s\"…", "Formaterar \"%s\"…", "Formateando \"%s\"…"},
+    {"Hemma doesn't know that disk", "Hemma känner inte till den disken", "Hemma no conoce ese disco"},
+    {"Forgetting \"%s\"…", "Glömmer \"%s\"…", "Olvidando \"%s\"…"},
+    {"Noted", "Noterat", "Anotado"},
+};
+TRANSLATIONS(media_upload, TR)

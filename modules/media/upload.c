@@ -26,7 +26,12 @@
  * free, and running conversions keep the room they need; each PUT checks again). A copy
  * the server's own converter is making is never taken; one only queued there leaves the
  * converter's queue - the upload brings it. The converter asks here too (upload_claims).
- * The page is rendered here like any other, so progress shows on every screen. */
+ * The page is rendered here like any other, so progress shows on every screen.
+ *
+ * Words (issue #46): answers to the browser are in the language of the request (a worker thread
+ * takes it along: Job.lang); the reasons kept for the cards (UpFile.why) are the English packed
+ * with their values (i18n_pack), so every viewer reads them in their own language. */
+#include <stdarg.h>
 #include <stdatomic.h>
 
 #include "../../core/assets.h"
@@ -62,7 +67,7 @@ typedef struct {
     int64_t size, saved;
     int state;
     bool head;    /* only the first `size` bytes of the browser's file: a play-all's header */
-    char why[96]; /* why it was skipped or failed (or, CV_ORIGINAL, why no copy was made) */
+    char why[160]; /* why it was skipped or failed (or, CV_ORIGINAL, why no copy was made): why_set */
     int src;      /* the browser's file this comes from: its own index, or the original's for an added copy */
     int conv, pm; /* CV_*; the browser's progress converting it, 0..1000 */
     bool extra;   /* a copy added next to its original ("also send originals"): dropped when it can't be made */
@@ -105,6 +110,21 @@ static int g_done_seen, g_pictures_seen;
 void upload_test_free_space(int64_t bytes) { media_test_free_space(bytes); }
 
 /* ---------------------------------------------------------------- helpers */
+
+/* A reason kept for the cards: the English (marked N_ where it's written) packed with its values,
+   shown in each viewer's language (why_of). A name in it is cut first, so the whole fits. (No format
+   attribute: the worker passes its English along as a variable.) */
+static void why_set(UpFile *f, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    i18n_vpack(f->why, sizeof f->why, fmt, ap);
+    va_end(ap);
+}
+
+static const char *why_of(const UpFile *f, char *out, size_t cap) {
+    i18n_unpack_to(out, cap, f->why);
+    return out;
+}
 
 static const Asset *asset_named(const char *path) { /* a file baked into this binary (tools/embed.c) */
     for (int i = 0; i < g_nassets; i++)
@@ -310,10 +330,10 @@ static void skip_companions(Batch *b) {
             else if (v->dupe && !with) with = v;
         }
         if (with && !kept) {
-            char why[440];
-            const char *name = strrchr(with->rel, '/');
-            snprintf(why, sizeof why, "goes with %s, which the library has", name ? name + 1 : with->rel);
-            str_copy(f->why, sizeof f->why, why);
+            char name[100]; /* (cut at a whole character) */
+            const char *n = strrchr(with->rel, '/');
+            str_copy(name, sizeof name, n ? n + 1 : with->rel);
+            why_set(f, N_("goes with %s, which the library has"), name);
             f->state = UP_SKIPPED;
         }
     }
@@ -349,7 +369,7 @@ static void play_alls(Batch *b) {
         snprintf(head, sizeof head, "%.*s.playall.mkv", (int)stem, f->rel);
         if (!str_iends(f->rel, ".mkv") || strlen(head) > 380) {
             f->state = UP_SKIPPED;
-            snprintf(f->why, sizeof f->why, "looks like a \"play all\" copy of the %d episodes next to it", parts[i]);
+            why_set(f, N_("looks like a \"play all\" copy of the %d episodes next to it"), parts[i]);
             continue;
         }
         str_copy(f->rel, sizeof f->rel, head);
@@ -360,10 +380,8 @@ static void play_alls(Batch *b) {
         join(full, sizeof full, b->root, f->rel);
         if (path_stat(full, &have, NULL, &dir)) {
             f->state = UP_SKIPPED;
-            if (dir || have != f->size) str_copy(f->why, sizeof f->why, "a different file with that name is already there");
-            else
-                snprintf(f->why, sizeof f->why, "a \"play all\" copy of the %d episodes next to it - its header is there",
-                         parts[i]);
+            if (dir || have != f->size) why_set(f, N_("a different file with that name is already there"));
+            else why_set(f, N_("a \"play all\" copy of the %d episodes next to it - its header is there"), parts[i]);
             continue;
         }
         f->saved = resume_point(b, f);
@@ -442,12 +460,18 @@ static int64_t spare_for(const Batch *b, const char *root, int me, int64_t *held
     return media_room(root, holds, n, held);
 }
 
-/* "No room for the copy: it needs 4 GB, and the drive has 2 GB to spare (Hemma keeps 1 GB free)" */
-static void no_room(char *out, size_t cap, const char *what, int64_t need, int64_t spare, int64_t held) {
+/* "No room for the copy: it needs 4 GB, and the drive has 2 GB to spare (Hemma keeps 1 GB free)" - in the
+   request's language */
+enum { ROOM_REST, ROOM_COPY, ROOM_ORIGINAL };
+static void no_room(char *out, size_t cap, int what, int64_t need, int64_t spare, int64_t held) {
     char n[24], tail[200];
     media_size_text(need, n, sizeof n);
     media_room_text(tail, sizeof tail, spare, held);
-    snprintf(out, cap, "No room for %s: it needs %s, and %s", what, n, tail);
+    snprintf(out, cap,
+             what == ROOM_REST   ? T("No room for the rest of this file: it needs %s, and %s")
+             : what == ROOM_COPY ? T("No room for the copy: it needs %s, and %s")
+                                 : T("No room for the original: it needs %s, and %s"),
+             n, tail);
 }
 
 bool upload_claims(const char *path) {
@@ -485,7 +509,7 @@ static void skip_originals(Batch *b) {
         convert_web_path(f->rel, copy, sizeof copy);
         if (listed(b, copy)) {
             f->state = UP_SKIPPED;
-            str_copy(f->why, sizeof f->why, "its play-everywhere copy (.web.mp4) goes instead");
+            why_set(f, N_("its play-everywhere copy (.web.mp4) goes instead"));
         }
     }
 }
@@ -526,10 +550,9 @@ static void convert_here(Batch *b, bool keep_originals, int me) {
         bool there = path_stat(full, NULL, NULL, NULL), server = !there && convert_making(full);
         if (there || server || claimed(b->root, me, copy)) {
             f->state = UP_SKIPPED;
-            str_copy(f->why, sizeof f->why,
-                     there    ? "its play-everywhere copy is already there"
-                     : server ? "Hemma is making its play-everywhere copy on the server right now"
-                              : "another upload is sending its copy right now");
+            why_set(f, there    ? N_("its play-everywhere copy is already there")
+                       : server ? N_("Hemma is making its play-everywhere copy on the server right now")
+                                : N_("another upload is sending its copy right now"));
             continue;
         }
         f->state = UP_QUEUED;
@@ -542,28 +565,31 @@ static int64_t copy_guess(const UpFile *f) { return f->orig / 2; } /* DVD copies
 /* Bytes a queued file still has to send (a copy not made yet: a guess). */
 static int64_t left_to_send(const UpFile *f) { return f->conv == CV_WAIT ? copy_guess(f) : MAX(f->size - f->saved, 0); }
 
-#define MAKING_IT "Hemma is making this copy on the server right now"
+#define MAKING_IT N_("Hemma is making this copy on the server right now")
+#define MADE_MEANWHILE N_("Hemma started making this copy on the server meanwhile")
 
 /* The server's converter is making this copy, so it comes from there: a plan leaves it out, and
    an upload that went quiet and comes back hears "sent" for it and goes on with the rest. Its
-   half-sent file from an earlier try goes. Lock held (or b not shared yet), and f has no worker. */
-static void leave_to_server(Batch *b, UpFile *f, const char *why) {
+   half-sent file from an earlier try goes. Lock held (or b not shared yet), and f has no worker.
+   meanwhile: the converter started on it after the plan. */
+static void leave_to_server(Batch *b, UpFile *f, bool meanwhile) {
     b->total -= left_to_send(f);
     drop_part(b, f);
     f->state = UP_SKIPPED;
     f->on_server = true;
     b->skipped++;
-    str_copy(f->why, sizeof f->why, why);
+    why_set(f, meanwhile ? MADE_MEANWHILE : MAKING_IT);
 }
 
-/* Room on the disk for what b has to send (spare_for); false with the reason in err. Lock NOT held. */
+/* Room on the disk for what b has to send (spare_for); false with the reason in err (in the request's
+   language). Lock NOT held. */
 static bool room_for(const Batch *b, int me, char *err, size_t cap) {
     int64_t held = 0, spare = spare_for(b, b->root, me, &held);
     if (b->total <= spare) return true;
     char need[24], tail[200];
     media_size_text(b->total, need, sizeof need);
     media_room_text(tail, sizeof tail, spare, held);
-    snprintf(err, cap, "Not enough room: this needs %s, and %s", need, tail);
+    snprintf(err, cap, T("Not enough room: this needs %s, and %s"), need, tail);
     return false;
 }
 
@@ -578,13 +604,13 @@ static bool art_plan(Json *j, int at, Batch **out, char *err, size_t cap) {
     json_string(j, at, hex, sizeof hex);
     if (!media_parse_id(hex, &id) || !media_art_target(id, &root, dir, sizeof dir, stem, sizeof stem) ||
         root < 0 || root >= media_lib()->nroots) {
-        snprintf(err, cap, "Pictures go with a series or a film in the library - this one isn't there any more");
+        str_copy(err, cap, T("Pictures go with a series or a film in the library - this one isn't there any more"));
         return false;
     }
     int arr = json_get(j, 0, "files");
     int n = json_type(j, arr) == JSON_ARRAY ? j->tok[arr].count : 0;
     if (n != 1) {
-        snprintf(err, cap, n ? "Choose just one picture" : "Choose a picture first");
+        str_copy(err, cap, n ? T("Choose just one picture") : T("Choose a picture first"));
         return false;
     }
     long long size = -1;
@@ -592,11 +618,11 @@ static bool art_plan(Json *j, int at, Batch **out, char *err, size_t cap) {
     json_string(j, json_index(j, k, 0), raw, sizeof raw);
     json_integer(j, json_index(j, k, 1), &size);
     if (!media_is_image_ext(raw)) {
-        snprintf(err, cap, "Pictures can be JPEG, PNG or WebP");
+        str_copy(err, cap, T("Pictures can be JPEG, PNG or WebP"));
         return false;
     }
     if (size <= 0 || size > ART_MAX) {
-        snprintf(err, cap, size > 0 ? "That picture is too big - 25 MB at most" : "That picture is empty");
+        str_copy(err, cap, size > 0 ? T("That picture is too big - 25 MB at most") : T("That picture is empty"));
         return false;
     }
     char ext[8];
@@ -623,11 +649,11 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
     JsonTok *tok = xmalloc((size_t)maxtok * sizeof *tok);
     Json j;
     Batch *b = NULL;
-    char err[200] = "";
+    char err[400] = ""; /* (in the request's language: the browser shows it) */
     char roots[MEDIA_MAX_ROOTS][300];
     int nroots = media_roots(roots, MEDIA_MAX_ROOTS);
     if (!r->body || !json_parse(&j, r->body, r->body_len, tok, maxtok) || json_type(&j, 0) != JSON_OBJECT) {
-        snprintf(err, sizeof err, "That upload list didn't make sense (more than %d files?)", MAX_FILES);
+        snprintf(err, sizeof err, T("That upload list didn't make sense (more than %d files?)"), MAX_FILES);
         goto out;
     }
     int art = json_get(&j, 0, "art");
@@ -641,29 +667,29 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
     if (json_type(&j, rt) == JSON_STRING && json_string(&j, rt, tmp, sizeof tmp)) ri = str_int_or(tmp, -1);
     else json_integer(&j, rt, &ri);
     if (ri < 0 || ri >= nroots) {
-        snprintf(err, sizeof err, "Choose which library folder to upload into");
+        str_copy(err, sizeof err, T("Choose which library folder to upload into"));
         goto out;
     }
     if (!path_is_dir(roots[ri])) {
-        snprintf(err, sizeof err, "Can't reach the library folder %s right now", roots[ri]);
+        snprintf(err, sizeof err, T("Can't reach the library folder %s right now"), roots[ri]);
         goto out;
     }
     char into[256] = "";
     if (json_string(&j, json_get(&j, 0, "into"), tmp, sizeof tmp)) {
         str_trim(tmp);
         if (*tmp && !upload_clean_rel(tmp, into, 200)) {
-            snprintf(err, sizeof err, "The folder name \"%.80s\" has characters a disk can't store", tmp);
+            snprintf(err, sizeof err, T("The folder name \"%.80s\" has characters a disk can't store"), tmp);
             goto out;
         }
     }
     int arr = json_get(&j, 0, "files");
     int n = json_type(&j, arr) == JSON_ARRAY ? j.tok[arr].count : 0;
     if (n <= 0) {
-        snprintf(err, sizeof err, "No files were chosen");
+        str_copy(err, sizeof err, T("No files were chosen"));
         goto out;
     }
     if (n > MAX_FILES) {
-        snprintf(err, sizeof err, "That's more than %d files - upload a few folders at a time", MAX_FILES);
+        snprintf(err, sizeof err, T("That's more than %d files - upload a few folders at a time"), MAX_FILES);
         goto out;
     }
 
@@ -684,56 +710,55 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
         f->src = i;
         str_copy(f->rel, sizeof f->rel, raw);
         if (size < 0) {
-            str_copy(f->why, sizeof f->why, "the browser didn't say how big it is");
+            why_set(f, N_("the browser didn't say how big it is"));
             continue;
         }
         f->size = size;
         if (!upload_clean_rel(raw, clean, sizeof clean)) {
-            str_copy(f->why, sizeof f->why, "its name has characters a disk can't store");
+            why_set(f, N_("its name has characters a disk can't store"));
             continue;
         }
         if (*into) snprintf(f->rel, sizeof f->rel, "%s/%s", into, clean);
         else str_copy(f->rel, sizeof f->rel, clean);
         if (strlen(f->rel) > 380) {
-            str_copy(f->why, sizeof f->why, "the path is too long");
+            why_set(f, N_("the path is too long"));
             continue;
         }
         if (junk(f->rel)) {
-            str_copy(f->why, sizeof f->why, "a system file");
+            why_set(f, N_("a system file"));
             continue;
         }
         if (!media_is_video_ext(f->rel) && !media_is_sub_ext(f->rel) && !media_is_image_ext(f->rel)) {
-            str_copy(f->why, sizeof f->why, "not a video, subtitle or poster");
+            why_set(f, N_("not a video, subtitle or poster"));
             continue;
         }
         bool twice = false;
         for (int p = 0; p < i && !twice; p++) twice = b->files[p].state != UP_SKIPPED && str_eq(b->files[p].rel, f->rel);
         if (twice) {
-            str_copy(f->why, sizeof f->why, "it's on the list twice");
+            why_set(f, N_("it's on the list twice"));
             continue;
         }
         if (claimed(b->root, c->me->id, f->rel)) {
-            str_copy(f->why, sizeof f->why, "another upload is sending it right now");
+            why_set(f, N_("another upload is sending it right now"));
             continue;
         }
         int64_t have = 0;
         bool dir = false;
         join(full, sizeof full, b->root, f->rel);
         if (path_stat(full, &have, NULL, &dir)) {
-            str_copy(f->why, sizeof f->why,
-                     dir               ? "a folder on the server has that name"
-                     : have == f->size ? "it's already there"
-                                       : "a different file with that name is already there");
+            why_set(f, dir               ? N_("a folder on the server has that name")
+                       : have == f->size ? N_("it's already there")
+                                         : N_("a different file with that name is already there"));
             continue;
         }
         if (media_is_video_ext(f->rel) && convert_making(full)) { /* the server is making this copy: one writer */
-            str_copy(f->why, sizeof f->why, MAKING_IT);
+            why_set(f, MAKING_IT);
             continue;
         }
-        char found[400], why[440];
+        char found[400], have_it[120];
         if (!dupes && media_is_video_ext(f->rel) && media_have(b->root, f->rel, found, sizeof found)) {
-            snprintf(why, sizeof why, "the library has it: %s", tail2(found));
-            str_copy(f->why, sizeof f->why, why); /* (cut at a whole character) */
+            str_copy(have_it, sizeof have_it, tail2(found)); /* (cut at a whole character) */
+            why_set(f, N_("the library has it: %s"), have_it);
             f->dupe = true;
             continue;
         }
@@ -773,11 +798,26 @@ planned:
         const Person *p = person_get(other->person);
         int todo = other->nfiles - other->skipped;
         if (other->person == c->me->id)
-            snprintf(err, sizeof err, "Your upload is still running (%d of %d files, in another tab?) - let it finish, stop it, "
-                                      "or tick \"Upload anyway\"", other->done, todo);
+            snprintf(err, sizeof err,
+                     TN(todo,
+                        "Your upload is still running (%d of %d file, in another tab?) - let it finish, stop it, or "
+                        "tick \"Upload anyway\"",
+                        "Your upload is still running (%d of %d files, in another tab?) - let it finish, stop it, or "
+                        "tick \"Upload anyway\""),
+                     other->done, todo);
+        else if (p)
+            snprintf(err, sizeof err,
+                     TN(todo,
+                        "%s's upload is running (%d of %d file) - let it finish, stop it, or tick \"Upload anyway\"",
+                        "%s's upload is running (%d of %d files) - let it finish, stop it, or tick \"Upload anyway\""),
+                     p->name, other->done, todo);
         else
-            snprintf(err, sizeof err, "%s's upload is running (%d of %d files) - let it finish, stop it, or tick \"Upload "
-                                      "anyway\"", p ? p->name : "Someone", other->done, todo);
+            snprintf(err, sizeof err,
+                     TN(todo,
+                        "Someone's upload is running (%d of %d file) - let it finish, stop it, or tick \"Upload anyway\"",
+                        "Someone's upload is running (%d of %d files) - let it finish, stop it, or tick \"Upload "
+                        "anyway\""),
+                     other->done, todo);
     }
     for (int s = 0; s < MAX_BATCHES && !err[0]; s++) {
         Batch *o = g_batch[s];
@@ -794,7 +834,7 @@ planned:
             g_batch[s] = NULL;
             slot = s;
         }
-    if (slot < 0 && !err[0]) snprintf(err, sizeof err, "Too many uploads at once - try again in a while");
+    if (slot < 0 && !err[0]) str_copy(err, sizeof err, T("Too many uploads at once - try again in a while"));
     if (!err[0]) {
         rand_bytes(&b->id, sizeof b->id);
         b->person = c->me->id;
@@ -822,7 +862,7 @@ planned:
         char full[1024];
         if (f->state != UP_QUEUED || !media_is_video_ext(f->rel)) continue;
         join(full, sizeof full, b->root, f->rel);
-        if (convert_give_way(full)) leave_to_server(b, f, MAKING_IT);
+        if (convert_give_way(full)) leave_to_server(b, f, false);
     }
     lock_give(&g_lock);
 
@@ -872,6 +912,7 @@ typedef struct {
     Buf head, body; /* unsent output to flush first / body bytes already received */
     int64_t at, len;
     char full[1024], part[1040];
+    Lang lang; /* the request's: the answer's words (the thread itself starts in English) */
 } Job;
 
 static void progress(Job *j, int64_t n) {
@@ -915,15 +956,17 @@ static void worker(void *arg) {
     str_copy(dir, sizeof dir, j->full);
     char *slash = strrchr(dir, '/');
     if (slash) *slash = '\0';
-    FILE *f = NULL;
-    if (!dir_make(dir)) fail = "Couldn't create the folder on the server", status = 500, stop = true;
-    else if (!(f = file_open(j->part, j->at ? "r+b" : "wb"))) fail = "Couldn't create the file on the server", status = 500, stop = true;
-    else if (j->at && !file_seek(f, j->at)) fail = "Couldn't continue the file", status = 409;
+    FILE *f = NULL; /* (fail: English, marked N_ - the card shows it in each viewer's language, the answer in
+                       the request's) */
+    if (!dir_make(dir)) fail = N_("Couldn't create the folder on the server"), status = 500, stop = true;
+    else if (!(f = file_open(j->part, j->at ? "r+b" : "wb")))
+        fail = N_("Couldn't create the file on the server"), status = 500, stop = true;
+    else if (j->at && !file_seek(f, j->at)) fail = N_("Couldn't continue the file"), status = 409;
 
     int64_t got = 0;
     if (!fail && j->body.len) {
         size_t n = (size_t)MIN((int64_t)j->body.len, j->len);
-        if (fwrite(j->body.p, 1, n, f) != n) fail = "The server's disk is full", status = 507, stop = true;
+        if (fwrite(j->body.p, 1, n, f) != n) fail = N_("The server's disk is full"), status = 507, stop = true;
         else {
             got += (int64_t)n;
             progress(j, (int64_t)n);
@@ -932,13 +975,13 @@ static void worker(void *arg) {
     char *buf = fail ? NULL : xmalloc(CHUNK);
     for (int waited = 0; !fail && got < j->len;) {
         if (halted(b)) {
-            fail = "The upload was stopped", status = 410, stop = true;
+            fail = N_("The upload was stopped"), status = 410, stop = true;
             break;
         }
         long k = sock_recv(j->s, buf, (size_t)MIN((int64_t)CHUNK, j->len - got));
         if (k > 0) {
             if (fwrite(buf, 1, (size_t)k, f) != (size_t)k) {
-                fail = "The server's disk is full", status = 507, stop = true;
+                fail = N_("The server's disk is full"), status = 507, stop = true;
                 break;
             }
             got += k;
@@ -947,29 +990,29 @@ static void worker(void *arg) {
             continue;
         }
         if (k == 0 || !sock_again(sock_errno())) {
-            fail = "The connection dropped", status = 0; /* the browser resumes from what we saved */
+            fail = N_("The connection dropped"), status = 0; /* the browser resumes from what we saved */
             break;
         }
         pollfd_t pf = {.fd = j->s, .events = POLLIN};
         int rc = plat_poll(&pf, 1, 1000);
-        if (rc < 0) fail = "The connection dropped", status = 0;
-        else if (rc == 0 && (waited += 1000) >= STALL_MS) fail = "Nothing arrived for a minute", status = 408;
+        if (rc < 0) fail = N_("The connection dropped"), status = 0;
+        else if (rc == 0 && (waited += 1000) >= STALL_MS) fail = N_("Nothing arrived for a minute"), status = 408;
     }
     free(buf);
     if (f) {
-        if (!file_sync(f) && !fail) fail = "The server couldn't save the file", status = 507, stop = true;
+        if (!file_sync(f) && !fail) fail = N_("The server couldn't save the file"), status = 507, stop = true;
         fclose(f);
     }
     bool complete = !fail && got == j->len;
     if (complete && b->art && !picture_bytes(j->part)) {
-        fail = "That file isn't a JPEG, PNG or WebP picture", status = 415, stop = true;
+        fail = N_("That file isn't a JPEG, PNG or WebP picture"), status = 415, stop = true;
         file_remove(j->part);
         complete = false;
     }
     if (complete) {
         if (!b->art && path_stat(j->full, NULL, NULL, NULL))
-            fail = "A file with that name appeared meanwhile", status = 409, stop = true;
-        else if (!file_replace(j->part, j->full)) fail = "Couldn't finish the file", status = 500, stop = true;
+            fail = N_("A file with that name appeared meanwhile"), status = 409, stop = true;
+        else if (!file_replace(j->part, j->full)) fail = N_("Couldn't finish the file"), status = 500, stop = true;
         complete = !fail;
     }
     if (complete && b->art) { /* the new picture wins: drop "poster.png" when "poster.jpg" came, and the like */
@@ -997,7 +1040,7 @@ static void worker(void *arg) {
         g_pictures_saved += b->art != 0;
     } else if (stop && status != 410) {
         uf->state = UP_FAILED;
-        str_copy(uf->why, sizeof uf->why, fail);
+        why_set(uf, fail);
         b->failed++;
     } else {
         uf->state = UP_QUEUED; /* resumable */
@@ -1012,7 +1055,7 @@ static void worker(void *arg) {
         if (complete) buf_puts(&out, "{\"ok\":true}");
         else {
             buf_puts(&out, "{\"error\":");
-            json_str(&out, fail);
+            json_str(&out, T_in(j->lang, fail)); /* (in the request's language: the browser shows it) */
             buf_printf(&out, ",\"stop\":%s}", stop ? "true" : "false");
         }
         worker_reply(j->s, complete ? 200 : status, buf_cstr(&out));
@@ -1031,7 +1074,8 @@ static void worker(void *arg) {
 
 /* -------------------------------------------------------------- endpoints */
 
-#define MADE_MEANWHILE "Hemma started making this copy on the server meanwhile"
+/* (every error below is shown by the browser: in the request's language. "busy" is a word wire.js
+   knows - it waits and tries again - so it stays as it is.) */
 
 static void reply_ok(Conn *conn) {
     Buf ok = {0};
@@ -1044,19 +1088,17 @@ static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     lock_take(&g_lock);
     Batch *b = find(id);
     const char *err = NULL;
-    char failed[96];
+    char failed[300];
     int status = 409;
     bool stop = true;
-    if (!b || b->person != c->me->id) err = "That upload is over - start it again to continue", status = 404;
-    else if (b->stopped) err = "The upload was stopped", status = 410;
+    if (!b || b->person != c->me->id) err = T("That upload is over - start it again to continue"), status = 404;
+    else if (b->stopped) err = T("The upload was stopped"), status = 410;
     else if (i < 0 || i >= b->nfiles || (b->files[i].state == UP_SKIPPED && !b->files[i].on_server))
-        err = "That file isn't part of the upload", status = 404;
-    else if (b->files[i].state == UP_FAILED) { /* (disk full and the like): say so, don't take it again */
-        str_copy(failed, sizeof failed, b->files[i].why);
-        err = failed;
-    }
+        err = T("That file isn't part of the upload"), status = 404;
+    else if (b->files[i].state == UP_FAILED) /* (disk full and the like): say so, don't take it again */
+        err = why_of(&b->files[i], failed, sizeof failed);
     else if (b->files[i].state == UP_DONE || b->files[i].on_server) err = NULL; /* answered below */
-    else if (b->files[i].conv == CV_WAIT) err = "That copy isn't made yet", status = 409;
+    else if (b->files[i].conv == CV_WAIT) err = T("That copy isn't made yet"), status = 409;
     else if (b->files[i].state == UP_WRITING || g_workers >= MAX_WORKERS) err = "busy", status = 503, stop = false;
     if (err || !b) {
         lock_give(&g_lock);
@@ -1069,7 +1111,7 @@ static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     /* (an upload back from a quiet spell: a conversion queued meanwhile for this copy leaves the
        queue; one already running keeps it, and this file is answered as sent) */
     if (f->state == UP_DONE || f->on_server || (!b->art && media_is_video_ext(f->rel) && convert_give_way(full))) {
-        if (f->state != UP_DONE && !f->on_server) leave_to_server(b, f, MADE_MEANWHILE);
+        if (f->state != UP_DONE && !f->on_server) leave_to_server(b, f, true);
         lock_give(&g_lock);
         reply_ok(conn);
         app_changed_where("/media");
@@ -1083,7 +1125,11 @@ static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     if (at != disk || at > f->size) { /* tell the browser where we really are */
         lock_give(&g_lock);
         Buf out = {0};
-        buf_printf(&out, "{\"error\":\"resume from %lld\",\"at\":%lld}", (long long)disk, (long long)disk);
+        char msg[100];
+        snprintf(msg, sizeof msg, T("resume from %lld"), (long long)disk);
+        buf_puts(&out, "{\"error\":");
+        json_str(&out, msg);
+        buf_printf(&out, ",\"at\":%lld}", (long long)disk);
         reply(conn, 409, &out);
         buf_free(&out);
         return;
@@ -1091,8 +1137,8 @@ static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     if (r->content_length != f->size - at) {
         lock_give(&g_lock);
         reply_err(conn, 400, true,
-                  f->head ? "Hemma was updated meanwhile - reload the page and start the upload again"
-                          : "The file changed size since the upload started - start it again");
+                  f->head ? T("Hemma was updated meanwhile - reload the page and start the upload again")
+                          : T("The file changed size since the upload started - start it again"));
         return;
     }
     /* Room for the rest: an upload holds room only while it's live, so after a quiet spell (a
@@ -1104,10 +1150,10 @@ static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     int64_t held = 0, spare = spare_for(b, root, 0, &held);
     lock_take(&g_lock);
     if (f->size - at > spare) {
-        char msg[300];
-        no_room(msg, sizeof msg, "the rest of this file", f->size - at, spare, held);
+        char msg[400];
+        no_room(msg, sizeof msg, ROOM_REST, f->size - at, spare, held);
         f->state = UP_FAILED;
-        str_copy(f->why, sizeof f->why, "not enough room on the drive (Hemma keeps 1 GB free)");
+        why_set(f, N_("not enough room on the drive (Hemma keeps 1 GB free)"));
         b->failed++;
         lock_give(&g_lock);
         reply_err(conn, 507, true, msg);
@@ -1119,6 +1165,7 @@ static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     j->i = i;
     j->at = at;
     j->len = f->size - at;
+    j->lang = i18n_lang();
     join(j->full, sizeof j->full, b->root, f->rel);
     snprintf(j->part, sizeof j->part, "%s%s", j->full, MEDIA_PART_SUFFIX);
     f->state = UP_WRITING;
@@ -1155,19 +1202,16 @@ static void where(Ctx *c, Conn *conn, uint64_t id, int i) {
     Batch *b = find(id);
     Buf out = {0};
     int status = 200;
-    if (!b || b->person != c->me->id) {
-        status = 404;
-        buf_puts(&out, "{\"error\":\"That upload is over - start it again to continue\",\"stop\":true}");
-    } else if (b->stopped) {
-        status = 410;
-        buf_puts(&out, "{\"error\":\"The upload was stopped\",\"stop\":true}");
-    } else if (i < 0 || i >= b->nfiles || (b->files[i].state == UP_SKIPPED && !b->files[i].on_server)) {
-        status = 404;
-        buf_puts(&out, "{\"error\":\"That file isn't part of the upload\",\"stop\":true}");
-    } else if (b->files[i].state == UP_FAILED) {
-        status = 409;
+    const char *err = NULL;
+    char failed[300];
+    if (!b || b->person != c->me->id) status = 404, err = T("That upload is over - start it again to continue");
+    else if (b->stopped) status = 410, err = T("The upload was stopped");
+    else if (i < 0 || i >= b->nfiles || (b->files[i].state == UP_SKIPPED && !b->files[i].on_server))
+        status = 404, err = T("That file isn't part of the upload");
+    else if (b->files[i].state == UP_FAILED) status = 409, err = why_of(&b->files[i], failed, sizeof failed);
+    if (err) {
         buf_puts(&out, "{\"error\":");
-        json_str(&out, b->files[i].why);
+        json_str(&out, err);
         buf_puts(&out, ",\"stop\":true}");
     } else {
         const UpFile *f = &b->files[i];
@@ -1194,11 +1238,11 @@ static void save_sub(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i, const F
     lock_take(&g_lock);
     const Batch *b = find(id);
     const UpFile *f = b && i >= 0 && i < b->nfiles ? &b->files[i] : NULL;
-    if (!b || b->person != c->me->id) err = "That upload is over", status = 404;
-    else if (!f || f->conv == CV_NONE || f->conv == CV_ORIGINAL) err = "That file has no copy made here", status = 404;
+    if (!b || b->person != c->me->id) err = T("That upload is over"), status = 404;
+    else if (!f || f->conv == CV_NONE || f->conv == CV_ORIGINAL) err = T("That file has no copy made here"), status = 404;
     else join(full, sizeof full, b->root, f->rel);
     lock_give(&g_lock);
-    if (!err && (!r->body || !r->body_len)) err = "No subtitles came", status = 400;
+    if (!err && (!r->body || !r->body_len)) err = T("No subtitles came"), status = 400;
     if (err) {
         reply_err(conn, status, false, err);
         return;
@@ -1223,7 +1267,7 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     }
     long long pm = fields_int(&q, "pm", -1), size = fields_int(&q, "size", -1);
     bool original = str_eq(fields_str(&q, "original"), "1");
-    char why[96], msg[300];
+    char why[96], msg[400]; /* (why: the browser's converter's words - shown as they came) */
     str_copy(why, sizeof why, fields_str(&q, "why"));
     fields_free(&q);
 
@@ -1243,13 +1287,13 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     lock_take(&g_lock);
     Batch *b = find(id);
     UpFile *f = b && i >= 0 && i < b->nfiles ? &b->files[i] : NULL;
-    if (!b || b->person != c->me->id) err = "That upload is over - start it again to continue", status = 404;
-    else if (b->stopped) err = "The upload was stopped", status = 410;
+    if (!b || b->person != c->me->id) err = T("That upload is over - start it again to continue"), status = 404;
+    else if (b->stopped) err = T("The upload was stopped"), status = 410;
     else if (pm >= 0 && size < 0 && !original) { /* progress - also a late one, after the copy went: fine */
         if (f && f->conv == CV_WAIT && f->state == UP_QUEUED) f->pm = (int)CLAMP(pm, 0, 999);
         b->last = b->busy = now_sec();
         buf_puts(&out, "{\"ok\":true}");
-    } else if (!f || !f->conv || f->state != UP_QUEUED) err = "That file isn't waiting for a copy", status = 404;
+    } else if (!f || !f->conv || f->state != UP_QUEUED) err = T("That file isn't waiting for a copy"), status = 404;
     else if (size >= 0) { /* the copy is ready: size it, then the browser sends it */
         char full[1024], part[1100];
         join(full, sizeof full, b->root, f->rel);
@@ -1257,14 +1301,14 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
         if (f->conv == CV_READY && size == f->size) { /* asked again (a lost answer): carry on */
             buf_printf(&out, "{\"at\":%lld}", (long long)resume_point(b, f));
         } else if (f->conv != CV_WAIT) {
-            err = "That file is going as it is", status = 409;
+            err = T("That file is going as it is"), status = 409;
         } else if (size <= 0 || size > (1LL << 40)) {
-            err = "The browser's copy came out empty", status = 422;
+            err = T("The browser's copy came out empty"), status = 422;
         } else if (convert_give_way(full)) { /* the server's converter started on it meanwhile */
-            leave_to_server(b, f, MADE_MEANWHILE);
+            leave_to_server(b, f, true);
             buf_puts(&out, "{\"skip\":true}");
         } else if (size > spare) {
-            no_room(msg, sizeof msg, "the copy", size, spare, held);
+            no_room(msg, sizeof msg, ROOM_COPY, size, spare, held);
             err = msg, status = 507;
         } else {
             b->total += size - copy_guess(f);
@@ -1283,15 +1327,15 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
         int64_t have = 0;
         bool dir = false, taken = f->extra || path_stat(full, &have, NULL, &dir);
         if (!taken && f->orig > spare) {
-            no_room(msg, sizeof msg, "the original", f->orig, spare, held);
+            no_room(msg, sizeof msg, ROOM_ORIGINAL, f->orig, spare, held);
             err = msg, status = 507;
         } else if (taken) {
             b->total -= copy_guess(f);
             f->state = UP_SKIPPED;
             b->skipped++;
-            snprintf(f->why, sizeof f->why, "%s", f->extra ? "couldn't be converted here - its original is on the list"
-                                                 : dir || have != f->orig ? "couldn't be converted here, and a different file has its name"
-                                                                          : "couldn't be converted here, and its original is already there");
+            why_set(f, f->extra                  ? N_("couldn't be converted here - its original is on the list")
+                       : dir || have != f->orig ? N_("couldn't be converted here, and a different file has its name")
+                                                : N_("couldn't be converted here, and its original is already there"));
             buf_puts(&out, "{\"skip\":true}");
         } else {
             b->total -= copy_guess(f);
@@ -1300,14 +1344,15 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
             f->conv = CV_ORIGINAL;
             f->saved = resume_point(b, f);
             b->total += f->size - f->saved;
-            snprintf(f->why, sizeof f->why, "%s", why[0] ? why : "the converter couldn't read it");
+            if (why[0]) why_set(f, "%s", why); /* (the browser's words: data) */
+            else why_set(f, N_("the converter couldn't read it"));
             buf_printf(&out, "{\"at\":%lld}", (long long)f->saved);
         }
         if (!err) b->last = b->busy = now_sec();
     } else if (original && f->conv == CV_ORIGINAL) { /* asked again */
         buf_printf(&out, "{\"at\":%lld}", (long long)resume_point(b, f));
     } else {
-        err = "pm, size or original", status = 400;
+        err = "pm, size or original", status = 400; /* (only a broken page asks: no words for people) */
     }
     lock_give(&g_lock);
     if (!err) app_changed_where("/media"); /* progress bars, copies ready */
@@ -1320,10 +1365,10 @@ bool upload_http(Ctx *c, Conn *conn, HttpReq *r) {
     if (!str_starts(r->path, "/media/upload/")) return false;
     const char *rest = r->path + 14;
     if (!is_admin(c)) {
-        reply_err(conn, 403, true, "Only an admin can add videos");
+        reply_err(conn, 403, true, T("Only an admin can add videos"));
         return true;
     }
-    if (!http_same_origin(r)) {
+    if (!http_same_origin(r)) { /* (this and the method answers: only another site's page or a broken one gets them) */
         reply_err(conn, 403, true, "cross-site request refused");
         return true;
     }
@@ -1338,7 +1383,7 @@ bool upload_http(Ctx *c, Conn *conn, HttpReq *r) {
     str_ncopy(hex, sizeof hex, rest, hl);
     long long i = rest[hl] == '/' ? str_int_or(rest + hl + 1, -1) : -1;
     if (hl != 16 || !media_parse_id(hex, &id) || i < 0 || i >= 2 * MAX_FILES) {
-        reply_err(conn, 404, true, "No such upload");
+        reply_err(conn, 404, true, T("No such upload"));
         return true;
     }
     if (str_eq(r->method, "PUT")) put(c, conn, r, id, (int)i);
@@ -1368,15 +1413,19 @@ void upload_art_status(Ctx *c, Buf *b, uint64_t id) {
             (!u || g_batch[s]->started > u->started))
             u = g_batch[s];
     const UpFile *f = u ? &u->files[0] : NULL;
+    char why[300];
     if (!f) {
     } else if (f->state == UP_FAILED) {
-        H(b, "<p class=\"notice bad\" id=\"media-pic-st\">%s</p>", f->why);
+        H(b, "<p class=\"notice bad\" id=\"media-pic-st\">%s</p>", why_of(f, why, sizeof why));
     } else if (f->state == UP_DONE) {
         if (!u->ended || c->now - u->ended < 120)
-            buf_puts(b, "<p class=\"notice\" id=\"media-pic-st\">Saved - the new picture shows everywhere in a moment.</p>");
+            H(b, "<p class=\"notice\" id=\"media-pic-st\">%s</p>",
+              T("Saved - the new picture shows everywhere in a moment."));
     } else if (!u->stopped) {
         int pct = f->size ? (int)(f->saved * 100 / f->size) : 0;
-        H(b, "<p class=\"notice\" id=\"media-pic-st\">Sending the picture… %d%%</p>", pct);
+        buf_puts(b, "<p class=\"notice\" id=\"media-pic-st\">");
+        H(b, T("Sending the picture… %d%%"), pct);
+        buf_puts(b, "</p>");
     }
     lock_give(&g_lock);
 }
@@ -1413,14 +1462,19 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
     }
     bool open = batch_open(u);
     bool waiting = open && !u->workers && c->now - u->last > 20;
-    H(b, "<section class=\"media-up\" id=\"media-up-%X\">", u->id);
-    if (u->stopped) H(b, "<h3>Stopped · %d of %d files sent</h3>", u->done, todo);
-    else if (!open) H(b, "<h3>Finished · %d file%s sent</h3>", u->done, u->done == 1 ? "" : "s");
-    else if (waiting) H(b, "<h3>Waiting for the browser · %d of %d files sent</h3>", u->done, todo);
-    else H(b, "<h3>Uploading · %d of %d files</h3>", u->done, todo);
+    char why[300];
+    H(b, "<section class=\"media-up\" id=\"media-up-%X\"><h3>", u->id);
+    if (u->stopped) H(b, TN(todo, "Stopped · %d of %d file sent", "Stopped · %d of %d files sent"), u->done, todo);
+    else if (!open) H(b, TN(u->done, "Finished · %d file sent", "Finished · %d files sent"), u->done);
+    else if (waiting)
+        H(b, TN(todo, "Waiting for the browser · %d of %d file sent", "Waiting for the browser · %d of %d files sent"),
+          u->done, todo);
+    else H(b, TN(todo, "Uploading · %d of %d file", "Uploading · %d of %d files"), u->done, todo);
+    buf_puts(b, "</h3>");
     int per_mille = copies ? batch_permille(u) : u->total ? (int)(u->moved * 1000 / u->total) : 1000;
-    H(b, "<progress class=\"media-up-bar\" max=\"1000\" value=\"%d\"></progress><p class=\"media-up-nums\">%s of %s%s",
-      MIN(per_mille, 1000), moved, pending ? "about " : "", total);
+    H(b, "<progress class=\"media-up-bar\" max=\"1000\" value=\"%d\"></progress><p class=\"media-up-nums\">",
+      MIN(per_mille, 1000));
+    H(b, pending ? T("%s of about %s") : T("%s of %s"), moved, total);
     if (open && !waiting && u->rate > 1 && pending) {
         media_size_text((int64_t)u->rate, speed, sizeof speed);
         H(b, " · %s/s", speed);
@@ -1429,27 +1483,38 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
         H(b, " · %s/s", speed);
         int64_t left = (int64_t)((double)(u->total - u->moved) / u->rate);
         if (left > 0) {
-            buf_puts(b, " · about ");
-            ui_duration(b, MAX(left, 60));
-            buf_puts(b, " left");
+            Buf d = {0};
+            ui_duration(&d, MAX(left, 60));
+            buf_puts(b, " · ");
+            H(b, T("about %s left"), buf_cstr(&d));
+            buf_free(&d);
         }
     } else if (!open && u->ended >= u->started && u->done) {
         int64_t took = MAX(u->ended - u->started, 1);
-        if (took < 60) H(b, " · took %d s", (int)took);
+        buf_puts(b, " · ");
+        if (took < 60) H(b, T("took %d s"), (int)took);
         else {
-            buf_puts(b, " · took ");
-            ui_duration(b, took);
+            Buf d = {0};
+            ui_duration(&d, took);
+            H(b, T("took %s"), buf_cstr(&d));
+            buf_free(&d);
         }
     }
     buf_puts(b, "</p>");
     if (open && u->current >= 0) {
         const UpFile *f = &u->files[u->current];
         int pct = f->size ? (int)(f->saved * 100 / f->size) : 100;
-        H(b, "<p class=\"muted media-up-now\">Now: <code class=\"media-code\">%s</code> · %d%%</p>", f->rel, pct);
+        buf_puts(b, "<p class=\"muted media-up-now\">");
+        H(b, T("Now: <code class=\"media-code\">%s</code> · %d%%"), f->rel, pct);
+        buf_puts(b, "</p>");
     }
     if (open && copies) {
-        H(b, "<p class=\"muted media-up-now\">Made on the sending device: %d of %d play-everywhere copies ready</p>",
+        buf_puts(b, "<p class=\"muted media-up-now\">");
+        H(b,
+          TN(copies, "Made on the sending device: %d of %d play-everywhere copy ready",
+             "Made on the sending device: %d of %d play-everywhere copies ready"),
           copies - pending, copies);
+        buf_puts(b, "</p>");
         int shown = 0;
         for (int i = 0; i < u->nfiles && shown < 12; i++) {
             const UpFile *f = &u->files[i];
@@ -1461,69 +1526,89 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
         if (shown) buf_puts(b, "</ul>");
     }
     if (waiting)
-        buf_puts(b, "<p class=\"muted media-small\">If the browser that started it was closed, choose the same folder "
-                    "again below - what's already on the server is skipped, and half-sent files continue where "
-                    "they stopped.</p>");
+        H(b, "<p class=\"muted media-small\">%r</p>",
+          T("If the browser that started it was closed, choose the same folder again below - what's already on the "
+            "server is skipped, and half-sent files continue where they stopped."));
     if (as_is) { /* said out loud, not only in the list below: such a video may play silent or not at all */
         const UpFile *first = NULL;
         for (int i = 0; i < u->nfiles && !first; i++)
             if (u->files[i].conv == CV_ORIGINAL) first = &u->files[i];
-        H(b, "<p class=\"notice media-up-asis\" id=\"media-up-asis-%X\">%d video%s couldn't be converted on this device and "
-             "went up as %s - %s may not play everywhere. Why: %s%s</p>",
-          u->id, as_is, as_is == 1 ? "" : "s", as_is == 1 ? "it was" : "they were", as_is == 1 ? "it" : "they", first->why,
-          as_is > 1 ? " (each one's reason is in the list below)." : ".");
+        H(b, "<p class=\"notice media-up-asis\" id=\"media-up-asis-%X\">", u->id);
+        H(b,
+          TN(as_is,
+             "%d video couldn't be converted on this device and went up as it was - it may not play everywhere. Why: %s.",
+             "%d videos couldn't be converted on this device and went up as they were - they may not play everywhere. "
+             "Why: %s (each one's reason is in the list below)."),
+          as_is, why_of(first, why, sizeof why));
+        buf_puts(b, "</p>");
     }
     if (u->failed || u->skipped || as_is || heads) {
-        H(b, "<details class=\"media-up-list\"><summary>%d skipped", u->skipped);
-        if (heads) H(b, ", %d play-all header%s", heads, heads == 1 ? "" : "s");
-        if (as_is) H(b, ", %d sent unconverted", as_is);
-        if (u->failed) H(b, ", %d failed", u->failed);
+        buf_puts(b, "<details class=\"media-up-list\"><summary>");
+        H(b, T("%d skipped"), u->skipped);
+        if (heads) {
+            buf_puts(b, ", ");
+            H(b, TN(heads, "%d play-all header", "%d play-all headers"), heads);
+        }
+        if (as_is) {
+            buf_puts(b, ", ");
+            H(b, T("%d sent unconverted"), as_is);
+        }
+        if (u->failed) {
+            buf_puts(b, ", ");
+            H(b, T("%d failed"), u->failed);
+        }
         buf_puts(b, "</summary><ul>");
         int shown = 0;
         for (int i = 0; i < u->nfiles && shown < 200; i++) {
             const UpFile *f = &u->files[i];
             if (f->state == UP_SKIPPED || f->state == UP_FAILED)
                 H(b, "<li%r><code class=\"media-code\">%s</code> — %s</li>", f->state == UP_FAILED ? " class=\"bad\"" : "",
-                  f->rel, f->why);
-            else if (f->conv == CV_ORIGINAL)
-                H(b, "<li><code class=\"media-code\">%s</code> — sent as it is: %s</li>", f->rel, f->why);
-            else if (f->head) /* a long special can look like one: this is where you'd notice */
-                H(b, "<li><code class=\"media-code\">%s</code> — only its first MB: it looks like a \"play all\" copy of the "
-                     "episodes next to it (if it isn't, upload it on its own)</li>",
-                  f->rel);
+                  f->rel, why_of(f, why, sizeof why));
+            else if (f->conv == CV_ORIGINAL) {
+                H(b, "<li><code class=\"media-code\">%s</code> — ", f->rel);
+                H(b, T("sent as it is: %s"), why_of(f, why, sizeof why));
+                buf_puts(b, "</li>");
+            } else if (f->head) /* a long special can look like one: this is where you'd notice */
+                H(b, "<li><code class=\"media-code\">%s</code> — %r</li>", f->rel,
+                  T("only its first MB: it looks like a \"play all\" copy of the episodes next to it (if it isn't, "
+                    "upload it on its own)"));
             else continue;
             shown++;
         }
         buf_puts(b, "</ul></details>");
     }
     if (open) {
-        ui_form_confirm(b, "media.upload_stop", "inline", "Stop the upload? Everything already sent stays on the server.");
-        H(b, "<input type=\"hidden\" name=\"batch\" value=\"%X\"><button class=\"btn\">Stop</button>", u->id);
+        ui_form_confirm(b, "media.upload_stop", "inline",
+                        T("Stop the upload? Everything already sent stays on the server."));
+        H(b, "<input type=\"hidden\" name=\"batch\" value=\"%X\"><button class=\"btn\">%s</button>", u->id, T("Stop"));
         ui_form_end(b);
     }
     buf_puts(b, "</section>");
 }
 
 void upload_page(Ctx *c, Buf *b) {
-    ctx_title(c, "Add videos");
+    ctx_title(c, "%s", T("Add videos"));
     buf_puts(b, "<a class=\"media-back\" href=\"/media/settings\">");
     ui_icon(b, "left");
-    buf_puts(b, "Library</a>");
-    ui_head(b, "Add videos", "Send movies and series from this device to the library");
+    H(b, "%s</a>", T("Library"));
+    ui_head(b, T("Add videos"), T("Send movies and series from this device to the library"));
     ui_head_end(b);
     if (!is_admin(c)) {
-        ui_empty(b, "🔒", "Admins only", NULL);
-        buf_puts(b, "<p class=\"center muted\">Ask ");
-        ui_admins(b);
-        buf_puts(b, " to add videos to the library.</p>");
+        ui_empty(b, "🔒", T("Admins only"), NULL);
+        Buf who = {0};
+        ui_admins(&who);
+        buf_puts(b, "<p class=\"center muted\">");
+        H(b, T("Ask %r to add videos to the library."), buf_cstr(&who));
+        buf_puts(b, "</p>");
+        buf_free(&who);
         return;
     }
     char roots[MEDIA_MAX_ROOTS][300];
     int nroots = media_roots(roots, MEDIA_MAX_ROOTS);
     if (!nroots) {
-        ui_empty(b, "📁", "Choose a library folder first",
-                 "Uploads go into one of the library's folders. Add one in the library settings.");
-        buf_puts(b, "<p class=\"center\"><a class=\"btn primary\" href=\"/media/settings\">Library settings</a></p>");
+        ui_empty(b, "📁", T("Choose a library folder first"),
+                 T("Uploads go into one of the library's folders. Add one in the library settings."));
+        H(b, "<p class=\"center\"><a class=\"btn primary\" href=\"/media/settings\">%s</a></p>", T("Library settings"));
         return;
     }
     /* The form comes first and keeps its place: progress cards appear after it,
@@ -1535,61 +1620,63 @@ void upload_page(Ctx *c, Buf *b) {
     for (int s = 0; s < MAX_BATCHES; s++) busy_now |= running(g_batch[s]);
     lock_give(&g_lock);
     buf_puts(b, "<div class=\"grid2\">");
-    ui_card(b, "Upload", NULL, NULL);
-    buf_puts(b, "<form class=\"stack\" data-upload=\"/media/upload\" data-empty=\"Choose a folder or some files first\"");
+    ui_card(b, T("Upload"), NULL, NULL);
+    H(b, "<form class=\"stack\" data-upload=\"/media/upload\" data-empty=\"%s\"",
+      T("Choose a folder or some files first"));
     if (here) H(b, " data-convert=\"/static/conv.js?v=%s\" data-wasm=\"/static/av.wasm?v=%s\"", worker->etag, wasm->etag);
-    buf_puts(b, "><label class=\"field\"><span>Save into</span><select name=\"root\">");
+    H(b, "><label class=\"field\"><span>%s</span><select name=\"root\">", T("Save into"));
     for (int i = 0; i < nroots; i++) H(b, "<option value=\"%d\">%s</option>", i, roots[i]);
-    buf_puts(b, "</select></label>"
-                "<label class=\"field\"><span>Inside the folder (optional)</span><input name=\"into\" maxlength=\"120\" "
-                "placeholder=\"e.g. Series\" spellcheck=\"false\"></label>"
-                "<label class=\"field\"><span>A whole folder</span><input type=\"file\" name=\"folder\" "
-                "webkitdirectory multiple></label>"
-                "<label class=\"field\"><span>…or single files</span><input type=\"file\" name=\"files\" multiple "
-                "accept=\"video/*,.mkv,.avi,.m2ts,.ts,.srt,.vtt,.jpg,.jpeg,.png,.webp\"></label>");
+    H(b,
+      "</select></label>"
+      "<label class=\"field\"><span>%s</span><input name=\"into\" maxlength=\"120\" placeholder=\"%s\" "
+      "spellcheck=\"false\"></label>"
+      "<label class=\"field\"><span>%s</span><input type=\"file\" name=\"folder\" webkitdirectory multiple></label>"
+      "<label class=\"field\"><span>%s</span><input type=\"file\" name=\"files\" multiple "
+      "accept=\"video/*,.mkv,.avi,.m2ts,.ts,.srt,.vtt,.jpg,.jpeg,.png,.webp\"></label>",
+      T("Inside the folder (optional)"), T("e.g. Series"), T("A whole folder"), T("…or single files"));
     if (here) {
-        buf_puts(b, "<label class=\"check\"><input type=\"checkbox\" name=\"conv\" value=\"1\" checked> Make videos play "
-                    "everywhere on this device first (recommended)</label>");
+        H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"conv\" value=\"1\" checked> %s</label>",
+          T("Make videos play everywhere on this device first (recommended)"));
         int room = (int)CLAMP(str_int_or(pref(c->me->id, PREF_UPLOAD_ROOM, ""), ROOM_DEFAULT), ROOM_MIN, ROOM_MAX);
-        H(b, /* (wire.js [data-show] keeps the number with the slider) */
-          "<label class=\"field\"><span>Room on this device for copies waiting to be sent: <b id=\"media-room-n\">%d</b> "
-          "GB</span><input type=\"range\" name=\"room\" min=\"%d\" max=\"%d\" step=\"1\" value=\"%d\" "
-          "data-show=\"media-room-n\" aria-describedby=\"media-room-h\"><small class=\"muted\" id=\"media-room-h\">More "
-          "room lets more videos convert side by side - DVD rips take minutes each. A copy leaves this device's disk "
-          "as soon as it's sent.</small></label>",
-          room, ROOM_MIN, ROOM_MAX, room);
+        buf_puts(b, "<label class=\"field\"><span>"); /* (wire.js [data-show] keeps the number with the slider) */
+        H(b, T("Room on this device for copies waiting to be sent: <b id=\"media-room-n\">%d</b> GB"), room);
+        H(b,
+          "</span><input type=\"range\" name=\"room\" min=\"%d\" max=\"%d\" step=\"1\" value=\"%d\" "
+          "data-show=\"media-room-n\" aria-describedby=\"media-room-h\"><small class=\"muted\" "
+          "id=\"media-room-h\">%r</small></label>",
+          ROOM_MIN, ROOM_MAX, room,
+          T("More room lets more videos convert side by side - DVD rips take minutes each. A copy leaves this "
+            "device's disk as soon as it's sent."));
     }
-    buf_puts(b, "<label class=\"check\"><input type=\"checkbox\" name=\"originals\" value=\"1\"> Also send the "
-                "originals</label>"
-                "<label class=\"check\"><input type=\"checkbox\" name=\"dupes\" value=\"1\"> Also send episodes and "
-                "films the library already has under another name</label>"
-                "<p class=\"muted media-small\">A folder keeps its layout, so <code class=\"media-code\">My Show/"
-                "Season 1/…</code> arrives just like that. Files already on the server are skipped - and so are "
-                "episodes and films the library already has under another name (the same show, season and episode; "
-                "the same film, year and part), before anything is converted. If the connection drops it carries on "
-                "where it stopped.</p>");
-    if (here)
-        buf_puts(b, "<p class=\"muted media-small\">Videos that not every phone, TV or browser can play (DVD rips, MKV "
-                    "files, Dolby sound) are converted right here, on this device, and only the converted copy is sent: "
-                    "about a third of the size, and it plays everywhere. That keeps this device busy while it runs - a "
-                    "computer does it much faster than a phone. ");
-    else
-        buf_puts(b, "<p class=\"muted media-small\">This Hemma was built without the video converter, so videos are "
-                    "sent as they are (convert them under Library settings afterwards). ");
-    buf_puts(b, "A folder that already holds a converted <code class=\"media-code\">x.web.mp4</code> sends just that. A "
-                "DVD's \"play all\" title (every episode again, in one file) stays behind: only its first MB goes, so "
-                "the library can still tell episodes from bonus clips. Keep this tab open while it runs - you can use "
-                "other pages meanwhile.</p>");
+    H(b,
+      "<label class=\"check\"><input type=\"checkbox\" name=\"originals\" value=\"1\"> %s</label>"
+      "<label class=\"check\"><input type=\"checkbox\" name=\"dupes\" value=\"1\"> %s</label>"
+      "<p class=\"muted media-small\">%r</p>",
+      T("Also send the originals"), T("Also send episodes and films the library already has under another name"),
+      T("A folder keeps its layout, so <code class=\"media-code\">My Show/Season 1/…</code> arrives just like that. "
+        "Files already on the server are skipped - and so are episodes and films the library already has under another "
+        "name (the same show, season and episode; the same film, year and part), before anything is converted. If the "
+        "connection drops it carries on where it stopped."));
+    H(b, "<p class=\"muted media-small\">%r %r</p>",
+      here ? T("Videos that not every phone, TV or browser can play (DVD rips, MKV files, Dolby sound) are converted "
+               "right here, on this device, and only the converted copy is sent: about a third of the size, and it "
+               "plays everywhere. That keeps this device busy while it runs - a computer does it much faster than a "
+               "phone.")
+           : T("This Hemma was built without the video converter, so videos are sent as they are (convert them under "
+               "Library settings afterwards)."),
+      T("A folder that already holds a converted <code class=\"media-code\">x.web.mp4</code> sends just that. A DVD's "
+        "\"play all\" title (every episode again, in one file) stays behind: only its first MB goes, so the library can "
+        "still tell episodes from bonus clips. Keep this tab open while it runs - you can use other pages meanwhile."));
     /* always there, hidden while nothing runs: live updates then never rebuild the form (and lose the files) */
-    H(b, "<label class=\"check\" id=\"media-up-force\"%r><input type=\"checkbox\" name=\"force\" value=\"1\"> Upload "
-         "anyway, alongside the upload that's running (its files are left to it)</label>",
-      busy_now ? "" : " hidden");
-    buf_puts(b, "<div class=\"modal-f\"><button class=\"btn primary\">Upload</button></div></form>");
+    H(b, "<label class=\"check\" id=\"media-up-force\"%r><input type=\"checkbox\" name=\"force\" value=\"1\"> %r</label>",
+      busy_now ? "" : " hidden",
+      T("Upload anyway, alongside the upload that's running (its files are left to it)"));
+    H(b, "<div class=\"modal-f\"><button class=\"btn primary\">%s</button></div></form>", T("Upload"));
     ui_card_end(b);
     lock_take(&g_lock);
     const Batch *mine = batch_of(c->me->id);
     if (mine) {
-        ui_card(b, "Your upload", NULL, NULL);
+        ui_card(b, T("Your upload"), NULL, NULL);
         render_batch(c, b, mine);
         ui_card_end(b);
     }
@@ -1597,7 +1684,7 @@ void upload_page(Ctx *c, Buf *b) {
         const Batch *o = g_batch[s];
         if (!o || o == mine || o->art || !batch_open(o)) continue;
         const Person *p = person_get(o->person);
-        ui_card(b, p ? p->name : "Someone", NULL, NULL);
+        ui_card(b, p ? p->name : T("Someone"), NULL, NULL);
         render_batch(c, b, o);
         ui_card_end(b);
     }
@@ -1617,12 +1704,15 @@ void upload_summary(Ctx *c, Buf *b) {
         done += o->done;
     }
     lock_give(&g_lock);
-    if (open) H(b, "<p class=\"media-small\">Uploading now: %d of %d files sent.</p>", done, files);
+    if (!open) return;
+    buf_puts(b, "<p class=\"media-small\">");
+    H(b, TN(files, "Uploading now: %d of %d file sent.", "Uploading now: %d of %d files sent."), done, files);
+    buf_puts(b, "</p>");
 }
 
 void upload_act_stop(Ctx *c, Fields *f) {
     if (!is_admin(c)) {
-        ctx_fail(c, "Only an admin can do that");
+        ctx_fail(c, "%s", T("Only an admin can do that"));
         return;
     }
     /* the upload whose Stop was pressed (another admin's card has its own); without one, your own */
@@ -1639,8 +1729,8 @@ void upload_act_stop(Ctx *c, Fields *f) {
         }
     }
     lock_give(&g_lock);
-    if (stopped) ctx_ok(c, "Upload stopped - what was sent stays");
-    else ctx_info(c, "Nothing is uploading");
+    if (stopped) ctx_ok(c, "%s", T("Upload stopped - what was sent stays"));
+    else ctx_info(c, "%s", T("Nothing is uploading"));
 }
 
 /* -------------------------------------------------------------- lifecycle */
@@ -1701,9 +1791,10 @@ void upload_tick(int64_t now) {
         app_changed_where("/media");
     }
     if (active) app_wake_in(1000); /* keep the numbers moving even with no other reason to tick */
-    if (finished_person)
-        app_notify_person(finished_person, 0, "Upload finished: %d file%s added", finished_files,
-                          finished_files == 1 ? "" : "s");
+    if (finished_person) /* (the core says it in their language) */
+        app_notify_person(finished_person, 0,
+                          finished_files == 1 ? N_("Upload finished: %d file added") : N_("Upload finished: %d files added"),
+                          finished_files);
     /* new files: rescan once things settle (and at least every few minutes during a long upload) */
     if (saved > g_done_seen) {
         g_rescan_at = now + 20000;

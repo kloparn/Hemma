@@ -293,7 +293,7 @@ void system_update_tick(int64_t now_ms_) {
     if (st == UP_RECEIVED) {
         if (ask("install-file")) {
             log_info("updates: %s uploaded %s - the update helper checks and installs it", who, name);
-            activity_add(person, "⬆️", "/system/updates", "%s started an update of Hemma from a download", who);
+            activity_add(person, "⬆️", "/system/updates", N_("%s started an update of Hemma from a download"), who);
         }
         app_changed_where("/system");
     } else if (st == UP_PLANNED && got != g_shown_got) {
@@ -316,49 +316,50 @@ void system_update_checks(Health *h) {
     int64_t now = now_sec();
     char d[700], when[64];
     if (g_present) {
-        if (result_unseen()) {
+        if (result_unseen()) { /* (g_res_words: the helper's own words, English data - shown as they are) */
             system_when(g_res_at, now, when, sizeof when);
             if (str_eq(g_state, "installed")) {
-                snprintf(d, sizeof d, "Updated to Hemma %s %s.", g_res_ver, when);
-                health_add(h, HEALTH_OK, "Update", d, NULL, "/system/updates");
+                snprintf(d, sizeof d, T("Updated to Hemma %s %s."), g_res_ver, when);
+                health_add(h, HEALTH_OK, T("Update"), d, NULL, "/system/updates");
             } else if (str_eq(g_state, "back")) {
-                snprintf(d, sizeof d, "Hemma %s didn't start (%s), so the update helper went back to this one and the "
-                                      "data as it was before. Nothing was lost.",
+                snprintf(d, sizeof d, T("Hemma %s didn't start (%s), so the update helper went back to this one and the "
+                                        "data as it was before. Nothing was lost."),
                          g_res_ver[0] ? g_res_ver : "?", when);
-                health_add(h, HEALTH_WARN, "Update", d, "See why on the Updates tab - and say so in an issue on GitHub.",
-                           "/system/updates");
+                health_add(h, HEALTH_WARN, T("Update"), d,
+                           T("See why on the Updates tab - and say so in an issue on GitHub."), "/system/updates");
                 health_tech(h, g_res_words);
             } else if (str_eq(g_state, "refused")) {
-                snprintf(d, sizeof d, "An update wasn't installed (%s): %s.", when, g_res_words);
-                health_add(h, HEALTH_WARN, "Update", d, "Nothing was changed. The Updates tab says more.", "/system/updates");
+                snprintf(d, sizeof d, T("An update wasn't installed (%s): %s."), when, g_res_words);
+                health_add(h, HEALTH_WARN, T("Update"), d, T("Nothing was changed. The Updates tab says more."),
+                           "/system/updates");
             } else {
-                snprintf(d, sizeof d, "An update of Hemma failed and going back didn't work at first (%s).", when);
-                health_add(h, HEALTH_WARN, "Update", d, "Hemma runs again now. See the Updates tab and the log.",
+                snprintf(d, sizeof d, T("An update of Hemma failed and going back didn't work at first (%s)."), when);
+                health_add(h, HEALTH_WARN, T("Update"), d, T("Hemma runs again now. See the Updates tab and the log."),
                            "/system/updates");
                 health_tech(h, g_res_words);
             }
         }
         if (silent(now)) {
-            health_add(h, HEALTH_WARN, "Updates", "The update helper didn't answer.",
-                       "On the Pi: sudo systemctl enable --now hemma-update.path - or run sudo hemma-upgrade there.",
+            health_add(h, HEALTH_WARN, T("Updates"), T("The update helper didn't answer."),
+                       T("On the Pi: sudo systemctl enable --now hemma-update.path - or run sudo hemma-upgrade there."),
                        "/system/updates");
         } else if (out_now()) {
-            snprintf(d, sizeof d, "Hemma %s is out (this is %s).", g_latest, HEMMA_VERSION);
-            health_add(h, HEALTH_INFO, "Updates", d, "Install it on the Updates tab.", "/system/updates");
+            snprintf(d, sizeof d, T("Hemma %s is out (this is %s)."), g_latest, HEMMA_VERSION);
+            health_add(h, HEALTH_INFO, T("Updates"), d, T("Install it on the Updates tab."), "/system/updates");
         } else if (g_latest[0]) {
             system_when(g_latest_at, now, when, sizeof when);
-            snprintf(d, sizeof d, "This is the newest Hemma (checked %s).", when);
-            health_add(h, HEALTH_OK, "Updates", d, NULL, "/system/updates");
+            snprintf(d, sizeof d, T("This is the newest Hemma (checked %s)."), when);
+            health_add(h, HEALTH_OK, T("Updates"), d, NULL, "/system/updates");
         } else {
-            health_add(h, HEALTH_OK, "Updates",
-                       setting_int(SET_CHECK, 0) == 1 ? "Checked once a day." : "Checked when you ask, on the Updates tab.",
+            health_add(h, HEALTH_OK, T("Updates"),
+                       setting_int(SET_CHECK, 0) == 1 ? T("Checked once a day.") : T("Checked when you ask, on the Updates tab."),
                        NULL, "/system/updates");
         }
     }
     if (g_apt && !g_unattended) {
-        health_add(h, HEALTH_INFO, "Operating system updates",
-                   "The operating system's security updates aren't installed by themselves.",
-                   "To have them installed every day: sudo apt install unattended-upgrades", "/system/updates");
+        health_add(h, HEALTH_INFO, T("Operating system updates"),
+                   T("The operating system's security updates aren't installed by themselves."),
+                   T("To have them installed every day: sudo apt install unattended-upgrades"), "/system/updates");
     }
 }
 
@@ -366,49 +367,62 @@ void system_update_checks(Health *h) {
 
 static void how_by_hand(Buf *b) {
     const char *dl = plat_bundle();
-    buf_puts(b, "<p>Updates from this page need Hemma installed with its installer (<code>install-pi.sh</code>, from "
-                "version 0.21.1) on a Raspberry Pi or another Linux with systemd: then a root helper installs what you "
-                "choose here.</p>");
+    H(b, "<p>%r</p>", T("Updates from this page need Hemma installed with its installer (<code>install-pi.sh</code>, from "
+                        "version 0.21.1) on a Raspberry Pi or another Linux with systemd: then a root helper installs what "
+                        "you choose here."));
+    buf_puts(b, "<p>");
     if (dl)
-        H(b, "<p>Here: download <b>%s.tar.gz</b> from <a href=\"%s/latest\" target=\"_blank\" rel=\"noopener noreferrer\">"
-             "the newest release</a> and install it the way you installed this one. A Pi or Linux with systemd: unpack "
-             "it and run <code>sudo sh install-pi.sh ./%s</code> - from then on, updates come from here or with "
-             "<code>sudo hemma-upgrade</code>.</p>",
+        H(b, T("Here: download <b>%s.tar.gz</b> from <a href=\"%s/latest\" target=\"_blank\" rel=\"noopener noreferrer\">"
+               "the newest release</a> and install it the way you installed this one. A Pi or Linux with systemd: unpack "
+               "it and run <code>sudo sh install-pi.sh ./%s</code> - from then on, updates come from here or with "
+               "<code>sudo hemma-upgrade</code>."),
           dl, RELEASES, str_eq(dl, "hemma-linux-x64") ? "hemma-linux" : dl);
     else
-        H(b, "<p>Here: build the newest release from its source (<a href=\"%s/latest\" target=\"_blank\" "
-             "rel=\"noopener noreferrer\">the newest release</a>, docs/windows.md).</p>",
+        H(b, T("Here: build the newest release from its source (<a href=\"%s/latest\" target=\"_blank\" "
+               "rel=\"noopener noreferrer\">the newest release</a>, docs/windows.md)."),
           RELEASES);
+    buf_puts(b, "</p>");
 }
 
 static void result_notice(Buf *b, int64_t now) {
     char when[64];
     system_when(g_res_at, now, when, sizeof when);
-    if (str_eq(g_state, "installed"))
-        H(b, "<div class=\"notice system-up-note\" id=\"system-up-result\"><p><b>Updated to Hemma %s</b> (from %s), %s. "
-             "<a href=\"%s/tag/v%s\" target=\"_blank\" rel=\"noopener noreferrer\">What's new</a></p>",
-          g_res_ver, g_res_words[0] ? g_res_words : "the one before", when, RELEASES, g_res_ver);
-    else if (str_eq(g_state, "back"))
-        H(b, "<div class=\"notice system-up-note system-up-bad\" id=\"system-up-result\"><p><b>Hemma %s didn't start</b>, so "
-             "the update helper went back to this one and the data as it was before (%s) - nothing was lost.</p>"
-             "<p class=\"small\">%s</p>",
-          g_res_ver[0] ? g_res_ver : "?", when, g_res_words);
-    else if (str_eq(g_state, "refused"))
-        H(b, "<div class=\"notice system-up-note system-up-bad\" id=\"system-up-result\"><p><b>Not installed</b> (%s): %s. "
-             "Nothing was changed.</p>",
+    if (str_eq(g_state, "installed")) {
+        buf_puts(b, "<div class=\"notice system-up-note\" id=\"system-up-result\"><p>");
+        if (g_res_words[0])
+            H(b, T("<b>Updated to Hemma %s</b> (from %s), %s. <a href=\"%s/tag/v%s\" target=\"_blank\" "
+                   "rel=\"noopener noreferrer\">What's new</a>"),
+              g_res_ver, g_res_words, when, RELEASES, g_res_ver);
+        else
+            H(b, T("<b>Updated to Hemma %s</b> (from the one before), %s. <a href=\"%s/tag/v%s\" target=\"_blank\" "
+                   "rel=\"noopener noreferrer\">What's new</a>"),
+              g_res_ver, when, RELEASES, g_res_ver);
+        buf_puts(b, "</p>");
+    } else if (str_eq(g_state, "back")) {
+        buf_puts(b, "<div class=\"notice system-up-note system-up-bad\" id=\"system-up-result\"><p>");
+        H(b, T("<b>Hemma %s didn't start</b>, so the update helper went back to this one and the data as it was before "
+               "(%s) - nothing was lost."),
+          g_res_ver[0] ? g_res_ver : "?", when);
+        H(b, "</p><p class=\"small\">%s</p>", g_res_words);
+    } else if (str_eq(g_state, "refused")) {
+        buf_puts(b, "<div class=\"notice system-up-note system-up-bad\" id=\"system-up-result\"><p>");
+        H(b, T("<b>Not installed</b> (%s): %s. Nothing was changed."), when, g_res_words);
+        buf_puts(b, "</p>");
+    } else {
+        buf_puts(b, "<div class=\"notice system-up-note system-up-bad\" id=\"system-up-result\"><p>");
+        H(b, T("<b>An update failed</b> (%s), and going back didn't work at first: %s. Hemma runs again now - the Log tab "
+               "may say why."),
           when, g_res_words);
-    else
-        H(b, "<div class=\"notice system-up-note system-up-bad\" id=\"system-up-result\"><p><b>An update failed</b> (%s), "
-             "and going back didn't work at first: %s. Hemma runs again now - the Log tab may say why.</p>",
-          when, g_res_words);
-    ui_act(b, "system.update_seen", "btn sm", "Got it", NULL, NULL, NULL);
+        buf_puts(b, "</p>");
+    }
+    ui_act(b, "system.update_seen", "btn sm", T("Got it"), NULL, NULL, NULL);
     buf_puts(b, "</div>");
 }
 
 void system_update_page(Ctx *c, Buf *b) {
     (void)c;
     int64_t now = now_sec();
-    char when[64], q[300];
+    char when[64], q[600];
     if (g_present && result_unseen()) result_notice(b, now);
     bool busy = g_present && installing(now);
     bool sent = busy && str_eq(g_asked, "install-file"); /* (an uploaded download) */
@@ -416,74 +430,93 @@ void system_update_page(Ctx *c, Buf *b) {
         const char *v = g_res_ver[0] && (str_eq(g_state, "fetching") || str_eq(g_state, "installing")) ? g_res_ver
                         : str_starts(g_asked, "install ")                                             ? g_asked + 8
                                                                                                       : "";
-        char doing[80];
-        if (str_eq(g_state, "installing") && answered()) snprintf(doing, sizeof doing, "Installing Hemma %s", v);
-        else if (sent) str_copy(doing, sizeof doing, "Checking the download you sent");
-        else snprintf(doing, sizeof doing, "Downloading and checking Hemma %s", v);
-        H(b, "<p class=\"notice system-up-note\" id=\"system-up-busy\" role=\"status\">%s… Hemma restarts by itself "
-             "when it's in; this page comes back on its own.</p>",
-          doing);
+        buf_puts(b, "<p class=\"notice system-up-note\" id=\"system-up-busy\" role=\"status\">");
+        if (str_eq(g_state, "installing") && answered()) H(b, T("Installing Hemma %s…"), v);
+        else if (sent) H(b, "%s", T("Checking the download you sent…"));
+        else H(b, T("Downloading and checking Hemma %s…"), v);
+        H(b, " %s</p>", T("Hemma restarts by itself when it's in; this page comes back on its own."));
     }
 
-    ui_card(b, "This Hemma", NULL, NULL);
+    ui_card(b, T("This Hemma"), NULL, NULL);
     const char *built = strchr(HEMMA_VERSION_FULL, '('); /* "0.21.0 (8a89a31c0131)": the commit */
     char commit[64] = "";
     if (built) str_ncopy(commit, sizeof commit, built + 1, strcspn(built + 1, ")"));
     H(b, "<p class=\"system-up-v\">Hemma <b>%s</b>", HEMMA_VERSION);
-    if (commit[0]) H(b, " <span class=\"muted small\">built from %s</span>", commit);
+    if (commit[0]) {
+        buf_puts(b, " <span class=\"muted small\">");
+        H(b, T("built from %s"), commit);
+        buf_puts(b, "</span>");
+    }
     buf_puts(b, "</p>");
     if (!g_present) {
         how_by_hand(b);
-        H(b, "<p><a class=\"btn\" href=\"%s\" target=\"_blank\" rel=\"noopener noreferrer\">Releases on GitHub</a></p>",
-          RELEASES);
+        H(b, "<p><a class=\"btn\" href=\"%s\" target=\"_blank\" rel=\"noopener noreferrer\">%s</a></p>", RELEASES,
+          T("Releases on GitHub"));
     }
     ui_card_end(b);
 
     if (g_present) {
-        ui_card(b, "New versions", NULL, NULL);
+        ui_card(b, T("New versions"), NULL, NULL);
         if (silent(now))
-            buf_puts(b, "<p class=\"notice system-up-bad\" id=\"system-up-silent\">The update helper didn't answer. On the "
-                        "Pi: <code>sudo systemctl enable --now hemma-update.path</code> - or update there with "
-                        "<code>sudo hemma-upgrade</code>.</p>");
+            H(b, "<p class=\"notice system-up-bad\" id=\"system-up-silent\">%r</p>",
+              T("The update helper didn't answer. On the Pi: <code>sudo systemctl enable --now hemma-update.path</code> - "
+                "or update there with <code>sudo hemma-upgrade</code>."));
         else if (!answered() && str_eq(g_asked, "check"))
-            buf_puts(b, "<p id=\"system-up-state\" role=\"status\">Asking github.com…</p>");
+            H(b, "<p id=\"system-up-state\" role=\"status\">%s</p>", T("Asking github.com…"));
         else if (out_now()) {
-            H(b, "<p id=\"system-up-state\"><b>Hemma %s is out</b> (this is %s). <a href=\"%s/tag/v%s\" target=\"_blank\" "
-                 "rel=\"noopener noreferrer\">What's new</a></p>",
+            buf_puts(b, "<p id=\"system-up-state\">");
+            H(b, T("<b>Hemma %s is out</b> (this is %s). <a href=\"%s/tag/v%s\" target=\"_blank\" "
+                   "rel=\"noopener noreferrer\">What's new</a>"),
               g_latest, HEMMA_VERSION, RELEASES, g_latest);
-            snprintf(q, sizeof q, "Install Hemma %s? Hemma restarts for a moment. If the new one doesn't start, the "
-                                  "update helper goes back to this one by itself.", g_latest);
+            buf_puts(b, "</p>");
+            snprintf(q, sizeof q, T("Install Hemma %s? Hemma restarts for a moment. If the new one doesn't start, the "
+                                    "update helper goes back to this one by itself."),
+                     g_latest);
             ui_form_confirm(b, "system.update_install", "system-up-install", q);
             ui_hidden(b, "v", g_latest);
-            H(b, "<button class=\"btn\"%r>Install Hemma %s</button>", busy ? " disabled" : "", g_latest);
+            H(b, "<button class=\"btn\"%r>", busy ? " disabled" : "");
+            H(b, T("Install Hemma %s"), g_latest);
+            buf_puts(b, "</button>");
             ui_form_end(b);
         } else if (g_latest[0]) {
             system_when(g_latest_at, now, when, sizeof when);
-            H(b, "<p id=\"system-up-state\">This is the newest Hemma (checked %s).</p>", when);
-        } else if (g_latest_why[0]) {
+            buf_puts(b, "<p id=\"system-up-state\">");
+            H(b, T("This is the newest Hemma (checked %s)."), when);
+            buf_puts(b, "</p>");
+        } else if (g_latest_why[0]) { /* (the helper's words, as they are) */
             system_when(g_latest_at, now, when, sizeof when);
-            H(b, "<p id=\"system-up-state\" class=\"system-up-bad\">The check %s didn't work: %s.</p>", when, g_latest_why);
-        } else buf_puts(b, "<p id=\"system-up-state\" class=\"muted\">Not checked yet.</p>");
+            buf_puts(b, "<p id=\"system-up-state\" class=\"system-up-bad\">");
+            H(b, T("The check %s didn't work: %s."), when, g_latest_why);
+            buf_puts(b, "</p>");
+        } else H(b, "<p id=\"system-up-state\" class=\"muted\">%s</p>", T("Not checked yet."));
         ui_form(b, "system.update_check", "inline");
-        H(b, "<button class=\"btn ghost\"%r>Check now</button>", busy ? " disabled" : "");
+        H(b, "<button class=\"btn ghost\"%r>%s</button>", busy ? " disabled" : "", T("Check now"));
         ui_form_end(b);
         ui_form(b, "system.update_auto", "system-up-auto");
-        H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"on\" value=\"1\" data-auto%r> Check once a day</label>",
-          setting_int(SET_CHECK, 0) == 1 ? " checked" : "");
+        H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"on\" value=\"1\" data-auto%r> %s</label>",
+          setting_int(SET_CHECK, 0) == 1 ? " checked" : "", T("Check once a day"));
         ui_form_end(b);
-        buf_puts(b, "<p class=\"muted small\">Checking asks github.com one thing: which version is newest. Nothing about "
-                    "your home leaves it, and nothing is installed until you say so. Only what the Hemma project signed "
-                    "is installed; the program and a copy of the data are kept, and if the new Hemma doesn't start, it "
-                    "goes back to them by itself.</p>");
+        H(b, "<p class=\"muted small\">%s</p>",
+          T("Checking asks github.com one thing: which version is newest. Nothing about your home leaves it, and "
+            "nothing is installed until you say so. Only what the Hemma project signed is installed; the program and a "
+            "copy of the data are kept, and if the new Hemma doesn't start, it goes back to them by itself."));
         ui_card_end(b);
 
         const char *dl = plat_bundle();
-        ui_card(b, "Install from a file", NULL, NULL);
-        char file[64] = "the download for this machine";
-        if (dl) snprintf(file, sizeof file, "%s.tar.gz", dl);
-        H(b, "<p>No internet here? Download <b>%s</b> from <a href=\"%s\" target=\"_blank\" "
-             "rel=\"noopener noreferrer\">the releases page</a> on any computer, then choose it here.</p>",
-          file, RELEASES);
+        ui_card(b, T("Install from a file"), NULL, NULL);
+        buf_puts(b, "<p>");
+        if (dl) {
+            char file[64];
+            snprintf(file, sizeof file, "%s.tar.gz", dl);
+            H(b, T("No internet here? Download <b>%s</b> from <a href=\"%s\" target=\"_blank\" "
+                   "rel=\"noopener noreferrer\">the releases page</a> on any computer, then choose it here."),
+              file, RELEASES);
+        } else {
+            H(b, T("No internet here? Download <b>the download for this machine</b> from <a href=\"%s\" target=\"_blank\" "
+                   "rel=\"noopener noreferrer\">the releases page</a> on any computer, then choose it here."),
+              RELEASES);
+        }
+        buf_puts(b, "</p>");
         lock_take(&g_lock);
         bool receiving = g_up == UP_PLANNED && g_up_got > 0;
         int pct = g_up_size > 0 ? (int)(g_up_got * 100 / g_up_size) : 0;
@@ -491,29 +524,45 @@ void system_update_page(Ctx *c, Buf *b) {
         str_copy(upname, sizeof upname, g_up_name);
         str_copy(why, sizeof why, g_up_why);
         lock_give(&g_lock);
-        if (receiving) H(b, "<p id=\"system-up-file\" role=\"status\">Receiving %s… %d%%</p>", upname, pct);
-        else if (sent)
-            H(b, "<p id=\"system-up-file\" role=\"status\">%s is in: the update helper checks it now - only a "
-                 "download the Hemma project signed is installed.</p>",
-              upname[0] ? upname : "The download");
-        else if (why[0]) H(b, "<p id=\"system-up-file\" class=\"system-up-bad\">%s</p>", why);
-        H(b, "<form class=\"system-up-form\" data-upload=\"/system/update\" data-empty=\"Choose the download first\">"
-             "<label class=\"field\"><span>The download</span><input type=\"file\" name=\"bundle\" "
-             "accept=\".gz,.tgz,application/gzip\"></label><button class=\"btn\"%r>Install</button></form>"
-             "<p class=\"muted small system-up-nojs\">(Choosing a file here needs JavaScript.)</p>",
-          busy ? " disabled" : "");
+        if (receiving) {
+            buf_puts(b, "<p id=\"system-up-file\" role=\"status\">");
+            H(b, T("Receiving %s… %d%%"), upname, pct);
+            buf_puts(b, "</p>");
+        } else if (sent) {
+            buf_puts(b, "<p id=\"system-up-file\" role=\"status\">");
+            if (upname[0])
+                H(b, T("%s is in: the update helper checks it now - only a download the Hemma project signed is installed."),
+                  upname);
+            else
+                H(b, "%s", T("The download is in: the update helper checks it now - only a download the Hemma project "
+                             "signed is installed."));
+            buf_puts(b, "</p>");
+        } else if (why[0]) {
+            H(b, "<p id=\"system-up-file\" class=\"system-up-bad\">%s</p>", T(why)); /* (the receiver's N_-marked English) */
+        }
+        H(b, "<form class=\"system-up-form\" data-upload=\"/system/update\" data-empty=\"%s\">"
+             "<label class=\"field\"><span>%s</span><input type=\"file\" name=\"bundle\" "
+             "accept=\".gz,.tgz,application/gzip\"></label><button class=\"btn\"%r>%s</button></form>"
+             "<p class=\"muted small system-up-nojs\">%s</p>",
+          T("Choose the download first"), T("The download"), busy ? " disabled" : "", T("Install"),
+          T("(Choosing a file here needs JavaScript.)"));
         ui_card_end(b);
     }
 
     if (g_apt) {
-        ui_card(b, "The operating system", NULL, NULL);
+        ui_card(b, T("The operating system"), NULL, NULL);
         if (g_unattended && g_os_last) {
             system_when(g_os_last, now, when, sizeof when);
-            H(b, "<p>Its security updates install by themselves (last looked for %s).</p>", when);
-        } else if (g_unattended) buf_puts(b, "<p>Its security updates install by themselves.</p>");
-        else
-            buf_puts(b, "<p>Its security updates aren't installed by themselves. To have that done every day, run this "
-                        "once on the machine:</p><p><code>sudo apt install unattended-upgrades</code></p>");
+            buf_puts(b, "<p>");
+            H(b, T("Its security updates install by themselves (last looked for %s)."), when);
+            buf_puts(b, "</p>");
+        } else if (g_unattended) {
+            H(b, "<p>%s</p>", T("Its security updates install by themselves."));
+        } else {
+            H(b, "<p>%s</p><p><code>sudo apt install unattended-upgrades</code></p>",
+              T("Its security updates aren't installed by themselves. To have that done every day, run this once on the "
+                "machine:"));
+        }
         ui_card_end(b);
     }
 }
@@ -522,14 +571,14 @@ void system_update_page(Ctx *c, Buf *b) {
 
 static bool admin_ok(Ctx *c) {
     if (is_admin(c)) return true;
-    ctx_fail(c, "Only an admin can do that");
+    ctx_fail(c, "%s", T("Only an admin can do that"));
     return false;
 }
 
 static bool helper_ok(Ctx *c) {
     g_present = present();
     if (g_present) return true;
-    ctx_fail(c, "This install has no update helper - the Updates tab says how to update it");
+    ctx_fail(c, "%s", T("This install has no update helper - the Updates tab says how to update it"));
     return false;
 }
 
@@ -537,14 +586,14 @@ void system_update_act_check(Ctx *c, Fields *f) {
     (void)f;
     if (!admin_ok(c) || !helper_ok(c)) return;
     if (installing(now_sec())) {
-        ctx_fail(c, "An update is under way");
+        ctx_fail(c, "%s", T("An update is under way"));
         return;
     }
     if (!ask("check")) {
-        ctx_fail(c, "Couldn't ask the update helper (see the log)");
+        ctx_fail(c, "%s", T("Couldn't ask the update helper (see the log)"));
         return;
     }
-    ctx_ok(c, "Asking github.com…");
+    ctx_ok(c, "%s", T("Asking github.com…"));
 }
 
 void system_update_act_auto(Ctx *c, Fields *f) {
@@ -552,29 +601,29 @@ void system_update_act_auto(Ctx *c, Fields *f) {
     bool on = str_eq(fields_str(f, "on"), "1");
     setting_set(SET_CHECK, on ? "1" : "0");
     log_info("updates: %s turned the daily check %s", c->me->name, on ? "on" : "off");
-    ctx_ok(c, on ? "Hemma checks for a new version once a day" : "No more daily checks");
+    ctx_ok(c, "%s", on ? T("Hemma checks for a new version once a day") : T("No more daily checks"));
 }
 
 void system_update_act_install(Ctx *c, Fields *f) {
     if (!admin_ok(c) || !helper_ok(c)) return;
     const char *v = fields_str(f, "v");
     if (installing(now_sec())) {
-        ctx_fail(c, "An update is under way");
+        ctx_fail(c, "%s", T("An update is under way"));
         return;
     }
     if (!str_eq(v, g_latest) || !out_now()) {
-        ctx_fail(c, "That isn't a newer version - check again");
+        ctx_fail(c, "%s", T("That isn't a newer version - check again"));
         return;
     }
     char what[40];
     snprintf(what, sizeof what, "install %s", g_latest);
     if (!ask(what)) {
-        ctx_fail(c, "Couldn't ask the update helper (see the log)");
+        ctx_fail(c, "%s", T("Couldn't ask the update helper (see the log)"));
         return;
     }
     log_info("updates: %s asked for Hemma %s", c->me->name, g_latest);
-    activity_add(c->me->id, "⬆️", "/system/updates", "%s started the update to Hemma %s", c->me->name, g_latest);
-    ctx_ok(c, "Downloading Hemma %s…", g_latest);
+    activity_add(c->me->id, "⬆️", "/system/updates", N_("%s started the update to Hemma %s"), c->me->name, g_latest);
+    ctx_ok(c, T("Downloading Hemma %s…"), g_latest);
 }
 
 void system_update_act_seen(Ctx *c, Fields *f) {
@@ -583,7 +632,7 @@ void system_update_act_seen(Ctx *c, Fields *f) {
     char at[24];
     snprintf(at, sizeof at, "%lld", (long long)g_res_at);
     setting_set(SET_SEEN, at);
-    ctx_ok(c, "Noted");
+    ctx_ok(c, "%s", T("Noted"));
 }
 
 /* ------------------------------------------------ the uploaded download */
@@ -615,10 +664,10 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
     const char *base = strrchr(name, '/'), *err = NULL;
     base = base ? base + 1 : name;
     int64_t now = now_sec();
-    if (!base[0] || size < 0) err = "Choose one file: the download for this machine";
-    else if (!str_iends(base, ".tar.gz") && !str_iends(base, ".tgz")) err = "That isn't a Hemma download - they end in .tar.gz";
-    else if (size == 0 || size > FILE_MAX) err = "That file is far too big for a Hemma download";
-    else if (installing(now)) err = "An update is under way";
+    if (!base[0] || size < 0) err = T("Choose one file: the download for this machine");
+    else if (!str_iends(base, ".tar.gz") && !str_iends(base, ".tgz")) err = T("That isn't a Hemma download - they end in .tar.gz");
+    else if (size == 0 || size > FILE_MAX) err = T("That file is far too big for a Hemma download");
+    else if (installing(now)) err = T("An update is under way");
     if (err) {
         reply(conn, installing(now) ? 409 : 400, err, true);
         return;
@@ -626,7 +675,7 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
     lock_take(&g_lock);
     if (g_writing || (g_up == UP_PLANNED && now - g_up_touched < PLAN_IDLE_S && g_up_person != c->me->id)) {
         lock_give(&g_lock);
-        reply(conn, 409, "Someone else is uploading a download right now", true);
+        reply(conn, 409, T("Someone else is uploading a download right now"), true);
         return;
     }
     rand_hex(g_batch, 8);
@@ -650,6 +699,7 @@ typedef struct {
     Buf head, body;
     int64_t len;
     char part[760], full[760];
+    Lang lang; /* the uploader's: the answer to the browser is in it (the card's words are made when shown) */
 } Job;
 
 static void job_reply(sock_t s, int status, const char *error) {
@@ -684,12 +734,12 @@ static void receive(void *arg) {
         sock_send(j->s, j->head.p, j->head.len); /* (rare: what the connection still owed) */
     }
     FILE *f = file_open(j->part, "wb");
-    if (!f) fail = "Couldn't save the file on the server", status = 500;
+    if (!f) fail = N_("Couldn't save the file on the server"), status = 500;
     int64_t got = 0;
     uint8_t magic[2] = {0, 0};
     if (f && j->body.len) {
         size_t n = (size_t)MIN((int64_t)j->body.len, j->len);
-        if (fwrite(j->body.p, 1, n, f) != n) fail = "The server's disk is full", status = 507;
+        if (fwrite(j->body.p, 1, n, f) != n) fail = N_("The server's disk is full"), status = 507;
         memcpy(magic, j->body.p, MIN(n, (size_t)2));
         got = (int64_t)n;
     }
@@ -699,7 +749,7 @@ static void receive(void *arg) {
         if (k > 0) {
             if (got < 2) memcpy(magic + got, buf, (size_t)MIN((int64_t)k, 2 - got));
             if (fwrite(buf, 1, (size_t)k, f) != (size_t)k) {
-                fail = "The server's disk is full", status = 507;
+                fail = N_("The server's disk is full"), status = 507;
                 break;
             }
             got += k;
@@ -712,20 +762,20 @@ static void receive(void *arg) {
         }
         if (k == 0 || !sock_again(sock_errno())) {
             dropped = true;
-            fail = "The connection dropped", status = 0;
+            fail = N_("The connection dropped"), status = 0;
             break;
         }
         pollfd_t pf = {.fd = j->s, .events = POLLIN};
         int rc = plat_poll(&pf, 1, 1000);
-        if (rc < 0) dropped = true, fail = "The connection dropped", status = 0;
-        else if (rc == 0 && (waited += 1000) >= STALL_MS) fail = "Nothing arrived for a minute", status = 408;
+        if (rc < 0) dropped = true, fail = N_("The connection dropped"), status = 0;
+        else if (rc == 0 && (waited += 1000) >= STALL_MS) fail = N_("Nothing arrived for a minute"), status = 408;
     }
     if (f) {
-        if (!file_sync(f) && !fail) fail = "The server couldn't save the file", status = 507;
+        if (!file_sync(f) && !fail) fail = N_("The server couldn't save the file"), status = 507;
         fclose(f);
     }
-    if (!fail && (magic[0] != 0x1f || magic[1] != 0x8b)) fail = "That isn't a Hemma download (not a .tar.gz)", status = 415;
-    if (!fail && !file_replace(j->part, j->full)) fail = "Couldn't save the file on the server", status = 500;
+    if (!fail && (magic[0] != 0x1f || magic[1] != 0x8b)) fail = N_("That isn't a Hemma download (not a .tar.gz)"), status = 415;
+    if (!fail && !file_replace(j->part, j->full)) fail = N_("Couldn't save the file on the server"), status = 500;
     if (fail) file_remove(j->part);
     lock_take(&g_lock);
     g_writing = false;
@@ -736,7 +786,7 @@ static void receive(void *arg) {
         str_copy(g_up_why, sizeof g_up_why, fail);
     }
     lock_give(&g_lock);
-    if (status) job_reply(j->s, status, fail);
+    if (status) job_reply(j->s, status, fail ? T_in(j->lang, fail) : NULL);
     sock_close(j->s);
     buf_free(&j->head);
     buf_free(&j->body);
@@ -752,9 +802,9 @@ static void put(Conn *conn, HttpReq *r, int me) {
     lock_take(&g_lock);
     const char *err = NULL;
     int status = 409;
-    if (g_up != UP_PLANNED || g_up_person != me) err = "That upload is over - choose the file again", status = 404;
+    if (g_up != UP_PLANNED || g_up_person != me) err = T("That upload is over - choose the file again"), status = 404;
     else if (g_writing) err = "busy";
-    else if (at != 0 || r->content_length != g_up_size) err = "The file changed size - choose it again", status = 400;
+    else if (at != 0 || r->content_length != g_up_size) err = T("The file changed size - choose it again"), status = 400;
     if (err) {
         lock_give(&g_lock);
         reply(conn, status, err, !str_eq(err, "busy"));
@@ -764,6 +814,7 @@ static void put(Conn *conn, HttpReq *r, int me) {
     g_up_got = 0;
     Job *j = xcalloc(1, sizeof *j);
     j->len = g_up_size;
+    j->lang = i18n_lang();
     lock_give(&g_lock);
     path_in(j->part, sizeof j->part, g_ask, "upload.tar.gz.part");
     path_in(j->full, sizeof j->full, g_ask, "upload.tar.gz");
@@ -791,7 +842,7 @@ bool system_update_http(Ctx *c, Conn *conn, HttpReq *r) {
     if (!str_starts(r->path, pre)) return false;
     const char *rest = r->path + sizeof pre - 1;
     if (!is_admin(c)) {
-        reply(conn, 403, "Only an admin can install updates", true);
+        reply(conn, 403, T("Only an admin can install updates"), true);
         return true;
     }
     if (!http_same_origin(r)) {
@@ -800,7 +851,7 @@ bool system_update_http(Ctx *c, Conn *conn, HttpReq *r) {
     }
     g_present = present();
     if (!g_present) {
-        reply(conn, 409, "This install has no update helper - the Updates tab says how to update it", true);
+        reply(conn, 409, T("This install has no update helper - the Updates tab says how to update it"), true);
         return true;
     }
     if (str_eq(rest, "plan")) {
@@ -812,7 +863,7 @@ bool system_update_http(Ctx *c, Conn *conn, HttpReq *r) {
     bool ours = strlen(rest) == 18 && strncmp(rest, g_batch, 16) == 0 && str_eq(rest + 16, "/0") && g_batch[0];
     lock_give(&g_lock);
     if (!ours) {
-        reply(conn, 404, "That upload is over - choose the file again", true);
+        reply(conn, 404, T("That upload is over - choose the file again"), true);
         return true;
     }
     if (str_eq(r->method, "PUT")) put(conn, r, c->me->id);

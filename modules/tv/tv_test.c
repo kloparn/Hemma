@@ -706,7 +706,7 @@ TEST(tv_channel_full_screen_for_the_tv) {
     CHECK(th_act(adam, "tv.save", "number=2&name=Films&movies=1&align=none").ok);
     g_fake_now += 125;
     const char *h = th_page(adam, "/tv/1?tv=1&back=%2Fscreens%2F2");
-    CHECK(str_starts(h, "<div id=\"app\" class=\"bare\" data-mod=\"tv\"><div class=\"media-tv tv-full\">"
+    CHECK(str_starts(h, "<div id=\"app\" class=\"bare\" data-mod=\"tv\" data-lang=\"en\"><div class=\"media-tv tv-full\">"
                         "<a class=\"media-tv-back\" href=\"/screens/2\" data-esc data-back>")); /* Back comes first */
     CHECK_HAS(h, "data-resume=\"125\"");
     CHECK_HAS(h, "data-next=\"/tv/1?tv=1&amp;back=%2Fscreens%2F2\"");

@@ -53,7 +53,11 @@ static char g_where[700];
 static bool g_same_disk, g_known_disk, g_listed;
 static int64_t g_next_try, g_quit_at, g_started;
 static char g_restoring[32]; /* staged and about to restart */
-static char g_note[512];     /* what the last job a person asked for came to */
+/* what the last job a person asked for came to: the kind, and its value (a name, or the reason - plain, or
+   i18n_pack'ed) - put into words when the page is shown */
+typedef enum { NOTE_NONE, NOTE_DONE, NOTE_FAILED, NOTE_NOT_BACK } NoteKind;
+static NoteKind g_note;
+static char g_note_arg[512];
 static bool g_waiting;        /* a backup is staged (refreshed on events and every minute: checks show cached facts) */
 static char g_wait_label[64];
 static int64_t g_wait_at;
@@ -156,7 +160,12 @@ static void run(Job *j) {
         char to[740];
         snprintf(to, sizeof to, "%s/%s", j->where, j->name);
         j->ok = dir_make(j->where);
-        if (!j->ok) snprintf(j->why, sizeof j->why, "the folder %.300s can't be made - is the disk there, and may Hemma write to it?", j->where);
+        if (!j->ok) { /* (kept for later, in whoever's language reads it: i18n_pack) */
+            char where[300];
+            str_copy(where, sizeof where, j->where);
+            i18n_pack(j->why, sizeof j->why, N_("the folder %s can't be made - is the disk there, and may Hemma write to it?"),
+                      where);
+        }
         if (j->ok) j->ok = store_backup(to, &j->rows, j->why, sizeof j->why);
         int64_t size = 0;
         if (j->ok && path_stat(to, &size, NULL, NULL)) j->bytes = size;
@@ -243,20 +252,29 @@ static void take_result(int64_t now_ms_) {
     g_known_disk = j->known_disk;
     g_listed = true;
     int64_t now = now_sec();
-    char line[700];
+    char line[700], why_en[400];
+    Lang was = i18n_use(LANG_EN); /* (the log's words; under tests this runs inside someone's action) */
+    i18n_unpack_to(why_en, sizeof why_en, j->why);
+    i18n_use(was);
     if (j->kind == JOB_BACKUP && j->ok) {
         snprintf(line, sizeof line, "%lld|%s|%lld|%lld", (long long)now, j->name, j->rows, (long long)j->bytes);
         setting_set(SET_BACKUP_LAST, line);
         setting_set(SET_BACKUP_FAIL, "");
         log_info("backups: %s made and checked (%lld rows, %lld KB) in %s%s%s", j->name, j->rows,
                  (long long)(j->bytes >> 10), j->where, j->who[0] ? " - asked for by " : "", j->who);
-        if (j->manual) snprintf(g_note, sizeof g_note, "Backed up and checked: %s.", j->name);
+        if (j->manual) {
+            g_note = NOTE_DONE;
+            str_copy(g_note_arg, sizeof g_note_arg, j->name);
+        }
     } else if (j->kind == JOB_BACKUP) {
-        snprintf(line, sizeof line, "%lld|%s", (long long)now, j->why);
+        snprintf(line, sizeof line, "%lld|%s", (long long)now, j->why); /* (the reason as kept: shown in words later) */
         setting_set(SET_BACKUP_FAIL, line);
         g_next_try = now + RETRY_S;
-        log_error("backups: %s failed: %s", j->name, j->why);
-        if (j->manual) snprintf(g_note, sizeof g_note, "The backup failed: %s", j->why);
+        log_error("backups: %s failed: %s", j->name, why_en);
+        if (j->manual) {
+            g_note = NOTE_FAILED;
+            str_copy(g_note_arg, sizeof g_note_arg, j->why);
+        }
     } else if (j->kind == JOB_STAGE && j->ok) {
         str_copy(g_restoring, sizeof g_restoring, j->name);
         refresh_waiting(now_ms_);
@@ -268,8 +286,9 @@ static void take_result(int64_t now_ms_) {
             log_warn("backups: %s chose to go back to %s - it's put in place when Hemma next starts", j->who, j->name);
         }
     } else if (j->kind == JOB_STAGE) {
-        snprintf(g_note, sizeof g_note, "Not put back: %s", j->why);
-        log_error("backups: going back to %s failed: %s", j->name, j->why);
+        g_note = NOTE_NOT_BACK;
+        str_copy(g_note_arg, sizeof g_note_arg, j->why);
+        log_error("backups: going back to %s failed: %s", j->name, why_en);
     }
     free(j);
     app_changed_where("/system");
@@ -301,7 +320,8 @@ void system_backup_tick(int64_t now) {
 void system_backup_start(void) {
     g_started = now_sec();
     g_next_try = g_quit_at = 0;
-    g_restoring[0] = g_note[0] = '\0';
+    g_restoring[0] = g_note_arg[0] = '\0';
+    g_note = NOTE_NONE;
     g_busy = g_listed = false;
     g_n = 0;
     refresh_waiting(now_ms());
@@ -321,95 +341,135 @@ static void size_words(int64_t n, char *out, size_t cap) {
     if (n >= (10LL << 20)) snprintf(out, cap, "%lld MB", (long long)(n >> 20));
     else if (n >= (1LL << 20)) snprintf(out, cap, "%.1f MB", (double)n / 1048576.0);
     else snprintf(out, cap, "%lld KB", (long long)((n + 1023) >> 10));
+    char mark = i18n_decimal(); /* (a decimal comma in Swedish and Spanish) */
+    for (char *s = out; mark != '.' && *s; s++)
+        if (*s == '.') *s = mark;
 }
 
 void system_backup_checks(Health *h) {
-    char d[900], when[64];
+    char d[900], when[64], why[400];
     int64_t now = now_sec();
-    const char *restored = setting(SETTING_RESTORED, "");
-    if (restored[0]) health_add(h, HEALTH_INFO, "Backup put back", restored, NULL, "/system/backups");
+    char restored[768]; /* (the core's words, kept packed: store_restore_packed) */
+    i18n_unpack_to(restored, sizeof restored, setting(SETTING_RESTORED, ""));
+    if (restored[0]) health_add(h, HEALTH_INFO, T("Backup put back"), restored, NULL, "/system/backups");
     if (g_waiting && !g_quit_at) {
-        snprintf(d, sizeof d, "The backup %s waits to be put back: Hemma does it at its next start.", g_wait_label);
-        health_add(h, HEALTH_WARN, "Going back to a backup", d,
-                   "Restart Hemma to finish it - or say \"Don't put it back\" on the Backups tab.", "/system/backups");
+        snprintf(d, sizeof d, T("The backup %s waits to be put back: Hemma does it at its next start."), g_wait_label);
+        health_add(h, HEALTH_WARN, T("Going back to a backup"), d,
+                   T("Restart Hemma to finish it - or say \"Don't put it back\" on the Backups tab."), "/system/backups");
     }
     const char *last = setting(SET_BACKUP_LAST, ""), *fail = setting(SET_BACKUP_FAIL, "");
     int64_t at = atoll(last), failed = atoll(fail);
-    const char *why = strchr(fail, '|');
+    const char *bar = strchr(fail, '|');
     if (failed && failed >= at) {
         system_when(failed, now, when, sizeof when);
-        snprintf(d, sizeof d, "The backup at %s failed: %s", when, why ? why + 1 : "?");
-        health_add(h, HEALTH_BAD, "Backups", d, "See the Backups tab: is the folder there, and may Hemma write to it?",
+        i18n_unpack_to(why, sizeof why, bar ? bar + 1 : "?");
+        snprintf(d, sizeof d, T("The backup at %s failed: %s"), when, why);
+        health_add(h, HEALTH_BAD, T("Backups"), d, T("See the Backups tab: is the folder there, and may Hemma write to it?"),
                    "/system/backups");
         return;
     }
     if (!at) {
-        health_add(h, HEALTH_INFO, "Backups",
-                   "No backup yet: the first one is made a few minutes after Hemma starts, then one every night.", NULL,
+        health_add(h, HEALTH_INFO, T("Backups"),
+                   T("No backup yet: the first one is made a few minutes after Hemma starts, then one every night."), NULL,
                    "/system/backups");
         return;
     }
     system_when(at, now, when, sizeof when);
-    char rows[32] = "";
     const char *p = strchr(last, '|');
     p = p ? strchr(p + 1, '|') : NULL;
-    if (p) snprintf(rows, sizeof rows, "%lld", atoll(p + 1));
-    int n = snprintf(d, sizeof d, "The last one: %s (checked%s%s%s)", when, rows[0] ? ", " : "", rows,
-                     rows[0] ? " rows" : "");
-    if (g_listed && n > 0 && (size_t)n < sizeof d)
-        snprintf(d + n, sizeof d - (size_t)n, ", %d kept in %s.", g_n, g_where);
-    else if (n > 0 && (size_t)n < sizeof d) snprintf(d + n, sizeof d - (size_t)n, ".");
+    long long rows = p ? atoll(p + 1) : -1;
+    /* (one whole sentence per case: whether the rows are known, whether the folder was listed, one kept or more) */
+    if (rows >= 0 && g_listed) {
+        if (g_n == 1)
+            snprintf(d, sizeof d, TN(rows, "The last one: %s (checked, %lld row), the only one kept in %s.",
+                                     "The last one: %s (checked, %lld rows), the only one kept in %s."),
+                     when, rows, g_where);
+        else
+            snprintf(d, sizeof d, TN(rows, "The last one: %s (checked, %lld row), %d kept in %s.",
+                                     "The last one: %s (checked, %lld rows), %d kept in %s."),
+                     when, rows, g_n, g_where);
+    } else if (rows >= 0) {
+        snprintf(d, sizeof d, TN(rows, "The last one: %s (checked, %lld row).", "The last one: %s (checked, %lld rows)."),
+                 when, rows);
+    } else if (g_listed) {
+        if (g_n == 1) snprintf(d, sizeof d, T("The last one: %s (checked), the only one kept in %s."), when, g_where);
+        else snprintf(d, sizeof d, T("The last one: %s (checked), %d kept in %s."), when, g_n, g_where);
+    } else {
+        snprintf(d, sizeof d, T("The last one: %s (checked)."), when);
+    }
     if (now - at > 2 * 86400)
-        health_add(h, HEALTH_WARN, "Backups", d, "Back up now on the Backups tab - and see in the log why the nightly one didn't run.",
+        health_add(h, HEALTH_WARN, T("Backups"), d,
+                   T("Back up now on the Backups tab - and see in the log why the nightly one didn't run."),
                    "/system/backups");
     else if (g_listed && g_known_disk && g_same_disk)
-        health_add(h, HEALTH_INFO, "Backups", d,
-                   "They're on the same disk as the data: if that disk dies, they go with it. A folder on another disk "
-                   "(a USB disk) keeps them safe - choose one on the Backups tab.",
+        health_add(h, HEALTH_INFO, T("Backups"), d,
+                   T("They're on the same disk as the data: if that disk dies, they go with it. A folder on another disk "
+                     "(a USB disk) keeps them safe - choose one on the Backups tab."),
                    "/system/backups");
-    else health_add(h, HEALTH_OK, "Backups", d, NULL, "/system/backups");
+    else health_add(h, HEALTH_OK, T("Backups"), d, NULL, "/system/backups");
 }
 
 /* -------------------------------------------------------------- the page */
 
 void system_backup_page(Ctx *c, Buf *b) {
     int64_t now = now_sec();
-    char when[64], size[32], q[400];
-    const char *restored = setting(SETTING_RESTORED, "");
+    char when[64], size[32], q[600];
+    char restored[768];
+    i18n_unpack_to(restored, sizeof restored, setting(SETTING_RESTORED, ""));
     if (restored[0]) {
         H(b, "<div class=\"notice system-bk-note\" id=\"system-bk-restored\"><p>%s</p>", restored);
-        ui_act(b, "system.restored_seen", "btn sm", "Got it", NULL, NULL, NULL);
+        ui_act(b, "system.restored_seen", "btn sm", T("Got it"), NULL, NULL, NULL);
         buf_puts(b, "</div>");
     }
     bool waiting = g_waiting;
-    if (g_quit_at)
-        H(b, "<p class=\"notice system-bk-note\" id=\"system-bk-wait\" role=\"status\">Going back to %s: Hemma restarts "
-             "now to put it in place. This page comes back in a few seconds.</p>",
+    if (g_quit_at) {
+        buf_puts(b, "<p class=\"notice system-bk-note\" id=\"system-bk-wait\" role=\"status\">");
+        H(b, T("Going back to %s: Hemma restarts now to put it in place. This page comes back in a few seconds."),
           g_restoring);
-    else if (waiting) {
-        H(b, "<div class=\"notice system-bk-note\" id=\"system-bk-wait\"><p><b>%s waits to be put back.</b> Restart "
-             "Hemma to finish it: it's put in place as Hemma starts, and what's there now is kept aside.</p>",
+        buf_puts(b, "</p>");
+    } else if (waiting) {
+        buf_puts(b, "<div class=\"notice system-bk-note\" id=\"system-bk-wait\"><p>");
+        H(b, T("<b>%s waits to be put back.</b> Restart Hemma to finish it: it's put in place as Hemma starts, and "
+               "what's there now is kept aside."),
           g_wait_label);
-        ui_act(b, "system.backup_cancel", "btn sm", "Don't put it back", NULL, NULL, NULL);
+        buf_puts(b, "</p>");
+        ui_act(b, "system.backup_cancel", "btn sm", T("Don't put it back"), NULL, NULL, NULL);
         buf_puts(b, "</div>");
     }
-    if (g_busy)
+    if (g_busy) {
         H(b, "<p class=\"notice system-bk-note\" id=\"system-bk-busy\" role=\"status\">%s</p>",
-          g_busy_kind == JOB_BACKUP ? "Backing up…" : g_busy_kind == JOB_STAGE ? "Getting the backup ready…"
-                                                                                : "Looking in the backup folder…");
-    else if (g_note[0]) H(b, "<p class=\"notice system-bk-note\" id=\"system-bk-said\">%s</p>", g_note);
+          g_busy_kind == JOB_BACKUP  ? T("Backing up…")
+          : g_busy_kind == JOB_STAGE ? T("Getting the backup ready…")
+                                     : T("Looking in the backup folder…"));
+    } else if (g_note != NOTE_NONE) {
+        char arg[512];
+        i18n_unpack_to(arg, sizeof arg, g_note_arg); /* (a reason kept for later; a name or the core's words as they are) */
+        buf_puts(b, "<p class=\"notice system-bk-note\" id=\"system-bk-said\">");
+        if (g_note == NOTE_DONE) H(b, T("Backed up and checked: %s."), arg);
+        else if (g_note == NOTE_FAILED) H(b, T("The backup failed: %s"), arg);
+        else H(b, T("Not put back: %s"), arg);
+        buf_puts(b, "</p>");
+    }
 
-    ui_card(b, "Backups", NULL, NULL);
-    H(b, "<p>Every night Hemma copies its database, checks the copy, and keeps the newest of the last %d days.</p>",
+    ui_card(b, T("Backups"), NULL, NULL);
+    buf_puts(b, "<p>");
+    H(b, T("Every night Hemma copies its database, checks the copy, and keeps the newest of the last %d days."),
       BACKUP_DAYS);
-    if (g_listed)
-        H(b, "<p class=\"small\">In <code>%s</code>%r</p>", g_where,
-          !g_known_disk ? "" : g_same_disk ? " - on the same disk as the data" : " - on another disk than the data");
+    buf_puts(b, "</p>");
+    if (g_listed) {
+        buf_puts(b, "<p class=\"small\">");
+        H(b, !g_known_disk ? T("In <code>%s</code>")
+             : g_same_disk ? T("In <code>%s</code> - on the same disk as the data")
+                           : T("In <code>%s</code> - on another disk than the data"),
+          g_where);
+        buf_puts(b, "</p>");
+    }
     ui_form(b, "system.backup_now", "system-bk-now");
-    H(b, "<button class=\"btn\"%r>Back up now</button>", g_busy || g_quit_at ? " disabled" : "");
+    H(b, "<button class=\"btn\"%r>%s</button>", g_busy || g_quit_at ? " disabled" : "", T("Back up now"));
     ui_form_end(b);
-    if (!g_n) buf_puts(b, g_listed ? "<p class=\"muted\">No backups yet.</p>" : "");
-    else buf_puts(b, "<ul class=\"rows system-bk-list\" id=\"system-bk-list\">");
+    if (!g_n) {
+        if (g_listed) H(b, "<p class=\"muted\">%s</p>", T("No backups yet."));
+    } else buf_puts(b, "<ul class=\"rows system-bk-list\" id=\"system-bk-list\">");
     for (int i = 0; i < g_n; i++) {
         const Entry *e = &g_list[i];
         system_when(name_time(e->name), now, when, sizeof when);
@@ -419,36 +479,42 @@ void system_backup_page(Ctx *c, Buf *b) {
           e->name + 6, when, e->name, size);
         char tar[80];
         snprintf(tar, sizeof tar, "/system/backups/%.*s.tar", (int)(strlen(e->name) - 3), e->name);
-        H(b, "<a class=\"btn sm\" href=\"%s\" data-native download title=\"Includes the password secret\">Download</a>",
-          tar);
-        snprintf(q, sizeof q, "Go back to the backup of %s? Everything changed since then is lost - what's there now is "
-                              "kept aside as a copy. Hemma restarts to do it.", when);
+        H(b, "<a class=\"btn sm\" href=\"%s\" data-native download title=\"%s\">%s</a>", tar,
+          T("Includes the password secret"), T("Download"));
+        snprintf(q, sizeof q, T("Go back to the backup of %s? Everything changed since then is lost - what's there now "
+                                "is kept aside as a copy. Hemma restarts to do it."),
+                 when);
         ui_form_confirm(b, "system.backup_restore", "system-bk-restore", q);
         ui_hidden(b, "name", e->name);
-        H(b, "<button class=\"btn sm ghost\"%r>Go back to this</button>", g_busy || g_quit_at || waiting ? " disabled" : "");
+        H(b, "<button class=\"btn sm ghost\"%r>%s</button>", g_busy || g_quit_at || waiting ? " disabled" : "",
+          T("Go back to this"));
         ui_form_end(b);
         buf_puts(b, "</div></li>");
     }
     if (g_n) buf_puts(b, "</ul>");
     ui_card_end(b);
 
-    ui_card(b, "A new memory card or computer", NULL, NULL);
-    buf_puts(b, "<p><b>Download</b> gives you a backup as one file: the database and the password secret "
-                "(<code>HEMMA_AUTH_SALT</code>) every password is made with. Keep it like a password. On a new memory card "
-                "or another computer, install Hemma, then <code>hemma --restore</code> that file - "
-                "docs/raspberry-pi.md, \"Backups\", has the steps.</p>"
-                "<p class=\"muted small\">The nightly backups leave the secret out: on their own they can't sign anyone "
-                "in on a new install - keep a copy of the secret (Getting started) or a download.</p>");
+    ui_card(b, T("A new memory card or computer"), NULL, NULL);
+    H(b, "<p>%r</p><p class=\"muted small\">%s</p>",
+      T("<b>Download</b> gives you a backup as one file: the database and the password secret "
+        "(<code>HEMMA_AUTH_SALT</code>) every password is made with. Keep it like a password. On a new memory card or "
+        "another computer, install Hemma, then <code>hemma --restore</code> that file - docs/raspberry-pi.md, "
+        "\"Backups\", has the steps."),
+      T("The nightly backups leave the secret out: on their own they can't sign anyone in on a new install - keep a "
+        "copy of the secret (Getting started) or a download."));
     ui_card_end(b);
 
-    ui_card(b, "Where they go", NULL, NULL);
+    ui_card(b, T("Where they go"), NULL, NULL);
     ui_form(b, "system.backup_dir", "stack system-bk-dir");
-    H(b, "<label class=\"field\"><span>Backup folder</span><input name=\"dir\" value=\"%s\" maxlength=\"500\" "
-         "spellcheck=\"false\" autocomplete=\"off\" placeholder=\"Hemma chooses\"><small class=\"muted\">Empty: Hemma "
-         "chooses - a hidden .hemma-backups folder in the first library folder on another disk than the data, else "
-         "%s/backups. Hemma must be allowed to write there (on a Pi: a folder you gave install-pi.sh).</small></label>",
-      setting(SET_BACKUP_DIR, ""), data_dir());
-    buf_puts(b, "<button class=\"btn\">Save</button>");
+    char note[600];
+    snprintf(note, sizeof note, T("Empty: Hemma chooses - a hidden .hemma-backups folder in the first library folder on "
+                                  "another disk than the data, else %s/backups. Hemma must be allowed to write there (on "
+                                  "a Pi: a folder you gave install-pi.sh)."),
+             data_dir());
+    H(b, "<label class=\"field\"><span>%s</span><input name=\"dir\" value=\"%s\" maxlength=\"500\" "
+         "spellcheck=\"false\" autocomplete=\"off\" placeholder=\"%s\"><small class=\"muted\">%s</small></label>",
+      T("Backup folder"), setting(SET_BACKUP_DIR, ""), T("Hemma chooses"), note);
+    H(b, "<button class=\"btn\">%s</button>", T("Save"));
     ui_form_end(b);
     ui_card_end(b);
 }
@@ -457,24 +523,24 @@ void system_backup_page(Ctx *c, Buf *b) {
 
 static bool admin_ok(Ctx *c) {
     if (is_admin(c)) return true;
-    ctx_fail(c, "Only an admin can do that");
+    ctx_fail(c, "%s", T("Only an admin can do that"));
     return false;
 }
 
 void system_backup_act_now(Ctx *c, Fields *f) {
     if (!admin_ok(c)) return;
     if (g_quit_at) {
-        ctx_fail(c, "Hemma is restarting to go back to a backup");
+        ctx_fail(c, "%s", T("Hemma is restarting to go back to a backup"));
         return;
     }
     char name[32];
     make_name(now_sec(), name);
-    g_note[0] = '\0';
+    g_note = NOTE_NONE;
     if (!start_job(JOB_BACKUP, true, c->me->name, name)) {
-        ctx_fail(c, "Busy with the backups right now - try again in a moment");
+        ctx_fail(c, "%s", T("Busy with the backups right now - try again in a moment"));
         return;
     }
-    ctx_ok(c, "Backing up…");
+    ctx_ok(c, "%s", T("Backing up…"));
 }
 
 void system_backup_act_restore(Ctx *c, Fields *f) {
@@ -483,32 +549,32 @@ void system_backup_act_restore(Ctx *c, Fields *f) {
     bool known = false;
     for (int i = 0; i < g_n; i++) known |= str_eq(g_list[i].name, name);
     if (!valid_name(name) || !known) {
-        ctx_fail(c, "That backup isn't there any more");
+        ctx_fail(c, "%s", T("That backup isn't there any more"));
         return;
     }
     if (g_quit_at) {
-        ctx_fail(c, "Hemma is already restarting to go back to a backup");
+        ctx_fail(c, "%s", T("Hemma is already restarting to go back to a backup"));
         return;
     }
-    g_note[0] = '\0';
+    g_note = NOTE_NONE;
     if (!start_job(JOB_STAGE, true, c->me->name, name)) {
-        ctx_fail(c, "Busy with the backups right now - try again in a moment");
+        ctx_fail(c, "%s", T("Busy with the backups right now - try again in a moment"));
         return;
     }
-    ctx_ok(c, system_restarts_itself() ? "Getting it ready - then Hemma restarts" : "Getting it ready…");
+    ctx_ok(c, "%s", system_restarts_itself() ? T("Getting it ready - then Hemma restarts") : T("Getting it ready…"));
 }
 
 void system_backup_act_cancel(Ctx *c, Fields *f) {
     if (!admin_ok(c)) return;
     if (g_quit_at) {
-        ctx_fail(c, "Too late: Hemma is restarting to put it back");
+        ctx_fail(c, "%s", T("Too late: Hemma is restarting to put it back"));
         return;
     }
     store_unstage_restore(data_dir());
     g_restoring[0] = '\0';
     refresh_waiting(now_ms());
     log_info("backups: %s cancelled going back to a backup", c->me->name);
-    ctx_ok(c, "It won't be put back");
+    ctx_ok(c, "%s", T("It won't be put back"));
 }
 
 void system_backup_act_dir(Ctx *c, Fields *f) {
@@ -522,13 +588,13 @@ void system_backup_act_dir(Ctx *c, Fields *f) {
     for (size_t i = 0; i < n; i++)
         if ((unsigned char)dir[i] < 32) absolute = false;
     if (n && !absolute) {
-        ctx_fail(c, "Give the whole path, e.g. /mnt/media/hemma-backups");
+        ctx_fail(c, "%s", T("Give the whole path, e.g. /mnt/media/hemma-backups"));
         return;
     }
     setting_set(SET_BACKUP_DIR, dir);
     log_info("backups: %s set the backup folder to %s", c->me->name, n ? dir : "the default");
     start_job(JOB_LIST, true, c->me->name, "");
-    ctx_ok(c, n ? "Saved - the next backup goes there" : "Saved - Hemma chooses the folder");
+    ctx_ok(c, "%s", n ? T("Saved - the next backup goes there") : T("Saved - Hemma chooses the folder"));
 }
 
 void system_backup_act_restored_seen(Ctx *c, Fields *f) {
@@ -541,14 +607,11 @@ void system_backup_act_restored_seen(Ctx *c, Fields *f) {
 bool system_backup_bundle(const char *path, const char *salt, int64_t mtime, Buf *out) {
     Buf db = {0};
     if (!file_read_all(path, &db, (size_t)1 << 30)) return false;
-    Buf txt = {0};
-    buf_printf(&txt,
-               "SECRET - keep this file like a password.\n\n"
-               "HEMMA_AUTH_SALT=%s\n\n"
-               "Every password and recovery code in this backup is made with the line above. To put the backup\n"
-               "back on a new memory card or another computer: hemma --restore <this .tar> (docs/raspberry-pi.md,\n"
-               "\"Backups\"). It tells you if the settings file there needs this line.\n",
-               salt ? salt : "");
+    Buf txt = {0}; /* (in the language of whoever downloads it: the download's thread speaks it) */
+    buf_printf(&txt, "%s\n\nHEMMA_AUTH_SALT=%s\n\n%s\n", T("SECRET - keep this file like a password."), salt ? salt : "",
+               T("Every password and recovery code in this backup is made with the line above.\n"
+                 "To put it back on a new memory card or another computer, run hemma --restore with this .tar file\n"
+                 "(docs/raspberry-pi.md, \"Backups\"). It tells you if the settings file there needs this line."));
     tar_add(out, "hemma.db", db.p, db.len, mtime, 0600);
     tar_add(out, "hemma-secret.txt", txt.p, txt.len, mtime, 0600);
     tar_end(out);
@@ -562,6 +625,7 @@ typedef struct {
     Buf head; /* bytes the connection still owed (pipelining) */
     char path[760], name[32], salt[160];
     int64_t mtime;
+    Lang lang; /* the one who asked for it */
 } Download;
 
 static bool send_all(sock_t s, const char *p, size_t n) {
@@ -588,6 +652,7 @@ static bool send_all(sock_t s, const char *p, size_t n) {
 
 static void download_thread(void *arg) {
     Download *d = arg;
+    i18n_use(d->lang); /* (this thread's own language: the secret file's words and the answer below) */
     Buf tar = {0}, out = {0};
     buf_put(&out, d->head.p, d->head.len);
     if (system_backup_bundle(d->path, d->salt, d->mtime, &tar)) {
@@ -598,11 +663,11 @@ static void download_thread(void *arg) {
                    (long long)tar.len, (int)(strlen(d->name) - 3), d->name);
         buf_put(&out, tar.p, tar.len);
     } else {
-        static const char gone[] = "the backup can't be read (has the disk gone?)\n";
+        const char *gone = T("the backup can't be read (has the disk gone?)");
         buf_printf(&out,
                    "HTTP/1.1 404 Not Found\r\nServer: hemma\r\nContent-Type: text/plain; charset=utf-8\r\n"
-                   "Content-Length: %lld\r\nConnection: close\r\n\r\n%s",
-                   (long long)(sizeof gone - 1), gone);
+                   "Content-Length: %lld\r\nConnection: close\r\n\r\n%s\n",
+                   (long long)strlen(gone) + 1, gone);
     }
     sock_nonblock(d->s, true);
     send_all(d->s, out.p, out.len);
@@ -614,6 +679,7 @@ static void download_thread(void *arg) {
     buf_free(&d->head);
     free(d);
     atomic_fetch_sub(&g_downloads, 1);
+    i18n_use(LANG_EN);
 }
 
 bool system_backup_http(Ctx *c, Conn *conn, HttpReq *r) {
@@ -630,10 +696,13 @@ bool system_backup_http(Ctx *c, Conn *conn, HttpReq *r) {
         return true;
     }
     if (!g_listed || atomic_load(&g_downloads) >= MAX_DOWNLOADS) {
-        conn_reply(conn, 503, "text/plain", "busy, try again\n", 16, "Retry-After: 2\r\n");
+        char busy[120];
+        snprintf(busy, sizeof busy, "%s\n", T("Busy - try again in a moment"));
+        conn_reply(conn, 503, "text/plain; charset=utf-8", busy, strlen(busy), "Retry-After: 2\r\n");
         return true;
     }
     Download *d = xcalloc(1, sizeof *d);
+    d->lang = i18n_lang();
     snprintf(d->path, sizeof d->path, "%s/%s", g_where, name);
     str_copy(d->name, sizeof d->name, name);
     str_copy(d->salt, sizeof d->salt, env("HEMMA_AUTH_SALT", ""));

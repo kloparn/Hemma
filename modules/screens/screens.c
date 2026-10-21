@@ -232,13 +232,13 @@ static void seats_watch(int64_t now) {
 
 static bool admin_only(Ctx *c) {
     if (is_admin(c)) return true;
-    ctx_fail(c, "Only an admin can change screens");
+    ctx_fail(c, "%s", T("Only an admin can change screens"));
     return false;
 }
 
 static Screen *screen_arg(Ctx *c, Fields *f) {
     Screen *s = screen_get((int)fields_int(f, "id", 0));
-    if (!s) ctx_fail(c, "That screen is gone");
+    if (!s) ctx_fail(c, "%s", T("That screen is gone"));
     return s;
 }
 
@@ -246,7 +246,7 @@ static ScreenRow *row_arg(Ctx *c, Fields *f) {
     int id = (int)fields_int(f, "row", 0);
     ScreenRow *r = id > 0 ? tbl_get(&T_screen_row, id) : NULL;
     if (!r || !screen_get(r->screen)) {
-        ctx_fail(c, "That row is gone");
+        ctx_fail(c, "%s", T("That row is gone"));
         return NULL;
     }
     return r;
@@ -256,7 +256,7 @@ static bool name_arg(Ctx *c, Fields *f, char *out, size_t cap) {
     str_copy(out, cap, fields_str(f, "name"));
     str_trim(out);
     if (out[0]) return true;
-    ctx_fail_at(c, "name", "Give the screen a name");
+    ctx_fail_at(c, "name", "%s", T("Give the screen a name"));
     return false;
 }
 
@@ -274,7 +274,9 @@ static bool pick_arg(Ctx *c, const Block *bl, const char *want, char out[64]) {
             ok = true;
         }
     free(ch);
-    if (!ok) ctx_fail(c, n ? "That isn't on offer any more - pick another" : "There's nothing to pick for that row yet");
+    if (!ok)
+        ctx_fail(c, "%s",
+                 n ? T("That isn't on offer any more - pick another") : T("There's nothing to pick for that row yet"));
     return ok;
 }
 
@@ -383,28 +385,28 @@ static void pin_passed(int person, int64_t now) {
 static void act_viewer(Ctx *c, Fields *f) {
     int who = (int)fields_int(f, "who", 0);
     if (who && !person_real(who)) {
-        ctx_fail(c, "Pick someone from the list");
+        ctx_fail(c, "%s", T("Pick someone from the list"));
         return;
     }
     if (c->me->role != ROLE_DISPLAY || !c->sess) return;
     if (who && !screens_drives_tv(c->me->id)) {
-        ctx_fail(c, "Only a TV picks who's watching: an admin ticks it under Screens, Edit, Shows on");
+        ctx_fail(c, "%s", T("Only a TV picks who's watching: an admin ticks it under Screens, Edit, Shows on"));
         return;
     }
     if (who && !screens_on_picker(person_get(who))) { /* (issue #90: admins only when they said so) */
-        ctx_fail(c, "Pick someone from the list");
+        ctx_fail(c, "%s", T("Pick someone from the list"));
         return;
     }
     if (who && screens_has_pin(who)) {
         int wait = screens_pin_wait(who, c->now);
         char want[33];
         if (wait > 0) {
-            ctx_fail(c, "Too many wrong PINs - try again in %d min", (wait + 59) / 60);
+            ctx_fail(c, T("Too many wrong PINs - try again in %d min"), (wait + 59) / 60);
             return;
         }
         if (!pin_hash(who, fields_str(f, "pin"), want) || !str_eq(want, pref(who, PREF_PIN, ""))) {
             pin_failed(who, c->now);
-            ctx_fail_at(c, "pin", "That PIN isn't right");
+            ctx_fail_at(c, "pin", "%s", T("That PIN isn't right"));
             return;
         }
         pin_passed(who, c->now);
@@ -419,28 +421,28 @@ static void act_on_tv(Ctx *c, Fields *f) {
     bool on = str_eq(fields_str(f, "on"), "1");
     pref_set(c->me->id, PREF_ON_TV, on ? "1" : "0");
     if (!on) forget_viewer_of(c->me->id);
-    ctx_ok(c, on ? "You're on the TV's Who's watching? now" : "You're off the TV's Who's watching?");
+    ctx_ok(c, "%s", on ? T("You're on the TV's Who's watching? now") : T("You're off the TV's Who's watching?"));
 }
 
 static void act_pin(Ctx *c, Fields *f) {
     if (str_eq(fields_str(f, "clear"), "1")) {
         pref_set(c->me->id, PREF_PIN, "");
-        ctx_ok(c, "No PIN any more: the TV picks you straight away");
+        ctx_ok(c, "%s", T("No PIN any more: the TV picks you straight away"));
         return;
     }
     const char *pin = fields_str(f, "pin");
     char h[33];
     if (!four_digits(pin)) {
-        ctx_fail_at(c, "pin", "A PIN is 4 digits");
+        ctx_fail_at(c, "pin", "%s", T("A PIN is 4 digits"));
         return;
     }
     if (!pin_hash(c->me->id, pin, h)) {
-        ctx_fail(c, "Hemma has no password secret yet, so it can't keep a PIN (System says how to add one)");
+        ctx_fail(c, "%s", T("Hemma has no password secret yet, so it can't keep a PIN (System says how to add one)"));
         return;
     }
     pref_set(c->me->id, PREF_PIN, h);
     forget_viewer_of(c->me->id); /* (a TV showing you now asks again, with the PIN) */
-    ctx_ok(c, "PIN saved: the TV asks for it when you're picked");
+    ctx_ok(c, "%s", T("PIN saved: the TV asks for it when you're picked"));
 }
 
 static void act_create(Ctx *c, Fields *f) {
@@ -448,7 +450,7 @@ static void act_create(Ctx *c, Fields *f) {
     Screen s = {0};
     if (!name_arg(c, f, s.name, sizeof s.name)) return;
     if (tbl_count(&T_screen) >= SCREENS_MAX) {
-        ctx_fail(c, "That's %d screens already - remove one first", SCREENS_MAX);
+        ctx_fail(c, T("That's %d screens already - remove one first"), SCREENS_MAX);
         return;
     }
     s.kind = str_eq(fields_str(f, "kind"), "wall") ? SCREEN_WALL : SCREEN_TV;
@@ -456,7 +458,7 @@ static void act_create(Ctx *c, Fields *f) {
     s.created_by = c->me->id;
     tbl_put(&T_screen, &s);
     display_default();
-    ctx_ok(c, "%s is ready for its rows", s.name);
+    ctx_ok(c, T("%s is ready for its rows"), s.name);
     ctx_redirect(c, "/screens/%d/edit", s.id);
 }
 
@@ -467,7 +469,7 @@ static void act_save(Ctx *c, Fields *f) {
     Screen rec = *s;
     if (!name_arg(c, f, rec.name, sizeof rec.name)) return;
     tbl_put(&T_screen, &rec);
-    ctx_ok(c, "Saved");
+    ctx_ok(c, "%s", T("Saved"));
 }
 
 static void act_delete(Ctx *c, Fields *f) {
@@ -487,7 +489,7 @@ static void act_delete(Ctx *c, Fields *f) {
     tbl_del(&T_screen, id);
     display_default();
     forget_viewers();
-    ctx_ok(c, "%s is gone", name);
+    ctx_ok(c, T("%s is gone"), name);
     ctx_redirect(c, "/screens");
 }
 
@@ -500,13 +502,13 @@ static void act_row_add(Ctx *c, Fields *f) {
     const Module *owner = NULL;
     const Block *bl = block_find(id, &owner);
     if (!bl || !(bl->kinds & kind)) {
-        ctx_fail(c, "That row isn't available here");
+        ctx_fail(c, "%s", T("That row isn't available here"));
         return;
     }
     ScreenRow *rows[SCREENS_MAX_ROWS];
     int n = screen_rows(screen, rows, SCREENS_MAX_ROWS);
     if (n >= SCREENS_MAX_ROWS) {
-        ctx_fail(c, "A screen holds %d rows at most", SCREENS_MAX_ROWS);
+        ctx_fail(c, T("A screen holds %d rows at most"), SCREENS_MAX_ROWS);
         return;
     }
     ScreenRow r = {0};
@@ -515,7 +517,7 @@ static void act_row_add(Ctx *c, Fields *f) {
     r.pos = n ? rows[n - 1]->pos + 1 : 1;
     str_copy(r.block, sizeof r.block, bl->id);
     tbl_put(&T_screen_row, &r);
-    ctx_ok(c, "Added %s", bl->title);
+    ctx_ok(c, T("Added %s"), T(bl->title)); /* (block titles: their modules' N_() words) */
 }
 
 static void act_row_save(Ctx *c, Fields *f) {
@@ -528,7 +530,7 @@ static void act_row_save(Ctx *c, Fields *f) {
     const Block *bl = block_find(rec.block, NULL);
     if (bl && bl->choices && fields_get(f, "arg") && !pick_arg(c, bl, fields_str(f, "arg"), rec.arg)) return;
     tbl_put(&T_screen_row, &rec);
-    ctx_ok(c, "Saved");
+    ctx_ok(c, "%s", T("Saved"));
 }
 
 static void act_row_move(Ctx *c, Fields *f) {
@@ -557,7 +559,7 @@ static void act_row_remove(Ctx *c, Fields *f) {
     int screen = r->screen;
     tbl_del(&T_screen_row, r->id);
     renumber(screen);
-    ctx_ok(c, "Removed");
+    ctx_ok(c, "%s", T("Removed"));
 }
 
 /* "Shows on": every ticked display account opens this screen at its "/" (one screen each, so a
@@ -577,7 +579,7 @@ static void act_shows(Ctx *c, Fields *f) {
         else if (str_eq(pref(id, PREF_START, ""), url)) pref_set(id, PREF_START, "");
     }
     forget_viewers();
-    ctx_ok(c, "Saved");
+    ctx_ok(c, "%s", T("Saved"));
 }
 
 static const Action actions[] = {
@@ -671,7 +673,7 @@ static void tick(int64_t now) {
 
 static const Module screens = {
     .id = "screens",
-    .title = "Screens",
+    .title = N_("Screens"),
     .icon = "monitor",
     .flags = MOD_NO_GUEST, /* (the household's TV and walls: not a guest's - issue #44) */
     .nav = 85, /* after the household's sections, before Household and System */

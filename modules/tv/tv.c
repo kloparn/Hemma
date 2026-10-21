@@ -172,7 +172,9 @@ static void ep_code(Buf *b, const MediaFile *f) {
     if (f->name.episode_end > f->name.episode) H(b, "-E%02d", f->name.episode_end);
 }
 
-static void prog_title(Buf *b, const MediaFile *f) { html_esc(b, f ? f->name.title : "Unknown"); }
+static const char *prog_name(const MediaFile *f) { return f ? f->name.title : T("Unknown programme"); }
+
+static void prog_title(Buf *b, const MediaFile *f) { html_esc(b, prog_name(f)); }
 
 static void prog_sub(Buf *b, const MediaFile *f) {
     if (!f) return;
@@ -192,9 +194,20 @@ static int bp(int64_t part, int64_t whole) { /* basis points, 0..10000 */
 static void pct(Buf *b, int basis) { H(b, "%d.%02d%%", basis / 100, basis % 100); }
 
 static void left(Buf *b, int64_t seconds) {
-    if (seconds < 60) buf_puts(b, "less than a minute");
-    else ui_duration(b, seconds);
-    buf_puts(b, " left");
+    if (seconds < 60) {
+        buf_puts(b, T("less than a minute left"));
+        return;
+    }
+    Buf d = {0};
+    ui_duration(&d, seconds);
+    H(b, T("%s left"), buf_cstr(&d));
+    buf_free(&d);
+}
+
+/* "20:30" for a sentence's %s */
+static const char *hm_of(int64_t t, char out[6]) {
+    fmt_hm(t, out);
+    return out;
 }
 
 /* "Now: …" line + progress for a channel, used by the list and widgets */
@@ -208,31 +221,34 @@ static bool channel_now(const Channel *ch, int64_t now, TvSlot *s, const MediaFi
 
 static void no_library(Ctx *c, Buf *b) {
     if (!is_admin(c)) { /* Library settings are an admin's (issue #58) */
-        ui_empty(b, "📼", "Nothing to broadcast yet", "TV channels air the series and movies from your library.");
-        buf_puts(b, "<p class=\"center muted\">Ask ");
-        ui_admins(b);
-        buf_puts(b, " to add the folders with your movies and series.</p>");
+        ui_empty(b, "📼", T("Nothing to broadcast yet"), T("TV channels air the series and movies from your library."));
+        Buf who = {0};
+        ui_admins(&who); /* (HTML: names escaped) */
+        buf_puts(b, "<p class=\"center muted\">");
+        H(b, T("Ask %r to add the folders with your movies and series."), buf_cstr(&who));
+        buf_puts(b, "</p>");
+        buf_free(&who);
         return;
     }
-    ui_empty(b, "📼", "Nothing to broadcast yet",
-             "TV channels air the series and movies from your library. Point Hemma at your drive first.");
-    buf_puts(b, "<p class=\"center\"><a class=\"btn primary\" href=\"/media/settings\">Set up the library</a></p>");
+    ui_empty(b, "📼", T("Nothing to broadcast yet"),
+             T("TV channels air the series and movies from your library. Point Hemma at your drive first."));
+    H(b, "<p class=\"center\"><a class=\"btn primary\" href=\"/media/settings\">%s</a></p>", T("Set up the library"));
 }
 
 static void channel_form(Ctx *c, Buf *b, const Channel *ch) {
     const MediaIndex *ix = media_lib();
-    ui_modal(b, ch ? "Edit channel" : "New channel", ch ? "/tv" : "/tv");
+    ui_modal(b, ch ? T("Edit channel") : T("New channel"), ch ? "/tv" : "/tv");
     ui_form(b, "tv.save", "stack");
     if (ch) ui_hidden_int(b, "id", ch->id);
     H(b,
-      "<div class=\"field-row\"><label class=\"field tv-f-num\"><span>Channel</span><input type=\"number\" "
+      "<div class=\"field-row\"><label class=\"field tv-f-num\"><span>%s</span><input type=\"number\" "
       "name=\"number\" min=\"1\" max=\"99\" required value=\"%d\"></label><label class=\"field tv-f-name\">"
-      "<span>Name</span><input name=\"name\" maxlength=\"36\" value=\"%s\" placeholder=\"Sitcoms, Kids, Late "
-      "night…\"%r></label></div>",
-      ch ? ch->number : next_free_number(), ch ? ch->name : "", ch ? "" : " autofocus");
-    H(b, "<div class=\"field\"><span>What's on</span><label class=\"tv-check\"><input type=\"checkbox\" name=\"all\" "
-         "value=\"1\"%r> <b>Every series</b> <small class=\"muted\">new ones join automatically</small></label>",
-      ch && ch->all_series ? " checked" : "");
+      "<span>%s</span><input name=\"name\" maxlength=\"36\" value=\"%s\" placeholder=\"%s\"%r></label></div>",
+      T("Channel"), ch ? ch->number : next_free_number(), T("Name"), ch ? ch->name : "",
+      T("Sitcoms, Kids, Late night…"), ch ? "" : " autofocus");
+    H(b, "<div class=\"field\"><span>%s</span><label class=\"tv-check\"><input type=\"checkbox\" name=\"all\" "
+         "value=\"1\"%r> <b>%s</b> <small class=\"muted\">%s</small></label>",
+      T("What's on"), ch && ch->all_series ? " checked" : "", T("Every series"), T("new ones join automatically"));
     if (ix->nseries) {
         buf_puts(b, "<div class=\"tv-shows\">");
         for (int i = 0; i < ix->nseries; i++) {
@@ -240,36 +256,39 @@ static void channel_form(Ctx *c, Buf *b, const Channel *ch) {
             int ok = 0, d;
             for (int e = 0; e < s->count; e++) ok += airable(media_episode(s, e), &d);
             H(b, "<label class=\"tv-check\"><input type=\"checkbox\" name=\"show\" value=\"%X\"%r> %s <small "
-                 "class=\"muted\">%d episode%r</small></label>",
-              s->id, ch && has_show(ch, s->id) ? " checked" : "", s->title, ok, ok == 1 ? "" : "s");
+                 "class=\"muted\">",
+              s->id, ch && has_show(ch, s->id) ? " checked" : "", s->title);
+            H(b, TN(ok, "%d episode", "%d episodes"), ok);
+            buf_puts(b, "</small></label>");
         }
         buf_puts(b, "</div>");
     }
-    H(b, "<label class=\"tv-check\"><input type=\"checkbox\" name=\"movies\" value=\"1\"%r> Movies too</label></div>",
-      ch && ch->movies ? " checked" : "");
+    H(b, "<label class=\"tv-check\"><input type=\"checkbox\" name=\"movies\" value=\"1\"%r> %s</label></div>",
+      ch && ch->movies ? " checked" : "", T("Movies too"));
     bool shuffle = ch && ch->order == TV_SHUFFLE, half = !ch || ch->align == TV_ALIGN_HALF_HOUR;
     H(b,
-      "<div class=\"field\"><span>Order</span><div class=\"tv-opts\"><label class=\"tv-opt\"><input type=\"radio\" "
-      "name=\"order\" value=\"rotate\"%r><span><b>Take turns</b><small>Show A, show B, show A …</small></span></label>"
-      "<label class=\"tv-opt\"><input type=\"radio\" name=\"order\" value=\"shuffle\"%r><span><b>Shuffle</b><small>A "
-      "surprise every time</small></span></label></div></div>",
-      shuffle ? "" : " checked", shuffle ? " checked" : "");
+      "<div class=\"field\"><span>%s</span><div class=\"tv-opts\"><label class=\"tv-opt\"><input type=\"radio\" "
+      "name=\"order\" value=\"rotate\"%r><span><b>%s</b><small>%s</small></span></label>"
+      "<label class=\"tv-opt\"><input type=\"radio\" name=\"order\" value=\"shuffle\"%r><span><b>%s</b><small>%s"
+      "</small></span></label></div></div>",
+      T("Order"), shuffle ? "" : " checked", T("Take turns"), T("Show A, show B, show A …"), shuffle ? " checked" : "",
+      T("Shuffle"), T("A surprise every time"));
     H(b,
-      "<div class=\"field\"><span>Timing</span><div class=\"tv-opts\"><label class=\"tv-opt\"><input type=\"radio\" "
-      "name=\"align\" value=\"half\"%r><span><b>On the half hour</b><small>Shows start at :00 and :30, like real "
-      "TV</small></span></label><label class=\"tv-opt\"><input type=\"radio\" name=\"align\" value=\"none\"%r><span>"
-      "<b>Back to back</b><small>No breaks between shows</small></span></label></div></div>",
-      half ? " checked" : "", half ? "" : " checked");
-    buf_puts(b, "<div class=\"field\"><span>Colour</span>");
+      "<div class=\"field\"><span>%s</span><div class=\"tv-opts\"><label class=\"tv-opt\"><input type=\"radio\" "
+      "name=\"align\" value=\"half\"%r><span><b>%s</b><small>%s</small></span></label><label class=\"tv-opt\"><input "
+      "type=\"radio\" name=\"align\" value=\"none\"%r><span><b>%s</b><small>%s</small></span></label></div></div>",
+      T("Timing"), half ? " checked" : "", T("On the half hour"), T("Shows start at :00 and :30, like real TV"),
+      half ? "" : " checked", T("Back to back"), T("No breaks between shows"));
+    H(b, "<div class=\"field\"><span>%s</span>", T("Colour"));
     ui_hue_picker(b, "hue", ch ? ch->hue : 150);
-    buf_puts(b, "</div><div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>");
+    H(b, "</div><div class=\"modal-f\"><button class=\"btn primary\">%s</button></div>", T("Save"));
     ui_form_end(b);
     if (ch) {
         Buf q = {0};
-        buf_printf(&q, "Take channel %d off the air?", ch->number);
+        buf_printf(&q, T("Take channel %d off the air?"), ch->number);
         ui_form_confirm(b, "tv.delete", "danger-zone", buf_cstr(&q));
         ui_hidden_int(b, "id", ch->id);
-        buf_puts(b, "<button class=\"btn danger\">Delete channel</button>");
+        H(b, "<button class=\"btn danger\">%s</button>", T("Delete channel"));
         ui_form_end(b);
         buf_free(&q);
     }
@@ -278,9 +297,10 @@ static void channel_form(Ctx *c, Buf *b, const Channel *ch) {
 
 static void guide(Ctx *c, Buf *b, Channel **chs, int n) {
     int64_t from = c->now / TV_SLOT_S * TV_SLOT_S, to = from + 3 * 3600, span = to - from;
-    buf_puts(b, "<section class=\"card tv-guide\"><header class=\"card-h\"><h2>TV guide</h2></header>"
-                "<div class=\"tv-g-scroll\"><div class=\"tv-g\"><div class=\"tv-g-row tv-g-head\"><span></span>"
-                "<div class=\"tv-g-times\">");
+    H(b, "<section class=\"card tv-guide\"><header class=\"card-h\"><h2>%s</h2></header>"
+         "<div class=\"tv-g-scroll\"><div class=\"tv-g\"><div class=\"tv-g-row tv-g-head\"><span></span>"
+         "<div class=\"tv-g-times\">",
+      T("TV guide"));
     for (int64_t t = from; t < to; t += TV_SLOT_S) {
         H(b, "<span style=\"--x:");
         pct(b, bp(t - from, span));
@@ -322,7 +342,7 @@ static void guide(Ctx *c, Buf *b, Channel **chs, int n) {
                 buf_puts(b, "\"></span>");
             }
         }
-        if (!k) buf_puts(b, "<span class=\"tv-g-off\">No signal</span>");
+        if (!k) H(b, "<span class=\"tv-g-off\">%s</span>", T("No signal"));
         buf_puts(b, "<i class=\"tv-g-nowline\" style=\"--x:");
         pct(b, bp(c->now - from, span));
         buf_puts(b, "\"></i></span></a>");
@@ -331,7 +351,7 @@ static void guide(Ctx *c, Buf *b, Channel **chs, int n) {
 }
 
 static void overview(Ctx *c, Buf *b) {
-    ctx_title(c, "Live TV");
+    ctx_title(c, "%s", T("Live TV"));
     Channel *chs[MAX_CHANNELS];
     int n = channel_list(c, chs, MAX_CHANNELS);
     const MediaIndex *ix = media_lib();
@@ -340,24 +360,24 @@ static void overview(Ctx *c, Buf *b) {
     if (can_edit(c) && n && library && next_free_number()) {
         buf_puts(&add, "<a class=\"btn\" href=\"/tv?new=1\">");
         ui_icon(&add, "plus");
-        buf_puts(&add, "<span>New channel</span></a>");
+        H(&add, "<span>%s</span></a>", T("New channel"));
     }
-    media_lib_head(c, b, "tv", "Live TV", "Always on — tune in like it's 1996", add.len ? buf_cstr(&add) : NULL);
+    media_lib_head(c, b, "tv", T("Live TV"), T("Always on — tune in like it's 1996"), add.len ? buf_cstr(&add) : NULL);
     buf_free(&add);
     if (!library && !n) {
         no_library(c, b);
         return;
     }
     if (!n) {
-        ui_empty(b, "📺", "Start your first channel",
-                 "A channel plays your series in a loop that never stops. Everyone who tunes in sees the same "
-                 "moment — like TV used to be.");
+        ui_empty(b, "📺", T("Start your first channel"),
+                 T("A channel plays your series in a loop that never stops. Everyone who tunes in sees the same "
+                   "moment — like TV used to be."));
         if (can_edit(c)) {
             buf_puts(b, "<div class=\"tv-start\">");
             ui_form(b, "tv.quick", "inline");
-            buf_puts(b, "<button class=\"btn primary big\">Channel 1 · Everything</button>");
+            H(b, "<button class=\"btn primary big\">%s</button>", T("Channel 1 · Everything"));
             ui_form_end(b);
-            buf_puts(b, "<a class=\"btn big\" href=\"/tv?new=1\">Choose shows…</a></div>");
+            H(b, "<a class=\"btn big\" href=\"/tv?new=1\">%s</a></div>", T("Choose shows…"));
         }
     } else {
         buf_puts(b, "<div class=\"tv-list\">");
@@ -372,21 +392,20 @@ static void overview(Ctx *c, Buf *b) {
                  "class=\"tv-num\">%02d</span><span class=\"tv-ch-main\"><b>%s</b>",
               ch->hue, ch->number, key, ch->number, ch->name);
             if (!on) {
-                buf_puts(b, "<span class=\"tv-now muted\">No signal</span>");
+                H(b, "<span class=\"tv-now muted\">%s</span>", T("No signal"));
             } else if (s.gap) {
                 const MediaFile *nf = NULL;
                 TvSlot nx;
                 if (channel_now(ch, s.next, &nx, &nf)) {
-                    buf_puts(b, "<span class=\"tv-now\">Intermission · next ");
-                    prog_title(b, nf);
-                    buf_puts(b, " at ");
-                    ui_hm(b, s.next);
+                    char hm[6];
+                    buf_puts(b, "<span class=\"tv-now\">");
+                    H(b, T("Intermission · next %s at %s"), prog_name(nf), hm_of(s.next, hm));
                     buf_puts(b, "</span>");
                 }
             } else {
-                buf_puts(b, "<span class=\"tv-now\">Now: <b>");
-                prog_title(b, f);
-                buf_puts(b, "</b> ");
+                buf_puts(b, "<span class=\"tv-now\">");
+                H(b, T("Now: <b>%s</b>"), prog_name(f));
+                buf_puts(b, " ");
                 prog_sub(b, f);
                 buf_puts(b, "</span><span class=\"tv-bar\"><i style=\"width:");
                 pct(b, bp(c->now - s.start, s.end - s.start));
@@ -396,7 +415,9 @@ static void overview(Ctx *c, Buf *b) {
             }
             buf_puts(b, "</span></a>");
             if (can_edit(c)) {
-                H(b, "<a class=\"icon-btn\" href=\"/tv?edit=%d\" aria-label=\"Edit channel %d\">", ch->id, ch->number);
+                char label[64];
+                snprintf(label, sizeof label, T("Edit channel %d"), ch->number);
+                H(b, "<a class=\"icon-btn\" href=\"/tv?edit=%d\" aria-label=\"%s\">", ch->id, label);
                 ui_icon(b, "edit");
                 buf_puts(b, "</a>");
             }
@@ -435,28 +456,33 @@ static void screen(Ctx *c, Buf *b, const Channel *ch, const TvPlan *p, const cha
           "<video id=\"tv-video\" class=\"tv-video\" src=\"%s\" autoplay playsinline preload=\"auto\" "
           "data-static=\"%s\" data-onair data-resume=\"%L\" data-next=\"/tv/%d%r\"></video>",
           src, key, (long long)s.offset, ch->number, tvq);
-        char hm[6], trouble[120];
+        char hm[6], trouble[160];
         fmt_hm(s.end, hm);
-        snprintf(trouble, sizeof trouble, "This programme won't play on this screen. The next one starts at %s.", hm);
+        snprintf(trouble, sizeof trouble, T("This programme won't play on this screen. The next one starts at %s."),
+                 hm);
         UiPlayer pl = {.box = "tv-screen", .video = "tv-video", .key = key, .live = true, .focus_sound = *tvq != 0,
                        .tv = *tvq != 0, .trouble = trouble};
         ui_player(b, &pl);
     } else if (on) {
         TvSlot nx;
         const MediaFile *nf = tv_now(p, ch->epoch, s.next, &nx) ? media_file(nx.file) : NULL;
-        H(b, "<div class=\"tv-card tv-bars\" id=\"tv-i-%d-%L\"><div class=\"tv-card-box\"><small>Up next at ", ch->number,
+        char hm[6];
+        H(b, "<div class=\"tv-card tv-bars\" id=\"tv-i-%d-%L\"><div class=\"tv-card-box\"><small>", ch->number,
           (long long)s.next);
-        ui_hm(b, s.next);
+        H(b, T("Up next at %s"), hm_of(s.next, hm));
         buf_puts(b, "</small><b>");
         prog_title(b, nf);
         buf_puts(b, "</b><span>");
         prog_sub(b, nf);
         buf_puts(b, "</span></div></div>");
     } else {
-        buf_puts(b, "<div class=\"tv-card tv-snow\"><div class=\"tv-card-box\"><b>No signal</b><span>");
-        if (p->skipped) buf_printf(b, "%d video%s here can't be aired (unknown length or won't play in browsers).",
-                                   p->skipped, p->skipped == 1 ? "" : "s");
-        else buf_puts(b, "This channel has nothing to air yet.");
+        H(b, "<div class=\"tv-card tv-snow\"><div class=\"tv-card-box\"><b>%s</b><span>", T("No signal"));
+        if (p->skipped)
+            buf_printf(b,
+                       TN(p->skipped, "%d video here can't be aired (unknown length or won't play in browsers).",
+                          "%d videos here can't be aired (unknown length or won't play in browsers)."),
+                       p->skipped);
+        else buf_puts(b, T("This channel has nothing to air yet."));
         buf_puts(b, "</span></div></div>");
     }
     /* (no scan lines over the picture any more - owner, 2026-10-14: they cost the show its quality;
@@ -481,18 +507,17 @@ static void channel_page(Ctx *c, Buf *b, Channel *ch) {
         if (chs[i]->id == ch->id) at = i;
     const Channel *down = chs[(at + n - 1) % n], *up = chs[(at + 1) % n];
 
-    char sub[32];
-    snprintf(sub, sizeof sub, "Channel %d", ch->number);
+    char sub[64];
+    snprintf(sub, sizeof sub, T("Channel %d"), ch->number);
     media_lib_head(c, b, "tv", ch->name, sub, NULL);
     H(b, "<div class=\"tv-room\" style=\"--h:%d\"><div class=\"tv-set\">", ch->hue);
     screen(c, b, ch, p, "");
-    H(b, "<div class=\"tv-knobs\"><a class=\"tv-knob\" href=\"/tv/%d\" data-key=\"ArrowDown\" aria-label=\"Channel "
-         "down\">",
-      down->number);
+    H(b, "<div class=\"tv-knobs\"><a class=\"tv-knob\" href=\"/tv/%d\" data-key=\"ArrowDown\" aria-label=\"%s\">",
+      down->number, T("Channel down"));
     ui_icon(b, "left");
     H(b, "</a><span class=\"tv-brand\"><span class=\"tv-num\">%02d</span> %s</span><a class=\"tv-knob\" href=\"/tv/%d\" "
-         "data-key=\"ArrowUp\" aria-label=\"Channel up\">",
-      ch->number, ch->name, up->number);
+         "data-key=\"ArrowUp\" aria-label=\"%s\">",
+      ch->number, ch->name, up->number, T("Channel up"));
     ui_icon(b, "right");
     buf_puts(b, "</a></div></div>");
 
@@ -502,7 +527,7 @@ static void channel_page(Ctx *c, Buf *b, Channel *ch) {
     if (tv_now(p, ch->epoch, c->now, &s)) {
         const MediaFile *f = media_file(s.file);
         if (!s.gap) {
-            buf_puts(b, "<p class=\"tv-label\">On now</p><h2>");
+            H(b, "<p class=\"tv-label\">%s</p><h2>", T("On now"));
             prog_title(b, f);
             buf_puts(b, "</h2><p class=\"muted\">");
             prog_sub(b, f);
@@ -514,13 +539,14 @@ static void channel_page(Ctx *c, Buf *b, Channel *ch) {
             left(b, s.end - c->now);
             buf_puts(b, "</p>");
         } else {
-            buf_puts(b, "<p class=\"tv-label\">Intermission</p><p class=\"muted\">Back at ");
-            ui_hm(b, s.next);
+            char hm[6];
+            H(b, "<p class=\"tv-label\">%s</p><p class=\"muted\">", T("Intermission"));
+            H(b, T("Back at %s"), hm_of(s.next, hm));
             buf_puts(b, "</p>");
         }
         TvSlot up_next[8];
         int k = tv_window(p, ch->epoch, c->now, c->now + 6 * 3600, up_next, countof(up_next));
-        buf_puts(b, "<p class=\"tv-label\">Coming up</p><ul class=\"tv-up\">");
+        H(b, "<p class=\"tv-label\">%s</p><ul class=\"tv-up\">", TC("tv", "Coming up"));
         int shown = 0;
         for (int i = 0; i < k && shown < 5; i++) {
             if (up_next[i].start <= c->now) continue;
@@ -534,25 +560,29 @@ static void channel_page(Ctx *c, Buf *b, Channel *ch) {
             buf_puts(b, "</small></span></li>");
             shown++;
         }
-        if (!shown) buf_puts(b, "<li class=\"muted\">More of the same.</li>");
+        if (!shown) H(b, "<li class=\"muted\">%s</li>", T("More of the same."));
         buf_puts(b, "</ul>");
     } else {
-        buf_puts(b, "<p class=\"muted\">Nothing to air on this channel yet.</p>");
+        H(b, "<p class=\"muted\">%s</p>", T("Nothing to air on this channel yet."));
     }
-    if (p->skipped)
-        H(b, "<p class=\"muted small\">%d video%r left out: unknown length, or browsers can't play them.</p>", p->skipped,
-          p->skipped == 1 ? "" : "s");
+    if (p->skipped) {
+        buf_puts(b, "<p class=\"muted small\">");
+        H(b, TN(p->skipped, "%d video left out: unknown length, or browsers can't play them.",
+                "%d videos left out: unknown length, or browsers can't play them."),
+          p->skipped);
+        buf_puts(b, "</p>");
+    }
     buf_puts(b, "<div class=\"tv-actions\"><a class=\"btn\" href=\"/tv\">");
     ui_icon(b, "list");
-    buf_puts(b, "<span>Guide</span></a>");
+    H(b, "<span>%s</span></a>", T("Guide"));
     if (can_edit(c)) {
         H(b, "<a class=\"btn ghost\" href=\"/tv?edit=%d\">", ch->id);
         ui_icon(b, "edit");
-        buf_puts(b, "<span>Edit</span></a>");
+        H(b, "<span>%s</span></a>", T("Edit"));
     }
     buf_puts(b, "</div>");
     /* the remote: 1-9 tune straight in */
-    buf_puts(b, "<nav class=\"tv-remote\" aria-label=\"Channels\">");
+    H(b, "<nav class=\"tv-remote\" aria-label=\"%s\">", T("Channels"));
     for (int i = 0; i < n; i++) {
         H(b, "<a class=\"tv-num%r\" href=\"/tv/%d\"", chs[i]->id == ch->id ? " on" : "", chs[i]->number);
         if (chs[i]->number <= 9) H(b, " data-key=\"%d\"", chs[i]->number);
@@ -584,8 +614,8 @@ static void channel_tv(Ctx *c, Buf *b, Channel *ch) {
     buf_puts(b, "</div>");
 
     H(b, "<div class=\"tv-full-bar\" style=\"--h:%d\"><a class=\"tv-knob\" href=\"/tv/%d%r\" data-key=\"ArrowDown\" "
-         "aria-label=\"Channel down\">",
-      ch->hue, down->number, tvq);
+         "aria-label=\"%s\">",
+      ch->hue, down->number, tvq, T("Channel down"));
     ui_icon(b, "left");
     H(b, "</a><div class=\"tv-full-now\"><span class=\"tv-num\" style=\"--h:%d\">%02d</span><div><b>%s</b>", ch->hue,
       ch->number, ch->name);
@@ -603,17 +633,18 @@ static void channel_tv(Ctx *c, Buf *b, Channel *ch) {
             pct(b, bp(c->now - s.start, s.end - s.start));
             buf_puts(b, "\"></i></span>");
         } else {
-            buf_puts(b, "<span>Intermission · back at ");
-            ui_hm(b, s.next);
+            char hm[6];
+            buf_puts(b, "<span>");
+            H(b, T("Intermission · back at %s"), hm_of(s.next, hm));
             buf_puts(b, "</span>");
         }
     } else {
-        buf_puts(b, "<span>No signal</span>");
+        H(b, "<span>%s</span>", T("No signal"));
     }
-    H(b, "</div></div><a class=\"tv-knob\" href=\"/tv/%d%r\" data-key=\"ArrowUp\" aria-label=\"Channel up\">", up->number,
-      tvq);
+    H(b, "</div></div><a class=\"tv-knob\" href=\"/tv/%d%r\" data-key=\"ArrowUp\" aria-label=\"%s\">", up->number, tvq,
+      T("Channel up"));
     ui_icon(b, "right");
-    buf_puts(b, "</a></div><nav class=\"tv-full-remote\" aria-label=\"Channels\">");
+    H(b, "</a></div><nav class=\"tv-full-remote\" aria-label=\"%s\">", T("Channels"));
     for (int i = 0; i < n; i++) {
         H(b, "<a class=\"tv-num%r\" href=\"/tv/%d%r\" style=\"--h:%d\"", chs[i]->id == ch->id ? " on" : "", chs[i]->number,
           tvq, chs[i]->hue);
@@ -632,12 +663,12 @@ static void page(Ctx *c, Buf *b) {
         if (ch && media_tv_mode(c)) channel_tv(c, b, ch);
         if (ch && !media_tv_mode(c)) channel_page(c, b, ch);
         if (ch) return;
-        ctx_title(c, "Live TV");
+        ctx_title(c, "%s", T("Live TV"));
         if (media_tv_mode(c)) media_tv_open(c, b, NULL, NULL);
-        else media_lib_head(c, b, "tv", "Live TV", NULL, NULL);
-        ui_empty(b, "📡", "No such channel", "That channel isn't on the air.");
+        else media_lib_head(c, b, "tv", T("Live TV"), NULL, NULL);
+        ui_empty(b, "📡", T("No such channel"), T("That channel isn't on the air."));
         if (c->bare) buf_puts(b, "</div>");
-        else buf_puts(b, "<p class=\"center\"><a class=\"btn\" href=\"/tv\">All channels</a></p>");
+        else H(b, "<p class=\"center\"><a class=\"btn\" href=\"/tv\">%s</a></p>", T("All channels"));
         return;
     }
     overview(c, b);
@@ -651,25 +682,27 @@ static void act_save(Ctx *c, Fields *f) {
     if (id) {
         Channel *old = tbl_get(&T_tv_channel, id);
         if (!old) {
-            ctx_fail(c, "That channel is gone");
+            ctx_fail(c, "%s", T("That channel is gone"));
             return;
         }
         ch = *old;
     }
     long long number = fields_int(f, "number", 0);
     if (number < 1 || number > MAX_CHANNELS) {
-        ctx_fail_at(c, "number", "Channel numbers go from 1 to %d", MAX_CHANNELS);
+        ctx_fail_at(c, "number", T("Channel numbers go from 1 to %d"), MAX_CHANNELS);
         return;
     }
     Channel *other = tv_channel_by_number((int)number);
     if (other && other->id != ch.id) {
-        ctx_fail_at(c, "number", "Channel %lld is already %s", number, other->name);
+        ctx_fail_at(c, "number", T("Channel %lld is already %s"), number, other->name);
         return;
     }
     char name[64];
     str_copy(name, sizeof name, fields_str(f, "name"));
     str_trim(name);
-    if (!name[0]) snprintf(name, sizeof name, "Channel %lld", number);
+    /* (a name made for whoever made the channel, in their words - as if they had typed it: it's the channel's
+       name from then on) */
+    if (!name[0]) snprintf(name, sizeof name, T("Channel %lld"), number);
     Buf shows = {0};
     for (int i = 0; i < f->n; i++) {
         uint64_t sid;
@@ -684,7 +717,7 @@ static void act_save(Ctx *c, Fields *f) {
     bool all = fields_get(f, "all") != NULL, movies = fields_get(f, "movies") != NULL;
     if (!all && !movies && !shows.len) {
         buf_free(&shows);
-        ctx_fail(c, "Pick at least one show — or every series");
+        ctx_fail(c, "%s", T("Pick at least one show — or every series"));
         return;
     }
     ch.number = (int)number;
@@ -706,12 +739,12 @@ static void act_save(Ctx *c, Fields *f) {
     }
     tbl_put(&T_tv_channel, &ch);
     if (!id) {
-        activity_add(ch.created_by, "📺", "/tv", "%s started channel %d · %s", c->me ? c->me->name : "Someone",
+        activity_add(ch.created_by, "📺", "/tv", N_("%s started channel %d · %s"), c->me ? c->me->name : "Someone",
                      ch.number, ch.name);
-        ctx_ok(c, "Channel %d is on the air", ch.number);
+        ctx_ok(c, T("Channel %d is on the air"), ch.number);
         ctx_redirect(c, "/tv/%d", ch.number);
     } else {
-        ctx_ok(c, "Saved channel %d", ch.number);
+        ctx_ok(c, T("Saved channel %d"), ch.number);
         ctx_redirect(c, "/tv");
     }
 }
@@ -719,26 +752,26 @@ static void act_save(Ctx *c, Fields *f) {
 static void act_delete(Ctx *c, Fields *f) {
     Channel *ch = tbl_get(&T_tv_channel, (int)fields_int(f, "id", 0));
     if (!ch) {
-        ctx_fail(c, "That channel is gone");
+        ctx_fail(c, "%s", T("That channel is gone"));
         return;
     }
     int number = ch->number;
     tbl_del(&T_tv_channel, ch->id);
-    ctx_ok(c, "Channel %d is off the air", number);
+    ctx_ok(c, T("Channel %d is off the air"), number);
     ctx_redirect(c, "/tv");
 }
 
 static void act_quick(Ctx *c, Fields *f) {
     int number = next_free_number();
     if (!number) {
-        ctx_fail(c, "Every channel number is taken");
+        ctx_fail(c, "%s", T("Every channel number is taken"));
         return;
     }
     Fields g = {0};
     char num[8];
     snprintf(num, sizeof num, "%d", number);
     fields_add(&g, "number", num);
-    fields_add(&g, "name", "Everything");
+    fields_add(&g, "name", T("Everything")); /* (the channel's name from then on: in its maker's words) */
     fields_add(&g, "all", "1");
     fields_add(&g, "movies", "1");
     fields_add(&g, "order", "rotate");
@@ -756,14 +789,14 @@ static void widget(Ctx *c, Buf *b, int where) {
     if (!n) {
         const MediaIndex *ix = media_lib();
         if (where == WIDGET_HOME && ix->nseries && c->me && c->me->role != ROLE_DISPLAY) { /* (a hint: people only) */
-            ui_card(b, "Live TV", "/tv", "Start");
-            buf_puts(b, "<p class=\"muted\">Turn your series into channels that never stop — <a href=\"/tv\">start "
-                        "one</a>.</p>");
+            ui_card(b, T("Live TV"), "/tv", T("Start"));
+            H(b, "<p class=\"muted\">%r</p>",
+              T("Turn your series into channels that never stop — <a href=\"/tv\">start one</a>."));
             ui_card_end(b);
         }
         return;
     }
-    ui_card(b, "On TV now", "/tv", "Guide");
+    ui_card(b, T("On TV now"), "/tv", T("Guide"));
     buf_puts(b, "<ul class=\"tv-w\">");
     for (int i = 0; i < n && i < 4; i++) {
         Channel *ch = chs[i];
@@ -773,27 +806,23 @@ static void widget(Ctx *c, Buf *b, int where) {
         H(b, "<li><a href=\"/tv/%d\" style=\"--h:%d\"><span class=\"tv-num\">%02d</span><span class=\"tv-w-t\">",
           ch->number, ch->hue, ch->number);
         if (!on) {
-            buf_puts(b, "<span class=\"muted\">No signal</span>");
+            H(b, "<span class=\"muted\">%s</span>", T("No signal"));
         } else if (s.gap) {
             TvSlot nx;
             const MediaFile *nf = NULL;
-            buf_puts(b, "<span class=\"muted\">Next");
-            if (channel_now(ch, s.next, &nx, &nf)) {
-                buf_puts(b, ": </span><b>");
-                prog_title(b, nf);
-                buf_puts(b, "</b> <small>at ");
-                ui_hm(b, s.next);
-                buf_puts(b, "</small>");
-            } else {
-                buf_puts(b, "</span>");
-            }
+            char hm[6];
+            if (channel_now(ch, s.next, &nx, &nf))
+                H(b, T("<span class=\"muted\">Next: </span><b>%s</b> <small>at %s</small>"), prog_name(nf),
+                  hm_of(s.next, hm));
+            else H(b, "<span class=\"muted\">%s</span>", T("Up next"));
         } else {
+            char hm[6];
             buf_puts(b, "<b>");
             prog_title(b, f);
             buf_puts(b, "</b> <small>");
             prog_sub(b, f);
-            buf_puts(b, " · until ");
-            ui_hm(b, s.end);
+            buf_puts(b, " · ");
+            H(b, TC("time", "until %s"), hm_of(s.end, hm));
             buf_puts(b, "</small>");
         }
         buf_puts(b, "</span></a></li>");
@@ -848,8 +877,9 @@ static bool row_onnow(Ctx *c, Buf *b, int kind, const char *arg) {
         }
         H(&row, "<span class=\"tv-num tv-tile-n\" style=\"--h:%d\">%02d</span>", ch->hue, ch->number);
         if (s.gap) {
-            buf_puts(&row, "<span class=\"tv-tile-up\">Up next · ");
-            ui_hm(&row, s.next);
+            char hm[6];
+            buf_puts(&row, "<span class=\"tv-tile-up\">");
+            H(&row, T("Up next · %s"), hm_of(s.next, hm));
             buf_puts(&row, "</span>");
         } else { /* how far into the programme, along the foot of the picture */
             H(&row, "<span class=\"tile-bar\"><i style=\"width:%d%%\"></i></span>",
@@ -859,7 +889,7 @@ static bool row_onnow(Ctx *c, Buf *b, int kind, const char *arg) {
         prog_title(&row, f);
         H(&row, "</b><span class=\"tile-s\">%s · ", ch->name);
         if (s.gap) {
-            buf_puts(&row, "Intermission");
+            buf_puts(&row, T("Intermission"));
         } else {
             prog_sub(&row, f);
             if (f && (f->name.kind == MEDIA_EPISODE || f->name.year)) buf_puts(&row, " · ");
@@ -878,7 +908,7 @@ static bool row_onnow(Ctx *c, Buf *b, int kind, const char *arg) {
 }
 
 static const Block blocks[] = {
-    {"tv.onnow", "On TV", SCREEN_TV | SCREEN_WALL, row_onnow, NULL},
+    {"tv.onnow", N_("On TV"), SCREEN_TV | SCREEN_WALL, row_onnow, NULL},
     {0},
 };
 
@@ -941,7 +971,7 @@ static const Action actions[] = {
    entry (parent) and draw Watch's tabs (media_lib_head). */
 static const Module tv = {
     .id = "tv",
-    .title = "Live TV",
+    .title = N_("Live TV"),
     .icon = "tv",
     .nav = 0,
     .parent = "media",

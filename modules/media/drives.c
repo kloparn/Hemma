@@ -2,7 +2,9 @@
  *
  * The looking is Hemma's own and needs no rights: sysfs says which disks there are and how big, udev's
  * database what's on them (file system, UUID, label, model, USB), mountinfo where they're mounted. The
- * doing is root's: a request line for deploy/hemma-disks, which trusts none of it and looks again. */
+ * doing is root's: a request line for deploy/hemma-disks, which trusts none of it and looks again.
+ * (Issue #46: the helper's own words in its result are English data - shown as they came, with
+ * everything around them in the viewer's language.) */
 #include "drives.h"
 #include "../../core/plat.h"
 #include "../../core/ui.h"
@@ -188,7 +190,7 @@ int media_drives_scan(const char *sys, const char *udev, const char *minfo, Driv
             snprintf(p, sizeof p, "%s/device/model", kpath);
             read_small(p, d->name, sizeof d->name);
         }
-        if (!d->name[0]) str_copy(d->name, sizeof d->name, d->usb ? "USB disk" : "Disk");
+        if (!d->name[0]) str_copy(d->name, sizeof d->name, d->usb ? N_("USB disk") : N_("Disk")); /* (drive_name) */
         add_vol(d, kpath, e.name, udev, minfo, true);
         DirIter *pi = dir_open(kpath);
         DirEntry pe;
@@ -230,17 +232,33 @@ void media_drive_size(int64_t n, char *out, size_t cap) { /* decimal, as the box
     if (n >= 1000000000000LL) snprintf(out, cap, "%.1f TB", (double)n / 1e12);
     else if (n >= 1000000000LL) snprintf(out, cap, "%.0f GB", (double)n / 1e9);
     else snprintf(out, cap, "%.0f MB", (double)n / 1e6);
+    char *dot = strchr(out, '.');
+    if (dot) *dot = i18n_decimal(); /* ("2,0 TB" in Swedish and Spanish) */
 }
 
+/* in the language in use (what isn't a word stays as it is) */
 static const char *fs_name(const char *fs) {
     static const char *const names[][2] = {
-        {"ntfs", "NTFS"},           {"exfat", "exFAT"},           {"vfat", "FAT"},
-        {"apfs", "APFS (a Mac's)"}, {"hfsplus", "HFS+ (a Mac's)"}, {"crypto_LUKS", "encrypted"},
-        {"linux_raid_member", "part of a RAID"}, {"LVM2_member", "LVM"}, {"zfs_member", "ZFS"},
+        {"ntfs", "NTFS"},
+        {"exfat", "exFAT"},
+        {"vfat", "FAT"},
+        {"apfs", N_("APFS (a Mac's)")},
+        {"hfsplus", N_("HFS+ (a Mac's)")},
+        {"crypto_LUKS", N_("encrypted")},
+        {"linux_raid_member", N_("part of a RAID")},
+        {"LVM2_member", "LVM"},
+        {"zfs_member", "ZFS"},
     };
     for (size_t i = 0; i < countof(names); i++)
-        if (str_eq(fs, names[i][0])) return names[i][1];
+        if (str_eq(fs, names[i][0])) return T(names[i][1]);
     return fs;
+}
+
+/* A disk's name in the language in use: its model is data, the words the scan gave a disk without one aren't. */
+static const char *drive_name(const Drive *d) {
+    if (str_eq(d->name, "USB disk")) return T("USB disk");
+    if (str_eq(d->name, "Disk")) return T("Disk");
+    return d->name;
 }
 
 /* --------------------------------------------------------- what's on offer */
@@ -293,7 +311,7 @@ static int count_new(void) {
 }
 
 static void vol_title(const Drive *d, const DriveVol *v, char *out, size_t cap) {
-    str_copy(out, cap, v && v->label[0] ? v->label : d->name);
+    str_copy(out, cap, v && v->label[0] ? v->label : drive_name(d));
 }
 
 /* ---------------------------------------------------------------- the helper */
@@ -417,7 +435,8 @@ static void settle_result(void) {
     if (str_eq(g_state, "used")) {
         if (media_root_add(g_res_path)) {
             log_info("disks: the movie disk \"%s\" (%s) is a library folder now", label, g_res_path);
-            activity_add(who, "💽", "/media/settings", "%s added the movie disk \"%s\"", p ? p->name : "Someone", label);
+            if (p) activity_add(who, "💽", "/media/settings", N_("%s added the movie disk \"%s\""), p->name, label);
+            else activity_add(who, "💽", "/media/settings", N_("Someone added the movie disk \"%s\""), label);
         }
     } else if (media_root_drop(g_res_path)) {
         log_info("disks: the movie disk at %s was forgotten - its library folder went with it", g_res_path);
@@ -543,28 +562,35 @@ static void result_notice(Buf *b, int64_t now) {
     if (!g_state[0] || str_eq(g_state, "working") || g_res_at <= setting_int(SET_SEEN, 0)) return;
     (void)now;
     const Mine *m = mine_by_uuid(g_res_uuid);
-    const char *label = m && m->label[0] ? m->label : "The disk";
-    if (str_eq(g_state, "used"))
-        H(b, "<div class=\"notice media-drive-note\" id=\"media-drive-result\"><p><b>%s is ready.</b> It's mounted at "
-             "<code class=\"media-code\">%s</code> and in the library; Hemma may save uploads and copies on it.</p>",
-          label, g_res_path);
-    else if (str_eq(g_state, "forgotten"))
-        H(b, "<div class=\"notice media-drive-note\" id=\"media-drive-result\"><p><b>Forgotten.</b> The Pi won't mount "
-             "<code class=\"media-code\">%s</code> at start any more, and it's out of the library. Its files are "
-             "untouched.</p>",
+    bool bad = !str_eq(g_state, "used") && !str_eq(g_state, "forgotten");
+    H(b, "<div class=\"notice media-drive-note%r\" id=\"media-drive-result\"><p>", bad ? " media-drive-bad" : "");
+    if (str_eq(g_state, "used") && m && m->label[0])
+        H(b,
+          T("<b>%s is ready.</b> It's mounted at <code class=\"media-code\">%s</code> and in the library; Hemma may "
+            "save uploads and copies on it."),
+          m->label, g_res_path);
+    else if (str_eq(g_state, "used"))
+        H(b,
+          T("<b>The disk is ready.</b> It's mounted at <code class=\"media-code\">%s</code> and in the library; Hemma "
+            "may save uploads and copies on it."),
           g_res_path);
-    else
-        H(b, "<div class=\"notice media-drive-note media-drive-bad\" id=\"media-drive-result\"><p><b>Not done:</b> %s. "
-             "Nothing on the disk was changed.</p>",
-          g_res_words[0] ? g_res_words : "the disk helper said no");
-    ui_act(b, "media.drive_seen", "btn sm", "Got it", NULL, NULL, NULL);
+    else if (str_eq(g_state, "forgotten"))
+        H(b,
+          T("<b>Forgotten.</b> The Pi won't mount <code class=\"media-code\">%s</code> at start any more, and it's out "
+            "of the library. Its files are untouched."),
+          g_res_path);
+    else if (g_res_words[0]) /* (the helper's words: English, as it wrote them) */
+        H(b, T("<b>Not done:</b> %s. Nothing on the disk was changed."), g_res_words);
+    else buf_puts(b, T("<b>Not done:</b> the disk helper said no. Nothing on the disk was changed."));
+    buf_puts(b, "</p>");
+    ui_act(b, "media.drive_seen", "btn sm", T("Got it"), NULL, NULL, NULL);
     buf_puts(b, "</div>");
 }
 
 static void use_form(Buf *b, const DriveVol *v, bool big) {
     ui_form(b, "media.drive_use", "inline");
     ui_hidden(b, "uuid", v->uuid);
-    H(b, "<button class=\"btn%r\">Use it for movies</button>", big ? " primary" : " sm");
+    H(b, "<button class=\"btn%r\">%s</button>", big ? " primary" : " sm", T("Use it for movies"));
     ui_form_end(b);
 }
 
@@ -576,10 +602,10 @@ static void new_rows(Buf *b) {
         media_drive_size(d->bytes, size, sizeof size);
         if (blank(d)) {
             H(b, "<li class=\"row media-drive\" id=\"media-drive-%s\"><div class=\"row-main\"><b>%s</b><small "
-                 "class=\"muted\">%s · empty: nothing on it Hemma can read</small></div>",
-              d->kname, d->name, size);
+                 "class=\"muted\">%s · %s</small></div>",
+              d->kname, drive_name(d), size, T("empty: nothing on it Hemma can read"));
             if (g_present)
-                H(b, "<a class=\"btn sm\" href=\"/media/settings?format=%u\">Format for Hemma</a>", d->kname);
+                H(b, "<a class=\"btn sm\" href=\"/media/settings?format=%u\">%s</a>", d->kname, T("Format for Hemma"));
             buf_puts(b, "</li>");
             continue;
         }
@@ -589,15 +615,16 @@ static void new_rows(Buf *b) {
             vol_title(d, v, title, sizeof title);
             if (!media_drive_fs_ok(v->fstype)) {
                 H(b, "<li class=\"row media-drive\" id=\"media-drive-%s\"><div class=\"row-main\"><b>%s</b><small "
-                     "class=\"muted\">%s · %s - Hemma can't keep movies on that (ext4, exFAT, NTFS and FAT disks "
-                     "work)</small></div></li>",
-                  v->kname, title, size, fs_name(v->fstype));
+                     "class=\"muted\">%s · %s - %r</small></div></li>",
+                  v->kname, title, size, fs_name(v->fstype),
+                  T("Hemma can't keep movies on that (ext4, exFAT, NTFS and FAT disks work)"));
                 continue;
             }
-            H(b, "<li class=\"row media-drive\" id=\"media-drive-%s\"><div class=\"row-main\"><b>New disk found: %s</b>"
-                 "<small class=\"muted\">%s · %s%s%s</small></div>",
-              v->kname, title, fs_name(v->fstype), size, str_eq(title, d->name) ? "" : " · ",
-              str_eq(title, d->name) ? "" : d->name);
+            const char *name = drive_name(d);
+            H(b, "<li class=\"row media-drive\" id=\"media-drive-%s\"><div class=\"row-main\"><b>", v->kname);
+            H(b, T("New disk found: %s"), title);
+            H(b, "</b><small class=\"muted\">%s · %s%s%s</small></div>", fs_name(v->fstype), size,
+              str_eq(title, name) ? "" : " · ", str_eq(title, name) ? "" : name);
             if (g_present && usable(v)) use_form(b, v, false);
             buf_puts(b, "</li>");
         }
@@ -615,20 +642,21 @@ static void mine_rows(Buf *b) {
             path_disk_space(v->mounted, &fr, &tot);
             media_drive_size(fr > 0 ? fr : 0, a, sizeof a);
             media_drive_size(tot > 0 ? tot : 0, t, sizeof t);
-            snprintf(state, sizeof state, "%s free of %s", a, t);
-        } else if (v) snprintf(state, sizeof state, "plugged in - mounting it…");
-        else snprintf(state, sizeof state, "missing: plug it back in");
+            snprintf(state, sizeof state, T("%s free of %s"), a, t);
+        } else if (v) str_copy(state, sizeof state, T("plugged in - mounting it…"));
+        else str_copy(state, sizeof state, T("missing: plug it back in"));
         H(b, "<li class=\"row media-drive%r\" id=\"media-mine-%s\"><div class=\"row-main\"><b>%s</b><small "
              "class=\"muted\"><code class=\"media-code\">%s</code> · %s · %s</small></div>",
           v && v->mounted[0] ? "" : " media-drive-gone", m->uuid, m->label[0] ? m->label : m->path, m->path,
           fs_name(m->fstype), state);
-        char q[300];
-        snprintf(q, sizeof q, "Forget the disk \"%s\"? The Pi stops mounting it at start and it leaves the library. "
-                              "The files on it stay as they are.",
+        char q[400];
+        snprintf(q, sizeof q,
+                 T("Forget the disk \"%s\"? The Pi stops mounting it at start and it leaves the library. The files on "
+                   "it stay as they are."),
                  m->label[0] ? m->label : m->path);
         ui_form_confirm(b, "media.drive_forget", "inline", q);
         ui_hidden(b, "uuid", m->uuid);
-        buf_puts(b, "<button class=\"btn sm ghost\">Forget</button>");
+        H(b, "<button class=\"btn sm ghost\">%s</button>", T("Forget"));
         ui_form_end(b);
         buf_puts(b, "</li>");
     }
@@ -644,26 +672,26 @@ void media_drives_card(Ctx *c, Buf *b) {
         for (int i = 0; i < g_ndrives && !any; i++) any = offered(&g_drives[i]) && !in_use(&g_drives[i]);
         if (!any) return;
     }
-    ui_card(b, "Disks", NULL, NULL);
+    ui_card(b, T("Disks"), NULL, NULL);
     if (g_present) result_notice(b, now);
     if (g_present && working(now))
-        buf_puts(b, "<p class=\"notice media-drive-note\" id=\"media-drive-busy\" role=\"status\">Setting up the disk… "
-                    "Hemma restarts once to reach it; this page comes back on its own.</p>");
+        H(b, "<p class=\"notice media-drive-note\" id=\"media-drive-busy\" role=\"status\">%r</p>",
+          T("Setting up the disk… Hemma restarts once to reach it; this page comes back on its own."));
     else if (g_present && silent(now))
-        buf_puts(b, "<p class=\"notice media-drive-note media-drive-bad\" id=\"media-drive-busy\">The disk helper didn't "
-                    "answer. On the Pi: <code>sudo systemctl enable --now hemma-disks.path</code>.</p>");
+        H(b, "<p class=\"notice media-drive-note media-drive-bad\" id=\"media-drive-busy\">%r</p>",
+          T("The disk helper didn't answer. On the Pi: <code>sudo systemctl enable --now hemma-disks.path</code>."));
     buf_puts(b, "<ul class=\"rows media-drives\">");
     mine_rows(b);
     new_rows(b);
     buf_puts(b, "</ul>");
     if (fresh && !g_present)
-        buf_puts(b, "<p class=\"muted media-small\">To use a disk from here, Hemma needs its disk helper: install Hemma "
-                    "with its installer (0.22.0 or newer, which brings it), or set the disk up by hand "
-                    "(docs/raspberry-pi.md, step 7).</p>");
+        H(b, "<p class=\"muted media-small\">%r</p>",
+          T("To use a disk from here, Hemma needs its disk helper: install Hemma with its installer (0.22.0 or newer, "
+            "which brings it), or set the disk up by hand (docs/raspberry-pi.md, step 7)."));
     else if (fresh)
-        buf_puts(b, "<p class=\"muted media-small\">Use it for movies: the Pi mounts it now and at every start (a "
-                    "missing disk never stops it starting), Hemma may save uploads and copies on it, and it becomes a "
-                    "library folder. Nothing on it is changed.</p>");
+        H(b, "<p class=\"muted media-small\">%r</p>",
+          T("Use it for movies: the Pi mounts it now and at every start (a missing disk never stops it starting), "
+            "Hemma may save uploads and copies on it, and it becomes a library folder. Nothing on it is changed."));
     ui_card_end(b);
 }
 
@@ -677,19 +705,23 @@ void media_drives_dialog(Ctx *c, Buf *b) {
     if (!d) return;
     char size[24];
     media_drive_size(d->bytes, size, sizeof size);
-    ui_modal(b, "Format for Hemma", "/media/settings");
-    H(b, "<p><b>%s</b> (%s) gets a new, empty file system for movies (ext4). Hemma sees nothing on it now - but if "
-         "it ever held something, that's gone for good.</p>",
-      d->name, size);
+    ui_modal(b, T("Format for Hemma"), "/media/settings");
+    buf_puts(b, "<p>");
+    H(b,
+      T("<b>%s</b> (%s) gets a new, empty file system for movies (ext4). Hemma sees nothing on it now - but if it ever "
+        "held something, that's gone for good."),
+      drive_name(d), size);
+    buf_puts(b, "</p>");
     ui_form(b, "media.drive_format", "stack");
     ui_hidden(b, "disk", d->kname);
     char bytes[32];
     snprintf(bytes, sizeof bytes, "%lld", (long long)d->bytes);
     ui_hidden(b, "bytes", bytes);
-    buf_puts(b, "<label class=\"field\"><span>Type ERASE to format it</span><input name=\"confirm\" autocomplete=\"off\" "
-                "autocapitalize=\"characters\" spellcheck=\"false\" required></label><div class=\"modal-f\"><a "
-                "class=\"btn\" href=\"/media/settings\">Keep it as it is</a><button class=\"btn danger\">Format and use "
-                "it</button></div>");
+    H(b, /* (the word typed stays ERASE in every language: media_drives_act_format asks for it) */
+      "<label class=\"field\"><span>%s</span><input name=\"confirm\" autocomplete=\"off\" autocapitalize=\"characters\" "
+      "spellcheck=\"false\" required></label><div class=\"modal-f\"><a class=\"btn\" href=\"/media/settings\">%s</a>"
+      "<button class=\"btn danger\">%s</button></div>",
+      T("Type ERASE to format it"), T("Keep it as it is"), T("Format and use it"));
     ui_form_end(b);
     ui_modal_end(b);
 }
@@ -704,9 +736,9 @@ bool media_drives_offer(Ctx *c, Buf *b) {
             char size[24], title[100];
             media_drive_size(d->bytes, size, sizeof size);
             vol_title(d, &d->vol[k], title, sizeof title);
-            H(b, "<div class=\"media-center media-suggest-big\" id=\"media-drive-offer\"><p><b>New disk found:</b> %s "
-                 "(%s, %s)</p>",
-              title, fs_name(d->vol[k].fstype), size);
+            buf_puts(b, "<div class=\"media-center media-suggest-big\" id=\"media-drive-offer\"><p>");
+            H(b, T("<b>New disk found:</b> %s (%s, %s)"), title, fs_name(d->vol[k].fstype), size);
+            buf_puts(b, "</p>");
             use_form(b, &d->vol[k], true);
             buf_puts(b, "</div>");
             return true;
@@ -718,39 +750,40 @@ bool media_drives_offer(Ctx *c, Buf *b) {
 /* ---------------------------------------------------------------- checks */
 
 void media_drives_health(Health *h) {
-    char d[400], size[24], title[100];
+    char d[400], todo[200], size[24], title[100];
     int64_t now = now_sec();
     for (int i = 0; i < g_nmine; i++) {
         const DriveVol *v = vol_by_uuid(g_mine[i].uuid, NULL);
         if (v && v->mounted[0]) continue;
         const char *name = g_mine[i].label[0] ? g_mine[i].label : g_mine[i].path;
-        if (v) snprintf(d, sizeof d, "The movie disk \"%s\" is plugged in but not mounted yet.", name);
-        else snprintf(d, sizeof d, "The movie disk \"%s\" (%s) is missing.", name, g_mine[i].path);
-        health_add(h, v ? HEALTH_INFO : HEALTH_WARN, "Movie disk", d,
-                   v ? "Hemma asks for it to be mounted by itself - give it a minute."
-                     : "Plug it back in: Hemma finds it again by itself. Not using it any more? Forget it under Watch → "
-                       "Library settings.",
+        if (v) snprintf(d, sizeof d, T("The movie disk \"%s\" is plugged in but not mounted yet."), name);
+        else snprintf(d, sizeof d, T("The movie disk \"%s\" (%s) is missing."), name, g_mine[i].path);
+        health_add(h, v ? HEALTH_INFO : HEALTH_WARN, T("Movie disk"), d,
+                   v ? T("Hemma asks for it to be mounted by itself - give it a minute.")
+                     : T("Plug it back in: Hemma finds it again by itself. Not using it any more? Forget it under Watch "
+                         "→ Library settings."),
                    "/media/settings");
     }
-    if (g_present && silent(now))
-        health_add(h, HEALTH_WARN, "Disk helper", "The disk helper didn't answer.",
-                   "On the Pi: sudo systemctl enable --now hemma-disks.path", "/media/settings");
+    if (g_present && silent(now)) {
+        snprintf(todo, sizeof todo, T("On the Pi: %s"), "sudo systemctl enable --now hemma-disks.path");
+        health_add(h, HEALTH_WARN, T("Disk helper"), T("The disk helper didn't answer."), todo, "/media/settings");
+    }
     for (int i = 0; i < g_ndrives; i++) {
         const Drive *dr = &g_drives[i];
         if (!offered(dr) || in_use(dr)) continue;
         media_drive_size(dr->bytes, size, sizeof size);
         if (blank(dr)) {
-            snprintf(d, sizeof d, "An empty USB disk is plugged in: %s (%s).", dr->name, size);
-            health_add(h, HEALTH_INFO, "New disk found", d,
-                       g_present ? "Format it for movies under Watch → Library settings." : NULL, "/media/settings");
+            snprintf(d, sizeof d, T("An empty USB disk is plugged in: %s (%s)."), drive_name(dr), size);
+            health_add(h, HEALTH_INFO, T("New disk found"), d,
+                       g_present ? T("Format it for movies under Watch → Library settings.") : NULL, "/media/settings");
             continue;
         }
         for (int k = 0; k < dr->nvol; k++) {
             if (!usable(&dr->vol[k])) continue;
             vol_title(dr, &dr->vol[k], title, sizeof title);
-            snprintf(d, sizeof d, "A USB disk is plugged in: %s (%s, %s).", title, fs_name(dr->vol[k].fstype), size);
-            health_add(h, HEALTH_INFO, "New disk found", d,
-                       g_present ? "Use it for movies under Watch → Library settings." : NULL, "/media/settings");
+            snprintf(d, sizeof d, T("A USB disk is plugged in: %s (%s, %s)."), title, fs_name(dr->vol[k].fstype), size);
+            health_add(h, HEALTH_INFO, T("New disk found"), d,
+                       g_present ? T("Use it for movies under Watch → Library settings.") : NULL, "/media/settings");
             break;
         }
     }
@@ -760,18 +793,18 @@ void media_drives_health(Health *h) {
 
 static bool admin_ok(Ctx *c) {
     if (is_admin(c)) return true;
-    ctx_fail(c, "Only an admin can do that");
+    ctx_fail(c, "%s", T("Only an admin can do that"));
     return false;
 }
 
 static bool helper_ok(Ctx *c) {
     g_present = present();
     if (!g_present) {
-        ctx_fail(c, "This install has no disk helper - see docs/raspberry-pi.md, step 7");
+        ctx_fail(c, "%s", T("This install has no disk helper - see docs/raspberry-pi.md, step 7"));
         return false;
     }
     if (working(now_sec())) {
-        ctx_fail(c, "The disk helper is busy - give it a moment");
+        ctx_fail(c, "%s", T("The disk helper is busy - give it a moment"));
         return false;
     }
     return true;
@@ -783,18 +816,18 @@ void media_drives_act_use(Ctx *c, Fields *f) {
     const Drive *d = NULL;
     const DriveVol *v = vol_by_uuid(uuid, &d);
     if (!v || !offered(d) || !usable(v)) {
-        ctx_fail(c, "That disk isn't here any more - or it's in use");
+        ctx_fail(c, "%s", T("That disk isn't here any more - or it's in use"));
         return;
     }
     char what[100], title[100];
     snprintf(what, sizeof what, "use %s", v->uuid);
     vol_title(d, v, title, sizeof title);
     if (!ask(c->me->id, what)) {
-        ctx_fail(c, "Couldn't ask the disk helper (see the log)");
+        ctx_fail(c, "%s", T("Couldn't ask the disk helper (see the log)"));
         return;
     }
     log_info("disks: %s asked for \"%s\" (%s, %s) to be used for movies", c->me->name, title, v->kname, v->fstype);
-    ctx_ok(c, "Setting up \"%s\"…", title);
+    ctx_ok(c, T("Setting up \"%s\"…"), title);
 }
 
 void media_drives_act_format(Ctx *c, Fields *f) {
@@ -805,24 +838,24 @@ void media_drives_act_format(Ctx *c, Fields *f) {
     for (int i = 0; i < g_ndrives && !d; i++)
         if (str_eq(g_drives[i].kname, k)) d = &g_drives[i];
     if (!d || d->bytes != bytes || !offered(d) || in_use(d) || !blank(d)) {
-        ctx_fail(c, "That disk isn't here any more - or it isn't empty");
+        ctx_fail(c, "%s", T("That disk isn't here any more - or it isn't empty"));
         return;
     }
     char typed[32];
     str_copy(typed, sizeof typed, fields_str(f, "confirm"));
     str_trim(typed);
     if (!str_ieq(typed, "erase")) {
-        ctx_fail_at(c, "confirm", "Type ERASE to format it");
+        ctx_fail_at(c, "confirm", "%s", T("Type ERASE to format it"));
         return;
     }
     char what[100];
     snprintf(what, sizeof what, "format %s %lld", d->kname, (long long)d->bytes);
     if (!ask(c->me->id, what)) {
-        ctx_fail(c, "Couldn't ask the disk helper (see the log)");
+        ctx_fail(c, "%s", T("Couldn't ask the disk helper (see the log)"));
         return;
     }
     log_info("disks: %s asked for the empty disk %s (%s) to be formatted for movies", c->me->name, d->name, d->kname);
-    ctx_ok(c, "Formatting \"%s\"…", d->name);
+    ctx_ok(c, T("Formatting \"%s\"…"), drive_name(d));
     ctx_redirect(c, "/media/settings");
 }
 
@@ -830,17 +863,17 @@ void media_drives_act_forget(Ctx *c, Fields *f) {
     if (!admin_ok(c) || !helper_ok(c)) return;
     const Mine *m = mine_by_uuid(fields_str(f, "uuid"));
     if (!m) {
-        ctx_fail(c, "Hemma doesn't know that disk");
+        ctx_fail(c, "%s", T("Hemma doesn't know that disk"));
         return;
     }
     char what[100];
     snprintf(what, sizeof what, "forget %s", m->uuid);
     if (!ask(c->me->id, what)) {
-        ctx_fail(c, "Couldn't ask the disk helper (see the log)");
+        ctx_fail(c, "%s", T("Couldn't ask the disk helper (see the log)"));
         return;
     }
     log_info("disks: %s asked for the movie disk \"%s\" to be forgotten", c->me->name, m->label);
-    ctx_ok(c, "Forgetting \"%s\"…", m->label[0] ? m->label : m->path);
+    ctx_ok(c, T("Forgetting \"%s\"…"), m->label[0] ? m->label : m->path);
 }
 
 void media_drives_act_seen(Ctx *c, Fields *f) {
@@ -849,7 +882,7 @@ void media_drives_act_seen(Ctx *c, Fields *f) {
     char at[24];
     snprintf(at, sizeof at, "%lld", (long long)g_res_at);
     setting_set(SET_SEEN, at);
-    ctx_ok(c, "Noted");
+    ctx_ok(c, "%s", T("Noted"));
 }
 
 /* ------------------------------------------------------------------ tests */

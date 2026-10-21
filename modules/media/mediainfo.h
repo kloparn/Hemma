@@ -78,12 +78,14 @@ bool media_probe_file(const char *path, MediaProbe *out); /* UTF-8 path */
 bool media_probe_mem(const void *data, size_t n, const char *filename_hint, MediaProbe *out);
 /* playable + why again from the container and codecs: a cached probe gets today's verdict and words */
 void media_probe_judge(MediaProbe *p);
+/* p->why (kept in English) in the language in use (core/i18n.h), for a page */
+void media_probe_why(const MediaProbe *p, char *out, size_t cap);
 
 const char *media_mime(const char *container);    /* "video/mp4", "video/webm", "video/x-matroska", ... */
 bool media_is_video_ext(const char *name);        /* .mp4 .m4v .mkv .webm .mov .avi .ts .m2ts .mts .wmv .mpg .mpeg */
 bool media_is_sub_ext(const char *name);          /* .srt .vtt */
 bool media_is_image_ext(const char *name);        /* .jpg .jpeg .png .webp (posters, folder art) */
-const char *media_playable_label(Playable p);     /* "Plays in browsers", "May not play everywhere", ... */
+const char *media_playable_label(Playable p);     /* "Plays in browsers", "May not play everywhere", ... (English: T() it) */
 void media_fmt_duration(int64_t ms, char *out, size_t cap); /* "1 h 42 min", "42 min", "45 s", "" */
 
 /* -------------------------------------------------------------- subtitles */

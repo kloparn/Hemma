@@ -14,6 +14,7 @@
 #include "base.h"
 #include "html.h"
 #include "http.h"
+#include "i18n.h"
 #include "server.h"
 #include "store.h"
 #include "zone.h"
@@ -94,6 +95,8 @@ typedef struct Ctx {
     uint32_t ip;    /* visitor's IPv4 (host order) */
     char host[96];  /* the address they opened Hemma by (the Host header: "hemma.local", "192.168.1.50:8080"); "" = none */
     int64_t now;
+    Lang lang;      /* what this request is shown in (also the thread's: i18n_lang) - see i18n.h */
+    int dev_lang;   /* the browser's own pick (cookie, else Accept-Language), -1 = none of ours */
     char url[600];  /* current page: path + query, e.g. "/book?r=2" */
     char path[300]; /* decoded path, e.g. "/book" */
     Fields q;       /* query parameters */
@@ -158,6 +161,7 @@ void ctx_set_live(Ctx *c, const char *key, const char *val);
 int ctx_viewer(const Ctx *c);
 void ctx_set_viewer(Ctx *c, int person);
 #define PREF_START "start" /* display accounts: the page their "/" shows, e.g. "/screens/2" */
+#define PREF_LANG "lang"   /* "en" "sv" "es", "" = the browser's (issue #46; core/i18n.h) */
 /* ... and a display account without one: the household's wall (issue #53: a hall tablet landed on
    "Good morning, Hallway tablet"). modules/screens keeps it - its first wall's address, or "". */
 #define SETTING_DISPLAY_START "display.start"
@@ -250,11 +254,11 @@ typedef struct {
     int state;          /* HEALTH_*; a step: HEALTH_OK = done, HEALTH_INFO = still to do */
     bool step;          /* a getting-started step rather than a check */
     const char *module; /* set by health_collect() */
-    char title[80];     /* "Library folders" */
-    char detail[320];   /* how it is */
-    char todo[240];     /* what to do about it, one line ("" = nothing) */
+    char title[96];     /* "Library folders" */
+    char detail[768];   /* how it is (a rescue report in Spanish runs long) */
+    char todo[320];     /* what to do about it, one line ("" = nothing) */
     char link[160];     /* where to do it ("" = nowhere) */
-    char tech[240];     /* the flag, variable or command behind it, for whoever runs the server: shown folded
+    char tech[320];     /* the flag, variable or command behind it, for whoever runs the server: shown folded
                            under "Technical details" (issue #62: plain words first) - health_tech() */
 } HealthItem;
 /* A disk a module keeps things on (issue #95: two checks with two rules said "OK" and "nearly full"
@@ -374,7 +378,8 @@ void app_changed_where(const char *url_prefix); /* only screens showing e.g. "/m
 void app_wake_in(int ms);
 /* Any thread: tick (modules' tick hooks) right away - a worker finished something to show. */
 void app_tick_soon(void);
-/* Toast on every open screen except the one belonging to `except` (may be NULL). */
+/* Toast on every open screen except the one belonging to `except` (may be NULL). The three notify
+   calls take an English fmt marked N_(): each screen gets it in its own language (core/i18n.h). */
 void app_notify(const Ctx *except, int kind, const char *fmt, ...) FMT(3, 4);
 /* ... and not on these people's either (0 = nobody): they get a toast of their own from app_notify_person
    ("Adam cancelled your Laundry booking" instead of "Adam cancelled Laundry" - issue #43). */
@@ -440,11 +445,14 @@ typedef struct {
     int64_t ts;
     int who;
     char icon[16]; /* emoji */
-    char text[200];
+    char text[200]; /* in English (/api) */
     char link[160];
+    char msg[400];  /* the format and its values (i18n_pack): shown in each reader's language - activity_text */
 } Activity;
 extern Table T_activity;
+/* fmt: English, marked N_(): each reader gets it in their language */
 void activity_add(int who, const char *icon, const char *link, const char *fmt, ...) FMT(4, 5);
+void activity_text(const Activity *a, Buf *b); /* the line in the language in use */
 
 /* --------------------------------------------------------------- misc */
 
@@ -459,6 +467,7 @@ bool app_dev_mode(void);
 bool app_boot(const char *data_dir);
 void app_halt(void);                       /* stop hooks + close the store */
 void app_ctx(Ctx *c, int person, const char *url); /* context as a person (0 = anonymous visitor) */
+void app_test_dev_lang(int lang); /* tests: app_ctx's browser language (Accept-Language), -1 = none of ours */
 void app_test_ctx_host(const char *host); /* tests: app_ctx's pages as if opened by this address (Ctx.host) */
 void app_ctx_free(Ctx *c);
 void app_render(Ctx *c, Buf *out);         /* the <div id="app"> for c->url */

@@ -33,6 +33,7 @@ int64_t media_room(const char *root, const MediaHold *holds, int n, int64_t *hel
     return fr - MEDIA_RESERVE - sum;
 }
 
+/* (a decimal comma in Swedish and Spanish: "1,2 GB" - the language in use, so English on a worker thread) */
 void media_size_text(int64_t n, char *out, size_t cap) {
     double v = (double)n;
     if (v >= 1099511627776.0) snprintf(out, cap, "%.1f TB", v / 1099511627776.0);
@@ -40,6 +41,9 @@ void media_size_text(int64_t n, char *out, size_t cap) {
     else if (v >= 1073741824.0) snprintf(out, cap, "%.1f GB", v / 1073741824.0);
     else if (v >= 1048576.0) snprintf(out, cap, "%.0f MB", v / 1048576.0);
     else snprintf(out, cap, "%.0f KB", v / 1024.0);
+    char d = i18n_decimal();
+    for (char *p = out; d != '.' && *p; p++)
+        if (*p == '.') *p = d;
 }
 
 void media_room_text(char *out, size_t cap, int64_t spare, int64_t held) {
@@ -47,7 +51,9 @@ void media_room_text(char *out, size_t cap, int64_t spare, int64_t held) {
     media_size_text(MAX(spare, 0), s, sizeof s);
     media_size_text(held, h, sizeof h);
     if (held > 0)
-        snprintf(out, cap, "the drive has %s to spare (Hemma keeps %lld GB free, and %s for the uploads and "
-                           "conversions running now)", s, (long long)(MEDIA_RESERVE >> 30), h);
-    else snprintf(out, cap, "the drive has %s to spare (Hemma keeps %lld GB free)", s, (long long)(MEDIA_RESERVE >> 30));
+        snprintf(out, cap,
+                 T("the drive has %s to spare (Hemma keeps %lld GB free, and %s for the uploads and conversions "
+                   "running now)"),
+                 s, (long long)(MEDIA_RESERVE >> 30), h);
+    else snprintf(out, cap, T("the drive has %s to spare (Hemma keeps %lld GB free)"), s, (long long)(MEDIA_RESERVE >> 30));
 }

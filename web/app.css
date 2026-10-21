@@ -469,6 +469,8 @@ html[data-idle], html[data-idle] * { cursor: none; }
   background: var(--panel); color: var(--text); font: inherit; font-weight: 600; font-size: 14.5px;
   text-decoration: none; cursor: pointer; white-space: nowrap; transition: background .12s, border-color .12s, transform .06s;
 }
+/* a phone: a long label (Spanish runs longer - issue #46) wraps instead of pushing the page sideways */
+@media (max-width: 600px) { .btn { white-space: normal; max-width: 100%; text-align: center; } }
 .btn:hover { border-color: var(--muted); }
 .btn:active { transform: translateY(1px); }
 .btn .i { width: 18px; height: 18px; }
