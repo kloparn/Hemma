@@ -4,6 +4,42 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 1.0.0 (2026-10-21)
+
+Hemma 1.0: everything planned for a first full version is in.
+
+A household's own page on its own network - bookings, chores that take turns, the shopping list
+and calendar, notes with photos, who's home, a little cinema with "90s TV" channels, the TV view
+and the wall tablet - in English, Swedish and Spanish, for grown-ups, children and guests. It sets
+itself up from a ready-made Raspberry Pi image, takes a USB movie disk from the browser, backs
+itself up every night, updates itself from signed releases, and nothing leaves the home unasked.
+Every issue from the outside reviews is fixed, and the code is tested on every change - the pages
+in a real browser too - with its video code fuzzed every night.
+
+Nothing changes for a household already running 0.25: this version is the same program, with the
+milestone's number and the documents below.
+
+### New
+
+- **For people who'd like to help:** [ARCHITECTURE.md](https://github.com/kloparn/Hemma/blob/main/ARCHITECTURE.md) (how Hemma fits together),
+  [CONTRIBUTING.md](https://github.com/kloparn/Hemma/blob/main/CONTRIBUTING.md) (reporting a problem, sending a change), a
+  [code of conduct](https://github.com/kloparn/Hemma/blob/main/CODE_OF_CONDUCT.md), forms for bug reports and ideas, and a checklist for pull
+  requests.
+- **Why Hemma is built the way it is**, one short record per big choice, in
+  [docs/decisions](https://github.com/kloparn/Hemma/blob/main/docs/decisions/README.md): C everywhere, SQLite, its own video codecs, plain
+  http at home, nothing leaving the home, video formats growing with their fuzzing, reviews and
+  releases, three languages.
+- **A video format can't arrive untested any more:** the formats the converter takes are one list,
+  and the tests fail until each has a sample the nightly fuzzing starts from. MPEG-1 video and SSA
+  subtitles - taken all along - got theirs.
+
+### Changed
+
+- Changes to Hemma's core get a written review before they're merged; releases still come out as
+  soon as a change is merged, after it has run on a real Raspberry Pi.
+- The working notes for AI agents (CLAUDE.md) lost their day-by-day diary: what each version did is
+  here, in the changelog.
+
 ## 0.25.1 (2026-10-21)
 
 The player and the upload page are tested in a real browser now, and the video code is fuzzed every

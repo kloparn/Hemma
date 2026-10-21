@@ -34,6 +34,20 @@
 #include "mp4.h"
 
 #define AV_CONV_MAX_SUBS 8               /* text subtitle tracks taken from one file */
+
+/* Every format the converter takes, by Matroska CodecID - the one place its checks look (av_conv_codec).
+   Formats grow when real files need them (owner, 2026-10-21; docs/decisions/0006): a new one goes in this
+   table, and conv_test.c's conv_fuzz_seeds then fails until a seed file carries it - so the fuzzing on
+   every push and every night (tools/ci/fuzz.sh) covers it from its first day. */
+typedef enum { AV_DECODE = 1, AV_COPY, AV_TEXT } AvHow; /* decoded and re-encoded / copied as it is / a subtitle text */
+typedef struct {
+    const char *id; /* CodecID; with prefix, every CodecID starting so ("A_AAC/MPEG4/LC") */
+    int type;       /* MKV_VIDEO, MKV_AUDIO, MKV_SUBTITLE */
+    AvHow how;
+    bool prefix;
+} AvCodec;
+extern const AvCodec AV_CONV_CODECS[]; /* ends with {NULL} */
+const AvCodec *av_conv_codec(const char *codec_id); /* NULL: not one the converter takes */
 #define AV_CONV_SUB_BYTES (768u << 10)   /* the most SRT one track may come to (a film's is ~100 KB) */
 
 typedef struct {

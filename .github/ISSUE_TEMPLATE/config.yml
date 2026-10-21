@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/kloparn/Hemma/security/advisories/new
+    about: Privately, not as a public issue - see SECURITY.md.
+  - name: How to install and use Hemma
+    url: https://github.com/kloparn/Hemma#readme
+    about: The README and the guides in docs/ answer most questions.

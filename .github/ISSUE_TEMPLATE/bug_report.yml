@@ -1,0 +1,49 @@
+name: Bug report
+description: Something in Hemma doesn't work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting it. A security problem? Please don't file it here - see
+        [SECURITY.md](https://github.com/kloparn/Hemma/blob/main/SECURITY.md) for how to report it privately.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`hemma --version`, or in Hemma: System -> Help -> \"Asking for help\""
+      placeholder: hemma 1.0.0 (a1b2c3d4e5f6)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      description: The page, and the device and browser (a phone, a laptop, a TV's own browser ...)
+      placeholder: "Watch -> a film, on a Samsung TV's browser"
+  - type: dropdown
+    id: runs-on
+    attributes:
+      label: Hemma runs on
+      options:
+        - Raspberry Pi (installed)
+        - Raspberry Pi (the ready-made image)
+        - Linux
+        - macOS
+        - Windows
+        - Something else
+  - type: textarea
+    id: log
+    attributes:
+      label: The log
+      description: |
+        System -> Help -> **Download the log**, and paste the lines from around when it happened.
+        It holds no passwords, but it does name people and devices in your home: have a look first.
+      render: text

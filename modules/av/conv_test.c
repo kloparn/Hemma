@@ -1078,7 +1078,9 @@ TEST(conv_fuzz_seeds) {
     }
     static const uint8_t hvcc[] = {1,    0x01, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 0x5D, 0xF0, 0, 0xFC,
                                    0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
-    for (int seed = 0; seed < 10; seed++) {
+    char took[64][40]; /* every CodecID a seed carries: each format the converter takes needs one (below) */
+    int ntook = 0;
+    for (int seed = 0; seed < 11; seed++) {
         uint8_t avcc[256], asc[2];
         size_t avcc_len = 0;
         Tracks mp2 = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0}, t = mp2;
@@ -1099,6 +1101,25 @@ TEST(conv_fuzz_seeds) {
             for (int k = 0, f = 0; k < 12 || f < 8;) {
                 if (k < 12 && (f >= 8 || frame_ms(k) <= f * 16)) w_simple(&in, 1, frame_ms(k), true, pic, mpeg2_picture(pic, k)), k++;
                 else w_simple(&in, 2, f * 16, true, eac3 + (size_t)f * 384, 384), f++;
+            }
+            w_close(&in, cl);
+            w_close(&in, seg);
+            built = true;
+            break;
+        }
+        case 10: { /* MPEG-1 by its CodecID (the stream inside is MPEG-2: the fuzzer turns it into MPEG-1), AAC
+                      sound and SSA subtitles */
+            name = "mpeg1-aac-ssa.mkv";
+            add_aac(&a, 0.5, asc);
+            t = (Tracks){"V_MPEG1", NULL, 0, 48, 32, "A_AAC", asc, 2, {{"S_TEXT/SSA", "eng", NULL, false}}};
+            size_t seg = start_file(&in, &t, 400), cl = w_open(&in, 0x1F43B675);
+            w_uint(&in, 0xE7, 0);
+            const char *ssa = "0,0,Default,,0,0,0,,Hello\\Nthere";
+            w_group(&in, 3, 10, 300, ssa, strlen(ssa));
+            static uint8_t pic[4096];
+            for (int k = 0, f = 0; k < 12 || f < a.n;) {
+                if (k < 12 && (f >= a.n || frame_ms(k) <= au_ms(f))) w_simple(&in, 1, frame_ms(k), true, pic, mpeg2_picture(pic, k)), k++;
+                else w_simple(&in, 2, au_ms(f), true, s_block(&a, f), s_size(&a, f)), f++;
             }
             w_close(&in, cl);
             w_close(&in, seg);
@@ -1161,8 +1182,11 @@ TEST(conv_fuzz_seeds) {
         bool ok = run(&in, &out, &j, &s);
         if (fails) CHECK(!ok && j.unsupported);
         else if (!ok) test_fail(__FILE__, __LINE__, "seed %s: %s", name, j.err);
-        if (built) CHECK_INT(j.nsubs, 2);
+        if (built) CHECK_INT(j.nsubs, seed == 10 ? 1 : 2);
         av_convert_free(&j);
+        const char *ids[] = {t.vcodec, t.acodec, t.sub[0].codec, t.sub[1].codec};
+        for (int i = 0; i < 4 && ntook < 64; i++)
+            if (ids[i]) snprintf(took[ntook++], sizeof took[0], "%s", ids[i]);
         if (dir && *dir) {
             char path[1024];
             snprintf(path, sizeof path, "%s/%s", dir, name);
@@ -1170,5 +1194,12 @@ TEST(conv_fuzz_seeds) {
         }
         free(in.p), free(out.p);
         s_free(&v), s_free(&a);
+    }
+    /* Every format the converter takes has a seed carrying it - so the fuzzing (every push, every night)
+       starts from it. A format added to AV_CONV_CODECS without one fails here (docs/decisions/0006). */
+    for (const AvCodec *k = AV_CONV_CODECS; k->id; k++) {
+        bool seeded = false;
+        for (int i = 0; i < ntook && !seeded; i++) seeded = av_conv_codec(took[i]) == k;
+        if (!seeded) test_fail(__FILE__, __LINE__, "the converter takes %s, but no fuzz seed carries it", k->id);
     }
 }

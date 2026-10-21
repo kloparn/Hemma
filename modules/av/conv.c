@@ -104,14 +104,36 @@ static bool unsupported(Conv *c, const char *fmt, const char *arg) {
 
 static bool stopped(const Conv *c) { return c->j->stop && *c->j->stop; }
 
+/* What it takes (conv.h: a new format goes here - and gets its fuzz seed, conv_test.c checks). */
+const AvCodec AV_CONV_CODECS[] = {
+    {"V_MPEG2", MKV_VIDEO, AV_DECODE, false},
+    {"V_MPEG1", MKV_VIDEO, AV_DECODE, false},
+    {"V_MPEG4/ISO/AVC", MKV_VIDEO, AV_COPY, false},
+    {"V_MPEGH/ISO/HEVC", MKV_VIDEO, AV_COPY, false}, /* (as 'hvc1': Safari plays it in MP4, never in MKV) */
+    {"A_AAC", MKV_AUDIO, AV_COPY, true},
+    {"A_AC3", MKV_AUDIO, AV_DECODE, false},
+    {"A_EAC3", MKV_AUDIO, AV_DECODE, false},
+    {"S_TEXT/UTF8", MKV_SUBTITLE, AV_TEXT, false},
+    {"S_TEXT/ASS", MKV_SUBTITLE, AV_TEXT, false},
+    {"S_TEXT/SSA", MKV_SUBTITLE, AV_TEXT, false},
+    {NULL, 0, 0, false},
+};
+
+const AvCodec *av_conv_codec(const char *id) {
+    for (const AvCodec *k = AV_CONV_CODECS; id && k->id; k++)
+        if (k->prefix ? !strncmp(id, k->id, strlen(k->id)) : !strcmp(id, k->id)) return k;
+    return NULL;
+}
+
 static bool dolby(const char *codec) { return !strcmp(codec, "A_AC3") || !strcmp(codec, "A_EAC3"); }
 
 /* Sound we can make AAC of: AAC itself, or Dolby AC-3 / E-AC-3 at 48 kHz (the decoder's output
    rate - DVDs and films always are; anything else would play at the wrong speed). */
 static bool audio_ok(const MkvTrack *t) {
-    if (t->compressed) return false;
-    if (dolby(t->codec)) return t->rate <= 0 || (t->rate > 47999 && t->rate < 48001);
-    return !strncmp(t->codec, "A_AAC", 5);
+    const AvCodec *k = av_conv_codec(t->codec);
+    if (t->compressed || !k || k->type != MKV_AUDIO) return false;
+    if (k->how == AV_DECODE) return t->rate <= 0 || (t->rate > 47999 && t->rate < 48001);
+    return true;
 }
 
 /* A codec in the words people know it by (the reasons in err are read on the upload page). */
@@ -294,9 +316,9 @@ static bool code_audio(Conv *c, const MkvFrame *fr) {
 /* ---- subtitles: text tracks become SubRip (.srt) texts ---- */
 
 static int sub_kind(const MkvTrack *t) { /* 0 = not one we take, 1 = SRT, 2 = ASS/SSA */
-    if (t->type != MKV_SUBTITLE || t->compressed) return 0;
-    if (!strcmp(t->codec, "S_TEXT/UTF8")) return 1;
-    return !strcmp(t->codec, "S_TEXT/ASS") || !strcmp(t->codec, "S_TEXT/SSA") ? 2 : 0;
+    const AvCodec *k = av_conv_codec(t->codec);
+    if (t->type != MKV_SUBTITLE || t->compressed || !k || k->how != AV_TEXT) return 0;
+    return !strcmp(k->id, "S_TEXT/UTF8") ? 1 : 2;
 }
 
 static void sub_put(struct ConvSub *s, const char *p, size_t n) {
@@ -678,12 +700,13 @@ bool av_convert(AvConvJob *j) {
             if ((pass == 0 && !t->is_default) || !audio_ok(t)) continue;
             c->at = t;
         }
+    const AvCodec *vk = c->vt ? av_conv_codec(c->vt->codec) : NULL;
     if (!c->vt) unsupported(c, "There's no picture to convert", NULL);
     else if (c->vt->compressed) unsupported(c, "The picture is compressed or encrypted inside the file", NULL);
-    else if (!strcmp(c->vt->codec, "V_MPEG2") || !strcmp(c->vt->codec, "V_MPEG1")) c->vcode = true;
-    else if (!strcmp(c->vt->codec, "V_MPEGH/ISO/HEVC")) c->hevc = true; /* copied: Safari plays it in MP4, never in MKV */
-    else if (strcmp(c->vt->codec, "V_MPEG4/ISO/AVC") != 0)
+    else if (!vk || vk->type != MKV_VIDEO)
         unsupported(c, "Its picture is %s, which the converter can't change yet", codec_words(c->vt->codec));
+    else if (vk->how == AV_DECODE) c->vcode = true; /* MPEG-2 / MPEG-1 */
+    else c->hevc = !strcmp(vk->id, "V_MPEGH/ISO/HEVC"); /* copied: Safari plays it in MP4, never in MKV */
     if (!c->failed && first_audio && !c->at) { /* sound, but none we can convert: say why for the first */
         if (first_audio->compressed) unsupported(c, "The sound is compressed or encrypted inside the file", NULL);
         else if (dolby(first_audio->codec)) unsupported(c, "Can't convert Dolby sound that isn't 48 kHz yet", NULL);
