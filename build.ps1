@@ -5,7 +5,7 @@
     ./build.ps1 run [args]      debug build + run on http://127.0.0.1:8080 (web/ + module CSS served live)
     ./build.ps1 test [filter]   build + run tests    (one process per core; a filter = substring of a test
                                 or file name, run in one process)
-    ./build.ps1 ci [job]        CI's Linux jobs in WSL (tools/ci/local.sh): test | asan | fuzz [seconds]
+    ./build.ps1 ci [job]        CI's Linux jobs in WSL (tools/ci/local.sh): test | asan | fuzz [seconds] [conv|mkv|ac3|mpeg2]
     ./build.ps1 release         optimised build      -> build/hemma.exe
     ./build.ps1 pi              Raspberry Pi 64-bit  -> build/hemma-pi64   (static, aarch64)
     ./build.ps1 pi32            Raspberry Pi 32-bit  -> build/hemma-pi32   (static, armv6: every Pi)

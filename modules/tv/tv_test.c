@@ -484,13 +484,14 @@ TEST(tv_channel_page_tunes_into_the_live_moment) {
     g_fake_now += 125; /* 2 min 5 s into Alpha S01E01 */
     const char *h = th_page(adam, "/tv/1");
     char want[200];
-    snprintf(want, sizeof want, "src=\"/media/file/%016llx\"",
+    /* (#t=125: where it is now, also for a browser without wire.js - issue #49) */
+    snprintf(want, sizeof want, "src=\"/media/file/%016llx#t=125\"",
              (unsigned long long)file_id("Series/Alpha/Season 1/Alpha.S01E01.Pilot.mp4"));
     CHECK_HAS(h, want);
     CHECK_HAS(h, "data-resume=\"125\"");
     CHECK_HAS(h, "data-next=\"/tv/1\"");
     /* one video element for good: the next programme (or channel) morphs into it - full screen stays */
-    snprintf(want, sizeof want, "<video id=\"tv-video\" class=\"tv-video\" src=\"/media/file/%016llx\"",
+    snprintf(want, sizeof want, "<video id=\"tv-video\" class=\"tv-video\" src=\"/media/file/%016llx#t=125\"",
              (unsigned long long)file_id("Series/Alpha/Season 1/Alpha.S01E01.Pilot.mp4"));
     CHECK_HAS(h, want);
     snprintf(want, sizeof want, "data-static=\"%016llx-%lld\" data-onair",

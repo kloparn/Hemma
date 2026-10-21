@@ -42,6 +42,17 @@ void media_file_src(const Ctx *c, uint64_t id, char *out, size_t cap) {
     keyed_src(c, path, out, cap);
 }
 
+void media_file_src_at(const Ctx *c, uint64_t id, int64_t at, char *out, size_t cap) {
+    media_file_src(c, id, out, cap);
+    size_t n = strlen(out);
+    if (at > 0 && n < cap) snprintf(out + n, cap - n, "#t=%lld", (long long)at);
+}
+
+int media_resume_at(const MediaWatch *w) {
+    if (!w || w->done || w->pos <= 10 || (w->dur > 0 && w->pos >= w->dur - 5)) return 0;
+    return w->pos;
+}
+
 void media_sub_src(const Ctx *c, uint64_t id, char *out, size_t cap) {
     char path[40];
     snprintf(path, sizeof path, "/media/sub/%016llx.vtt", (unsigned long long)id);
@@ -1160,13 +1171,14 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     bool autoplay = str_eq(ctx_q(c, "auto"), "1");
     Buf go = {0};
     if (next) H(&go, "/media/watch/%X?auto=1", next->id);
-    char src[100];
-    media_file_src(c, f->id, src, sizeof src);
+    int at = autoplay ? 0 : media_resume_at(w);
+    char src[120];
+    media_file_src_at(c, f->id, at, src, sizeof src);
     H(b, "<div class=\"media-player-box\" id=\"media-box\"><video id=\"media-video\" class=\"media-player\" "
          "src=\"%s\" controls preload=\"metadata\" playsinline data-static=\"%X\" data-id=\"%X\" "
          "data-report=\"media.progress\"",
       src, f->id, f->id);
-    if (w && !w->done && w->pos > 10 && !autoplay) H(b, " data-resume=\"%d\"", w->pos);
+    if (at) H(b, " data-resume=\"%d\"", at);
     if (next) H(b, " data-next=\"%r\"", buf_cstr(&go));
     if (autoplay) buf_puts(b, " autoplay");
     uint64_t poster = f->poster ? f->poster : s ? s->poster : 0;

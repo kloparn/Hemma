@@ -81,3 +81,9 @@ CLAUDE.local.md
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ---- the browser tests (tests/browser: CI-only Node tools)
+node_modules/
+tests/browser/.auth/
+tests/browser/test-results/
+tests/browser/playwright-report/

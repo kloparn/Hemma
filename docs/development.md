@@ -98,7 +98,9 @@ server, so module tests can sign people in, run actions and check the rendered p
 There are over 500 tests, including end-to-end tests over real sockets. Keep the suite green.
 GitHub CI runs them on Linux and macOS, again under AddressSanitizer + UBSan, and fuzzes the
 video converter for 90 seconds (`tools/convfuzz.c`: a libFuzzer target; build it with
-`-DCONVFUZZ_MAIN` for a replay/mutate driver that works with zig on Windows too).
+`-DCONVFUZZ_MAIN` for a replay/mutate driver that works with zig on Windows too). Every night it
+fuzzes for about three hours (see [Fuzzing](#fuzzing)), and on every push it also opens Hemma in
+a real browser (see [The browser's side](#the-browsers-side)).
 
 ```powershell
 .\build.ps1 test            # everything, one process per core
@@ -114,8 +116,11 @@ does. On a 20-thread PC the suite takes about 5-10 s instead of a minute.
 ### Checking before you push
 
 `tools/ci/local.sh` runs CI's three Linux jobs on your own machine: `test` (gcc, `make` +
-`make test`), `asan` (the suite under AddressSanitizer + UBSan with clang) and `fuzz [seconds]`
-(the converter's libFuzzer target). It works on a fresh copy of the tree in a RAM disk and keeps
+`make test`), `asan` (the suite under AddressSanitizer + UBSan with clang) and `fuzz [seconds]
+[conv|mkv|ac3|mpeg2]` (a libFuzzer target - see [Fuzzing](#fuzzing)). The suite runs in four
+processes there, as on GitHub's runners (`HEMMA_TEST_JOBS` changes it): tests that share a process
+meet what earlier ones left, and four processes put different tests together than twenty do.
+It works on a fresh copy of the tree in a RAM disk and keeps
 each job's compiled objects for the next run, so only what changed compiles again: a run takes
 seconds to a minute. It needs `make`, `gcc`, and for `asan`/`fuzz` clang with its sanitizer
 runtimes (Ubuntu: `build-essential clang libclang-rt-18-dev`).
@@ -144,6 +149,41 @@ file. `AAC_VERBOSE=1` / `AC3_VERBOSE=1` print codec details in the codec tests.
 `stats` reports which coding tools a stream uses and whether every frame parsed, and `f32 ...
 --native` writes every channel as raw floats in WAV order - what `ffmpeg -f f32le` writes, for
 comparing with another decoder (expect dither and noise to differ, nothing else).
+
+### The browser's side
+
+`web/wire.js` is more than a transport: it holds Hemma's video player (resume, progress, the next
+episode, Live TV's "now") and the upload client. `tests/browser` checks it where it runs - in
+Google Chrome, driven by [Playwright](https://playwright.dev), against a real Hemma with real
+videos - and lints `web/*.js` with eslint. It's Node, for CI and your machine only: nothing in it
+ships, and the program never needs it.
+
+```sh
+make && make build/test                  # or on Windows: .\build.ps1 build; .\build.ps1 test av_test
+cd tests/browser && npm ci
+npx playwright test                      # the pages in Chrome (needs Google Chrome installed)
+npm run lint                             # eslint over web/*.js
+```
+
+`server.mjs` makes everything afresh each run: a folder under your temp folder, small test videos
+made by Hemma's own encoders (`build/test av_test_clips` with `HEMMA_TEST_CLIPS`), an admin, and
+Hemma itself on `127.0.0.1:18093`. A test that changes the player's behaviour on purpose changes
+its spec too; the rules are listed in CLAUDE.md ("the player's rules").
+
+### Fuzzing
+
+The converter reads files nobody controls, in the process that serves the whole household, so it's
+fuzzed: libFuzzer feeds it damaged and strange inputs under AddressSanitizer + UBSan. Four targets
+(`tools/ci/fuzz.sh TARGET [seconds] [processes]`): `conv` - a whole conversion
+(`tools/convfuzz.c`, slow per input, reaches everything) - and `mkv`, `ac3` and `mpeg2`, one part
+alone (`tools/avfuzz.c`, tens to hundreds of times as many inputs a minute). Every push runs `conv`
+for 90 s; every night `.github/workflows/fuzz.yml` runs all four side by side for about three
+hours, each starting from what the earlier nights found. A finding fails that night's run, and the
+input that does it is kept with the run: `build/fuzz-<target> <file>` replays it.
+
+```sh
+bash tools/ci/local.sh fuzz 300 ac3      # five minutes of the Dolby decoder (Windows: .\build.ps1 ci fuzz 300 ac3)
+```
 
 ## Versions and releases
 

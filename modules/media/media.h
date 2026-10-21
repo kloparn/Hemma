@@ -73,6 +73,12 @@ void media_tracks(const Ctx *c, Buf *b, const MediaFile *f); /* <track>s of its 
 /* A video's / a subtitle's address with its key (ctx_url_key), for src="...": a TV's video player
    fetches without the page's cookies. "/media/file/<id>?k=..." and "/media/sub/<id>.vtt?k=..." */
 void media_file_src(const Ctx *c, uint64_t id, char *out, size_t cap);
+/* ... plus "#t=<seconds>" when at > 0: the browser starts it there by itself (a media fragment), so a resume
+   point and a live channel's "now" hold without wire.js too (issue #49) */
+void media_file_src_at(const Ctx *c, uint64_t id, int64_t at, char *out, size_t cap);
+/* Where w resumes, in seconds: its position - unless it's done, under 10 s in, or in its last 5 s (0 = from
+   the top). wire.js keeps the same last-5-seconds rule for whatever data-resume says. */
+int media_resume_at(const MediaWatch *w);
 void media_sub_src(const Ctx *c, uint64_t id, char *out, size_t cap);
 /* The player's own controls (ui_player) for f inside #media-box over #media-video: its length, its
    subtitles in a menu (as media_tracks has them). tv: a remote's arrows move along the bar. */

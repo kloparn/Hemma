@@ -7,7 +7,8 @@
 #
 #   bash tools/ci/local.sh test       make + make test with the system compiler     (CI: test)
 #   bash tools/ci/local.sh asan       the suite under ASan + UBSan with clang         (CI: sanitizers)
-#   bash tools/ci/local.sh fuzz [S]   libFuzzer over the converter for S s (90)       (CI: fuzz)
+#   bash tools/ci/local.sh fuzz [S] [T]  libFuzzer for S s (90) over T: conv (the converter, as CI's fuzz
+#                                     job), mkv, ac3 or mpeg2 (one part alone, as the nightly) - tools/ci/fuzz.sh
 #
 # The tree to test: a tar on stdin (git ls-files -co --exclude-standard | tar -cf - -T -), else
 # --tar FILE, else this checkout's own files (git ls-files). Needs make, gcc, and for asan/fuzz clang
@@ -18,16 +19,18 @@ set -u
 export HEMMA_TEST_JOBS=${HEMMA_TEST_JOBS:-4}
 job=${1:-test}
 secs=90
+target=conv
 tarfile=
 shift || true
 while [ $# -gt 0 ]; do
     case $1 in
     --tar) tarfile=$2; shift 2 ;;
     [0-9]*) secs=$1; shift ;;
+    conv | mkv | ac3 | mpeg2) target=$1; shift ;;
     *) echo "unknown argument $1"; exit 2 ;;
     esac
 done
-case $job in test | asan | fuzz) ;; *) echo "usage: bash tools/ci/local.sh test | asan | fuzz [seconds] [--tar FILE]"; exit 2 ;; esac
+case $job in test | asan | fuzz) ;; *) echo "usage: bash tools/ci/local.sh test | asan | fuzz [seconds] [conv|mkv|ac3|mpeg2] [--tar FILE]"; exit 2 ;; esac
 
 base=/dev/shm
 [ -d "$base" ] && [ -w "$base" ] || base=${TMPDIR:-/tmp}
@@ -70,17 +73,9 @@ asan)
     ;;
 fuzz)
     export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
-    { make -j"$jobs" build/test && HEMMA_FUZZ_SEEDS=build/fuzz-seeds build/test conv_fuzz_seeds &&
-      clang -g -O1 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
-        -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
-        -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION tools/convfuzz.c \
-        modules/av/conv.c modules/av/mkv.c modules/av/mpeg2.c modules/av/deint.c modules/av/h264enc.c \
-        modules/av/ac3.c modules/av/aac.c modules/av/mp4.c -lm -o build/convfuzz; } >make.log 2>&1 ||
-        { tail -40 make.log; exit 1; }
+    make -j"$jobs" build/test >make.log 2>&1 || { tail -40 make.log; exit 1; }
     built=$(ms "$t0"); t1=$(now)
-    mkdir -p build/fuzz-corpus build/fuzz-found
-    build/convfuzz -max_total_time="$secs" -max_len=65536 -rss_limit_mb=2048 -timeout=60 -print_final_stats=1 \
-        -artifact_prefix=build/fuzz-found/ build/fuzz-corpus build/fuzz-seeds >test.log 2>&1 || rc=$?
+    sh tools/ci/fuzz.sh "$target" "$secs" >test.log 2>&1 || rc=$?
     ;;
 esac
 ran=$(ms "$t1")
@@ -91,7 +86,7 @@ w=$(grep -c "warning:" make.log)
 [ "$w" -gt 0 ] && echo "$w compiler warnings (files compiled this run): $W/make.log"
 if [ "$job" = fuzz ]; then
     grep -E "^Done|ERROR|SUMMARY" test.log | head -5
-    [ -n "$(ls build/fuzz-found 2>/dev/null)" ] && echo "found: $W/build/fuzz-found"
+    grep -A20 "found something" test.log | head -20
 else
     tail -n 30 test.log | grep -v '^$'
 fi

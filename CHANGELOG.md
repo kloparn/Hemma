@@ -4,6 +4,31 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 0.25.1 (2026-10-21)
+
+The player and the upload page are tested in a real browser now, and the video code is fuzzed every
+night.
+
+### Fixed
+
+- **Live TV and "continue watching" without JavaScript:** a channel started its programme from the
+  beginning instead of where it is now, and a video didn't resume, in a browser that runs no
+  JavaScript (or before Hemma's script arrived). The page now puts the starting point in the
+  video's address, so the browser starts there by itself.
+- A video no longer offers to resume in its last 5 seconds (it would end at once) - the server keeps
+  that rule now, not only the player.
+
+### For developers
+
+- **Browser tests** (`tests/browser`, CI only): Hemma's pages in Google Chrome against a real Hemma
+  with real (tiny) videos made by its own encoders - resuming, progress, the next episode, Live TV's
+  rules with and without JavaScript, an upload, the sign-in languages - and eslint over `web/*.js`.
+- **Nightly fuzzing** (`.github/workflows/fuzz.yml`): about three hours every night over the whole
+  converter and, much faster, the MKV reader, the Dolby decoder and the MPEG-2 decoder on their own,
+  each night going on from what the last one found.
+- Local CI runs the suite in four processes, as GitHub does, and fuzzes any of the four targets
+  (`./build.ps1 ci fuzz 300 ac3`).
+
 ## 0.25.0 (2026-10-21)
 
 Hemma speaks English, Swedish and Spanish.
