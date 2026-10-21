@@ -13,6 +13,9 @@
 # --tar FILE, else this checkout's own files (git ls-files). Needs make, gcc, and for asan/fuzz clang
 # with its sanitizer and libFuzzer runtimes (Ubuntu: build-essential clang libclang-rt-18-dev).
 set -u
+# The suite in 4 processes, as GitHub's runners split it: tests sharing a process meet what earlier ones
+# left (a test module stays registered), and 20 processes once hid such a meeting CI then had (0.25.0).
+export HEMMA_TEST_JOBS=${HEMMA_TEST_JOBS:-4}
 job=${1:-test}
 secs=90
 tarfile=

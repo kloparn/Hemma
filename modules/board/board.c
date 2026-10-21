@@ -85,10 +85,11 @@ static void clean_text(const char *in, char *out) {
     out[o] = '\0';
 }
 
-/* First `max` characters on one line, with an ellipsis when cut. (No text: a photo's note - "the photo".) */
+/* First `max` characters on one line, with an ellipsis when cut. (No text: a photo's note - "the photo", in the
+   language in use: for what's shown now, never for what's kept - the Latest feed has formats of its own.) */
 static void snippet(const char *text, char *out, size_t cap, int max) {
     if (!*text) {
-        str_copy(out, cap, "the photo");
+        str_copy(out, cap, T("the photo"));
         return;
     }
     size_t o = 0, left = strlen(text);
@@ -176,9 +177,9 @@ static bool read_text(Ctx *c, Fields *f, char *dst, size_t cap, bool photo) {
     size_t chars = utf8_count(t);
     bool ok = false;
     if (!t[0] && !photo) { /* (a photo can say it all) */
-        ctx_fail_at(c, "text", "Write something first, or add a photo");
+        ctx_fail_at(c, "text", "%s", T("Write something first, or add a photo"));
     } else if (chars > NOTE_MAX_CHARS) {
-        ctx_fail_at(c, "text", "Keep it under %d characters (that one has %zu)", NOTE_MAX_CHARS, chars);
+        ctx_fail_at(c, "text", T("Keep it under %d characters (that one has %zu)"), NOTE_MAX_CHARS, chars);
     } else {
         str_copy(dst, cap, t);
         ok = true;
@@ -237,7 +238,7 @@ static bool read_photo(Ctx *c, Fields *f, Note *n) {
     if (!v[0]) return true;
     static const char pre[] = "data:image/jpeg;base64,";
     if (!str_starts(v, pre)) {
-        ctx_fail_at(c, "photo", "That isn't a photo Hemma can keep - try another");
+        ctx_fail_at(c, "photo", "%s", T("That isn't a photo Hemma can keep - try another"));
         return false;
     }
     const char *b64 = v + sizeof pre - 1;
@@ -246,7 +247,7 @@ static bool read_photo(Ctx *c, Fields *f, Note *n) {
     int w = 0, h = 0;
     if (len <= 0 || !jpeg_size(jpg, (size_t)len, &w, &h) || w > PHOTO_SIDE || h > PHOTO_SIDE) {
         free(jpg);
-        ctx_fail_at(c, "photo", "That photo couldn't be read - try another");
+        ctx_fail_at(c, "photo", "%s", T("That photo couldn't be read - try another"));
         return false;
     }
     char name[24], dir[600], path[640];
@@ -257,7 +258,7 @@ static bool read_photo(Ctx *c, Fields *f, Note *n) {
     bool saved = dir_make(dir) && file_write_atomic(path, jpg, (size_t)len);
     free(jpg);
     if (!saved) {
-        ctx_fail_at(c, "photo", "The photo couldn't be saved - is the disk full?");
+        ctx_fail_at(c, "photo", "%s", T("The photo couldn't be saved - is the disk full?"));
         return false;
     }
     str_copy(n->photo, sizeof n->photo, name);
@@ -291,7 +292,7 @@ static void photo_img(Buf *b, const Note *n, bool link) {
     if (link) H(b, "<a class=\"board-photo\" href=\"/board/photo/%s\" data-native target=\"_blank\" rel=\"noopener\">", n->photo);
     else buf_puts(b, "<div class=\"board-photo\">");
     H(b, "<img src=\"/board/photo/%s\" width=\"%d\" height=\"%d\" alt=\"%s\" loading=\"lazy\">", n->photo, n->photo_w,
-      n->photo_h, link ? "Photo - open it full size" : "Photo");
+      n->photo_h, link ? T("Photo - open it full size") : T("Photo"));
     buf_puts(b, link ? "</a>" : "</div>");
 }
 
@@ -310,12 +311,12 @@ static bool read_expiry(Ctx *c, Fields *f, int64_t current, int64_t *out) {
     if (until[0] || str_eq(keep, "date")) {
         int y, m, d;
         if (!parse_ymd(until, &y, &m, &d)) {
-            ctx_fail_at(c, "until", "Pick a date for the note to disappear");
+            ctx_fail_at(c, "until", "%s", T("Pick a date for the note to disappear"));
             return false;
         }
         *out = dt_make(y, m, d + 1, 0, 0);
         if (*out <= c->now) {
-            ctx_fail_at(c, "until", "That date has already passed");
+            ctx_fail_at(c, "until", "%s", T("That date has already passed"));
             return false;
         }
     } else if (str_eq(keep, "keep")) *out = current;
@@ -330,9 +331,9 @@ static bool may_change(const Ctx *c, const Note *n) { return !(is_child(c) || is
 
 static Note *note_arg(Ctx *c, Fields *f) {
     Note *n = tbl_get(&T_note, (int)fields_int(f, "id", 0));
-    if (!n) ctx_fail(c, "That note is gone");
+    if (!n) ctx_fail(c, "%s", T("That note is gone"));
     else if (!may_change(c, n)) {
-        ctx_fail(c, "That note isn't yours");
+        ctx_fail(c, "%s", T("That note isn't yours"));
         return NULL;
     }
     return n;
@@ -342,26 +343,20 @@ static void back_to_board(Ctx *c) { ctx_redirect(c, "%s", str_eq(ctx_q(c, "expir
 
 /* ------------------------------------------------------------------ pieces */
 
-/* ui_day() says "Today"/"Tomorrow"; mid-sentence those read better lower-case. */
-static void day_inline(Buf *b, int64_t t, int64_t now) {
-    size_t at = b->len;
-    ui_day(b, t, now);
-    if (b->len > at && (str_starts(b->p + at, "Today") || str_starts(b->p + at, "Tomorrow") ||
-                        str_starts(b->p + at, "Yesterday")))
-        b->p[at] = (char)(b->p[at] + 32);
-}
-
+/* "until tomorrow 09:00" / "hidden since Tuesday" (ui_day_inline: "today" mid-sentence) */
 static void expiry_label(Buf *b, const Note *n, int64_t now) {
     DateTime e = dt_local(n->expires);
     bool midnight = e.hour == 0 && e.min == 0;
-    buf_puts(b, is_expired(n, now) ? "hidden since " : "until ");
+    Buf when = {0};
     if (midnight && !is_expired(n, now)) {
-        day_inline(b, n->expires - 1, now);
+        ui_day_inline(&when, n->expires - 1, now);
     } else {
-        day_inline(b, n->expires, now);
-        buf_putc(b, ' ');
-        ui_hm(b, n->expires);
+        ui_day_inline(&when, n->expires, now);
+        buf_putc(&when, ' ');
+        ui_hm(&when, n->expires);
     }
+    buf_printf(b, is_expired(n, now) ? T("hidden since %s") : T("until %s"), buf_cstr(&when));
+    buf_free(&when);
 }
 
 static void note_actions(Buf *b, const Note *n, bool expired_view) {
@@ -369,21 +364,25 @@ static void note_actions(Buf *b, const Note *n, bool expired_view) {
     snprintf(id, sizeof id, "%d", n->id);
     buf_puts(b, "<div class=\"board-note-x\">");
     /* each button names its note: a screen reader's list of buttons said "Pin to the top" over and over (#69) */
-    char snip[80], what[160];
+    char snip[80], what[240];
     snippet(n->text, snip, sizeof snip, 30);
     Buf icon = {0};
     ui_icon(&icon, expired_view ? "check" : "pin");
-    if (expired_view) snprintf(what, sizeof what, "Keep “%s”", snip);
-    else snprintf(what, sizeof what, n->pinned ? "Unpin “%s”" : "Pin “%s” to the top", snip);
+    if (expired_view) snprintf(what, sizeof what, T("Keep “%s”"), snip);
+    else snprintf(what, sizeof what, n->pinned ? T("Unpin “%s”") : T("Pin “%s” to the top"), snip);
     ui_act(b, expired_view ? "board.keep" : "board.pin", "icon-btn", buf_cstr(&icon), "id", id, what);
     buf_free(&icon);
-    H(b, "<a class=\"icon-btn\" href=\"/board?%redit=%d\" title=\"Edit\" aria-label=\"Edit “%s”\">",
-      expired_view ? "expired=1&amp;" : "", n->id, snip);
+    H(b, "<a class=\"icon-btn\" href=\"/board?%redit=%d\" title=\"%s\" aria-label=\"", expired_view ? "expired=1&amp;" : "",
+      n->id, T("Edit"));
+    H(b, T("Edit “%s”"), snip);
+    buf_puts(b, "\">");
     ui_icon(b, "edit");
     buf_puts(b, "</a>");
     ui_form(b, "board.delete", "inline");
     ui_hidden_int(b, "id", n->id);
-    H(b, "<button class=\"icon-btn\" title=\"Remove\" aria-label=\"Remove “%s”\">", snip);
+    H(b, "<button class=\"icon-btn\" title=\"%s\" aria-label=\"", T("Remove"));
+    H(b, T("Remove “%s”"), snip);
+    buf_puts(b, "\">");
     ui_icon(b, "trash");
     buf_puts(b, "</button>");
     ui_form_end(b);
@@ -394,7 +393,7 @@ static void note_card(Ctx *c, Buf *b, const Note *n, bool expired_view) {
     H(b, "<article class=\"board-note%r\" id=\"board-note-%d\"", n->pinned ? " pinned" : "", n->id);
     ui_hue_style(b, n->hue);
     buf_putc(b, '>');
-    if (n->pinned) buf_puts(b, "<span class=\"board-note-pin\" title=\"Pinned\"></span>");
+    if (n->pinned) H(b, "<span class=\"board-note-pin\" title=\"%s\"></span>", T("Pinned"));
     photo_img(b, n, true);
     if (n->text[0]) {
         buf_puts(b, "<div class=\"board-note-text\">");
@@ -410,11 +409,14 @@ static void note_card(Ctx *c, Buf *b, const Note *n, bool expired_view) {
     buf_puts(b, "<footer class=\"board-note-f\">");
     Person *p = person_get(n->by);
     ui_avatar_deco(b, p, "xs");
-    H(b, "<span class=\"board-note-m\"><b>%s</b> · ", p ? p->name : "Someone");
+    H(b, "<span class=\"board-note-m\"><b>%s</b> · ", p ? p->name : T("Someone"));
     ui_ago(b, n->created, c->now);
     if (n->edited_by && n->updated > n->created + 60) {
         Person *e = person_get(n->edited_by);
-        H(b, " · <span title=\"Edited by %s\">edited</span>", e ? e->name : "someone");
+        buf_puts(b, " · <span title=\"");
+        if (e) H(b, T("Edited by %s"), e->name);
+        else H(b, "%s", T("Edited by someone"));
+        H(b, "\">%s</span>", T("edited"));
     }
     buf_puts(b, "</span>");
     if (c->me && c->me->role != ROLE_DISPLAY && may_change(c, n)) note_actions(b, n, expired_view); /* (#54, #44) */
@@ -429,66 +431,67 @@ static void keep_radio(Buf *b, const char *value, const char *label, bool on) {
 static void post_box(Buf *b) {
     buf_puts(b, "<section class=\"card board-post\">");
     ui_form(b, "board.post", "board-post-f");
-    H(b, "<textarea name=\"text\" rows=\"3\" maxlength=\"%d\" aria-label=\"Note\" "
-         "placeholder=\"Leave a note for everyone… reminders, the Wi-Fi password for guests, who picks up whom\">"
-         "</textarea><div class=\"board-post-o\">",
-      NOTE_MAX_CHARS);
+    H(b, "<textarea name=\"text\" rows=\"3\" maxlength=\"%d\" aria-label=\"%s\" placeholder=\"%s\"></textarea>"
+         "<div class=\"board-post-o\">",
+      NOTE_MAX_CHARS, T("Note"),
+      T("Leave a note for everyone… reminders, the Wi-Fi password for guests, who picks up whom"));
     ui_hue_picker(b, "hue", 45);
     buf_puts(b, "<label class=\"board-pin-toggle\"><input type=\"checkbox\" name=\"pin\" value=\"1\"><span>");
     ui_icon(b, "pin");
-    buf_puts(b, "Pin</span></label><div class=\"board-keep\" role=\"radiogroup\" aria-label=\"Keep it for\">");
-    keep_radio(b, "0", "Keep", true);
-    keep_radio(b, "1d", "1 day", false);
-    keep_radio(b, "7d", "1 week", false);
+    H(b, "%s</span></label><div class=\"board-keep\" role=\"radiogroup\" aria-label=\"%s\">", T("Pin"), T("Keep it for"));
+    keep_radio(b, "0", T("Keep"), true);
+    keep_radio(b, "1d", T("1 day"), false);
+    keep_radio(b, "7d", T("1 week"), false);
     buf_puts(b, "</div>");
-    photo_field(b, "📷 Photo");
-    buf_puts(b, "<button class=\"btn primary board-post-go\">Post</button></div>");
+    photo_field(b, T("📷 Photo"));
+    H(b, "<button class=\"btn primary board-post-go\">%s</button></div>", T("Post"));
     ui_form_end(b);
     buf_puts(b, "</section>");
 }
 
 static void edit_modal(Ctx *c, Buf *b, const Note *n, bool expired_view) {
     const char *close = expired_view ? "/board?expired=1" : "/board";
-    ui_modal(b, "Edit note", close);
+    ui_modal(b, T("Edit note"), close);
     ui_form(b, "board.save", "stack");
     ui_hidden_int(b, "id", n->id);
-    H(b, "<textarea name=\"text\" rows=\"6\" maxlength=\"%d\" autofocus aria-label=\"Note\">%s</textarea>",
-      NOTE_MAX_CHARS, n->text);
+    H(b, "<textarea name=\"text\" rows=\"6\" maxlength=\"%d\" autofocus aria-label=\"%s\">%s</textarea>",
+      NOTE_MAX_CHARS, T("Note"), n->text);
     if (n->photo[0]) {
         buf_puts(b, "<div class=\"board-photo-edit\">");
         photo_img(b, n, false);
-        buf_puts(b, "<label class=\"check\"><input type=\"checkbox\" name=\"photo_off\" value=\"1\"> Take the photo away</label>"
-                    "</div>");
+        H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"photo_off\" value=\"1\"> %s</label></div>",
+          T("Take the photo away"));
     }
-    photo_field(b, n->photo[0] ? "Another photo" : "📷 Add a photo");
-    buf_puts(b, "<div class=\"field\"><span>Colour</span>");
+    photo_field(b, n->photo[0] ? T("Another photo") : T("📷 Add a photo"));
+    H(b, "<div class=\"field\"><span>%s</span>", T("Colour"));
     ui_hue_picker(b, "hue", n->hue);
     H(b, "</div><label class=\"board-pin-toggle\"><input type=\"checkbox\" name=\"pin\" value=\"1\"%r><span>",
       n->pinned ? " checked" : "");
     ui_icon(b, "pin");
-    buf_puts(b, "Pinned to the top</span></label><div class=\"field\"><span>Show it</span><div class=\"board-keep wrap\">");
+    H(b, "%s</span></label><div class=\"field\"><span>%s</span><div class=\"board-keep wrap\">", T("Pinned to the top"),
+      T("Show it"));
     bool has = n->expires > 0 && !is_expired(n, c->now);
     if (has) {
-        Buf lbl = {0};
-        buf_puts(&lbl, "As now (");
-        expiry_label(&lbl, n, c->now);
-        buf_putc(&lbl, ')');
+        Buf now = {0}, lbl = {0};
+        expiry_label(&now, n, c->now);
+        buf_printf(&lbl, T("As now (%s)"), buf_cstr(&now));
         keep_radio(b, "keep", buf_cstr(&lbl), true);
+        buf_free(&now);
         buf_free(&lbl);
     }
-    keep_radio(b, "0", "Always", !has);
-    keep_radio(b, "1d", "1 more day", false);
-    keep_radio(b, "7d", "1 more week", false);
+    keep_radio(b, "0", T("Always"), !has);
+    keep_radio(b, "1d", T("1 more day"), false);
+    keep_radio(b, "7d", T("1 more week"), false);
     char today[11];
     fmt_ymd(c->now, today);
-    H(b, "</div><label class=\"board-until\"><span>or until</span><input type=\"date\" name=\"until\" min=\"%s\" "
-         "aria-label=\"Show until date\"></label></div>",
-      today);
-    buf_puts(b, "<div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>");
+    H(b, "</div><label class=\"board-until\"><span>%s</span><input type=\"date\" name=\"until\" min=\"%s\" "
+         "aria-label=\"%s\"></label></div>",
+      T("or until"), today, T("Show until date"));
+    H(b, "<div class=\"modal-f\"><button class=\"btn primary\">%s</button></div>", T("Save"));
     ui_form_end(b);
     ui_form(b, "board.delete", "danger-zone");
     ui_hidden_int(b, "id", n->id);
-    buf_puts(b, "<button class=\"btn danger\">Remove note</button>");
+    H(b, "<button class=\"btn danger\">%s</button>", T("Remove note"));
     ui_form_end(b);
     ui_modal_end(b);
 }
@@ -502,7 +505,7 @@ static void grid(Ctx *c, Buf *b, Note **v, int n, bool expired_view) {
 }
 
 static void page(Ctx *c, Buf *b) {
-    ctx_title(c, "Board");
+    ctx_title(c, "%s", T("Board"));
     bool expired_view = str_eq(ctx_q(c, "expired"), "1");
     Note **live, **old;
     int nlive = collect(c->now, false, &live);
@@ -511,39 +514,49 @@ static void page(Ctx *c, Buf *b) {
     while (npinned < nlive && live[npinned]->pinned) npinned++;
 
     if (expired_view) {
-        ctx_title(c, "Hidden notes");
-        ui_head(b, "Hidden notes", "They passed their date. Kept for 60 days, then cleaned up.");
+        ctx_title(c, "%s", T("Hidden notes"));
+        ui_head(b, T("Hidden notes"), T("They passed their date. Kept for 60 days, then cleaned up."));
         H(b, "<a class=\"btn\" href=\"/board\">");
         ui_icon(b, "left");
-        buf_puts(b, "<span>Back to the board</span></a>");
+        H(b, "<span>%s</span></a>", T("Back to the board"));
         ui_head_end(b);
         if (nold) grid(c, b, old, nold, true);
-        else ui_empty(b, "🧹", "Nothing hidden", "Notes that expire end up here for a while.");
+        else ui_empty(b, "🧹", T("Nothing hidden"), T("Notes that expire end up here for a while."));
     } else {
-        char sub[96];
-        if (nlive) snprintf(sub, sizeof sub, "%d note%s%s", nlive, nlive == 1 ? "" : "s", npinned ? " · " : "");
-        else snprintf(sub, sizeof sub, "The household's fridge door");
-        if (nlive && npinned) snprintf(sub + strlen(sub), sizeof sub - strlen(sub), "%d pinned", npinned);
-        ui_head(b, "Board", sub);
+        char sub[200];
+        if (nlive) snprintf(sub, sizeof sub, TN(nlive, "%d note", "%d notes"), nlive);
+        else snprintf(sub, sizeof sub, "%s", T("The household's fridge door"));
+        if (nlive && npinned) {
+            size_t at = strlen(sub);
+            snprintf(sub + at, sizeof sub - at, " · ");
+            at = strlen(sub);
+            snprintf(sub + at, sizeof sub - at, T("%d pinned"), npinned);
+        }
+        ui_head(b, T("Board"), sub);
         ui_head_end(b);
         post_box(b);
         if (!nlive) {
-            ui_empty(b, "📝", "The board is empty", "Leave a note for the household — it shows up on every screen.");
+            ui_empty(b, "📝", T("The board is empty"), T("Leave a note for the household — it shows up on every screen."));
         } else {
             if (npinned) {
                 buf_puts(b, "<h2 class=\"board-h\">");
                 ui_icon(b, "pin");
-                buf_puts(b, "Pinned</h2>");
+                H(b, "%s</h2>", T("Pinned"));
                 grid(c, b, live, npinned, false);
             }
             if (nlive > npinned) {
-                if (npinned) buf_puts(b, "<h2 class=\"board-h\">Notes</h2>");
+                if (npinned) H(b, "<h2 class=\"board-h\">%s</h2>", T("Notes"));
                 grid(c, b, live + npinned, nlive - npinned, false);
             }
         }
-        if (nold)
-            H(b, "<p class=\"board-hidden\"><a href=\"/board?expired=1\">%d hidden note%s</a> — past their date</p>", nold,
-              nold == 1 ? "" : "s");
+        if (nold) {
+            buf_puts(b, "<p class=\"board-hidden\">");
+            H(b,
+              TN(nold, "<a href=\"/board?expired=1\">%d hidden note</a> — past their date",
+                 "<a href=\"/board?expired=1\">%d hidden notes</a> — past their date"),
+              nold);
+            buf_puts(b, "</p>");
+        }
     }
 
     Note *edit = tbl_get(&T_note, (int)ctx_qint(c, "edit", 0));
@@ -570,7 +583,7 @@ static void minis(Ctx *c, Buf *b, Note **v, int show, bool links) {
         buf_puts(b, "</p><small>");
         if (x->pinned) ui_icon(b, "pin");
         Person *p = person_get(x->by);
-        H(b, "%s · ", p ? p->name : "Someone");
+        H(b, "%s · ", p ? p->name : T("Someone"));
         ui_ago(b, x->created, c->now);
         buf_puts(b, "</small></li>");
     }
@@ -582,8 +595,8 @@ static void widget(Ctx *c, Buf *b, int where) {
     Note **v;
     int n = collect(c->now, false, &v);
     int show = MIN(n, 4);
-    ui_card(b, "Board", "/board", n > show ? "All notes" : "Open");
-    if (!n) buf_puts(b, "<p class=\"muted\">Nothing on the board. <a href=\"/board\">Leave a note</a></p>");
+    ui_card(b, T("Board"), "/board", n > show ? T("All notes") : T("Open"));
+    if (!n) H(b, "<p class=\"muted\">%r</p>", T("Nothing on the board. <a href=\"/board\">Leave a note</a>"));
     else minis(c, b, v, show, true);
     ui_card_end(b);
     free(v);
@@ -600,7 +613,7 @@ static bool row_notes(Ctx *c, Buf *b, int kind, const char *arg) {
 }
 
 static const Block blocks[] = {
-    {"board.notes", "Notes", SCREEN_WALL, row_notes, NULL},
+    {"board.notes", N_("Notes"), SCREEN_WALL, row_notes, NULL},
     {0},
 };
 
@@ -608,7 +621,7 @@ static const Block blocks[] = {
 
 static bool known(Ctx *c) {
     if (c->me) return true;
-    ctx_fail(c, "Pick who you are first");
+    ctx_fail(c, "%s", T("Pick who you are first"));
     return false;
 }
 
@@ -625,13 +638,17 @@ static void act_post(Ctx *c, Fields *f) {
     tbl_put(&T_note, &n);
     char snip[160];
     snippet(n.text, snip, sizeof snip, 40);
-    if (!n.text[0])
-        activity_add(c->me->id, "📷", "/board", "%s %s a photo on the board", c->me->name, n.pinned ? "pinned" : "put");
-    else
-        activity_add(c->me->id, n.pinned ? "📌" : "📝", "/board", "%s %s a note%s: “%s”", c->me->name,
-                     n.pinned ? "pinned" : "left", n.photo[0] ? " with a photo" : "", snip);
-    app_notify(c, TOAST_INFO, "%s left a note on the board", c->me->name);
-    ctx_ok(c, n.pinned ? "Pinned to the board" : "Posted");
+    int me = c->me->id;
+    const char *name = c->me->name, *icon = n.pinned ? "📌" : "📝";
+    /* (the Latest feed: one whole format each, said in every reader's language - issue #46) */
+    if (!n.text[0] && n.pinned) activity_add(me, "📷", "/board", N_("%s pinned a photo on the board"), name);
+    else if (!n.text[0]) activity_add(me, "📷", "/board", N_("%s put a photo on the board"), name);
+    else if (n.photo[0] && n.pinned) activity_add(me, icon, "/board", N_("%s pinned a note with a photo: “%s”"), name, snip);
+    else if (n.photo[0]) activity_add(me, icon, "/board", N_("%s left a note with a photo: “%s”"), name, snip);
+    else if (n.pinned) activity_add(me, icon, "/board", N_("%s pinned a note: “%s”"), name, snip);
+    else activity_add(me, icon, "/board", N_("%s left a note: “%s”"), name, snip);
+    app_notify(c, TOAST_INFO, N_("%s left a note on the board"), name);
+    ctx_ok(c, "%s", n.pinned ? T("Pinned to the board") : T("Posted"));
 }
 
 static void act_save(Ctx *c, Fields *f) {
@@ -651,11 +668,18 @@ static void act_save(Ctx *c, Fields *f) {
     char snip[160];
     snippet(n.text, snip, sizeof snip, 40);
     Person *author = person_get(n.by);
-    if (n.by == c->me->id) activity_add(c->me->id, "✏️", "/board", "%s edited their note: “%s”", c->me->name, snip);
-    else
-        activity_add(c->me->id, "✏️", "/board", "%s edited %s's note: “%s”", c->me->name,
-                     author ? author->name : "someone", snip);
-    ctx_ok(c, "Saved");
+    int me = c->me->id;
+    const char *name = c->me->name;
+    if (!n.text[0]) { /* a photo's note */
+        if (n.by == me) activity_add(me, "✏️", "/board", N_("%s edited their note: “the photo”"), name);
+        else if (author) activity_add(me, "✏️", "/board", N_("%s edited %s's note: “the photo”"), name, author->name);
+        else activity_add(me, "✏️", "/board", N_("%s edited someone's note: “the photo”"), name);
+    } else {
+        if (n.by == me) activity_add(me, "✏️", "/board", N_("%s edited their note: “%s”"), name, snip);
+        else if (author) activity_add(me, "✏️", "/board", N_("%s edited %s's note: “%s”"), name, author->name, snip);
+        else activity_add(me, "✏️", "/board", N_("%s edited someone's note: “%s”"), name, snip);
+    }
+    ctx_ok(c, "%s", T("Saved"));
     back_to_board(c);
 }
 
@@ -668,8 +692,9 @@ static void act_pin(Ctx *c, Fields *f) {
     tbl_put(&T_note, &n);
     char snip[160];
     snippet(n.text, snip, sizeof snip, 30);
-    if (n.pinned) activity_add(c->me->id, "📌", "/board", "%s pinned “%s”", c->me->name, snip);
-    ctx_ok(c, n.pinned ? "Pinned" : "Unpinned");
+    if (n.pinned && !n.text[0]) activity_add(c->me->id, "📌", "/board", N_("%s pinned “the photo”"), c->me->name);
+    else if (n.pinned) activity_add(c->me->id, "📌", "/board", N_("%s pinned “%s”"), c->me->name, snip);
+    ctx_ok(c, "%s", n.pinned ? T("Pinned") : T("Unpinned"));
 }
 
 static void act_keep(Ctx *c, Fields *f) {
@@ -680,7 +705,7 @@ static void act_keep(Ctx *c, Fields *f) {
     n.expires = 0;
     n.updated = c->now;
     tbl_put(&T_note, &n);
-    ctx_ok(c, "Back on the board");
+    ctx_ok(c, "%s", T("Back on the board"));
 }
 
 static void act_delete(Ctx *c, Fields *f) {
@@ -689,15 +714,23 @@ static void act_delete(Ctx *c, Fields *f) {
     if (!cur) return;
     char snip[160];
     snippet(cur->text, snip, sizeof snip, 40);
+    bool photo_only = !cur->text[0];
     int author_id = cur->by;
     ctx_undo(c, &T_note, cur->id); /* no "Remove this note?" any more: Undo instead (issue #60) */
     tbl_del(&T_note, cur->id);
     Person *author = person_get(author_id);
-    if (author_id == c->me->id) activity_add(c->me->id, "🗑️", "/board", "%s took down their note: “%s”", c->me->name, snip);
-    else
-        activity_add(c->me->id, "🗑️", "/board", "%s took down %s's note: “%s”", c->me->name,
-                     author ? author->name : "someone", snip);
-    ctx_ok(c, "Removed");
+    int me = c->me->id;
+    const char *name = c->me->name;
+    if (photo_only) {
+        if (author_id == me) activity_add(me, "🗑️", "/board", N_("%s took down their note: “the photo”"), name);
+        else if (author) activity_add(me, "🗑️", "/board", N_("%s took down %s's note: “the photo”"), name, author->name);
+        else activity_add(me, "🗑️", "/board", N_("%s took down someone's note: “the photo”"), name);
+    } else {
+        if (author_id == me) activity_add(me, "🗑️", "/board", N_("%s took down their note: “%s”"), name, snip);
+        else if (author) activity_add(me, "🗑️", "/board", N_("%s took down %s's note: “%s”"), name, author->name, snip);
+        else activity_add(me, "🗑️", "/board", N_("%s took down someone's note: “%s”"), name, snip);
+    }
+    ctx_ok(c, "%s", T("Removed"));
     back_to_board(c);
 }
 
@@ -733,8 +766,8 @@ static bool http(Ctx *c, Conn *conn, HttpReq *r) {
     char path[640];
     if (photo_name_ok(name)) photo_path(name, path, sizeof path);
     if (!photo_name_ok(name) || !file_read_all(path, &jpg, PHOTO_MAX)) {
-        static const char msg[] = "That photo isn't here any more.\n";
-        conn_reply(conn, 404, "text/plain; charset=utf-8", msg, sizeof msg - 1, NULL);
+        const char *msg = T("That photo isn't here any more.\n"); /* (opened by itself: the request's language) */
+        conn_reply(conn, 404, "text/plain; charset=utf-8", msg, strlen(msg), NULL);
     } else {
         conn_reply(conn, 200, "image/jpeg", jpg.p, jpg.len, "Cache-Control: private, max-age=31536000, immutable\r\n");
     }
@@ -764,7 +797,9 @@ static int forget(Forget *f) {
             if (f->apply) tbl_put(&T_note, &n);
         }
     }
-    if (mine) forget_note(f, "%d note%s of theirs on the board %s taken down", mine, mine == 1 ? "" : "s", mine == 1 ? "is" : "are");
+    if (mine) /* (said while the remove dialog renders: in its language) */
+        forget_note(f, TN(mine, "%d note of theirs on the board is taken down", "%d notes of theirs on the board are taken down"),
+                    mine);
     return mine + edited;
 }
 
@@ -782,7 +817,7 @@ static int rezone(Rezone *z) {
 
 static const Module board = {
     .id = "board",
-    .title = "Board",
+    .title = N_("Board"),
     .icon = "note",
     .nav = 5,
     .init = init,

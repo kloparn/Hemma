@@ -64,8 +64,10 @@ typedef struct {
     int id;
     int person; /* whose booking it was */
     int64_t ts;
-    char text[200]; /* "Adam cancelled your Laundry booking · Fri 14:00–17:00" */
+    char text[200]; /* "Adam cancelled your Laundry booking · Fri 14:00–17:00" (English: /api, older versions) */
     char link[160];
+    char msg[480]; /* the same as its English format and values (i18n_pack): shown in the reader's language
+                      (issue #46); "" = a line from before, shown as text */
 } BookNews;
 
 extern Table T_resource, T_booking, T_book_news, T_book_series;
@@ -118,6 +120,9 @@ typedef struct {
 void book_quick_parse(const char *q, int default_res, int64_t now, Quick *out);
 
 /* Rendering helpers shared by the page and the widgets */
+/* A day mid-sentence ("until tomorrow"): Swedish and Spanish in lower case; English keeps the capital it always
+   had here ("until Tomorrow 02:00") - ui_day / ui_day_inline (issue #46). */
+void book_day(Buf *b, int64_t day, int64_t now);
 void book_span_text(const Resource *r, int64_t start, int64_t end, int64_t now, Buf *b);
 void book_page(Ctx *c, Buf *b);
 void book_widget(Ctx *c, Buf *b, int where);

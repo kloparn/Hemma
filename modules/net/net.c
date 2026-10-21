@@ -69,9 +69,11 @@ static struct {
 /* ------------------------------------------------------------- kinds */
 
 static const char *const KINDS[] = {"📱", "💻", "🖥️", "📺", "🔊", "🎮", "🖨️", "📷", "💡", "🌐", "💾", "🍓", "⌚", "🚗"};
-static const char *const KIND_NAMES[] = {"Phone or tablet", "Laptop",     "Computer", "TV",           "Speaker",
-                                         "Game console",    "Printer",    "Camera",   "Smart home",   "Router",
-                                         "Storage",         "Raspberry Pi", "Watch",  "Car"};
+/* (shown with T(): translated where they're shown) */
+static const char *const KIND_NAMES[] = {N_("Phone or tablet"), N_("Laptop"),  N_("Computer"),   N_("TV"),
+                                         N_("Speaker"),         N_("Game console"), N_("Printer"), N_("Camera"),
+                                         N_("Smart home"),      N_("Router"),  N_("Storage"),    N_("Raspberry Pi"),
+                                         N_("Smartwatch"),      N_("Car")};
 
 static const struct {
     const char *needle, *kind;
@@ -132,9 +134,12 @@ const char *net_kind(const Device *d) {
 const char *net_label(const Device *d) {
     if (d->name[0]) return d->name;
     if (d->hostname[0]) return d->hostname;
-    if (is_gateway(d)) return "Router";
-    return "Unknown device";
+    if (is_gateway(d)) return N_("Router");
+    return N_("Unknown device");
 }
+
+/* net_label for people to read: a device's own name as it is, Hemma's words in the reader's language */
+static const char *label(const Device *d) { return d->name[0] || d->hostname[0] ? net_label(d) : T(net_label(d)); }
 
 /* ------------------------------------------------------------- lookups */
 
@@ -435,32 +440,42 @@ static Device *add_device(const Neighbor *e, int64_t now) {
 /* New devices make one activity line an hour: later rounds add their count to it while it's
    under an hour old, and screens get a toast at most once an hour. Forged ARP could otherwise
    fill the feed and pester every screen - one fake device a sweep is enough. */
+/* (Each line and toast is a whole English format with its values: every reader and screen gets it in
+   their language - app_notify, activity_add and the packed Activity.msg.) */
+#define NEWS_MANY N_("%d new devices on the network")
 static void announce(int count, const Device *d, int64_t now) {
-    char what[160];
+    bool toast = now - S.toast_at >= NEWS_EVERY;
+    if (toast) S.toast_at = now;
     Activity *line = S.news_id && now - S.news_at < NEWS_EVERY ? tbl_get(&T_activity, S.news_id) : NULL;
-    if (line) {
+    if (line) { /* the hour's line counts on, in place */
         Activity upd = *line;
         S.news_count += count;
-        snprintf(upd.text, sizeof upd.text, "%d new devices on the network", S.news_count);
+        snprintf(upd.text, sizeof upd.text, NEWS_MANY, S.news_count);
+        if (!i18n_pack(upd.msg, sizeof upd.msg, NEWS_MANY, S.news_count)) upd.msg[0] = '\0';
         tbl_put(&T_activity, &upd);
-        str_copy(what, sizeof what, upd.text);
-    } else {
-        if (count > 1 || !d) snprintf(what, sizeof what, "%d new devices on the network", count);
-        else if (d->hostname[0])
-            snprintf(what, sizeof what, "New device on the network: %s (%s)", d->hostname, d->last_ip);
-        else if (d->random_mac)
-            snprintf(what, sizeof what, "New device on the network: a phone or tablet with a private address (%s)",
+        if (toast) app_notify(NULL, TOAST_INFO, NEWS_MANY, S.news_count);
+        return;
+    }
+    const char *link = "/net?f=unknown";
+    if (count > 1 || !d) {
+        activity_add(0, "🆕", link, NEWS_MANY, count);
+        if (toast) app_notify(NULL, TOAST_INFO, NEWS_MANY, count);
+    } else if (d->hostname[0]) {
+        activity_add(0, "🆕", link, N_("New device on the network: %s (%s)"), d->hostname, d->last_ip);
+        if (toast) app_notify(NULL, TOAST_INFO, N_("New device on the network: %s (%s)"), d->hostname, d->last_ip);
+    } else if (d->random_mac) {
+        activity_add(0, "🆕", link, N_("New device on the network: a phone or tablet with a private address (%s)"),
                      d->last_ip);
-        else snprintf(what, sizeof what, "New device on the network: an unknown device (%s)", d->last_ip);
-        activity_add(0, "🆕", "/net?f=unknown", "%s", what);
-        S.news_id = ((Activity *)tbl_at(&T_activity, tbl_count(&T_activity) - 1))->id;
-        S.news_count = count;
-        S.news_at = now;
+        if (toast)
+            app_notify(NULL, TOAST_INFO, N_("New device on the network: a phone or tablet with a private address (%s)"),
+                       d->last_ip);
+    } else {
+        activity_add(0, "🆕", link, N_("New device on the network: an unknown device (%s)"), d->last_ip);
+        if (toast) app_notify(NULL, TOAST_INFO, N_("New device on the network: an unknown device (%s)"), d->last_ip);
     }
-    if (now - S.toast_at >= NEWS_EVERY) {
-        app_notify(NULL, TOAST_INFO, "%s", what);
-        S.toast_at = now;
-    }
+    S.news_id = ((Activity *)tbl_at(&T_activity, tbl_count(&T_activity) - 1))->id;
+    S.news_count = count;
+    S.news_at = now;
 }
 
 /* Making room is normal on a busy network (phones that change their private address): one
@@ -813,26 +828,27 @@ static void filter_chip(Ctx *c, Buf *b, const char *value, const char *label, in
     buf_free(&u);
 }
 
-/* How this hub is connected, in words: "Wi-Fi", "a network cable" - not "en0" (issue #62). NULL: can't tell. */
-static const char *link_words(int link) {
-    return link == LAN_LINK_WIFI ? "Wi-Fi" : link == LAN_LINK_CABLE ? "a network cable" : NULL;
-}
-
 static void hub_card(Buf *b) {
-    ui_card(b, "This hub", NULL, NULL);
+    ui_card(b, T("This hub"), NULL, NULL);
     if (!S.have_ifc) {
-        buf_puts(b, "<p class=\"muted\">The network interface couldn't be read.</p>");
+        H(b, "<p class=\"muted\">%s</p>", T("The network interface couldn't be read."));
     } else {
         char ip[16], gw[16];
         ip_format(S.ifc.ip, ip);
         ip_format(S.ifc.gateway, gw);
         int prefix = 0;
         for (uint32_t m = S.ifc.mask; m; m <<= 1) prefix++;
-        const char *how = link_words(S.ifc.link);
-        if (how) H(b, "<dl class=\"net-facts\"><dt>Connected</dt><dd title=\"%s\">over %s</dd>", S.ifc.name, how);
-        else H(b, "<dl class=\"net-facts\"><dt>Connected</dt><dd>through %s</dd>", S.ifc.name);
-        H(b, "<dt>Address</dt><dd>%s/%d</dd>", ip, prefix);
-        if (S.ifc.gateway) H(b, "<dt>Router</dt><dd>%s</dd>", gw);
+        /* how this hub is connected, in words: "Wi-Fi", "a network cable" - not "en0" (issue #62) */
+        H(b, "<dl class=\"net-facts\"><dt>%s</dt>", T("Connected"));
+        if (S.ifc.link == LAN_LINK_WIFI) H(b, "<dd title=\"%s\">%s</dd>", S.ifc.name, T("over Wi-Fi"));
+        else if (S.ifc.link == LAN_LINK_CABLE) H(b, "<dd title=\"%s\">%s</dd>", S.ifc.name, T("over a network cable"));
+        else {
+            buf_puts(b, "<dd>");
+            H(b, T("through %s"), S.ifc.name);
+            buf_puts(b, "</dd>");
+        }
+        H(b, "<dt>%s</dt><dd>%s/%d</dd>", T("Address"), ip, prefix);
+        if (S.ifc.gateway) H(b, "<dt>%s</dt><dd>%s</dd>", T("Router"), gw);
         buf_puts(b, "</dl>");
     }
     ui_card_end(b);
@@ -840,51 +856,61 @@ static void hub_card(Buf *b) {
 
 static void scan_card(Ctx *c, Buf *b) {
     bool on = net_scan_on();
-    buf_puts(b, "<section class=\"card net-scan\"><div class=\"net-scan-h\"><div><h2>Discovery</h2>");
+    H(b, "<section class=\"card net-scan\"><div class=\"net-scan-h\"><div><h2>%s</h2>", T("Discovery"));
     H(b, "<p class=\"muted\">%s</p></div>",
-      on ? "On — sweeping the network every two minutes." : "Off — only devices this hub talks to are listed.");
+      on ? T("On — sweeping the network every two minutes.") : T("Off — only devices this hub talks to are listed."));
     if (is_admin(c)) {
         ui_form(b, "net.scan", "inline");
         ui_hidden(b, "on", on ? "0" : "1");
-        H(b, "<button class=\"net-switch%r\" role=\"switch\" aria-checked=\"%s\" aria-label=\"Discovery\"></button>",
-          on ? " on" : "", on ? "true" : "false");
+        H(b, "<button class=\"net-switch%r\" role=\"switch\" aria-checked=\"%s\" aria-label=\"%s\"></button>",
+          on ? " on" : "", on ? "true" : "false", T("Discovery"));
         ui_form_end(b);
     } else {
-        H(b, "<span class=\"badge%r\" title=\"An admin can change this\">%s</span>", on ? " ok" : "", on ? "On" : "Off");
+        H(b, "<span class=\"badge%r\" title=\"%s\">%s</span>", on ? " ok" : "", T("An admin can change this"),
+          on ? T("On") : T("Off"));
     }
     buf_puts(b, "</div>");
     if (on) {
         buf_puts(b, "<p class=\"net-small muted\">");
         if (S.last_sweep) {
-            buf_puts(b, "Last sweep ");
-            ui_ago(b, S.last_sweep, c->now);
+            Buf ago = {0};
+            ui_ago(&ago, S.last_sweep, c->now);
+            H(b, T("Last sweep %s"), buf_cstr(&ago));
+            buf_free(&ago);
         } else {
-            buf_puts(b, "First sweep starting…");
+            buf_puts(b, T("First sweep starting…"));
         }
         buf_puts(b, "</p>");
         int cur = window_s() / 60;
         static const int choices[] = {5, 10, 15, 30, 60};
         if (!is_admin(c)) {
-            H(b, "<p class=\"net-small muted\">People count as home when their device was seen in the last %d minutes.</p>",
-              cur);
+            buf_puts(b, "<p class=\"net-small muted\">");
+            H(b, T("People count as home when their device was seen in the last %d minutes."), cur);
+            buf_puts(b, "</p>");
         } else {
             ui_form(b, "net.window", "net-window");
-            buf_puts(b, "<label>People count as home when their device was seen in the last <select name=\"min\" "
-                        "data-auto aria-label=\"Minutes\">");
+            Buf sel = {0}; /* the sentence's number is a choice: the select sits inside it */
+            H(&sel, "<select name=\"min\" data-auto aria-label=\"%s\">", T("Minutes"));
             for (int i = 0; i < countof(choices); i++)
-                H(b, "<option value=\"%d\"%r>%d</option>", choices[i], choices[i] == cur ? " selected" : "",
+                H(&sel, "<option value=\"%d\"%r>%d</option>", choices[i], choices[i] == cur ? " selected" : "",
                   choices[i]);
-            buf_puts(b, "</select> minutes.</label><noscript><button class=\"btn sm\">Save</button></noscript>");
+            buf_puts(&sel, "</select>");
+            buf_puts(b, "<label>");
+            H(b, T("People count as home when their device was seen in the last %r minutes."), buf_cstr(&sel));
+            H(b, "</label><noscript><button class=\"btn sm\">%s</button></noscript>", T("Save"));
+            buf_free(&sel);
             ui_form_end(b);
         }
         /* ARP can't be authenticated: a forged neighbour entry with someone's phone address
            makes them "home" (issue #10). Say so where presence is set up. */
-        buf_puts(b, "<p class=\"net-small muted\">It's a good guess, not proof: phones get left at home, and any device "
-                    "on the network can pretend to be someone's phone.</p>");
+        H(b, "<p class=\"net-small muted\">%r</p>",
+          T("It's a good guess, not proof: phones get left at home, and any device on the network can pretend to be "
+            "someone's phone."));
     } else {
-        buf_puts(b, "<p class=\"net-explain\">Turn it on at home to see every phone, TV and laptop on the Wi-Fi — and a "
-                    "good guess at who's home. Hemma then sends a tiny packet to each address on your own network "
-                    "every two minutes. Nothing leaves your network.</p>");
+        H(b, "<p class=\"net-explain\">%r</p>",
+          T("Turn it on at home to see every phone, TV and laptop on the Wi-Fi — and a good guess at who's home. "
+            "Hemma then sends a tiny packet to each address on your own network every two minutes. Nothing leaves "
+            "your network."));
     }
     buf_puts(b, "</section>");
 }
@@ -897,45 +923,54 @@ static void device_row(Ctx *c, Buf *b, const Device *d) {
     const char *k = net_kind(d);
     if (k) html_esc(b, k);
     else ui_icon(b, "wifi");
-    H(b, "<i></i></span><div class=\"net-main\"><div class=\"net-name\"><b>%s</b>", net_label(d));
-    if (is_new(d, c->now)) buf_puts(b, "<span class=\"badge net-new\">new</span>");
+    H(b, "<i></i></span><div class=\"net-main\"><div class=\"net-name\"><b>%s</b>", label(d));
+    if (is_new(d, c->now)) H(b, "<span class=\"badge net-new\">%s</span>", T("new"));
     buf_puts(b, "</div><small>");
-    if (on) buf_puts(b, "<span class=\"net-live\">online</span>");
+    if (on) H(b, "<span class=\"net-live\">%s</span>", T("online"));
     else if (d->last_seen) {
-        buf_puts(b, "seen ");
-        ui_ago(b, d->last_seen, c->now);
-    } else buf_puts(b, "never seen");
+        Buf ago = {0};
+        ui_ago(&ago, d->last_seen, c->now);
+        H(b, T("seen %s"), buf_cstr(&ago));
+        buf_free(&ago);
+    } else buf_puts(b, T("never seen"));
     if (d->last_ip[0]) H(b, " · %s", d->last_ip);
     if (d->name[0] && d->hostname[0]) H(b, " · %s", d->hostname);
-    if (d->random_mac) buf_puts(b, " · private address");
+    if (d->random_mac) H(b, " · %s", T("private address"));
     buf_puts(b, "</small></div><div class=\"net-side\">");
     Person *o = person_get(d->owner);
     Person *u = person_get(d->used_by);
     if (o) {
-        H(b, "<span class=\"net-owner\" title=\"%s's\">", o->name);
+        char whose[96];
+        snprintf(whose, sizeof whose, T("%s's"), o->name);
+        H(b, "<span class=\"net-owner\" title=\"%s\">", whose);
         ui_avatar(b, o, "sm");
         buf_puts(b, "</span>");
     } else if (u && admin) {
+        char why[160];
+        snprintf(why, sizeof why, T("%s opened Hemma from this device"), u->name);
         ui_form(b, "net.assign", "inline");
         ui_hidden(b, "id", idstr);
         ui_hidden_int(b, "person", u->id);
-        H(b, "<button class=\"chip net-suggest\" title=\"%s opened Hemma from this device\">", u->name);
+        H(b, "<button class=\"chip net-suggest\" title=\"%s\">", why);
         ui_avatar_deco(b, u, "xs");
-        H(b, "%s's?</button>", u->name);
+        H(b, T("%s's?"), u->name);
+        buf_puts(b, "</button>");
         ui_form_end(b);
     }
     if (d->wol && admin) {
         Buf ic = {0};
         ui_icon(&ic, "power");
         char what[120];
-        snprintf(what, sizeof what, "Wake up %s", net_label(d)); /* (which one: issue #69) */
+        snprintf(what, sizeof what, T("Wake up %s"), label(d)); /* (which one: issue #69) */
         ui_act(b, "net.wake", "icon-btn net-wake", buf_cstr(&ic), "id", idstr, what);
         buf_free(&ic);
     }
     if (admin) {
         Buf href = {0};
+        char what[120];
+        snprintf(what, sizeof what, T("Edit %s"), label(d));
         ctx_url(c, &href, "edit", idstr, NULL);
-        H(b, "<a class=\"icon-btn\" href=\"%s\" aria-label=\"Edit %s\">", buf_cstr(&href), net_label(d));
+        H(b, "<a class=\"icon-btn\" href=\"%s\" aria-label=\"%s\">", buf_cstr(&href), what);
         ui_icon(b, "edit");
         buf_puts(b, "</a>");
         buf_free(&href);
@@ -946,51 +981,54 @@ static void device_row(Ctx *c, Buf *b, const Device *d) {
 static void edit_modal(Ctx *c, Buf *b, const Device *d) {
     Buf close = {0};
     ctx_url(c, &close, "edit", NULL, NULL);
-    ui_modal(b, net_label(d), buf_cstr(&close));
-    H(b, "<dl class=\"net-facts\"><dt>Address</dt><dd>%s</dd><dt>Hardware</dt><dd><code>%s</code></dd>",
-      d->last_ip[0] ? d->last_ip : "—", d->mac);
-    if (d->hostname[0]) H(b, "<dt>Network name</dt><dd>%s</dd>", d->hostname);
-    buf_puts(b, "<dt>First seen</dt><dd>");
+    ui_modal(b, label(d), buf_cstr(&close));
+    H(b, "<dl class=\"net-facts\"><dt>%s</dt><dd>%s</dd><dt>%s</dt><dd><code>%s</code></dd>", T("Address"),
+      d->last_ip[0] ? d->last_ip : "—", T("Hardware"), d->mac);
+    if (d->hostname[0]) H(b, "<dt>%s</dt><dd>%s</dd>", T("Network name"), d->hostname);
+    H(b, "<dt>%s</dt><dd>", T("First seen"));
     ui_day(b, d->first_seen, c->now);
-    buf_puts(b, "</dd><dt>Last seen</dt><dd>");
-    if (net_online(d, c->now)) buf_puts(b, "online now");
+    H(b, "</dd><dt>%s</dt><dd>", T("Last seen"));
+    if (net_online(d, c->now)) buf_puts(b, T("online now"));
     else if (d->last_seen) ui_ago(b, d->last_seen, c->now);
-    else buf_puts(b, "never");
+    else buf_puts(b, T("never"));
     buf_puts(b, "</dd></dl>");
     if (d->random_mac)
-        buf_puts(b, "<p class=\"net-small muted\">This is a private Wi-Fi address — phones pick one per network. It "
-                    "stays the same unless the phone is set to rotate it.</p>");
+        H(b, "<p class=\"net-small muted\">%s</p>",
+          T("This is a private Wi-Fi address — phones pick one per network. It stays the same unless the phone is set "
+            "to rotate it."));
 
     ui_form(b, "net.save", "stack net-form");
     ui_hidden_int(b, "id", d->id);
     H(b,
-      "<label class=\"field\"><span>Name</span><input name=\"name\" maxlength=\"40\" autocomplete=\"off\" "
+      "<label class=\"field\"><span>%s</span><input name=\"name\" maxlength=\"40\" autocomplete=\"off\" "
       "value=\"%s\" placeholder=\"%s\" autofocus></label>",
-      d->name, d->hostname[0] ? d->hostname : "e.g. Eva's phone");
-    buf_puts(b, "<label class=\"field\"><span>Belongs to</span>");
-    ui_person_select(b, "owner", d->owner, "Shared / nobody");
-    buf_puts(b, "</label><div class=\"field\"><span>Kind</span><div class=\"emojis\">");
-    H(b, "<label class=\"emo\" title=\"Guess from its name\"><input type=\"radio\" name=\"kind\" value=\"\"%r><span "
-         "title=\"Auto\">Auto</span></label>",
-      d->kind[0] ? "" : " checked");
+      T("Name"), d->name, d->hostname[0] ? d->hostname : T("e.g. Eva's phone"));
+    H(b, "<label class=\"field\"><span>%s</span>", T("Belongs to"));
+    ui_person_select(b, "owner", d->owner, T("Shared / nobody"));
+    H(b, "</label><div class=\"field\"><span>%s</span><div class=\"emojis\">", T("Kind"));
+    H(b, "<label class=\"emo\" title=\"%s\"><input type=\"radio\" name=\"kind\" value=\"\"%r><span title=\"%s\">%s</span>"
+         "</label>",
+      T("Guess from its name"), d->kind[0] ? "" : " checked", T("Auto"), T("Auto"));
     for (int i = 0; i < countof(KINDS); i++)
         H(b,
           "<label class=\"emo\" title=\"%s\"><input type=\"radio\" name=\"kind\" value=\"%s\" aria-label=\"%s\"%r><span>%s</span></label>",
-          KIND_NAMES[i], KINDS[i], KIND_NAMES[i], str_eq(d->kind, KINDS[i]) ? " checked" : "", KINDS[i]);
+          T(KIND_NAMES[i]), KINDS[i], T(KIND_NAMES[i]), str_eq(d->kind, KINDS[i]) ? " checked" : "", KINDS[i]);
     H(b,
-      "</div></div><label class=\"net-check\"><input type=\"checkbox\" name=\"wol\" value=\"1\"%r><span><b>Wake-on-LAN"
-      "</b><small>Show a button that can switch this computer on over the network.</small></span></label>",
-      d->wol ? " checked" : "");
-    H(b, "<label class=\"field\"><span>Note</span><textarea name=\"note\" maxlength=\"118\" rows=\"2\">%s</textarea>"
-         "</label><div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>",
-      d->note);
+      "</div></div><label class=\"net-check\"><input type=\"checkbox\" name=\"wol\" value=\"1\"%r><span><b>%s</b>"
+      "<small>%s</small></span></label>",
+      d->wol ? " checked" : "", T("Wake-on-LAN"), T("Show a button that can switch this computer on over the network."));
+    H(b, "<label class=\"field\"><span>%s</span><textarea name=\"note\" maxlength=\"118\" rows=\"2\">%s</textarea>"
+         "</label><div class=\"modal-f\"><button class=\"btn primary\">%s</button></div>",
+      T("Note"), d->note, T("Save"));
     ui_form_end(b);
+    char q[200];
+    snprintf(q, sizeof q, T("Forget %s? It comes back if it's seen again."), label(d));
     H(b,
       "<form method=\"post\" action=\"/a/net.forget\" data-a=\"net.forget\" class=\"danger-zone\" "
-      "data-confirm=\"Forget %s? It comes back if it's seen again.\">",
-      net_label(d));
+      "data-confirm=\"%s\">",
+      q);
     ui_hidden_int(b, "id", d->id);
-    buf_puts(b, "<button class=\"btn danger\">Forget device</button></form>");
+    H(b, "<button class=\"btn danger\">%s</button></form>", T("Forget device"));
     ui_modal_end(b);
     buf_free(&close);
 }
@@ -1002,32 +1040,37 @@ static void mine_card(Ctx *c, Buf *b) {
     int n = 0;
     for (int i = 0; i < tbl_count(&T_device); i++) n += ((Device *)tbl_at(&T_device, i))->owner == c->me->id;
     if (!n) return;
-    buf_puts(b, "<section class=\"card net-mine\" id=\"net-mine\"><header class=\"card-h\"><h2>Your devices</h2>"
-                "</header><ul class=\"rows\">");
+    H(b, "<section class=\"card net-mine\" id=\"net-mine\"><header class=\"card-h\"><h2>%s</h2></header><ul "
+         "class=\"rows\">",
+      T("Your devices"));
     for (int i = 0; i < tbl_count(&T_device); i++) {
         const Device *d = tbl_at(&T_device, i);
         if (d->owner != c->me->id) continue;
+        char named[120];
+        snprintf(named, sizeof named, T("Name of %s"), label(d));
         H(b, "<li class=\"row\" id=\"net-mine-%d\"><div class=\"row-main\">", d->id);
         ui_form(b, "net.mine_name", "row-form net-mine-name");
         ui_hidden_int(b, "id", d->id);
-        H(b, "<input name=\"name\" maxlength=\"40\" value=\"%s\" placeholder=\"%s\" aria-label=\"Name of %s\"><button "
-             "class=\"btn sm\">Rename</button>",
-          d->name, d->hostname[0] ? d->hostname : "My phone", net_label(d));
+        H(b, "<input name=\"name\" maxlength=\"40\" value=\"%s\" placeholder=\"%s\" aria-label=\"%s\"><button "
+             "class=\"btn sm\">%s</button>",
+          d->name, d->hostname[0] ? d->hostname : T("My phone"), named, T("Rename"));
         ui_form_end(b);
-        H(b, "<small class=\"muted\">%s</small></div>", net_online(d, c->now) ? "online now" : "not seen lately");
-        char ids[16], aria[96];
+        H(b, "<small class=\"muted\">%s</small></div>", net_online(d, c->now) ? T("online now") : T("not seen lately"));
+        char ids[16], aria[120];
         snprintf(ids, sizeof ids, "%d", d->id);
-        snprintf(aria, sizeof aria, "%s isn't mine", net_label(d));
-        ui_act(b, "net.mine_drop", "btn sm", "Not mine", "id", ids, aria);
+        snprintf(aria, sizeof aria, T("%s isn't mine"), label(d));
+        ui_act(b, "net.mine_drop", "btn sm", T("Not mine"), "id", ids, aria);
         buf_puts(b, "</li>");
     }
-    H(b, "</ul><p class=\"muted small\">%s <a href=\"/people\">Your account</a>.</p></section>",
-      privacy_home(c->me->id) ? "They tell Hemma when you're home - change that under"
-                              : "You asked Hemma not to use them for who's home:");
+    /* (whole sentences with their link, shown as HTML: the apostrophe is written as the entity it always was) */
+    H(b, "</ul><p class=\"muted small\">%r</p></section>",
+      privacy_home(c->me->id)
+          ? T("They tell Hemma when you&#39;re home - change that under <a href=\"/people\">Your account</a>.")
+          : T("You asked Hemma not to use them for who&#39;s home: <a href=\"/people\">Your account</a>."));
 }
 
 static void page(Ctx *c, Buf *b) {
-    ctx_title(c, "Network");
+    ctx_title(c, "%s", T("Network"));
     int n = tbl_count(&T_device), online = 0, people = 0, unknown = 0, tidy = 0;
     for (int i = 0; i < n; i++) {
         Device *d = tbl_at(&T_device, i);
@@ -1037,8 +1080,8 @@ static void page(Ctx *c, Buf *b) {
         tidy += is_tidy(d, c->now);
     }
     char sub[96];
-    snprintf(sub, sizeof sub, "%d online · %d known", online, n);
-    ui_head(b, "Network", sub);
+    snprintf(sub, sizeof sub, T("%d online · %d known"), online, n);
+    ui_head(b, T("Network"), sub);
     ui_head_end(b);
 
     mine_card(c, b);
@@ -1049,10 +1092,10 @@ static void page(Ctx *c, Buf *b) {
 
     const char *f = ctx_q(c, "f");
     buf_puts(b, "<div class=\"toolbar\"><div class=\"chips\">");
-    filter_chip(c, b, NULL, "All", n);
-    filter_chip(c, b, "online", "Online", online);
-    filter_chip(c, b, "people", "People's", people);
-    filter_chip(c, b, "unknown", "Unknown", unknown);
+    filter_chip(c, b, NULL, T("All"), n);
+    filter_chip(c, b, "online", T("Online"), online);
+    filter_chip(c, b, "people", T("People's"), people);
+    filter_chip(c, b, "unknown", TC("devices", "Unknown"), unknown);
     buf_puts(b, "</div></div>");
 
     int *idx = xmalloc(sizeof(int) * (size_t)(n ? n : 1));
@@ -1068,11 +1111,12 @@ static void page(Ctx *c, Buf *b) {
     qsort(idx, (size_t)shown, sizeof *idx, dev_order);
     if (!shown) {
         buf_puts(b, "<section class=\"card\">");
-        if (n) ui_empty(b, "🔍", "Nothing matches", "Try another filter.");
+        if (n) ui_empty(b, "🔍", T("Nothing matches"), T("Try another filter."));
         else
-            ui_empty(b, "📡", "No devices yet",
-                     net_scan_on() ? "The first sweep is on its way."
-                                   : "Devices appear as this hub talks to them — or turn on discovery to find them all.");
+            ui_empty(b, "📡", T("No devices yet"),
+                     net_scan_on()
+                         ? T("The first sweep is on its way.")
+                         : T("Devices appear as this hub talks to them — or turn on discovery to find them all."));
         buf_puts(b, "</section>");
     } else {
         long long want = ctx_qint(c, "n", PAGE_ROWS);
@@ -1085,21 +1129,29 @@ static void page(Ctx *c, Buf *b) {
             snprintf(more, sizeof more, "%d", limit + PAGE_ROWS);
             Buf u = {0};
             ctx_url(c, &u, "n", more, "edit", NULL, NULL);
-            H(b, "<p class=\"net-more\" id=\"net-more\"><a class=\"btn sm\" href=\"%s\">Show %d more</a><span "
-                 "class=\"muted\">%d of %d shown</span></p>",
-              buf_cstr(&u), MIN(PAGE_ROWS, shown - upto), upto, shown);
+            H(b, "<p class=\"net-more\" id=\"net-more\"><a class=\"btn sm\" href=\"%s\">", buf_cstr(&u));
+            H(b, T("Show %d more"), MIN(PAGE_ROWS, shown - upto));
+            buf_puts(b, "</a><span class=\"muted\">");
+            H(b, T("%d of %d shown"), upto, shown);
+            buf_puts(b, "</span></p>");
             buf_free(&u);
         }
         buf_puts(b, "</section>");
     }
     free(idx);
     if (tidy && is_admin(c)) {
-        const char *s = tidy == 1 ? "" : "s";
+        char q[200];
+        snprintf(q, sizeof q,
+                 TN(tidy, "Forget %d unknown device not seen for a week? Any that come back show up again.",
+                    "Forget %d unknown devices not seen for a week? Any that come back show up again."),
+                 tidy);
         H(b,
           "<form method=\"post\" action=\"/a/net.tidy\" data-a=\"net.tidy\" class=\"net-tidy\" id=\"net-tidy\" "
-          "data-confirm=\"Forget %d unknown device%s not seen for a week? Any that come back show up again.\">"
-          "<button class=\"btn sm\">Forget %d unknown device%s not seen for a week</button></form>",
-          tidy, s, tidy, s);
+          "data-confirm=\"%s\"><button class=\"btn sm\">",
+          q);
+        H(b, TN(tidy, "Forget %d unknown device not seen for a week", "Forget %d unknown devices not seen for a week"),
+          tidy);
+        buf_puts(b, "</button></form>");
     }
 
     Device *ed = tbl_get(&T_device, (int)ctx_qint(c, "edit", 0));
@@ -1120,10 +1172,11 @@ static void widget(Ctx *c, Buf *b, int where) {
     for (int i = 0; i < tbl_count(&T_device); i++) online += net_online(tbl_at(&T_device, i), c->now);
     bool track = tracking();
     (void)where; /* (a wall's "who's home" is the wall's own: modules/screens) */
-    ui_card(b, "Network", "/net", "Devices");
-    H(b, "<div class=\"net-w-big\"><b>%d</b><span>device%s online</span></div>", online, online == 1 ? "" : "s");
+    ui_card(b, T("Network"), "/net", T("Devices"));
+    H(b, "<div class=\"net-w-big\"><b>%d</b><span>%s</span></div>", online,
+      TN(online, "device online", "devices online"));
     if (track) {
-        buf_puts(b, "<div class=\"net-w-home\"><span class=\"muted\">Home now</span><div class=\"net-w-av\">");
+        H(b, "<div class=\"net-w-home\"><span class=\"muted\">%s</span><div class=\"net-w-av\">", T("Home now"));
         int home = 0;
         for (int i = 0; i < person_count(); i++) {
             Person *p = person_at(i);
@@ -1131,12 +1184,12 @@ static void widget(Ctx *c, Buf *b, int where) {
             ui_avatar(b, p, "sm");
             home++;
         }
-        if (!home) buf_puts(b, "<span class=\"muted\">nobody</span>");
+        if (!home) H(b, "<span class=\"muted\">%s</span>", T("nobody"));
         buf_puts(b, "</div></div>");
     } else if (!net_scan_on()) {
-        buf_puts(b, "<p class=\"net-small muted\">Turn on discovery to see who's home.</p>");
+        H(b, "<p class=\"net-small muted\">%r</p>", T("Turn on discovery to see who's home."));
     } else {
-        buf_puts(b, "<p class=\"net-small muted\">Tell Hemma whose devices are whose to see who's home.</p>");
+        H(b, "<p class=\"net-small muted\">%r</p>", T("Tell Hemma whose devices are whose to see who's home."));
     }
     ui_card_end(b);
 }
@@ -1145,7 +1198,7 @@ static void widget(Ctx *c, Buf *b, int where) {
 
 static Device *device_for(Ctx *c, Fields *f) {
     Device *d = tbl_get(&T_device, (int)fields_int(f, "id", 0));
-    if (!d) ctx_fail(c, "That device isn't known any more");
+    if (!d) ctx_fail(c, "%s", T("That device isn't known any more"));
     return d;
 }
 
@@ -1158,24 +1211,24 @@ static void back_without_edit(Ctx *c) {
 
 static void act_scan(Ctx *c, Fields *f) {
     if (!is_admin(c)) { /* active probing of the whole network is the admin's call */
-        ctx_fail(c, "Only an admin can switch network discovery");
+        ctx_fail(c, "%s", T("Only an admin can switch network discovery"));
         return;
     }
     bool on = str_eq(fields_str(f, "on"), "1");
     setting_set("net.scan", on ? "1" : "0");
     if (on) {
-        activity_add(c->me->id, "📡", "/net", "%s turned on network discovery", c->me->name);
-        ctx_ok(c, "Discovery is on — the first sweep starts in a moment");
+        activity_add(c->me->id, "📡", "/net", N_("%s turned on network discovery"), c->me->name);
+        ctx_ok(c, "%s", T("Discovery is on — the first sweep starts in a moment"));
     } else {
         forget_presence(0); /* without sweeps the neighbour cache can't tell who left */
-        ctx_info(c, "Discovery is off");
+        ctx_info(c, "%s", T("Discovery is off"));
     }
 }
 
 /* Devices, Wake-on-LAN and who counts as home are the admin's to change (owner's call). */
 static bool admin_only(Ctx *c) {
     if (is_admin(c)) return true;
-    ctx_fail(c, "Only an admin can change the network page");
+    ctx_fail(c, "%s", T("Only an admin can change the network page"));
     return false;
 }
 
@@ -1183,7 +1236,7 @@ static void act_window(Ctx *c, Fields *f) {
     if (!admin_only(c)) return;
     setting_set_int("net.window", CLAMP(fields_int(f, "min", 10), 1, 240));
     if (net_scan_on()) update_presence(now_sec());
-    ctx_ok(c, "Saved");
+    ctx_ok(c, "%s", T("Saved"));
 }
 
 static void act_save(Ctx *c, Fields *f) {
@@ -1207,7 +1260,7 @@ static void act_save(Ctx *c, Fields *f) {
     upd.dirty = false;
     tbl_put(&T_device, &upd);
     if (net_scan_on()) update_presence(now_sec());
-    ctx_ok(c, "Saved %s", net_label(&upd));
+    ctx_ok(c, T("Saved %s"), label(&upd));
     back_without_edit(c);
 }
 
@@ -1217,26 +1270,26 @@ static void act_assign(Ctx *c, Fields *f) {
     Person *p = person_get((int)fields_int(f, "person", 0));
     if (!d) return;
     if (!p) {
-        ctx_fail(c, "Unknown person");
+        ctx_fail(c, "%s", T("Unknown person"));
         return;
     }
     Device upd = *d;
     upd.owner = p->id;
     tbl_put(&T_device, &upd);
     if (net_scan_on()) update_presence(now_sec());
-    ctx_ok(c, "%s is now %s's", net_label(&upd), p->name);
+    ctx_ok(c, T("%s is now %s's"), label(&upd), p->name);
 }
 
 static void act_forget(Ctx *c, Fields *f) {
     if (!admin_only(c)) return;
     Device *d = device_for(c, f);
     if (!d) return;
-    char label[64];
-    str_copy(label, sizeof label, net_label(d));
+    char was[64];
+    str_copy(was, sizeof was, label(d));
     tbl_del(&T_device, d->id);
     find_router();
     if (net_scan_on()) update_presence(now_sec()); /* maybe its owner's last device */
-    ctx_ok(c, "Forgot %s", label);
+    ctx_ok(c, T("Forgot %s"), was);
     back_without_edit(c);
 }
 
@@ -1254,8 +1307,8 @@ static void act_tidy(Ctx *c, Fields *f) {
     for (int i = 0; i < n; i++) tbl_del(&T_device, s[i].id);
     free(s);
     find_router();
-    if (n) ctx_ok(c, "Forgot %d device%s not seen for a week", n, n == 1 ? "" : "s");
-    else ctx_info(c, "Nothing to forget");
+    if (n) ctx_ok(c, TN(n, "Forgot %d device not seen for a week", "Forgot %d devices not seen for a week"), n);
+    else ctx_info(c, "%s", T("Nothing to forget"));
 }
 
 static void act_wake(Ctx *c, Fields *f) {
@@ -1264,11 +1317,12 @@ static void act_wake(Ctx *c, Fields *f) {
     if (!d) return;
     Mac m;
     if (!d->wol || !mac_parse(d->mac, &m)) {
-        ctx_fail(c, "Wake-on-LAN isn't enabled for this device");
+        ctx_fail(c, "%s", T("Wake-on-LAN isn't enabled for this device"));
         return;
     }
-    char label[64];
-    str_copy(label, sizeof label, net_label(d));
+    char name[64], shown[64]; /* (the feed's line keeps the device's own name; the toast is for the reader) */
+    str_copy(name, sizeof name, net_label(d));
+    str_copy(shown, sizeof shown, label(d));
     bool ok = true;
     if (!app_testing()) { /* tests never put packets on the wire */
         sock_t s = lan_udp_open(true);
@@ -1276,11 +1330,11 @@ static void act_wake(Ctx *c, Fields *f) {
         if (s != SOCK_BAD) sock_close(s);
     }
     if (!ok) {
-        ctx_fail(c, "Couldn't send the wake-up packet");
+        ctx_fail(c, "%s", T("Couldn't send the wake-up packet"));
         return;
     }
-    activity_add(c->me->id, "⏰", "/net", "%s woke up %s", c->me->name, label);
-    ctx_ok(c, "Wake-up sent to %s — give it a minute", label);
+    activity_add(c->me->id, "⏰", "/net", N_("%s woke up %s"), c->me->name, name);
+    ctx_ok(c, T("Wake-up sent to %s — give it a minute"), shown);
 }
 
 /* -------------------------------------------------------------- module */
@@ -1288,38 +1342,53 @@ static void act_wake(Ctx *c, Fields *f) {
 /* The System page's checks: is there a network, and is discovery on and working? (Cached
    facts: the interface is looked up once a minute by the tick.) */
 static void health(Ctx *c, Health *h) {
-    char d[320], ip[16], gw[16];
+    char d[400], ip[16], gw[16];
     if (S.have_ifc) {
         ip_format(S.ifc.ip, ip);
-        char how[96];
-        if (link_words(S.ifc.link)) snprintf(how, sizeof how, "over %s", link_words(S.ifc.link));
-        else snprintf(how, sizeof how, "through \"%s\"", S.ifc.name);
-        if (S.ifc.gateway) {
-            ip_format(S.ifc.gateway, gw);
-            snprintf(d, sizeof d, "Connected %s as %s, with the router at %s.", how, ip, gw);
+        ip_format(S.ifc.gateway, gw);
+        bool router = S.ifc.gateway != 0;
+        /* how it's connected, in words (issue #62), each a whole sentence */
+        if (S.ifc.link == LAN_LINK_WIFI) {
+            if (router) snprintf(d, sizeof d, T("Connected over Wi-Fi as %s, with the router at %s."), ip, gw);
+            else
+                snprintf(d, sizeof d, T("Connected over Wi-Fi as %s, but no router was found: devices may go unnamed."),
+                         ip);
+        } else if (S.ifc.link == LAN_LINK_CABLE) {
+            if (router)
+                snprintf(d, sizeof d, T("Connected over a network cable as %s, with the router at %s."), ip, gw);
+            else
+                snprintf(d, sizeof d,
+                         T("Connected over a network cable as %s, but no router was found: devices may go unnamed."),
+                         ip);
         } else {
-            snprintf(d, sizeof d, "Connected %s as %s, but no router was found: devices may go unnamed.", how, ip);
+            if (router)
+                snprintf(d, sizeof d, T("Connected through \"%s\" as %s, with the router at %s."), S.ifc.name, ip, gw);
+            else
+                snprintf(d, sizeof d,
+                         T("Connected through \"%s\" as %s, but no router was found: devices may go unnamed."),
+                         S.ifc.name, ip);
         }
-        health_add(h, HEALTH_OK, "Home network", d, NULL, NULL);
+        health_add(h, HEALTH_OK, T("Home network"), d, NULL, NULL);
     } else if (!app_testing()) { /* (tests have no interface unless they set one) */
-        health_add(h, HEALTH_WARN, "Home network", "Hemma can't find a network connection on this computer.",
-                   "Check the network cable or Wi-Fi - Hemma looks again every minute.", NULL);
+        health_add(h, HEALTH_WARN, T("Home network"), T("Hemma can't find a network connection on this computer."),
+                   T("Check the network cable or Wi-Fi - Hemma looks again every minute."), NULL);
     }
     if (!net_scan_on()) {
-        health_add(h, HEALTH_INFO, "Device discovery",
-                   "Off: the Network page only lists devices that talk to Hemma, and nobody shows as home or away.",
-                   "Turn it on on the Network page to see who's home.", "/net");
+        health_add(h, HEALTH_INFO, T("Device discovery"),
+                   T("Off: the Network page only lists devices that talk to Hemma, and nobody shows as home or away."),
+                   T("Turn it on on the Network page to see who's home."), "/net");
     } else if (S.udp == SOCK_BAD && S.udp_retry) {
-        health_add(h, HEALTH_WARN, "Device discovery", "On, but Hemma can't send its probes (no network socket).",
-                   "The log says more; Hemma tries again every minute.", "/system/log?f=warn");
+        health_add(h, HEALTH_WARN, T("Device discovery"), T("On, but Hemma can't send its probes (no network socket)."),
+                   T("The log says more; Hemma tries again every minute."), "/system/log?f=warn");
     } else {
-        int n = snprintf(d, sizeof d, "On: Hemma looks for devices every %d minutes, so it can tell who's home.",
+        int n = snprintf(d, sizeof d, T("On: Hemma looks for devices every %d minutes, so it can tell who's home."),
                          NET_SCAN_EVERY / 60);
-        if (S.last_sweep && n > 0 && (size_t)n < sizeof d) {
+        if (S.last_sweep && n > 0 && (size_t)n + 2 < sizeof d) { /* (room for the space and more) */
             DateTime t = dt_local(S.last_sweep);
-            snprintf(d + n, sizeof d - (size_t)n, " Last look: %02d:%02d.", t.hour % 100, t.min % 100);
+            d[n++] = ' ';
+            snprintf(d + n, sizeof d - (size_t)n, T("Last look: %02d:%02d."), t.hour % 100, t.min % 100);
         }
-        health_add(h, HEALTH_OK, "Device discovery", d, NULL, "/net");
+        health_add(h, HEALTH_OK, T("Device discovery"), d, NULL, "/net");
     }
 }
 
@@ -1354,7 +1423,7 @@ static void stop(void) {
 static Device *mine_arg(Ctx *c, Fields *f) {
     Device *d = device_for(c, f);
     if (d && d->owner != c->me->id) {
-        ctx_fail(c, "That device isn't yours");
+        ctx_fail(c, "%s", T("That device isn't yours"));
         return NULL;
     }
     return d;
@@ -1370,7 +1439,7 @@ static void act_mine_name(Ctx *c, Fields *f) {
     str_copy(upd.name, sizeof upd.name, name);
     upd.dirty = false;
     tbl_put(&T_device, &upd);
-    ctx_ok(c, "Saved %s", net_label(&upd));
+    ctx_ok(c, T("Saved %s"), label(&upd));
 }
 
 static void act_mine_drop(Ctx *c, Fields *f) {
@@ -1381,7 +1450,7 @@ static void act_mine_drop(Ctx *c, Fields *f) {
     upd.dirty = false;
     tbl_put(&T_device, &upd);
     if (net_scan_on()) update_presence(now_sec());
-    ctx_ok(c, "%s isn't counted as yours any more", net_label(&upd));
+    ctx_ok(c, T("%s isn't counted as yours any more"), label(&upd));
 }
 
 /* Someone leaves (issue #45): their devices are nobody's (they no longer say who's home). */
@@ -1398,7 +1467,11 @@ static int forget(Forget *f) {
         d.dirty = false;
         tbl_put(&T_device, &d);
     }
-    if (n) forget_note(f, "%d device%s of theirs on the network %s nobody's", n, n == 1 ? "" : "s", n == 1 ? "is" : "are");
+    if (n) /* (the remove dialog shows it now, to the admin asking) */
+        forget_note(f,
+                    TN(n, "%d device of theirs on the network is nobody's",
+                       "%d devices of theirs on the network are nobody's"),
+                    n);
     if (f->apply) forget_presence(f->person);
     return n;
 }
@@ -1412,7 +1485,7 @@ static const Action actions[] = {
 
 static const Module net = {
     .id = "net",
-    .title = "Network",
+    .title = N_("Network"),
     .icon = "wifi",
     .nav = 6,
     .flags = MOD_NO_CHILD | MOD_NO_GUEST, /* (the household's devices and who's home: issue #44) */

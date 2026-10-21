@@ -103,8 +103,12 @@ int64_t days_of_date(int64_t year, int mon, int day);
 void date_of_days(int64_t days, int *year, int *mon, int *day);
 int iso_week(int64_t t, int *iso_year);
 int days_in_month(int year, int mon);
-const char *weekday_name(int wday, bool abbrev); /* English, wday 0 = Monday */
-const char *month_name(int mon, bool abbrev);    /* English, mon 1..12 */
+/* The language the calling thread shows text in: 0 English, 1 Swedish, 2 Spanish (core/i18n.h's Lang).
+   Per thread, English until set: the core sets it for each request (ctx) and back after. */
+int lang_now(void);
+int lang_use(int lang); /* returns the one before */
+const char *weekday_name(int wday, bool abbrev); /* in lang_now(), wday 0 = Monday ("Tue", "tis", "mar") */
+const char *month_name(int mon, bool abbrev);    /* in lang_now(), mon 1..12 ("Oct", "okt", "oct") */
 bool parse_ymd(const char *s, int *y, int *m, int *d); /* "2026-10-12" */
 bool parse_hm(const char *s, int *minutes);             /* "14:30" "14.30" "14" "1430" -> minutes after midnight */
 void fmt_ymd(int64_t t, char out[11]);                  /* "2026-10-12" */

@@ -462,12 +462,19 @@ TEST(auth_sessions_create_find_and_drop) {
     CHECK(strcmp(a, b) != 0);
     CHECK_INT(tbl_count(&T_session), 2);
     Session *s = tbl_at(&T_session, 0);
-    CHECK_STR(s->agent, "Safari on iPhone");
+    char said[80]; /* (kept packed: each reader sees it in their language) */
+    i18n_unpack_to(said, sizeof said, s->agent);
+    CHECK_STR(said, "Safari on iPhone");
+    Lang was = i18n_use(LANG_SV);
+    i18n_unpack_to(said, sizeof said, s->agent);
+    i18n_use(was);
+    CHECK_STR(said, "Safari på iPhone");
     CHECK(!strstr(s->token, a)); /* only the hash is stored */
     CHECK_INT(strlen(s->token), 64);
     session_end(a);
     CHECK_INT(tbl_count(&T_session), 1);
-    CHECK_STR(((Session *)tbl_at(&T_session, 0))->agent, "Chrome on Windows");
+    i18n_unpack_to(said, sizeof said, ((Session *)tbl_at(&T_session, 0))->agent);
+    CHECK_STR(said, "Chrome on Windows");
     CHECK_INT(sessions_drop(adam, NULL), 1);
     CHECK_INT(tbl_count(&T_session), 0);
     th_halt();

@@ -2,6 +2,7 @@
  * plus the shared connection for direct SQL (see db.h). */
 #include "store.h"
 #include "db.h"
+#include "i18n.h"
 #include "json.h"
 #include "plat.h"
 #include "tar.h"
@@ -22,7 +23,9 @@ static int ntables;
 static sqlite3 *g_db;
 static bool g_failed;
 static int g_last_err;     /* SQLite's code for the last write that failed */
-static char g_rescue[700]; /* store_rescue_report() */
+static char g_rescue[700];          /* store_rescue_report(): in English, for the log */
+static char g_rescue_packed[1400];  /* the same for people: packed (i18n_pack_add), shown in their language */
+static char g_restored_packed[1400];
 static bool g_refused;     /* store_refused(): the data was left alone, on purpose */
 static char g_refusal[800]; /* store_refusal() */
 static char g_restored[700]; /* store_restore_report() */
@@ -86,6 +89,14 @@ static bool damage(int rc) {
 
 bool store_damaged(void) { return g_failed && damage(g_last_err); }
 const char *store_rescue_report(void) { return g_rescue; }
+const char *store_rescue_packed(void) { return g_rescue_packed; }
+
+/* packed -> the English text (the log's, the tests') */
+static void english(char *out, size_t cap, const char *packed) {
+    Lang was = i18n_use(LANG_EN);
+    i18n_unpack_to(out, cap, packed);
+    i18n_use(was);
+}
 
 /* ============================================================ memory rows */
 
@@ -609,17 +620,20 @@ static long long census_of(const Buf *census, const char *table) {
     return -1;
 }
 
-/* "2,944" */
-static void count_text(long long v, char *out, size_t cap) {
+/* "2,944" - or, in a text shown in any language (plain = true), "2944" (and "12 345" past 9,999: a
+   comma reads as a decimal point in Swedish and Spanish) */
+static void count_text_in(long long v, char *out, size_t cap, bool plain) {
     char raw[32];
     snprintf(raw, sizeof raw, "%lld", v < 0 ? 0 : v);
     size_t len = strlen(raw), o = 0;
     for (size_t i = 0; i < len && o + 2 < cap; i++) {
-        if (i && (len - i) % 3 == 0) out[o++] = ',';
+        if (i && (len - i) % 3 == 0 && (!plain || len > 4)) out[o++] = plain ? ' ' : ',';
         out[o++] = raw[i];
     }
     out[o] = '\0';
 }
+
+static void count_text(long long v, char *out, size_t cap) { count_text_in(v, out, cap, false); }
 
 /* ---- copies kept beside the database (damaged ones, the data before a restore): the newest few stay ---- */
 
@@ -936,8 +950,8 @@ static Rescue rescue(const char *path, const char *why) {
         if (str_eq(t->name, "person")) people = n, was_people = was;
         if (was > n && ++nlost <= 3) {
             char a[24], b2[24];
-            count_text(n, a, sizeof a);
-            count_text(was, b2, sizeof b2);
+            count_text_in(n, a, sizeof a, true);
+            count_text_in(was, b2, sizeof b2, true);
             buf_printf(&lost, "%s%s: %s of %s", lost.len ? ", " : "", table_words(t), a, b2);
         }
     }
@@ -984,22 +998,31 @@ static Rescue rescue(const char *path, const char *why) {
         return RESCUE_FAILED;
     }
     const char *base = strrchr(kept, '/'); /* (SQLite's own words go to the log; people get these) */
-    int n = snprintf(g_rescue, sizeof g_rescue,
-                     "%s %s: Hemma's data was damaged (%s). Nothing was deleted: the damaged file is kept as %s. ", day, hm,
-                     strstr(why, "not a database") ? "it isn't a database file any more" : "parts of it couldn't be read",
-                     base ? base + 1 : kept);
-    if (n > 0 && (size_t)n < sizeof g_rescue) {
-        if (unknown) snprintf(g_rescue + n, sizeof g_rescue - (size_t)n, "%s rows were kept%s%s.", k,
-                              lost.len ? "; fewer than before in " : "", buf_cstr(&lost));
-        else if (lost.len) snprintf(g_rescue + n, sizeof g_rescue - (size_t)n, "%s of %s rows were kept - %s.", k, w, buf_cstr(&lost));
-        else snprintf(g_rescue + n, sizeof g_rescue - (size_t)n, "All %s rows were kept.", k);
-    }
-    size_t used = strlen(g_rescue);
-    if (orphans > 0 && used < sizeof g_rescue) {
-        char o[24];
-        count_text(orphans, o, sizeof o);
-        snprintf(g_rescue + used, sizeof g_rescue - used, " %s more couldn't be put back in their place: they're in the table lost_and_found.", o);
-    }
+    char *r = g_rescue_packed;
+    r[0] = '\0';
+    if (strstr(why, "not a database"))
+        i18n_pack_add(r, sizeof g_rescue_packed,
+                      N_("%s %s: Hemma's data was damaged (it isn't a database file any more). Nothing was deleted: the "
+                         "damaged file is kept as %s."),
+                      day, hm, base ? base + 1 : kept);
+    else
+        i18n_pack_add(r, sizeof g_rescue_packed,
+                      N_("%s %s: Hemma's data was damaged (parts of it couldn't be read). Nothing was deleted: the "
+                         "damaged file is kept as %s."),
+                      day, hm, base ? base + 1 : kept);
+    if (unknown && lost.len)
+        i18n_pack_add(r, sizeof g_rescue_packed, N_("%'lld rows were kept; fewer than before in %s."), kept_rows,
+                      buf_cstr(&lost));
+    else if (unknown) i18n_pack_add(r, sizeof g_rescue_packed, N_("%'lld rows were kept."), kept_rows);
+    else if (lost.len)
+        i18n_pack_add(r, sizeof g_rescue_packed, N_("%'lld of %'lld rows were kept - %s."), kept_rows, was_rows,
+                      buf_cstr(&lost));
+    else i18n_pack_add(r, sizeof g_rescue_packed, N_("All %'lld rows were kept."), kept_rows);
+    if (orphans > 0)
+        i18n_pack_add(r, sizeof g_rescue_packed,
+                      N_("%'lld more couldn't be put back in their place: they're in the table lost_and_found."),
+                      (long long)orphans);
+    english(g_rescue, sizeof g_rescue, r);
     buf_free(&lost);
     return RESCUED;
 }
@@ -1214,10 +1237,12 @@ static void restore_staged(const char *path) {
         snprintf(kept, sizeof kept, "%s.restore-refused", path);
         file_replace(staged, kept);
         file_remove(from);
-        snprintf(g_restored, sizeof g_restored,
-                 "%s %s: the backup %s was NOT put back - %s. Hemma carried on with the data it had (the backup is "
-                 "kept as hemma.db.restore-refused).",
-                 day, hm, label, why);
+        g_restored_packed[0] = '\0';
+        i18n_pack_add(g_restored_packed, sizeof g_restored_packed,
+                      N_("%s %s: the backup %s was NOT put back - %s. Hemma carried on with the data it had (the backup "
+                         "is kept as hemma.db.restore-refused)."),
+                      day, hm, label, why);
+        english(g_restored, sizeof g_restored, g_restored_packed);
         log_error("store: %s", g_restored);
         return;
     }
@@ -1244,16 +1269,19 @@ static void restore_staged(const char *path) {
     }
     file_remove(from);
     prune_copies("hemma.db.before-restore-", RESTORE_KEEP);
-    char n[24];
-    count_text(rows, n, sizeof n);
     const char *base = strrchr(kept, '/');
-    snprintf(g_restored, sizeof g_restored,
-             "%s %s: the backup %s was put back (%s rows).%s%.200s%s", day, hm, label, n,
-             had ? " What was there before is kept as " : "", had ? (base ? base + 1 : kept) : "", had ? "." : "");
+    g_restored_packed[0] = '\0';
+    i18n_pack_add(g_restored_packed, sizeof g_restored_packed, N_("%s %s: the backup %s was put back (%'lld rows)."), day,
+                  hm, label, rows);
+    if (had)
+        i18n_pack_add(g_restored_packed, sizeof g_restored_packed, N_("What was there before is kept as %.200s."),
+                      base ? base + 1 : kept);
+    english(g_restored, sizeof g_restored, g_restored_packed);
     log_warn("store: %s", g_restored);
 }
 
 const char *store_restore_report(void) { return g_restored; }
+const char *store_restore_packed(void) { return g_restored_packed; }
 
 /* =========================================================== open / close */
 
@@ -1329,7 +1357,7 @@ bool store_open(const char *dir) {
     char path[600];
     snprintf(path, sizeof path, "%s/hemma.db", dir);
     str_copy(g_dir, sizeof g_dir, dir);
-    g_rescue[0] = g_refusal[0] = g_restored[0] = '\0';
+    g_rescue[0] = g_refusal[0] = g_restored[0] = g_rescue_packed[0] = g_restored_packed[0] = '\0';
     g_refused = false;
     restore_staged(path); /* (a backup an admin chose to go back to: issue #35) */
     for (int attempt = 0;; attempt++) {

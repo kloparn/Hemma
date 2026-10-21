@@ -453,19 +453,43 @@ int days_in_month(int year, int mon) {
     return dm[mon - 1];
 }
 
+/* The language this thread shows text in (core/i18n.h): English until a request says otherwise. */
+static _Thread_local int g_lang;
+int lang_now(void) { return g_lang; }
+int lang_use(int lang) {
+    int old = g_lang;
+    g_lang = lang >= 0 && lang < 3 ? lang : 0;
+    return old;
+}
+
+/* Swedish and Spanish names are lower case, as they're written mid-sentence; ui_day() capitalises
+   one that starts a line. */
 const char *weekday_name(int wday, bool abbrev) {
-    static const char *full[7] = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"};
-    static const char *ab[7] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+    static const char *const full[3][7] = {
+        {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"},
+        {"måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag", "söndag"},
+        {"lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"}};
+    static const char *const ab[3][7] = {{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"},
+                                         {"mån", "tis", "ons", "tors", "fre", "lör", "sön"},
+                                         {"lun", "mar", "mié", "jue", "vie", "sáb", "dom"}};
     if (wday < 0 || wday > 6) return "?";
-    return abbrev ? ab[wday] : full[wday];
+    return abbrev ? ab[g_lang][wday] : full[g_lang][wday];
 }
 
 const char *month_name(int mon, bool abbrev) {
-    static const char *full[12] = {"January", "February", "March",     "April",   "May",      "June",
-                                   "July",    "August",   "September", "October", "November", "December"};
-    static const char *ab[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    static const char *const full[3][12] = {
+        {"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November",
+         "December"},
+        {"januari", "februari", "mars", "april", "maj", "juni", "juli", "augusti", "september", "oktober", "november",
+         "december"},
+        {"enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre",
+         "diciembre"}};
+    static const char *const ab[3][12] = {
+        {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"},
+        {"jan", "feb", "mar", "apr", "maj", "jun", "jul", "aug", "sep", "okt", "nov", "dec"},
+        {"ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"}};
     if (mon < 1 || mon > 12) return "?";
-    return abbrev ? ab[mon - 1] : full[mon - 1];
+    return abbrev ? ab[g_lang][mon - 1] : full[g_lang][mon - 1];
 }
 
 static int digits(const char *s, int n, int *out) {

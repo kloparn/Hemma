@@ -384,7 +384,7 @@ TEST(media_tv_mode_pages_are_bare_with_a_way_back) {
     progress(adam, ep1, 200, 1200);
     snprintf(url, sizeof url, "/media/watch/%016llx?tv=1&back=%%2Fscreens%%2F2", (unsigned long long)ep1->id);
     const char *h = th_page(adam, url);
-    CHECK(str_starts(h, "<div id=\"app\" class=\"bare\" data-mod=\"media\"><div class=\"media-tv media-tv-watch\">"
+    CHECK(str_starts(h, "<div id=\"app\" class=\"bare\" data-mod=\"media\" data-lang=\"en\"><div class=\"media-tv media-tv-watch\">"
                         "<a class=\"media-tv-back\" href=\"/screens/2\" data-esc data-back>")); /* Back comes first */
     CHECK_HAS(h, "class=\"media-tv-video\"");
     CHECK_HAS(h, " autoplay ");

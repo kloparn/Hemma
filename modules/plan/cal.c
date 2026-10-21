@@ -33,9 +33,8 @@ static int64_t selected_day(Ctx *c) {
 static void time_label(Buf *b, const Event *e, int64_t day, bool span) {
     int64_t next = add_days(day, 1);
     if (span && e->end > next) {
-        buf_puts(b, "until ");
-        buf_puts(b, weekday_name(dt_local(e->end - 1).wday, true));
-    } else if (e->allday || (e->start <= day && e->end >= next)) buf_puts(b, "All day");
+        buf_printf(b, TC("day", "until %s"), weekday_name(dt_local(e->end - 1).wday, true));
+    } else if (e->allday || (e->start <= day && e->end >= next)) buf_puts(b, T("All day"));
     else if (e->start >= day && e->end <= next) ui_span(b, e->start, e->end);
     else if (e->start >= day) {
         ui_hm(b, e->start);
@@ -57,11 +56,12 @@ static void event_row(Ctx *c, Buf *b, const Event *e, int64_t day, const char *h
     if (href) H(b, "<a class=\"plan-ev-main\" href=\"%s\">", href);
     else buf_puts(b, "<div class=\"plan-ev-main\">");
     H(b, "<b>%s%r%s</b>", icon, icon[0] ? " " : "", e->title);
-    if (e->series) buf_puts(b, " <span class=\"plan-rep\" aria-hidden=\"true\">↻</span><span class=\"sr-only\">, repeats</span>");
+    if (e->series)
+        H(b, " <span class=\"plan-rep\" aria-hidden=\"true\">↻</span><span class=\"sr-only\">%s</span>", T(", repeats"));
     if (e->note[0]) H(b, "<small>%s</small>", e->note);
     buf_puts(b, href ? "</a>" : "</div>");
     if (p) {
-        buf_puts(b, "<span class=\"plan-ev-who\"><span class=\"sr-only\">for </span>");
+        H(b, "<span class=\"plan-ev-who\"><span class=\"sr-only\">%s </span>", T("for"));
         ui_avatar(b, p, "sm");
         buf_puts(b, "</span>");
     }
@@ -87,7 +87,7 @@ static void ext_row(Buf *b, const AgendaItem *it, int64_t day, bool link) {
     if (p) ui_hue_style(b, p->hue);
     buf_puts(b, "><span class=\"plan-ev-time\">");
     int64_t next = add_days(day, 1);
-    if (it->allday || (it->start <= day && it->end >= next)) buf_puts(b, "All day");
+    if (it->allday || (it->start <= day && it->end >= next)) buf_puts(b, T("All day"));
     else if (it->start >= day && it->end <= next) ui_span(b, it->start, it->end);
     else if (it->start >= day) {
         ui_hm(b, it->start);
@@ -98,10 +98,11 @@ static void ext_row(Buf *b, const AgendaItem *it, int64_t day, bool link) {
     }
     if (link) H(b, "</span><a class=\"plan-ev-main\" href=\"%s\">", it->link);
     else buf_puts(b, "</span><div class=\"plan-ev-main\">");
+    /* (kind stays English in the item - the calendar feed tells to-dos by it - and is said here) */
     H(b, "<b>%s%r%s</b><small>%s</small>%r", it->icon, it->icon[0] ? " " : "", it->title,
-      it->kind[0] ? it->kind : m ? m->title : "", link ? "</a>" : "</div>");
+      it->kind[0] ? T(it->kind) : m ? T(m->title) : "", link ? "</a>" : "</div>");
     if (p) {
-        buf_puts(b, "<span class=\"plan-ev-who\"><span class=\"sr-only\">for </span>");
+        H(b, "<span class=\"plan-ev-who\"><span class=\"sr-only\">%s </span>", T("for"));
         ui_avatar(b, p, "sm");
         buf_puts(b, "</span>");
     }
@@ -150,15 +151,18 @@ static void mini_month(Ctx *c, Buf *b, int year, int mon, int64_t sel) {
     buf_puts(b, "<div class=\"card plan-mm\"><div class=\"plan-mm-h\">");
     snprintf(ym, sizeof ym, "%04d-%02d", py, pm);
     ctx_url(c, &u, "m", ym, "edit", NULL, "new", NULL, NULL);
-    H(b, "<a class=\"icon-btn\" href=\"%s\" aria-label=\"Previous month\">", buf_cstr(&u));
+    H(b, "<a class=\"icon-btn\" href=\"%s\" aria-label=\"%s\">", buf_cstr(&u), T("Previous month"));
     ui_icon(b, "left");
-    H(b, "</a><b>%s %d</b>", month_name(mon, false), year);
+    char my[48]; /* (a heading: Swedish and Spanish months are lower case) */
+    snprintf(my, sizeof my, "%s %d", month_name(mon, false), year);
+    plan_capitalise(my);
+    H(b, "</a><b>%s</b>", my);
     buf_reset(&u);
     snprintf(ym, sizeof ym, "%04d-%02d", ny, nm);
     ctx_url(c, &u, "m", ym, "edit", NULL, "new", NULL, NULL);
-    H(b, "<a class=\"icon-btn\" href=\"%s\" aria-label=\"Next month\">", buf_cstr(&u));
+    H(b, "<a class=\"icon-btn\" href=\"%s\" aria-label=\"%s\">", buf_cstr(&u), T("Next month"));
     ui_icon(b, "right");
-    buf_puts(b, "</a></div><div class=\"plan-mm-grid\"><span class=\"plan-mm-wk plan-mm-hd\">wk</span>");
+    H(b, "</a></div><div class=\"plan-mm-grid\"><span class=\"plan-mm-wk plan-mm-hd\">%s</span>", T("wk"));
     for (int d = 0; d < 7; d++) H(b, "<span class=\"plan-mm-hd\">%c</span>", weekday_name(d, true)[0]);
     snprintf(ym, sizeof ym, "%04d-%02d", year, mon);
     static int idx[MAX_EVENTS];
@@ -176,9 +180,9 @@ static void mini_month(Ctx *c, Buf *b, int year, int mon, int64_t sel) {
             fmt_ymd(day, ymd);
             buf_reset(&u);
             ctx_url(c, &u, "m", ym, "day", ymd, "edit", NULL, "new", NULL, NULL);
-            H(b, "<a class=\"plan-mm-d%r%r%r%r\" href=\"%s\" aria-label=\"%s %d %s%r\">", dd.mon != mon ? " plan-out" : "",
+            H(b, "<a class=\"plan-mm-d%r%r%r%r\" href=\"%s\" aria-label=\"%s %d %s%s\">", dd.mon != mon ? " plan-out" : "",
               day == today ? " plan-today" : "", day == sel ? " plan-sel" : "", n + nx ? " plan-busy" : "", buf_cstr(&u),
-              weekday_name(dd.wday, false), dd.day, month_name(dd.mon, false), n + nx ? ", has events" : "");
+              weekday_name(dd.wday, false), dd.day, month_name(dd.mon, false), n + nx ? T(", has events") : "");
             H(b, "<span>%d</span><i class=\"plan-dots\">", dd.day);
             int dots = 0;
             for (int k = 0; k < n && dots < 3; k++, dots++) {
@@ -208,7 +212,7 @@ static void mini_month(Ctx *c, Buf *b, int year, int mon, int64_t sel) {
 static void event_modal(Ctx *c, Buf *b, const Event *e, int64_t day) {
     Buf close = {0};
     ctx_url(c, &close, "edit", NULL, "new", NULL, NULL);
-    ui_modal(b, e ? "Edit event" : "New event", buf_cstr(&close));
+    ui_modal(b, e ? T("Edit event") : T("New event"), buf_cstr(&close));
     ui_form(b, "plan.event_save", "stack");
     if (e) ui_hidden_int(b, "id", e->id);
     char date[11], until[11] = "", from[6] = "", to[6] = "";
@@ -221,48 +225,52 @@ static void event_modal(Ctx *c, Buf *b, const Event *e, int64_t day) {
         }
     }
     H(b,
-      "<label class=\"field\"><span>What</span><input name=\"title\" required maxlength=\"110\" autocomplete=\"off\" "
+      "<label class=\"field\"><span>%s</span><input name=\"title\" required maxlength=\"110\" autocomplete=\"off\" "
       "value=\"%s\" autofocus></label>"
-      "<div class=\"field-row\"><label class=\"field\"><span>Date</span><input type=\"date\" name=\"date\" required "
-      "value=\"%s\"></label><label class=\"field\"><span>Until</span><input type=\"date\" name=\"until\" "
+      "<div class=\"field-row\"><label class=\"field\"><span>%s</span><input type=\"date\" name=\"date\" required "
+      "value=\"%s\"></label><label class=\"field\"><span>%s</span><input type=\"date\" name=\"until\" "
       "value=\"%s\"></label></div>"
-      "<label class=\"plan-check\"><input type=\"checkbox\" name=\"allday\" value=\"1\"%r> All day</label>"
-      "<div class=\"field-row\"><label class=\"field\"><span>From</span><input type=\"time\" name=\"from\" "
-      "value=\"%s\"></label><label class=\"field\"><span>To</span><input type=\"time\" name=\"to\" "
-      "value=\"%s\"></label></div><label class=\"field\"><span>Who</span>",
-      e ? e->title : "", date, until, e && e->allday ? " checked" : "", from, to);
-    ui_person_select(b, "who", e ? e->who : 0, "Everyone");
+      "<label class=\"plan-check\"><input type=\"checkbox\" name=\"allday\" value=\"1\"%r> %s</label>"
+      "<div class=\"field-row\"><label class=\"field\"><span>%s</span><input type=\"time\" name=\"from\" "
+      "value=\"%s\"></label><label class=\"field\"><span>%s</span><input type=\"time\" name=\"to\" "
+      "value=\"%s\"></label></div><label class=\"field\"><span>%s</span>",
+      T("What"), e ? e->title : "", T("Date"), date, T("Until"), until, e && e->allday ? " checked" : "", T("All day"),
+      T("From"), from, T("To"), to, T("Who"));
+    ui_person_select(b, "who", e ? e->who : 0, T("Everyone"));
     H(b,
-      "</label><label class=\"field\"><span>Note</span><textarea name=\"note\" maxlength=\"190\" rows=\"2\">%s"
+      "</label><label class=\"field\"><span>%s</span><textarea name=\"note\" maxlength=\"190\" rows=\"2\">%s"
       "</textarea></label>",
-      e ? e->note : "");
+      T("Note"), e ? e->note : "");
     const EventSeries *s = e && e->series ? tbl_get(&T_event_series, e->series) : NULL;
     if (!e) { /* a new one may repeat (issue #47); one of a series changes on its own */
-        buf_puts(b, "<div class=\"field-row\"><label class=\"field\"><span>Repeat</span><select name=\"rep\">");
-        static const char *const reps[] = {"Never", "Every day", "Every week", "Every 2 weeks", "Every month"};
-        for (int i = 0; i < countof(reps); i++) H(b, "<option value=\"%d\">%s</option>", i, reps[i]);
-        buf_puts(b, "</select></label><label class=\"field\"><span>Repeat until</span><input type=\"date\" "
-                    "name=\"rep_until\"></label></div>");
+        H(b, "<div class=\"field-row\"><label class=\"field\"><span>%s</span><select name=\"rep\">", T("Repeat"));
+        static const char *const reps[] = {N_("Never"), N_("Every day"), N_("Every week"), N_("Every 2 weeks"),
+                                           N_("Every month")};
+        for (int i = 0; i < countof(reps); i++) H(b, "<option value=\"%d\">%s</option>", i, T(reps[i]));
+        H(b, "</select></label><label class=\"field\"><span>%s</span><input type=\"date\" name=\"rep_until\"></label></div>",
+          T("Repeat until"));
     } else if (s) {
         Buf lab = {0};
         plan_series_label(&lab, s);
-        H(b, "<p class=\"muted small plan-series\">↻ Repeats %s. Saving changes this one only.</p>", buf_cstr(&lab));
+        buf_puts(b, "<p class=\"muted small plan-series\">↻ ");
+        H(b, T("Repeats %s. Saving changes this one only."), buf_cstr(&lab));
+        buf_puts(b, "</p>");
         buf_free(&lab);
     }
-    buf_puts(b, "<div class=\"modal-f\"><button class=\"btn primary\">Save</button></div>");
+    H(b, "<div class=\"modal-f\"><button class=\"btn primary\">%s</button></div>", T("Save"));
     ui_form_end(b);
     if (e) {
         ui_form(b, "plan.event_delete", "danger-zone"); /* no "Delete ...?": the toast offers Undo (issue #60) */
         ui_hidden_int(b, "id", e->id);
         buf_puts(b, "<button class=\"btn danger\">");
         ui_icon(b, "trash");
-        H(b, "<span>%s</span></button>", s ? "Delete this one" : "Delete");
+        H(b, "<span>%s</span></button>", s ? T("Delete this one") : T("Delete"));
         ui_form_end(b);
         if (s && !s->stopped) { /* the rest of a series: more than Undo can bring back, so asked first */
-            ui_form_confirm(b, "plan.event_delete", "danger-zone", "Delete this one and every later one?");
+            ui_form_confirm(b, "plan.event_delete", "danger-zone", T("Delete this one and every later one?"));
             ui_hidden_int(b, "id", e->id);
             ui_hidden(b, "later", "1");
-            buf_puts(b, "<button class=\"btn danger\"><span>Delete this and later ones</span></button>");
+            H(b, "<button class=\"btn danger\"><span>%s</span></button>", T("Delete this and later ones"));
             ui_form_end(b);
         }
     }
@@ -273,10 +281,10 @@ static void event_modal(Ctx *c, Buf *b, const Event *e, int64_t day) {
 /* ----------------------------------------------------------------- page */
 
 void plan_cal_page(Ctx *c, Buf *b) {
-    ctx_title(c, "Calendar");
+    ctx_title(c, "%s", T("Calendar"));
     Buf sub = {0};
     plan_subtitle(c, &sub);
-    ui_head(b, "Plan", buf_cstr(&sub));
+    ui_head(b, T("Plan"), buf_cstr(&sub));
     plan_tabs(c, b, 2);
     ui_head_end(b);
     buf_free(&sub);
@@ -291,12 +299,12 @@ void plan_cal_page(Ctx *c, Buf *b) {
 
     buf_puts(b, "<div class=\"plan-cal\"><div class=\"plan-cal-side\">");
     ui_form(b, "plan.event_add", "quick plan-quick");
-    buf_puts(b, "<div class=\"quick-row\"><input name=\"q\" required maxlength=\"200\" autocomplete=\"off\" "
-                "enterkeyhint=\"done\" data-live=\"plan.event_preview\" data-key=\"/\" aria-label=\"New event\" "
-                "placeholder=\"Add an event — “dentist tue 14:30 @adam”\"><button class=\"btn primary\" "
-                "aria-label=\"Add event\">"); /* (on phones only the + shows: issue #65) */
+    H(b, "<div class=\"quick-row\"><input name=\"q\" required maxlength=\"200\" autocomplete=\"off\" "
+         "enterkeyhint=\"done\" data-live=\"plan.event_preview\" data-key=\"/\" aria-label=\"%s\" placeholder=\"%s\">"
+         "<button class=\"btn primary\" aria-label=\"%s\">", /* (on phones only the + shows: issue #65) */
+      T("New event"), T("Add an event — “dentist tue 14:30 @adam”"), T("Add event"));
     ui_icon(b, "plus");
-    buf_puts(b, "<span>Add</span></button></div>");
+    H(b, "<span>%s</span></button></div>", T("Add"));
     preview(c, b);
     ui_form_end(b);
     mini_month(c, b, year, mon, sel);
@@ -307,7 +315,7 @@ void plan_cal_page(Ctx *c, Buf *b) {
     if (ui_can("plan.event_add")) { /* (a display account only looks: issue #96) */
         H(b, "<a class=\"btn plan-cal-new\" href=\"%s\">", buf_cstr(&u));
         ui_icon(b, "calendar");
-        buf_puts(b, "<span>New event with details</span></a>");
+        H(b, "<span>%s</span></a>", T("New event with details"));
     }
     buf_puts(b, "</div>");
 
@@ -318,8 +326,8 @@ void plan_cal_page(Ctx *c, Buf *b) {
     agenda_collect(c, sel, add_days(sel, AGENDA_DAYS), "plan", &ext);
     int total = events_between(sel, add_days(sel, AGENDA_DAYS), idx, MAX_EVENTS) + ext.n;
     if (!total) {
-        ui_empty(b, "📅", sel == today ? "Nothing planned" : "Nothing planned from here",
-                 "Add things like “grandma visits fri-sun” or “dentist tue 14:30 @adam”.");
+        ui_empty(b, "📅", sel == today ? T("Nothing planned") : T("Nothing planned from here"),
+                 T("Add things like “grandma visits fri-sun” or “dentist tue 14:30 @adam”."));
     }
     char ids[16];
     int last_week = -1;
@@ -331,7 +339,9 @@ void plan_cal_page(Ctx *c, Buf *b) {
         DateTime dd = dt_local(day);
         int wk = iso_week(day, NULL);
         if (wk != last_week) {
-            H(b, "<div class=\"plan-ag-week\">Week %d</div>", wk);
+            buf_puts(b, "<div class=\"plan-ag-week\">");
+            H(b, T("Week %d"), wk);
+            buf_puts(b, "</div>");
             last_week = wk;
         }
         fmt_ymd(day, ymd);
@@ -341,11 +351,12 @@ void plan_cal_page(Ctx *c, Buf *b) {
         ui_day(&label, day, c->now);
         snprintf(date, sizeof date, "%s %d %s", weekday_name(dd.wday, true), dd.day, month_name(dd.mon, true));
         html_esc(b, buf_cstr(&label));
-        if (!str_eq(buf_cstr(&label), date)) H(b, "<small>%s</small>", date); /* "Friday" + "Fri 16 Oct" */
+        /* "Friday" + "Fri 16 Oct" (ui_day gives a Swedish or Spanish date its capital: "Fre 16 okt") */
+        if (!str_ieq(buf_cstr(&label), date)) H(b, "<small>%s</small>", date);
         buf_puts(b, "</h3>");
         buf_free(&label);
         if (!n && !nx) {
-            buf_puts(b, "<p class=\"muted plan-ag-none\">Nothing planned</p>");
+            H(b, "<p class=\"muted plan-ag-none\">%s</p>", T("Nothing planned"));
         } else {
             buf_puts(b, "<ul class=\"plan-evs\">");
             for (int k = 0; k < n; k++) {
@@ -404,7 +415,7 @@ void plan_agenda(Ctx *c, int64_t from, int64_t to, Agenda *out) {
         fmt_ymd(e->start, ymd);
         snprintf(it.link, sizeof it.link, "/plan/cal?day=%s&edit=%d", ymd, e->id);
         it.who = e->who;
-        str_copy(it.kind, sizeof it.kind, "Event");
+        str_copy(it.kind, sizeof it.kind, N_("Event")); /* (English: what it is - said where it's shown) */
         agenda_add(out, &it);
     }
     if (!out->todos) return;
@@ -419,17 +430,19 @@ void plan_agenda(Ctx *c, int64_t from, int64_t to, Agenda *out) {
         it.start = day;
         it.end = add_days(day, 1);
         it.allday = true;
-        char since[40] = "";
+        char since[48] = "";
         if (t->due < today) {
             DateTime d = dt_local(t->due);
-            snprintf(since, sizeof since, " (due %s %d %s)", weekday_name(d.wday, true), d.day, month_name(d.mon, true));
+            char due[44];
+            snprintf(due, sizeof due, T("(due %s %d %s)"), weekday_name(d.wday, true), d.day, month_name(d.mon, true));
+            snprintf(since, sizeof since, " %s", due);
         }
         str_copy(it.title, sizeof it.title - strlen(since), t->title); /* (a long title gives way, whole letters) */
         strcat(it.title, since);
         str_copy(it.icon, sizeof it.icon, plan_task_icon(t->title)[0] ? plan_task_icon(t->title) : "✅");
         snprintf(it.link, sizeof it.link, "/plan?edit=%d", t->id);
         it.who = t->who;
-        str_copy(it.kind, sizeof it.kind, "To-do");
+        str_copy(it.kind, sizeof it.kind, N_("To-do")); /* (core/feed.c tells to-dos by it) */
         agenda_add(out, &it);
     }
 }
@@ -449,8 +462,11 @@ int plan_days(Ctx *c, Buf *b, int days, int max) {
         }
         if (!n && !due) continue;
         DateTime dt = dt_local(day);
-        if (d == 1) buf_puts(b, "<h3 class=\"plan-day-h\" data-fit-head>Tomorrow</h3>"); /* (a wall too short: wire.js) */
-        else H(b, "<h3 class=\"plan-day-h\" data-fit-head>%s %d</h3>", weekday_name(dt.wday, false), dt.day);
+        char head[48];
+        if (d == 1) str_copy(head, sizeof head, T("Tomorrow"));
+        else snprintf(head, sizeof head, "%s %d", weekday_name(dt.wday, false), dt.day);
+        plan_capitalise(head); /* (a heading: Swedish and Spanish weekdays are lower case) */
+        H(b, "<h3 class=\"plan-day-h\" data-fit-head>%s</h3>", head); /* (a wall too short: wire.js) */
         buf_puts(b, "<ul class=\"plan-evs plan-compact\">");
         for (int k = 0; k < n && rows < max; k++, rows++) event_row(c, b, tbl_at(&T_event, idx[k]), day, NULL, "plan-wd", true);
         for (int i = 0; i < tbl_count(&T_task) && rows < max; i++) {
@@ -460,10 +476,10 @@ int plan_days(Ctx *c, Buf *b, int days, int max) {
             H(b, "<li class=\"plan-ev plan-day-task\" id=\"plan-wdt%d\"", t->id);
             if (p) ui_hue_style(b, p->hue);
             const char *icon = plan_task_icon(t->title);
-            H(b, "><span class=\"plan-ev-time\">To do</span><div class=\"plan-ev-main\"><b>%s%r%s</b></div>", icon,
+            H(b, "><span class=\"plan-ev-time\">%s</span><div class=\"plan-ev-main\"><b>%s%r%s</b></div>", T("To do"), icon,
               icon[0] ? " " : "", t->title);
             if (p) {
-                buf_puts(b, "<span class=\"plan-ev-who\"><span class=\"sr-only\">for </span>");
+                H(b, "<span class=\"plan-ev-who\"><span class=\"sr-only\">%s </span>", T("for"));
                 ui_avatar(b, p, "sm");
                 buf_puts(b, "</span>");
             }
@@ -487,17 +503,19 @@ static void close_modal(Ctx *c) {
 static void announce(Ctx *c, const Event *e) {
     char when[96];
     when_describe(e->start, e->end, c->now, when, sizeof when);
-    Buf rep = {0};
     const EventSeries *s = e->series ? tbl_get(&T_event_series, e->series) : NULL;
-    if (s) {
-        buf_puts(&rep, ", ");
-        plan_series_label(&rep, s);
-    }
     const char *icon = plan_task_icon(e->title);
-    activity_add(c->me->id, icon[0] ? icon : "📅", "/plan/cal", "%s added %s · %s%s", c->me->name, e->title, when,
-                 buf_cstr(&rep));
-    app_notify(c, TOAST_INFO, "%s added %s · %s%s", c->me->name, e->title, when, buf_cstr(&rep));
-    buf_free(&rep);
+    if (s) { /* (the repeat in the words of whoever added it: "every Wednesday") */
+        Buf rep = {0};
+        plan_series_label(&rep, s);
+        activity_add(c->me->id, icon[0] ? icon : "📅", "/plan/cal", N_("%s added %s · %s, %s"), c->me->name, e->title, when,
+                     buf_cstr(&rep));
+        app_notify(c, TOAST_INFO, N_("%s added %s · %s, %s"), c->me->name, e->title, when, buf_cstr(&rep));
+        buf_free(&rep);
+    } else {
+        activity_add(c->me->id, icon[0] ? icon : "📅", "/plan/cal", N_("%s added %s · %s"), c->me->name, e->title, when);
+        app_notify(c, TOAST_INFO, N_("%s added %s · %s"), c->me->name, e->title, when);
+    }
 }
 
 /* A repeating event (issue #47): the series, its first event (e, put here) and the ones ahead */
@@ -537,10 +555,10 @@ void plan_act_event_add(Ctx *c, Fields *f) {
     if (d.repeat) {
         Buf rep = {0};
         plan_repeat_label(&rep, d.repeat, dt_local(e.start).wday + 1);
-        ctx_ok(c, "Added · %s, %s", when, buf_cstr(&rep));
+        ctx_ok(c, T("Added · %s, %s"), when, buf_cstr(&rep));
         buf_free(&rep);
     } else {
-        ctx_ok(c, "Added · %s", when);
+        ctx_ok(c, T("Added · %s"), when);
     }
     announce(c, &e);
 }
@@ -551,7 +569,7 @@ void plan_act_event_save(Ctx *c, Fields *f) {
     if (id) {
         Event *row = tbl_get(&T_event, id);
         if (!row) {
-            ctx_fail(c, "That event is gone");
+            ctx_fail(c, "%s", T("That event is gone"));
             return;
         }
         e = *row;
@@ -563,20 +581,20 @@ void plan_act_event_save(Ctx *c, Fields *f) {
     str_copy(title, sizeof title, fields_str(f, "title"));
     str_trim(title);
     if (!title[0]) {
-        ctx_fail_at(c, "title", "What's happening?");
+        ctx_fail_at(c, "title", "%s", T("What's happening?"));
         return;
     }
     plan_capitalise(title);
     str_copy(e.title, sizeof e.title, title);
     int y, m, d, uy, um, ud;
     if (!parse_ymd(fields_str(f, "date"), &y, &m, &d)) {
-        ctx_fail_at(c, "date", "Pick a date");
+        ctx_fail_at(c, "date", "%s", T("Pick a date"));
         return;
     }
     bool has_until = parse_ymd(fields_str(f, "until"), &uy, &um, &ud);
     if (!has_until) uy = y, um = m, ud = d;
     if (dt_make(uy, um, ud, 0, 0) < dt_make(y, m, d, 0, 0)) {
-        ctx_fail_at(c, "until", "“Until” is before the start");
+        ctx_fail_at(c, "until", "%s", T("“Until” is before the start"));
         return;
     }
     e.allday = fields_get(f, "allday") != NULL;
@@ -586,7 +604,7 @@ void plan_act_event_save(Ctx *c, Fields *f) {
     } else {
         int from, to;
         if (!parse_hm(fields_str(f, "from"), &from)) {
-            ctx_fail_at(c, "from", "Pick a start time (or tick “All day”)");
+            ctx_fail_at(c, "from", "%s", T("Pick a start time (or tick “All day”)"));
             return;
         }
         e.start = dt_make(y, m, d, from / 60, from % 60);
@@ -594,7 +612,7 @@ void plan_act_event_save(Ctx *c, Fields *f) {
             e.end = dt_make(uy, um, ud, to / 60, to % 60);
             if (e.end <= e.start) {
                 if (has_until && (uy != y || um != m || ud != d)) {
-                    ctx_fail_at(c, "to", "It ends before it starts");
+                    ctx_fail_at(c, "to", "%s", T("It ends before it starts"));
                     return;
                 }
                 e.end = add_days(e.end, 1); /* 22:00–02:00 */
@@ -612,14 +630,14 @@ void plan_act_event_save(Ctx *c, Fields *f) {
     if (rep && fields_str(f, "rep_until")[0]) {
         int ry, rm, rd;
         if (!parse_ymd(fields_str(f, "rep_until"), &ry, &rm, &rd) || dt_make(ry, rm, rd, 0, 0) < day_start(e.start)) {
-            ctx_fail_at(c, "rep_until", "Repeat until a day on or after the first one");
+            ctx_fail_at(c, "rep_until", "%s", T("Repeat until a day on or after the first one"));
             return;
         }
         rep_until = dt_make(ry, rm, rd, 0, 0);
     }
     if (rep) start_series(c, &e, rep, rep_until);
     else tbl_put(&T_event, &e);
-    ctx_ok(c, id ? "Saved" : "Added");
+    ctx_ok(c, "%s", id ? T("Saved") : T("Added"));
     if (!id) announce(c, &e);
     close_modal(c);
 }
@@ -644,16 +662,16 @@ void plan_act_event_delete(Ctx *c, Fields *f) {
         }
         char when[96];
         when_describe(first.start, first.end, c->now, when, sizeof when);
-        ctx_ok(c, "Deleted %s from %s on (%d)", first.title, when, n);
-        activity_add(c->me->id, "🗓️", "/plan/cal", "%s stopped %s from %s on", c->me->name, first.title, when);
+        ctx_ok(c, T("Deleted %s from %s on (%d)"), first.title, when, n);
+        activity_add(c->me->id, "🗓️", "/plan/cal", N_("%s stopped %s from %s on"), c->me->name, first.title, when);
         close_modal(c);
         return;
     }
     ctx_undo(c, &T_event, id); /* Undo rather than "Delete ...?" (issue #60) */
     if (!tbl_del(&T_event, id)) {
-        ctx_fail(c, "That event is gone");
+        ctx_fail(c, "%s", T("That event is gone"));
         return;
     }
-    ctx_ok(c, "Deleted");
+    ctx_ok(c, "%s", T("Deleted"));
     close_modal(c);
 }

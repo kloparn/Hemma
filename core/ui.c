@@ -1,5 +1,6 @@
 /* core/ui.c — see ui.h */
 #include "ui.h"
+#include "json.h"
 
 /* ------------------------------------------------------------------ icons */
 
@@ -108,7 +109,8 @@ void ui_hue_style(Buf *b, int hue) { H(b, " style=\"--h:%d\"", ((hue % 360) + 36
    name is printed right beside it, so a screen reader skips the picture */
 static void avatar(Buf *b, const Person *p, const char *size, bool named) {
     if (!p) {
-        H(b, "<span class=\"av av-%s av-none\" %r>?</span>", size, named ? "role=\"img\" aria-label=\"Someone\"" : "aria-hidden=\"true\"");
+        if (named) H(b, "<span class=\"av av-%s av-none\" role=\"img\" aria-label=\"%s\">?</span>", size, T("Someone"));
+        else H(b, "<span class=\"av av-%s av-none\" aria-hidden=\"true\">?</span>", size);
         return;
     }
     char label[80];
@@ -134,7 +136,7 @@ void ui_avatar_deco(Buf *b, const Person *p, const char *size) { avatar(b, p, si
 void ui_person(Buf *b, const Person *p) {
     H(b, "<span class=\"who\">");
     ui_avatar_deco(b, p, "xs");
-    H(b, "<span>%s</span></span>", p ? p->name : "Someone");
+    H(b, "<span>%s</span></span>", p ? p->name : T("Someone"));
 }
 
 /* ---------------------------------------------------------- page pieces */
@@ -151,7 +153,7 @@ void ui_card(Buf *b, const char *title, const char *more_href, const char *more_
     buf_puts(b, "<section class=\"card\">");
     if (title) {
         H(b, "<header class=\"card-h\"><h2>%s</h2>", title);
-        if (more_href) H(b, "<a class=\"more\" href=\"%s\">%s</a>", more_href, more_label ? more_label : "All");
+        if (more_href) H(b, "<a class=\"more\" href=\"%s\">%s</a>", more_href, more_label ? more_label : T("See all"));
         buf_puts(b, "</header>");
     }
 }
@@ -165,12 +167,10 @@ void ui_admins(Buf *b) {
         const Person *p = account_at(i);
         if (p->role == ROLE_ADMIN && p->username[0] && p->pass[0]) a[n++] = p;
     }
-    if (n == 0 || n > 3) {
-        buf_puts(b, "an admin");
-        return;
-    }
-    for (int i = 0; i < n; i++) H(b, "%r%s", i == 0 ? "" : i == n - 1 ? " or " : ", ", a[i]->name);
-    buf_puts(b, n == 1 ? " (admin)" : " (admins)");
+    if (n == 0 || n > 3) buf_puts(b, T("an admin"));
+    else if (n == 1) H(b, T("%s (admin)"), a[0]->name);
+    else if (n == 2) H(b, T("%s or %s (admins)"), a[0]->name, a[1]->name);
+    else H(b, T("%s, %s or %s (admins)"), a[0]->name, a[1]->name, a[2]->name);
 }
 
 void ui_empty(Buf *b, const char *emoji, const char *title, const char *text) {
@@ -207,33 +207,32 @@ void ui_player(Buf *b, const UiPlayer *p) {
       p->box, p->video, p->key);
     /* big in the middle while paused (the bar's own play button is the one to tab to) - a live
        channel too: a browser that won't start one by itself waits for a press */
-    buf_puts(b, "<button type=\"button\" class=\"pl-big\" data-p=\"play\" tabindex=\"-1\" aria-label=\"Play\">");
+    H(b, "<button type=\"button\" class=\"pl-big\" data-p=\"play\" tabindex=\"-1\" aria-label=\"%s\">", T("Play"));
     ui_icon(b, "go");
     buf_puts(b, "</button>");
     /* with the browser's own player in Hemma's place (wire.js: data-native) the bar is gone, but full
        screen stays the box's - the "Next episode" card shows there, and the next episode keeps it */
     H(b, "<button type=\"button\" class=\"pl-natfs\" id=\"%s-natfs\" data-fullscreen=\"%s\" data-static hidden "
-         "aria-pressed=\"false\" aria-label=\"Full screen\" title=\"Full screen\"><span class=\"pl-a\">",
-      p->box, p->box);
+         "aria-pressed=\"false\" aria-label=\"%s\" title=\"%s\"><span class=\"pl-a\">",
+      p->box, p->box, T("Full screen"), T("Full screen"));
     ui_icon(b, "expand");
     buf_puts(b, "</span><span class=\"pl-b\">");
     ui_icon(b, "shrink");
     buf_puts(b, "</span></button>");
     /* the browser can't play it (wire.js sets data-err on the video's "error"): say so, not spin */
-    H(b, "<p class=\"pl-err\" role=\"alert\">%s</p>", p->trouble ? p->trouble : "This video won't play in this browser.");
+    H(b, "<p class=\"pl-err\" role=\"alert\">%s</p>", p->trouble ? p->trouble : T("This video won't play in this browser."));
     H(b, "<span class=\"pl-spin\" aria-hidden=\"true\"></span><div class=\"pl-bar\"%r>", p->tv ? " data-arrows" : "");
     if (!p->live)
         H(b, "<div class=\"pl-seek\"><span class=\"pl-buf\"></span><span class=\"pl-fill\"></span><input type=\"range\" "
-             "class=\"pl-range\" data-p=\"seek\" min=\"0\" max=\"%d\" step=\"any\" value=\"0\" aria-label=\"Where in the "
-             "video\"></div>",
-          MAX(p->seconds, 1));
+             "class=\"pl-range\" data-p=\"seek\" min=\"0\" max=\"%d\" step=\"any\" value=\"0\" aria-label=\"%s\"></div>",
+          MAX(p->seconds, 1), T("Where in the video"));
     buf_puts(b, "<div class=\"pl-row\">");
     if (p->live) {
-        buf_puts(b, "<span class=\"pl-onair\">Live</span>");
+        H(b, "<span class=\"pl-onair\">%s</span>", T("Live"));
     } else {
-        pl_button(b, "play", "Play (Space)", "go", "pause"); /* wire.js: "Pause (Space)" while playing (#64) */
-        pl_button(b, "back", "Back 10 seconds (Left)", "back10", NULL);
-        pl_button(b, "fwd", "Forward 10 seconds (Right)", "fwd10", NULL);
+        pl_button(b, "play", T("Play (Space)"), "go", "pause"); /* wire.js: "Pause (Space)" while playing (#64) */
+        pl_button(b, "back", T("Back 10 seconds (Left)"), "back10", NULL);
+        pl_button(b, "fwd", T("Forward 10 seconds (Right)"), "fwd10", NULL);
         buf_puts(b, "<span class=\"pl-time\"><span data-p=\"at\">0:00</span> / <span data-p=\"dur\">");
         if (p->seconds > 0) clock_text(b, p->seconds);
         else buf_puts(b, "-:--");
@@ -244,10 +243,10 @@ void ui_player(Buf *b, const UiPlayer *p) {
         bool any = false;
         for (int i = 0; i < p->nsubs; i++) any |= p->subs[i].on;
         buf_puts(b, "<span class=\"pl-subs\">");
-        pl_button(b, "subs", "Subtitles", "cc", NULL);
+        pl_button(b, "subs", T("Subtitles"), "cc", NULL);
         H(b, "<span class=\"pl-menu\" role=\"menu\" hidden><button type=\"button\" role=\"menuitemradio\" data-sub=\"\" "
-             "aria-checked=\"%s\">Off</button>",
-          any ? "false" : "true");
+             "aria-checked=\"%s\">%s</button>",
+          any ? "false" : "true", T("Off"));
         for (int i = 0; i < p->nsubs; i++)
             H(b, "<button type=\"button\" role=\"menuitemradio\" data-sub=\"%s\" aria-checked=\"%s\">%s</button>", p->subs[i].lang,
               p->subs[i].on ? "true" : "false", p->subs[i].label);
@@ -255,20 +254,21 @@ void ui_player(Buf *b, const UiPlayer *p) {
     }
     /* the sound: muted swaps the icon; on a live channel it also says so in words (a TV that won't
        start with sound starts it muted) */
-    H(b, "<button type=\"button\" class=\"pl-mute\" data-p=\"mute\" aria-label=\"Mute (M)\" aria-pressed=\"false\" "
-         "title=\"Sound (M)\"%r>"
+    H(b, "<button type=\"button\" class=\"pl-mute\" data-p=\"mute\" aria-label=\"%s\" aria-pressed=\"false\" "
+         "title=\"%s\"%r>"
          "<span class=\"pl-a\">",
-      p->focus_sound ? " autofocus" : "");
+      T("Mute (M)"), T("Sound (M)"), p->focus_sound ? " autofocus" : "");
     ui_icon(b, "sound");
     buf_puts(b, "</span><span class=\"pl-b\">");
     ui_icon(b, "muted");
-    buf_puts(b, "<span class=\"pl-mute-t\">Sound off</span></span></button>"
-                "<input type=\"range\" class=\"pl-vol\" data-p=\"vol\" min=\"0\" max=\"1\" step=\"0.05\" value=\"1\" "
-                "aria-label=\"Volume\">");
+    H(b, "<span class=\"pl-mute-t\">%s</span></span></button>"
+         "<input type=\"range\" class=\"pl-vol\" data-p=\"vol\" min=\"0\" max=\"1\" step=\"0.05\" value=\"1\" "
+         "aria-label=\"%s\">",
+      T("Sound off"), T("Volume"));
     /* full screen: the box, not the video (what's drawn over it stays) - wire.js [data-fullscreen] */
     H(b, "<button type=\"button\" class=\"pl-fs\" id=\"%s-fs\" data-fullscreen=\"%s\" data-static hidden aria-pressed=\"false\" "
-         "aria-label=\"Full screen (F)\" title=\"Full screen (F)\"><span class=\"pl-a\">",
-      p->box, p->box);
+         "aria-label=\"%s\" title=\"%s\"><span class=\"pl-a\">",
+      p->box, p->box, T("Full screen (F)"), T("Full screen (F)"));
     ui_icon(b, "expand");
     buf_puts(b, "</span><span class=\"pl-b\">");
     ui_icon(b, "shrink");
@@ -368,14 +368,14 @@ void ui_person_select(Buf *b, const char *name, int selected, const char *none_l
 
 void ui_hue_picker(Buf *b, const char *name, int selected) {
     static const int hues[] = {0, 25, 45, 90, 150, 175, 200, 220, 255, 280, 310, 335};
-    static const char *names[] = {"Red",   "Orange", "Amber", "Lime",   "Green",   "Teal",
-                                  "Sky",   "Blue",   "Indigo", "Purple", "Magenta", "Pink"};
-    buf_puts(b, "<div class=\"hues\" role=\"radiogroup\" aria-label=\"Colour\">");
+    static const char *names[] = {N_("Red"),  N_("Orange"), N_("Amber"),  N_("Lime"),   N_("Green"),   N_("Teal"),
+                                  N_("Sky"),  N_("Blue"),   N_("Indigo"), N_("Purple"), N_("Magenta"), N_("Pink")};
+    H(b, "<div class=\"hues\" role=\"radiogroup\" aria-label=\"%s\">", T("Colour"));
     for (int i = 0; i < countof(hues); i++) {
-        H(b, "<label class=\"hue\" title=\"%s\"", names[i]);
+        H(b, "<label class=\"hue\" title=\"%s\"", T(names[i]));
         ui_hue_style(b, hues[i]);
         H(b, "><input type=\"radio\" name=\"%s\" value=\"%d\" aria-label=\"%s\"%r><span></span></label>", name, hues[i],
-          names[i], hues[i] == selected ? " checked" : "");
+          T(names[i]), hues[i] == selected ? " checked" : "");
     }
     buf_puts(b, "</div>");
 }
@@ -392,8 +392,8 @@ void ui_modal(Buf *b, const char *title, const char *close_href) {
     H(b,
       "<div class=\"modal\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"modal-t\">"
       "<a class=\"modal-bg\" href=\"%s\" data-esc tabindex=\"-1\" aria-hidden=\"true\"></a><div class=\"modal-card\">"
-      "<header class=\"modal-h\"><h2 id=\"modal-t\">%s</h2><a class=\"icon-btn\" href=\"%s\" aria-label=\"Close\">",
-      close_href, title, close_href); /* (wire.js moves the focus in and keeps it there: issue #63) */
+      "<header class=\"modal-h\"><h2 id=\"modal-t\">%s</h2><a class=\"icon-btn\" href=\"%s\" aria-label=\"%s\">",
+      close_href, title, close_href, T("Close")); /* (wire.js moves the focus in and keeps it there: issue #63) */
     ui_icon(b, "x");
     buf_puts(b, "</a></header><div class=\"modal-b\">");
 }
@@ -416,31 +416,32 @@ void ui_hm(Buf *b, int64_t t) {
     buf_puts(b, s);
 }
 
-void ui_day(Buf *b, int64_t day, int64_t now) {
+/* A day in words. Swedish and Spanish write weekdays and months in lower case (base.c): first =
+   the words start a line, so their first letter gets its capital (every name starts with a plain
+   letter). English names keep theirs anyway. */
+static void day_words(Buf *b, int64_t day, int64_t now, bool first) {
     int64_t d0 = day_start(day), today = day_start(now);
     DateTime d = dt_local(day), n = dt_local(now);
-    if (d0 == today) buf_puts(b, "Today");
-    else if (d0 == add_days(today, 1)) buf_puts(b, "Tomorrow");
-    else if (d0 == add_days(today, -1)) buf_puts(b, "Yesterday");
+    size_t at = b->len;
+    if (d0 == today) buf_puts(b, first ? T("Today") : T("today"));
+    else if (d0 == add_days(today, 1)) buf_puts(b, first ? T("Tomorrow") : T("tomorrow"));
+    else if (d0 == add_days(today, -1)) buf_puts(b, first ? T("Yesterday") : T("yesterday"));
     else if (d0 > today && d0 < add_days(today, 7)) buf_puts(b, weekday_name(d.wday, false));
     else if (d.year == n.year) buf_printf(b, "%s %d %s", weekday_name(d.wday, true), d.day, month_name(d.mon, true));
     else buf_printf(b, "%d %s %d", d.day, month_name(d.mon, true), d.year);
+    if (first && b->len > at && b->p[at] >= 'a' && b->p[at] <= 'z') b->p[at] = (char)(b->p[at] - 'a' + 'A');
 }
 
-void ui_day_inline(Buf *b, int64_t day, int64_t now) {
-    int64_t d0 = day_start(day), today = day_start(now);
-    if (d0 == today) buf_puts(b, "today");
-    else if (d0 == add_days(today, 1)) buf_puts(b, "tomorrow");
-    else if (d0 == add_days(today, -1)) buf_puts(b, "yesterday");
-    else ui_day(b, day, now); /* weekday names and dates keep their capitals */
-}
+void ui_day(Buf *b, int64_t day, int64_t now) { day_words(b, day, now, true); }
+
+void ui_day_inline(Buf *b, int64_t day, int64_t now) { day_words(b, day, now, false); }
 
 void ui_ago(Buf *b, int64_t t, int64_t now) {
     int64_t s = now - t;
-    if (s < 60) buf_puts(b, "just now");
-    else if (s < 3600) buf_printf(b, "%lld min ago", (long long)(s / 60));
-    else if (s < 6 * 3600 || day_start(t) == day_start(now)) buf_printf(b, "%lld h ago", (long long)(s / 3600));
-    else if (day_start(t) == add_days(day_start(now), -1)) buf_puts(b, "yesterday");
+    if (s < 60) buf_puts(b, T("just now"));
+    else if (s < 3600) buf_printf(b, T("%lld min ago"), (long long)(s / 60));
+    else if (s < 6 * 3600 || day_start(t) == day_start(now)) buf_printf(b, T("%lld h ago"), (long long)(s / 3600));
+    else if (day_start(t) == add_days(day_start(now), -1)) buf_puts(b, T("yesterday"));
     else if (s < 6 * 86400) buf_puts(b, weekday_name(dt_local(t).wday, false));
     else {
         DateTime d = dt_local(t);
@@ -455,7 +456,7 @@ void ui_span(Buf *b, int64_t start, int64_t end) {
     if (whole_days) {
         int64_t last = add_days(end, -1);
         DateTime l = dt_local(last);
-        if (day_start(last) == day_start(start)) buf_puts(b, "all day");
+        if (day_start(last) == day_start(start)) buf_puts(b, T("all day"));
         else if (l.mon == s.mon)
             buf_printf(b, "%s %d – %s %d %s", weekday_name(s.wday, true), s.day, weekday_name(l.wday, true), l.day,
                        month_name(l.mon, true));
@@ -498,18 +499,18 @@ static void nav_links(Ctx *c, Buf *b, const Module *active, bool tabbar) {
           extra ? (on ? " class=\"tab-x on\"" : " class=\"tab-x\"") : on ? " class=\"on\"" : "",
           on ? " aria-current=\"page\"" : "");
         ui_icon(b, m->icon);
-        H(b, "<span>%s</span></a>", m->title);
+        H(b, "<span>%s</span></a>", T(m->title));
     }
     if (tabbar) { /* shown by CSS only where the bar runs out of room */
         H(b, "<a class=\"tab-more%r\" href=\"/more\">", more_on ? " on" : "");
         ui_icon(b, "grid");
-        buf_puts(b, "<span>More</span></a>");
+        H(b, "<span>%s</span></a>", T("More"));
     }
 }
 
 void ui_more_page(Ctx *c, Buf *b) {
-    ctx_title(c, "More");
-    ui_head(b, "Everything", NULL);
+    ctx_title(c, "%s", T("More"));
+    ui_head(b, T("Everything"), NULL);
     ui_head_end(b);
     buf_puts(b, "<nav class=\"more-grid\">");
     for (int i = 0; i < module_count(); i++) {
@@ -517,7 +518,7 @@ void ui_more_page(Ctx *c, Buf *b) {
         if (!m->nav || !module_visible(m, c)) continue;
         H(b, "<a href=\"/%s\">", str_eq(m->id, "home") ? "" : m->id);
         ui_icon(b, m->icon);
-        H(b, "<span>%s</span></a>", m->title);
+        H(b, "<span>%s</span></a>", T(m->title));
     }
     buf_puts(b, "</nav><div class=\"more-side\">"); /* the sidebar's blocks: phones have no sidebar */
     for (int i = 0; i < module_count(); i++)
@@ -527,7 +528,8 @@ void ui_more_page(Ctx *c, Buf *b) {
 
 void ui_shell(Ctx *c, Buf *b, const Module *active, const char *page, size_t page_len) {
     /* the first thing Tab reaches, past the sidebar's dozen links (issue #68) */
-    buf_puts(b, "<a class=\"skip\" href=\"#main\">Skip to content</a><aside class=\"side\"><a class=\"brand\" href=\"/\"><span class=\"logo\">");
+    H(b, "<a class=\"skip\" href=\"#main\">%s</a><aside class=\"side\"><a class=\"brand\" href=\"/\"><span class=\"logo\">",
+      T("Skip to content"));
     ui_icon(b, "logo");
     H(b, "</span><b>%s</b></a><nav class=\"nav\">", app_name());
     nav_links(c, b, active, false);
@@ -539,7 +541,7 @@ void ui_shell(Ctx *c, Buf *b, const Module *active, const char *page, size_t pag
         Person *p = person_at(i);
         if (c->me && p->id == c->me->id) continue;
         if (presence_screens(p->id) <= 0) continue;
-        if (!shown++) buf_puts(b, "<div class=\"here\"><span class=\"here-l\">Here now</span><div class=\"here-a\">");
+        if (!shown++) H(b, "<div class=\"here\"><span class=\"here-l\">%s</span><div class=\"here-a\">", T("Here now"));
         H(b, "<span class=\"here-p\" title=\"%s\">", p->name);
         ui_avatar(b, p, "sm");
         buf_puts(b, "</span>");
@@ -554,12 +556,65 @@ void ui_shell(Ctx *c, Buf *b, const Module *active, const char *page, size_t pag
     }
     buf_puts(b, "</div></aside><main class=\"main\" id=\"main\" tabindex=\"-1\">");
     if (app_demo()) /* hemma --demo: every page says so (issue #31) */
-        buf_puts(b, "<p class=\"demo-band\" role=\"note\">A demo with a made-up household: try anything, nothing here "
-                    "is real. The next <code>hemma --demo</code> starts afresh.</p>");
+        H(b, "<p class=\"demo-band\" role=\"note\">%r</p>",
+          T("A demo with a made-up household: try anything, nothing here is real. The next <code>hemma --demo</code> "
+            "starts afresh."));
     buf_put(b, page, page_len);
     buf_puts(b, "</main><nav class=\"tabbar\">");
     nav_links(c, b, active, true);
     buf_puts(b, "</nav>");
+}
+
+/* wire.js's own words (its T('...') calls - core/i18n_test.c finds every one here): each page
+   carries them in its language as JSON, <script type="application/json" id="wire-tr"> (data, not a
+   script: the CSP doesn't mind). Their translations are core/ui_lang.c's. */
+static const char *const WIRE_TEXTS[] = {
+    "Photos need the connection to Hemma - wait a moment and send it again",
+    "That doesn't look like a photo",
+    "The photo couldn't be read",
+    "That photo is too big to send - try another",
+    "Unexpected answer (%d)",
+    "An upload is already running",
+    "Choose a folder or some files first",
+    "The upload stopped",
+    "The converter stopped",
+    "The upload was stopped",
+    "The connection keeps dropping",
+    "The browser lost the copy it made - is its disk full? Make room and start the upload again: what was sent stays",
+    "Undo",
+    "+%d more",
+    "Didn't fit: %s",
+    "Play",
+    "Pause",
+    "Play (Space)",
+    "Pause (Space)",
+    "%s of %s",
+};
+
+const char *const *ui_wire_texts(int *n) {
+    *n = (int)(sizeof WIRE_TEXTS / sizeof WIRE_TEXTS[0]);
+    return WIRE_TEXTS;
+}
+
+static void wire_words(Buf *b) {
+    if (i18n_lang() == LANG_EN) return; /* (the keys are the English) */
+    Buf j = {0};
+    buf_putc(&j, '{');
+    for (size_t i = 0; i < sizeof WIRE_TEXTS / sizeof WIRE_TEXTS[0]; i++) {
+        const char *to = T(WIRE_TEXTS[i]);
+        if (to == WIRE_TEXTS[i]) continue;
+        if (j.len > 1) buf_putc(&j, ',');
+        json_str(&j, WIRE_TEXTS[i]);
+        buf_putc(&j, ':');
+        json_str(&j, to);
+    }
+    buf_putc(&j, '}');
+    buf_puts(b, "<script type=\"application/json\" id=\"wire-tr\">");
+    for (size_t i = 0; i < j.len; i++) /* (no "</script>" can end it early) */
+        if (j.p[i] == '<') buf_puts(b, "\\u003c");
+        else buf_putc(b, j.p[i]);
+    buf_puts(b, "</script>");
+    buf_free(&j);
 }
 
 void ui_document(Ctx *c, Buf *b, const char *app_html, size_t n, const char *flash, int flash_kind) {
@@ -569,21 +624,23 @@ void ui_document(Ctx *c, Buf *b, const char *app_html, size_t n, const char *fla
     char h[17];
     snprintf(h, sizeof h, "%016llx", (unsigned long long)hash64(app_html, n));
     H(b,
-      "<!doctype html><html lang=\"en\" data-v=\"%s\" data-h=\"%s\"><head><meta charset=\"utf-8\">"
+      "<!doctype html><html lang=\"%s\" data-v=\"%s\" data-h=\"%s\"><head><meta charset=\"utf-8\">"
       "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
       "<meta name=\"color-scheme\" content=\"light dark\">"
       "<meta name=\"theme-color\" content=\"#f4f1ea\" media=\"(prefers-color-scheme: light)\">"
       "<meta name=\"theme-color\" content=\"#121316\" media=\"(prefers-color-scheme: dark)\">"
       "<meta name=\"mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-capable\" content=\"yes\">",
-      v, h);
+      i18n_code(c->lang), v, h);
     if (c->title[0] && !str_eq(c->title, app_name())) H(b, "<title>%s · %s</title>", c->title, app_name());
     else H(b, "<title>%s</title>", app_name());
     H(b,
       "<link rel=\"icon\" href=\"/static/icon.svg?v=%s\" type=\"image/svg+xml\">"
       "<link rel=\"manifest\" href=\"/static/manifest.webmanifest?v=%s\">"
       "<link rel=\"stylesheet\" href=\"/static/app.css?v=%s\">"
-      "<script src=\"/static/wire.js?v=%s\" defer></script></head><body>",
+      "<script src=\"/static/wire.js?v=%s\" defer></script>",
       v, v, v, v);
+    wire_words(b);
+    buf_puts(b, "</head><body>");
     buf_put(b, app_html, n);
     buf_puts(b, "<div id=\"toasts\" aria-live=\"polite\">");
     if (flash) {

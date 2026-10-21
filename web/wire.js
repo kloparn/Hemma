@@ -46,6 +46,13 @@
   });
   addEventListener('pageshow', () => { leaving = 0; });
 
+  // wire.js's own words in the page's language (issue #46): the server puts them, translated, in
+  // <script type="application/json" id="wire-tr"> (core/ui.c WIRE_TEXTS - a new T() text goes there
+  // too; core/i18n_test.c checks). English is the key and stays when there's none; %s and %d take
+  // the values in order.
+  const TR = (() => { try { return JSON.parse(document.getElementById('wire-tr').textContent) || {}; } catch (_) { return {}; } })();
+  const T = (en, ...v) => { let i = 0; return (TR[en] || en).replace(/%[sd]/g, () => String(v[i++])); };
+
   function connect() {
     ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
     ws.onopen = () => {
@@ -183,7 +190,7 @@
     const shots = [...f.querySelectorAll('input[type=file][data-shrink]')].filter((x) => x.files && x.files.length);
     if (shots.length && !(a && open)) { // a plain POST can't carry it: say so instead of losing it
       e.preventDefault();
-      toast(2, 'Photos need the connection to Hemma - wait a moment and send it again');
+      toast(2, T('Photos need the connection to Hemma - wait a moment and send it again'));
       return;
     }
     if (!a || !open) { if (!e.defaultPrevented) leave(); return; } // a plain POST: the page is leaving
@@ -213,7 +220,7 @@
     const viaImg = () => new Promise((ok, no) => {
       const u = URL.createObjectURL(file), i = new Image();
       i.onload = () => { URL.revokeObjectURL(u); ok(i); };
-      i.onerror = () => { URL.revokeObjectURL(u); no(new Error("That doesn't look like a photo")); };
+      i.onerror = () => { URL.revokeObjectURL(u); no(new Error(T("That doesn't look like a photo"))); };
       i.src = u;
     });
     return self.createImageBitmap ? createImageBitmap(file, { imageOrientation: 'from-image' }).catch(viaImg) : viaImg();
@@ -232,12 +239,12 @@
         return new Promise((ok, no) => {
           const r = new FileReader();
           r.onload = () => ok(r.result);
-          r.onerror = () => no(new Error("The photo couldn't be read"));
+          r.onerror = () => no(new Error(T("The photo couldn't be read")));
           r.readAsDataURL(blob);
         });
       }
     }
-    throw new Error('That photo is too big to send - try another');
+    throw new Error(T('That photo is too big to send - try another'));
   }
 
   // An error stays by its field until the field changes; a form's own error until any field does.
@@ -518,7 +525,7 @@
   // one PUT streamed from disk. The server renders the progress; this only
   // moves bytes - and keeps going while you browse other pages.
   const pause = (ms) => new Promise((ok) => setTimeout(ok, ms));
-  const json = (r) => r.json().catch(() => ({ error: `Unexpected answer (${r.status})` }));
+  const json = (r) => r.json().catch(() => ({ error: T('Unexpected answer (%d)', r.status) }));
   // The server's converter, built to WebAssembly, can run here (web/conv.js in a Worker).
   // It needs SIMD (Chrome 91, Firefox 89, Safari 16.4): a 30-byte module that uses it tells.
   const canConvert = (() => {
@@ -529,10 +536,10 @@
   })();
 
   async function upload(f) {
-    if (uploading) { toast(1, 'An upload is already running'); return; }
+    if (uploading) { toast(1, T('An upload is already running')); return; }
     const files = [];
     for (const el of f.querySelectorAll('input[type=file]')) files.push(...el.files);
-    if (!files.length) { toast(2, f.dataset.empty || 'Choose a folder or some files first'); return; }
+    if (!files.length) { toast(2, f.dataset.empty || T('Choose a folder or some files first')); return; }
     const base = f.dataset.upload, body = {};
     for (const [k, v] of pairs(new FormData(f))) body[k] = v;
     const use = { worker: f.dataset.convert, wasm: f.dataset.wasm }; // the page says where (if it has them)
@@ -564,7 +571,7 @@
         }
       }
     } catch (err) {
-      toast(2, err.message || 'The upload stopped');
+      toast(2, err.message || T('The upload stopped'));
     } finally {
       if (made) made.stop();
       uploading = false;
@@ -637,7 +644,7 @@
         if (Date.now() - at >= 3000) tell(k, m.pm);
         else seen.set(k, [m.pm, at]);
       };
-      w.onerror = (e) => { e.preventDefault(); finish(k, { error: 'The converter stopped' }); };
+      w.onerror = (e) => { e.preventDefault(); finish(k, { error: T('The converter stopped') }); };
       w.postMessage({ file: files[job.f], wasm: use.wasm });
     }
     function pump() {
@@ -645,7 +652,7 @@
              ((!workers.size && !ready.size) || ahead() + source(next) <= room)) start(next++);
     }
     function halt(why) {
-      halted = why || 'The upload was stopped';
+      halted = why || T('The upload was stopped');
       clearInterval(beat);
       for (const w of workers.values()) w.terminate();
       workers.clear();
@@ -659,7 +666,7 @@
       take(k) {
         sending = k;
         pump();
-        const r = results.get(k) || Promise.resolve({ stop: halted || 'The upload was stopped' });
+        const r = results.get(k) || Promise.resolve({ stop: halted || T('The upload was stopped') });
         results.delete(k);
         return r;
       },
@@ -686,15 +693,15 @@
       const s = await fetch(`${url}?${query}`, { method: 'POST' }).then(json).catch(() => ({}));
       if (s.stop) throw new Error(s.error);
       if (!s.error && (s.skip || typeof s.at === 'number')) return s;
-      if (tries >= 5) throw new Error(s.error || 'The connection keeps dropping');
+      if (tries >= 5) throw new Error(s.error || T('The connection keeps dropping'));
       await pause(1000 * 2 ** tries);
     }
   }
 
   // One file - or a copy its converter holds (src.send) - after a dropped connection, ask the server
   // how far it got and go on from there.
-  const LOST = 'The browser lost the copy it made - is its disk full? Make room and start the upload again: ' +
-    'what was sent stays';
+  const LOST = T(
+    'The browser lost the copy it made - is its disk full? Make room and start the upload again: what was sent stays');
   async function put(url, src, at, end) {
     const send = src.send
       ? (a) => src.send(url, a).then((x) => {
@@ -719,7 +726,7 @@
         tries--;
         continue;
       }
-      if (tries >= 8) throw new Error(s.error || 'The connection keeps dropping');
+      if (tries >= 8) throw new Error(s.error || T('The connection keeps dropping'));
       if (typeof s.at !== 'number') {
         await pause(Math.min(15000, 1000 * 2 ** tries));
         Object.assign(s, await fetch(url).then(json).catch(() => ({})));
@@ -736,7 +743,9 @@
         const t = document.createElement('template');
         t.innerHTML = op[1];
         const next = t.content.firstElementChild, app = document.getElementById('app');
-        if (next && app) {
+        if (next && app && next.dataset.lang && next.dataset.lang !== root.lang && !uploading) {
+          if (!isLeaving()) location.reload(); /* another language: the head (lang, wire-tr) comes with a load */
+        } else if (next && app) {
           const was = focusSpot(), kept = keepSpot(), opener = dlg ? null : { el: document.activeElement, keep: kept };
           morph(app, next); settle(); starts(); gaps(); fits(); arrowsSettle(was); keepSettle(kept); dialogs(opener); says();
           showValues();
@@ -776,7 +785,7 @@
       const u = document.createElement('button');
       u.type = 'button';
       u.className = 'toast-undo';
-      u.textContent = 'Undo';
+      u.textContent = T('Undo');
       u.onclick = (e) => {
         e.stopPropagation();
         el.remove();
@@ -1038,7 +1047,7 @@
   function fit(box) {
     for (const x of box.querySelectorAll('[data-fit-cut]')) fitShow(x);
     for (const x of box.querySelectorAll('.fit-more')) x.remove();
-    for (const x of box.querySelectorAll('[data-fit-more]')) x.textContent = `+${x.dataset.fitMore} more`;
+    for (const x of box.querySelectorAll('[data-fit-more]')) x.textContent = T('+%d more', x.dataset.fitMore);
     const shown = () => [...box.children].filter((c) => !c.hidden);
     const css = getComputedStyle(box), laid = css.overflowY === 'hidden';
     if (laid) box.setAttribute('data-fit-laid', '');
@@ -1079,10 +1088,10 @@
       end();
       const n = card.querySelectorAll('li[data-fit-cut]:not([data-fit-head])').length, own = card.querySelector('[data-fit-more]');
       let p = card.querySelector('.fit-more');
-      if (own) own.textContent = `+${n + (parseInt(own.dataset.fitMore, 10) || 0)} more`;
+      if (own) own.textContent = T('+%d more', n + (parseInt(own.dataset.fitMore, 10) || 0));
       else if (n) {
         if (!p) { p = document.createElement('p'); p.className = 'fit-more'; card.append(p); }
-        p.textContent = `+${n} more`;
+        p.textContent = T('+%d more', n);
       } else if (p) p.remove();
     };
     const shorten = (card) => { const r = rows(card); fitCut(r[r.length - 1]); settle(card); };
@@ -1129,7 +1138,7 @@
     const say = box.dataset.fit && document.getElementById(box.dataset.fit);
     if (say) {
       const gone = [...box.children].filter((c) => c.hasAttribute('data-fit-cut'));
-      say.textContent = gone.length ? `Didn't fit: ${gone.map((c) => (c.querySelector('h2,h3') || c).textContent.trim()).join(', ')}` : '';
+      say.textContent = gone.length ? T("Didn't fit: %s", gone.map((c) => (c.querySelector('h2,h3') || c).textContent.trim()).join(', ')) : '';
     }
   }
   const fits = () => document.querySelectorAll('[data-fit]').forEach(fit);
@@ -1387,7 +1396,7 @@
     flag(pl, 'data-muted', v.muted || v.volume === 0);
     // what the buttons do now, in words (issue #64: "Play" and "Sound" never said paused or muted)
     for (const b of pl.querySelectorAll('[data-p="play"]')) {
-      const l = (v.paused ? 'Play' : 'Pause') + (b.title ? ' (Space)' : '');
+      const l = v.paused ? (b.title ? T('Play (Space)') : T('Play')) : b.title ? T('Pause (Space)') : T('Pause');
       attr(b, 'aria-label', l);
       if (b.title) attr(b, 'title', l);
     }
@@ -1400,7 +1409,7 @@
         seek.value = at;
       }
       pl.querySelector('.pl-fill').style.width = (100 * at / d) + '%';
-      attr(seek, 'aria-valuetext', clock(at) + ' of ' + clock(d)); /* (not a bare "12": #64) */
+      attr(seek, 'aria-valuetext', T('%s of %s', clock(at), clock(d))); /* (not a bare "12": #64) */
       let end = 0;
       for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= v.currentTime + 1) end = Math.max(end, v.buffered.end(i));
       pl.querySelector('.pl-buf').style.width = (100 * Math.min(end, d) / d) + '%';

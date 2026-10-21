@@ -144,6 +144,12 @@ TEST(feed_holds_what_is_on_for_them) {
     ics = ics_of(adam, &b);
     CHECK_HAS(ics, "X-WR-CALNAME:Björk\\; by the lake\\, north\r\n");
     CHECK_HAS(ics, "DESCRIPTION:Booking for you - Björk\\; by the lake\\, north\r\n");
+    /* in their language (issue #46: cal_feed_http picks it - their own choice, else the app's) */
+    pref_set(adam, PREF_LANG, "sv");
+    ics = ics_of(adam, &b);
+    pref_set(adam, PREF_LANG, "");
+    unfold(ics, &u); /* (longer in Swedish: folded at 75 octets) */
+    CHECK_HAS(u.p, "DESCRIPTION:Bokning åt dig - Björk\\; by the lake\\, north\r\n");
     /* Eva's own calendar has her booking and her to-do */
     unfold(ics_of(eva, &b), &u);
     CHECK_HAS(u.p, "20261014T090000Z");

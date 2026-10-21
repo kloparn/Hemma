@@ -4,6 +4,36 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 0.25.0 (2026-10-21)
+
+Hemma speaks English, Swedish and Spanish.
+
+### New
+
+- **Three languages:** every page, button, message, toast and check in Hemma is in English,
+  Swedish (svenska) or Spanish (español). It's all built into the program - no internet, no
+  translation service.
+- **The browser's language by itself:** Hemma speaks what your phone or computer is set to, and
+  English when that's none of the three.
+- **Or your own choice:** **Household → Your account → Language** (Automatic, English, Svenska,
+  Español). It follows you to every device you sign in on; children and guests choose too. An admin
+  picks the language of a TV or wall tablet in its dialog under **Household**.
+- **The sign-in pages** have *English · Svenska · Español* at the bottom, for a browser that asks for
+  something else.
+- **Quick text understands Spanish:** *"coche mañana de 14 a 17"*, *"sauna esta noche a las 19"*,
+  *"aspirar todos los martes"*, *"cena el 5 de noviembre a las 20"* - beside English and Swedish.
+- **A starter answers to its name in every language:** the "Car" books as *bil* or *coche* too.
+- **Dates, days and sizes** follow the language: "mån 5 okt", "lun 5 oct", "1,3 TB ledigt".
+- **What others did** (the Latest feed, toasts, booking news) reaches each person in their own
+  language, and the calendar on your phone comes in yours.
+
+### Changed
+
+- On phones, a long button label wraps instead of pushing the page sideways.
+- A few English texts were made whole sentences or proper plurals on the way ("of 1 file", not
+  "of 1 files"); the card link "All" reads "See all".
+- The server's log, the command line and the guides stay in English.
+
 ## 0.24.0 (2026-10-20)
 
 Dolby Digital Plus sound plays everywhere, and a video's own subtitles come along.

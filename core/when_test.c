@@ -1,4 +1,5 @@
 #include "../tests/test.h"
+#include "i18n.h"
 #include "when.h"
 
 /* All expectations are relative to Wednesday 7 Oct 2026, 10:00 local time and
@@ -986,5 +987,641 @@ TEST(when_fuzz_random_phrases) {
                 return;
             }
         }
+    }
+}
+
+/* ---------------------------------------------------------------- Spanish (issue #46) */
+
+/* The cases in another language of the person's (the person's language decides what a word
+ * Spanish shares with Swedish means: "el 12", "dom"). */
+#define RUN_IN(lang, cases)                                                                                            \
+    do {                                                                                                               \
+        Lang was_ = i18n_use(lang);                                                                                    \
+        RUN(cases);                                                                                                    \
+        i18n_use(was_);                                                                                                \
+    } while (0)
+
+TEST(when_spanish_days) {
+    static const Case cases[] = {
+        {"hoy 19-21", "2026-10-07 19:00", "2026-10-07 21:00", ""},
+        {"hoy a las 19", "2026-10-07 19:00", "2026-10-07 20:00", ""},
+        {"mañana a las 9", "2026-10-08 09:00", "2026-10-08 10:00", ""},
+        {"manana a las 9", "2026-10-08 09:00", "2026-10-08 10:00", ""},
+        {"MAÑANA 9", "2026-10-08 09:00", "2026-10-08 10:00", ""},
+        {"pasado mañana a las 12", "2026-10-09 12:00", "2026-10-09 13:00", ""},
+        {"pasado manana", "2026-10-09 00:00", "2026-10-10 00:00", ""},
+        {"el lunes", "2026-10-12 00:00", "2026-10-13 00:00", ""},
+        {"lunes 8", "2026-10-12 08:00", "2026-10-12 09:00", ""},
+        {"lun 8", "2026-10-12 08:00", "2026-10-12 09:00", ""},
+        {"martes 8", "2026-10-13 08:00", "2026-10-13 09:00", ""},
+        {"el martes a las 8", "2026-10-13 08:00", "2026-10-13 09:00", ""},
+        {"miércoles 18", "2026-10-07 18:00", "2026-10-07 19:00", ""}, /* today counts */
+        {"Miércoles 18", "2026-10-07 18:00", "2026-10-07 19:00", ""},
+        {"miercoles 18", "2026-10-07 18:00", "2026-10-07 19:00", ""},
+        {"mié 18", "2026-10-07 18:00", "2026-10-07 19:00", ""},
+        {"mie 18", "2026-10-07 18:00", "2026-10-07 19:00", ""},
+        {"jueves 18", "2026-10-08 18:00", "2026-10-08 19:00", ""},
+        {"jue 18", "2026-10-08 18:00", "2026-10-08 19:00", ""},
+        {"viernes 14-17", "2026-10-09 14:00", "2026-10-09 17:00", ""},
+        {"el vie 14-17", "2026-10-09 14:00", "2026-10-09 17:00", ""},
+        {"sábado 10", "2026-10-10 10:00", "2026-10-10 11:00", ""},
+        {"SÁBADO 10", "2026-10-10 10:00", "2026-10-10 11:00", ""},
+        {"sabado 10", "2026-10-10 10:00", "2026-10-10 11:00", ""},
+        {"sáb 10", "2026-10-10 10:00", "2026-10-10 11:00", ""},
+        {"sab 10", "2026-10-10 10:00", "2026-10-10 11:00", ""},
+        {"domingo 10", "2026-10-11 10:00", "2026-10-11 11:00", ""},
+        {"el dom a las 10", "2026-10-11 10:00", "2026-10-11 11:00", ""},
+        {"el domingo, a las 10", "2026-10-11 10:00", "2026-10-11 11:00", ""},
+        /* "próximo" / "que viene": the next one to come (not next week's, as English "next fri") */
+        {"el próximo lunes", "2026-10-12 00:00", "2026-10-13 00:00", ""},
+        {"el proximo viernes", "2026-10-09 00:00", "2026-10-10 00:00", ""},
+        {"próximo viernes a las 10", "2026-10-09 10:00", "2026-10-09 11:00", ""},
+        {"el viernes que viene", "2026-10-09 00:00", "2026-10-10 00:00", ""},
+        {"el lunes próximo", "2026-10-12 00:00", "2026-10-13 00:00", ""},
+        {"el miércoles que viene", "2026-10-14 00:00", "2026-10-15 00:00", ""}, /* never today */
+        {"el próximo miércoles", "2026-10-14 00:00", "2026-10-15 00:00", ""},
+        {"el viernes de la semana que viene", "2026-10-16 00:00", "2026-10-17 00:00", ""},
+        {"el viernes de la próxima semana", "2026-10-16 00:00", "2026-10-17 00:00", ""},
+        {"este viernes a las 10", "2026-10-09 10:00", "2026-10-09 11:00", ""},
+        {"este miércoles", "2026-10-07 00:00", "2026-10-08 00:00", ""},
+        {"la semana que viene", "2026-10-12 00:00", "2026-10-13 00:00", ""},
+        {"la próxima semana", "2026-10-12 00:00", "2026-10-13 00:00", ""},
+        {"proxima semana", "2026-10-12 00:00", "2026-10-13 00:00", ""},
+        {"semana que viene", "2026-10-12 00:00", "2026-10-13 00:00", ""},
+        {"la semana próxima", "2026-10-12 00:00", "2026-10-13 00:00", ""},
+        /* the weekend */
+        {"este fin de semana", "2026-10-10 00:00", "2026-10-12 00:00", ""},
+        {"el fin de semana", "2026-10-10 00:00", "2026-10-12 00:00", ""},
+        {"fin de semana", "2026-10-10 00:00", "2026-10-12 00:00", ""},
+        {"finde", "2026-10-10 00:00", "2026-10-12 00:00", ""},
+        {"este finde", "2026-10-10 00:00", "2026-10-12 00:00", ""},
+        {"el próximo fin de semana", "2026-10-10 00:00", "2026-10-12 00:00", ""}, /* the coming one */
+        {"el finde que viene", "2026-10-10 00:00", "2026-10-12 00:00", ""},
+        /* a weekday with its date: the date says which */
+        {"el lunes 9 de noviembre a las 10", "2026-11-09 10:00", "2026-11-09 11:00", ""},
+        {"lunes, 9 de noviembre", "2026-11-09 00:00", "2026-11-10 00:00", ""},
+        /* "el jueves 12": the Thursday that is a 12th ("jueves 12" without "el" is Thursday at 12) */
+        {"médico el jueves 12 a las 9:30", "2026-11-12 09:30", "2026-11-12 10:30", "médico"},
+        {"el martes 13", "2026-10-13 00:00", "2026-10-14 00:00", ""},
+        {"el dom 10", "2027-01-10 00:00", "2027-01-11 00:00", ""},
+        {"jueves 12", "2026-10-08 12:00", "2026-10-08 13:00", ""},
+        {"el lunes 8 pm", "2026-10-12 20:00", "2026-10-12 21:00", ""},
+        {"el viernes 2 horas", "2026-10-09 00:00", "2026-10-09 02:00", ""},
+    };
+    RUN(cases);
+
+    static const Case saturday[] = { /* Saturday 10 Oct: this weekend is under way */
+        {"el próximo fin de semana", "2026-10-17 00:00", "2026-10-19 00:00", ""},
+        {"el fin de semana que viene", "2026-10-17 00:00", "2026-10-19 00:00", ""},
+        {"este fin de semana", "2026-10-10 00:00", "2026-10-12 00:00", ""},
+        {"el próximo sábado", "2026-10-17 00:00", "2026-10-18 00:00", ""},
+        {"este sábado", "2026-10-10 00:00", "2026-10-11 00:00", ""},
+    };
+    NOW = dt_make(2026, 10, 10, 10, 0);
+    for (int i = 0; i < countof(saturday); i++) check_case(&saturday[i], 60);
+}
+
+TEST(when_spanish_dates) {
+    static const Case cases[] = {
+        {"5/11", "2026-11-05 00:00", "2026-11-06 00:00", ""},
+        {"5 de noviembre", "2026-11-05 00:00", "2026-11-06 00:00", ""},
+        {"el 5 de noviembre a las 10", "2026-11-05 10:00", "2026-11-05 11:00", ""},
+        {"5 nov", "2026-11-05 00:00", "2026-11-06 00:00", ""},
+        {"5 de nov", "2026-11-05 00:00", "2026-11-06 00:00", ""},
+        {"5 noviembre", "2026-11-05 00:00", "2026-11-06 00:00", ""},
+        {"el 5 de noviembre de 2027", "2027-11-05 00:00", "2027-11-06 00:00", ""},
+        {"5 de noviembre 2027", "2027-11-05 00:00", "2027-11-06 00:00", ""},
+        {"1 de enero", "2027-01-01 00:00", "2027-01-02 00:00", ""},
+        {"3 ene", "2027-01-03 00:00", "2027-01-04 00:00", ""},
+        {"14 de febrero", "2027-02-14 00:00", "2027-02-15 00:00", ""},
+        {"19 de marzo", "2027-03-19 00:00", "2027-03-20 00:00", ""},
+        {"1 de abril", "2027-04-01 00:00", "2027-04-02 00:00", ""},
+        {"12 abr", "2027-04-12 00:00", "2027-04-13 00:00", ""},
+        {"2 de mayo", "2027-05-02 00:00", "2027-05-03 00:00", ""},
+        {"24 de junio", "2027-06-24 00:00", "2027-06-25 00:00", ""},
+        {"25 de julio", "2027-07-25 00:00", "2027-07-26 00:00", ""},
+        {"15 de agosto", "2027-08-15 00:00", "2027-08-16 00:00", ""},
+        {"15 de ago", "2027-08-15 00:00", "2027-08-16 00:00", ""},
+        {"30 de septiembre", "2027-09-30 00:00", "2027-10-01 00:00", ""},
+        {"30 de setiembre", "2027-09-30 00:00", "2027-10-01 00:00", ""},
+        {"12 de octubre", "2026-10-12 00:00", "2026-10-13 00:00", ""},
+        {"24 dic", "2026-12-24 00:00", "2026-12-25 00:00", ""},
+        {"31 de diciembre a las 22", "2026-12-31 22:00", "2026-12-31 23:00", ""},
+        {"el día 12", "2026-10-12 00:00", "2026-10-13 00:00", ""},
+        {"día 3", "2026-11-03 00:00", "2026-11-04 00:00", ""}, /* passed -> next month */
+        {"el día 12 de noviembre", "2026-11-12 00:00", "2026-11-13 00:00", ""},
+        /* day ranges */
+        {"12-14 de noviembre", "2026-11-12 00:00", "2026-11-15 00:00", ""},
+        {"del 5 al 10 de noviembre", "2026-11-05 00:00", "2026-11-11 00:00", ""},
+        {"5 al 10 de noviembre", "2026-11-05 00:00", "2026-11-11 00:00", ""},
+        {"de 5 a 10 de noviembre", "2026-11-05 00:00", "2026-11-11 00:00", ""},
+        {"del 28 de octubre al 3 de noviembre", "2026-10-28 00:00", "2026-11-04 00:00", ""},
+        {"del 28/12 al 2/1", "2026-12-28 00:00", "2027-01-03 00:00", ""},
+        {"del 3 al 5", "2026-11-03 00:00", "2026-11-06 00:00", ""}, /* the next 3rd: November's */
+        {"del 28 al 3", "2026-10-28 00:00", "2026-11-04 00:00", ""},
+        {"viaje del 1 de diciembre al 3", "2026-12-01 00:00", "2026-12-04 00:00", "viaje"},
+        {"del 28 de diciembre al 2", "2026-12-28 00:00", "2027-01-03 00:00", ""},
+        {"del 10 al 12 a las 9", "2026-10-10 09:00", "2026-10-13 00:00", ""},
+        {"vacaciones del 20 de diciembre al 6 de enero", "2026-12-20 00:00", "2027-01-07 00:00", "vacaciones"},
+    };
+    RUN(cases);
+}
+
+TEST(when_spanish_refusals_and_swedish_ones_speak_their_language) {
+    static const RefuseCase es[] = {
+        {"31 de septiembre", "No existe el 31 de septiembre"},
+        {"cena el 31 de septiembre a las 10", "No existe el 31 de septiembre"},
+        {"31/9", "No existe el 31 de septiembre"},
+        {"29 de febrero de 2027", "No existe el 29 de febrero de 2027"},
+        {"29/2", "No existe el 29 de febrero de 2027"},
+        {"del 10 al 5 de noviembre", "La fecha de fin es anterior a la de inicio"},
+        {"del 12/10 al 10/10", "La fecha de fin es anterior a la de inicio"},
+        {"hasta el 5/10", "La fecha de fin es anterior a la de inicio"},
+        {"1/1/1960 10", "Elige un año entre 1970 y 2200"},
+    };
+    Lang was = i18n_use(LANG_ES);
+    RUN_REFUSED(es);
+    static const RefuseCase sv[] = {
+        {"31 sep 14", "Det finns ingen 31 september"},
+        {"bil 31 sep 14-16", "Det finns ingen 31 september"},
+        {"29/2", "Det finns ingen 29 februari 2027"},
+        {"12/10-10/10", "Slutdatumet är före startdatumet"},
+        {"until 5/10", "Slutdatumet är före startdatumet"},
+        {"1/1/1960 10", "Välj ett år från 1970 till 2200"},
+    };
+    i18n_use(LANG_SV);
+    RUN_REFUSED(sv);
+    i18n_use(was);
+    /* every reason fits When.refused in every language: the longest ones */
+    char why[64];
+    Lang langs[] = {LANG_EN, LANG_SV, LANG_ES};
+    for (int i = 0; i < countof(langs); i++) {
+        CHECK((size_t)snprintf(why, sizeof why, T_in(langs[i], "There's no %d %s %d"), 29, "septiembre", 2027) <
+              sizeof why);
+        CHECK(strlen(T_in(langs[i], "The end date is before the start date")) < sizeof why);
+        CHECK(strlen(T_in(langs[i], "Pick a year from 1970 to 2200")) < sizeof why);
+    }
+}
+
+TEST(when_spanish_evenings_afternoons_and_mornings) {
+    static const Case cases[] = {
+        {"esta noche a las 8", "2026-10-07 20:00", "2026-10-07 21:00", ""},
+        {"esta noche 8", "2026-10-07 20:00", "2026-10-07 21:00", ""},
+        {"esta noche a las 12", "2026-10-08 00:00", "2026-10-08 01:00", ""}, /* midnight, not noon */
+        {"esta noche a la 1", "2026-10-08 01:00", "2026-10-08 02:00", ""},
+        {"esta noche de 9 a 11", "2026-10-07 21:00", "2026-10-07 23:00", ""},
+        {"esta noche 20", "2026-10-07 20:00", "2026-10-07 21:00", ""},
+        {"esta tarde a las 4", "2026-10-07 16:00", "2026-10-07 17:00", ""},
+        {"esta tarde a las 4:30", "2026-10-07 16:30", "2026-10-07 17:30", ""},
+        {"esta tarde de 3 a 5", "2026-10-07 15:00", "2026-10-07 17:00", ""},
+        {"esta mañana a las 9", "2026-10-07 09:00", "2026-10-07 10:00", ""},
+        {"mañana por la noche a las 9", "2026-10-08 21:00", "2026-10-08 22:00", ""},
+        {"mañana por la tarde a las 5", "2026-10-08 17:00", "2026-10-08 18:00", ""},
+        {"mañana por la mañana a las 6", "2026-10-08 06:00", "2026-10-08 07:00", ""}, /* not 18:00 */
+        {"mañana tarde 5", "2026-10-08 17:00", "2026-10-08 18:00", ""},
+        {"mañana noche 10", "2026-10-08 22:00", "2026-10-08 23:00", ""},
+        {"mañana en la noche a las 10", "2026-10-08 22:00", "2026-10-08 23:00", ""}, /* Latin America */
+        {"el viernes por la noche a las 11", "2026-10-09 23:00", "2026-10-10 00:00", ""},
+        {"viernes noche 11", "2026-10-09 23:00", "2026-10-10 00:00", ""},
+        {"el sábado de madrugada a las 3", "2026-10-10 03:00", "2026-10-10 04:00", ""},
+        {"mañana por la noche", "2026-10-08 00:00", "2026-10-09 00:00", ""}, /* the words are taken; all day */
+        /* a time typed before its day */
+        {"a las 8 esta noche", "2026-10-07 20:00", "2026-10-07 21:00", ""},
+        {"a las 4 esta tarde", "2026-10-07 16:00", "2026-10-07 17:00", ""},
+        {"a las 6 mañana por la mañana", "2026-10-08 06:00", "2026-10-08 07:00", ""},
+        /* a time belongs to the day right before it */
+        {"esta noche hasta mañana a las 10", "2026-10-07 10:00", "2026-10-08 10:00", ""},
+        {"hasta mañana por la noche a las 8", "2026-10-07 10:00", "2026-10-08 20:00", ""},
+        {"esta noche hasta las 11", "2026-10-07 10:00", "2026-10-07 23:00", ""},
+        {"hoy de 8 a 10 de la noche", "2026-10-07 20:00", "2026-10-07 22:00", ""},
+    };
+    RUN(cases);
+    static const Case at_0010[] = {
+        {"esta noche a las 12:30", "2026-10-07 00:30", "2026-10-07 01:30", ""}, /* in 20 minutes */
+        {"esta noche a las 2", "2026-10-07 02:00", "2026-10-07 03:00", ""},
+    };
+    NOW = dt_make(2026, 10, 7, 0, 10);
+    for (int i = 0; i < countof(at_0010); i++) check_case(&at_0010[i], 60);
+}
+
+TEST(when_spanish_times) {
+    static const Case cases[] = {
+        {"a las 14", "2026-10-07 14:00", "2026-10-07 15:00", ""},
+        {"a las 14:00", "2026-10-07 14:00", "2026-10-07 15:00", ""},
+        {"a las 14.30", "2026-10-07 14:30", "2026-10-07 15:30", ""},
+        {"a las 9", "2026-10-08 09:00", "2026-10-08 10:00", ""}, /* passed -> tomorrow */
+        {"a las 5", "2026-10-07 17:00", "2026-10-07 18:00", ""}, /* like "at 5" */
+        {"a la 1", "2026-10-07 13:00", "2026-10-07 14:00", ""},
+        {"a la una", "2026-10-07 13:00", "2026-10-07 14:00", ""},
+        {"a las dos", "2026-10-07 14:00", "2026-10-07 15:00", ""},
+        {"a las doce", "2026-10-07 12:00", "2026-10-07 13:00", ""},
+        {"sobre las 14", "2026-10-07 14:00", "2026-10-07 15:00", ""},
+        {"hacia las 14", "2026-10-07 14:00", "2026-10-07 15:00", ""},
+        {"para las 14", "2026-10-07 14:00", "2026-10-07 15:00", ""},
+        {"a las 5 de la tarde", "2026-10-07 17:00", "2026-10-07 18:00", ""},
+        {"a las 8 de la tarde", "2026-10-07 20:00", "2026-10-07 21:00", ""},
+        {"a las 11 de la mañana", "2026-10-07 11:00", "2026-10-07 12:00", ""},
+        {"a las 9 de la mañana", "2026-10-08 09:00", "2026-10-08 10:00", ""},
+        {"a las 10 de la noche", "2026-10-07 22:00", "2026-10-07 23:00", ""},
+        {"a las 12 de la noche", "2026-10-08 00:00", "2026-10-08 01:00", ""},
+        {"a la 1 de la noche", "2026-10-08 01:00", "2026-10-08 02:00", ""},
+        {"a las 3 de la madrugada", "2026-10-08 03:00", "2026-10-08 04:00", ""},
+        {"a las 5 por la tarde", "2026-10-07 17:00", "2026-10-07 18:00", ""},
+        {"5 de la tarde", "2026-10-07 17:00", "2026-10-07 18:00", ""},
+        {"a las 12 del mediodía", "2026-10-07 12:00", "2026-10-07 13:00", ""},
+        {"a la una del mediodía", "2026-10-07 13:00", "2026-10-07 14:00", ""},
+        {"a las 8 y media", "2026-10-08 08:30", "2026-10-08 09:30", ""},
+        {"a las 5 y media", "2026-10-07 17:30", "2026-10-07 18:30", ""},
+        {"a las 4 y cuarto", "2026-10-07 16:15", "2026-10-07 17:15", ""},
+        {"a las 7 menos cuarto", "2026-10-08 06:45", "2026-10-08 07:45", ""},
+        {"a las 2 menos cuarto", "2026-10-07 13:45", "2026-10-07 14:45", ""},
+        {"a las 9 y media de la noche", "2026-10-07 21:30", "2026-10-07 22:30", ""},
+        {"a las 9 en punto", "2026-10-08 09:00", "2026-10-08 10:00", ""},
+        {"a las 14h", "2026-10-07 14:00", "2026-10-07 15:00", ""},
+        {"a las 14:30h", "2026-10-07 14:30", "2026-10-07 15:30", ""},
+        {"a las 9h", "2026-10-08 09:00", "2026-10-08 10:00", ""},
+        {"a las 14 horas", "2026-10-07 14:00", "2026-10-07 15:00", ""},
+        {"a las 14 hs", "2026-10-07 14:00", "2026-10-07 15:00", ""},
+        {"al mediodía", "2026-10-07 12:00", "2026-10-07 13:00", ""},
+        {"al mediodia", "2026-10-07 12:00", "2026-10-07 13:00", ""},
+        {"a medianoche", "2026-10-08 00:00", "2026-10-08 01:00", ""},
+        /* ranges */
+        {"de 14 a 16", "2026-10-07 14:00", "2026-10-07 16:00", ""},
+        {"de 14:00 a 16:30", "2026-10-07 14:00", "2026-10-07 16:30", ""},
+        {"desde las 14 hasta las 16", "2026-10-07 14:00", "2026-10-07 16:00", ""},
+        {"desde 14 hasta 16", "2026-10-07 14:00", "2026-10-07 16:00", ""},
+        {"de las 14 a las 16", "2026-10-07 14:00", "2026-10-07 16:00", ""},
+        {"entre las 14 y las 16", "2026-10-07 14:00", "2026-10-07 16:00", ""},
+        {"entre 2 y 4", "2026-10-07 14:00", "2026-10-07 16:00", ""},
+        {"14-16", "2026-10-07 14:00", "2026-10-07 16:00", ""},
+        {"de 10 a 2", "2026-10-07 10:00", "2026-10-07 14:00", ""},
+        {"de 2 a 5 de la tarde", "2026-10-07 14:00", "2026-10-07 17:00", ""},
+        {"de 8 a 10 de la noche", "2026-10-07 20:00", "2026-10-07 22:00", ""},
+        {"8-10 de la noche", "2026-10-07 20:00", "2026-10-07 22:00", ""},
+        {"de 10 de la noche a 2", "2026-10-07 22:00", "2026-10-08 02:00", ""},
+        {"de 9 a 11 de la mañana", "2026-10-08 09:00", "2026-10-08 11:00", ""},
+        {"de la una a las tres", "2026-10-07 13:00", "2026-10-07 15:00", ""},
+        {"hasta las 17", "2026-10-07 10:00", "2026-10-07 17:00", ""},
+        {"hasta la 1", "2026-10-07 10:00", "2026-10-07 13:00", ""},
+        {"viernes de 18 a 20", "2026-10-09 18:00", "2026-10-09 20:00", ""},
+    };
+    RUN(cases);
+}
+
+TEST(when_spanish_durations_and_now) {
+    static const Case cases[] = {
+        {"2 horas", "2026-10-07 10:00", "2026-10-07 12:00", ""},
+        {"2 hora", "2026-10-07 10:00", "2026-10-07 12:00", ""},
+        {"30 minutos", "2026-10-07 10:00", "2026-10-07 10:30", ""},
+        {"1 minuto", "2026-10-07 10:00", "2026-10-07 10:01", ""},
+        {"90minutos", "2026-10-07 10:00", "2026-10-07 11:30", ""},
+        {"media hora", "2026-10-07 10:00", "2026-10-07 10:30", ""},
+        {"una media hora", "2026-10-07 10:00", "2026-10-07 10:30", ""},
+        {"una hora", "2026-10-07 10:00", "2026-10-07 11:00", ""},
+        {"una hora y media", "2026-10-07 10:00", "2026-10-07 11:30", ""},
+        {"dos horas y media", "2026-10-07 10:00", "2026-10-07 12:30", ""},
+        {"hora y media", "2026-10-07 10:00", "2026-10-07 11:30", ""},
+        {"un cuarto de hora", "2026-10-07 10:00", "2026-10-07 10:15", ""},
+        {"cuarto de hora", "2026-10-07 10:00", "2026-10-07 10:15", ""},
+        {"durante 2 horas", "2026-10-07 10:00", "2026-10-07 12:00", ""},
+        {"por 2 horas", "2026-10-07 10:00", "2026-10-07 12:00", ""},
+        {"para 2 horas", "2026-10-07 10:00", "2026-10-07 12:00", ""},
+        {"2 horas y 30 minutos", "2026-10-07 10:00", "2026-10-07 12:30", ""},
+        {"1 hora 30 minutos", "2026-10-07 10:00", "2026-10-07 11:30", ""},
+        {"tres horas", "2026-10-07 10:00", "2026-10-07 13:00", ""},
+        {"viernes a las 14 durante 2 horas", "2026-10-09 14:00", "2026-10-09 16:00", ""},
+        {"viernes durante 3 días", "2026-10-09 00:00", "2026-10-12 00:00", ""},
+        {"viernes 3 dias", "2026-10-09 00:00", "2026-10-12 00:00", ""},
+        {"el vie por una semana", "2026-10-09 00:00", "2026-10-16 00:00", ""},
+        {"sábado 2 noches", "2026-10-10 00:00", "2026-10-12 00:00", ""},
+        {"un día", "2026-10-07 10:00", "2026-10-08 10:00", ""},
+        {"2 semanas", "2026-10-07 10:00", "2026-10-21 10:00", ""},
+        /* now, and from now */
+        {"ahora", "2026-10-07 10:00", "2026-10-07 11:00", ""},
+        {"ahora mismo", "2026-10-07 10:00", "2026-10-07 11:00", ""},
+        {"ahora durante 2 horas", "2026-10-07 10:00", "2026-10-07 12:00", ""},
+        {"ahora hasta las 17", "2026-10-07 10:00", "2026-10-07 17:00", ""},
+        {"en 30 minutos", "2026-10-07 10:30", "2026-10-07 11:30", ""},
+        {"en una hora", "2026-10-07 11:00", "2026-10-07 12:00", ""},
+        {"en un cuarto de hora", "2026-10-07 10:15", "2026-10-07 11:15", ""},
+        {"en media hora", "2026-10-07 10:30", "2026-10-07 11:30", ""},
+        {"en 2 horas", "2026-10-07 12:00", "2026-10-07 13:00", ""},
+        {"en 2 horas durante 1 hora", "2026-10-07 12:00", "2026-10-07 13:00", ""},
+        {"dentro de 2 horas", "2026-10-07 12:00", "2026-10-07 13:00", ""},
+        {"dentro de 30 min", "2026-10-07 10:30", "2026-10-07 11:30", ""},
+    };
+    RUN(cases);
+}
+
+TEST(when_spanish_ranges_and_until) {
+    static const Case cases[] = {
+        {"hasta el domingo", "2026-10-07 00:00", "2026-10-12 00:00", ""},
+        {"hasta el dom", "2026-10-07 00:00", "2026-10-12 00:00", ""},
+        {"hasta mañana a las 10", "2026-10-07 10:00", "2026-10-08 10:00", ""},
+        {"hasta el domingo a las 17", "2026-10-07 10:00", "2026-10-11 17:00", ""},
+        {"del lunes al miércoles", "2026-10-12 00:00", "2026-10-15 00:00", ""},
+        {"de lunes a viernes", "2026-10-12 00:00", "2026-10-17 00:00", ""},
+        {"lunes a viernes", "2026-10-12 00:00", "2026-10-17 00:00", ""},
+        {"lun-vie", "2026-10-12 00:00", "2026-10-17 00:00", ""},
+        {"vie-dom", "2026-10-09 00:00", "2026-10-12 00:00", ""},
+        {"viernes a domingo", "2026-10-09 00:00", "2026-10-12 00:00", ""},
+        {"del viernes al dom", "2026-10-09 00:00", "2026-10-12 00:00", ""},
+        {"viernes hasta el domingo", "2026-10-09 00:00", "2026-10-12 00:00", ""},
+        {"entre el lunes y el miércoles", "2026-10-12 00:00", "2026-10-15 00:00", ""},
+        {"desde el viernes hasta el domingo a las 17", "2026-10-09 00:00", "2026-10-11 17:00", ""},
+        {"del viernes al domingo a las 17", "2026-10-09 00:00", "2026-10-11 17:00", ""},
+        {"el viernes a las 14 hasta el domingo", "2026-10-09 14:00", "2026-10-12 00:00", ""},
+        {"de hoy a mañana", "2026-10-07 00:00", "2026-10-09 00:00", ""},
+        {"desde el viernes", "2026-10-09 00:00", "2026-10-10 00:00", ""},
+        {"para el lunes", "2026-10-12 00:00", "2026-10-13 00:00", ""},
+    };
+    RUN(cases);
+}
+
+/* Spanish's little words stay in the title unless they're part of the day or the time. */
+TEST(when_spanish_leaves_other_words_alone) {
+    static const Case cases[] = {
+        {"cena con la abuela mañana a las 20", "2026-10-08 20:00", "2026-10-08 21:00", "cena con la abuela"},
+        {"llevar el coche al taller el lunes", "2026-10-12 00:00", "2026-10-13 00:00", "llevar el coche al taller"},
+        {"reunión de padres el martes a las 18", "2026-10-13 18:00", "2026-10-13 19:00", "reunión de padres"},
+        {"pagar la luz el 5 de noviembre", "2026-11-05 00:00", "2026-11-06 00:00", "pagar la luz"},
+        {"sauna hoy de 19 a 21", "2026-10-07 19:00", "2026-10-07 21:00", "sauna"},
+        {"coche viernes 14-17 viaje a ikea", "2026-10-09 14:00", "2026-10-09 17:00", "coche viaje a ikea"},
+        {"comprar las 2 pizzas el viernes a las 20", "2026-10-09 20:00", "2026-10-09 21:00", "comprar las 2 pizzas"},
+        {"la cena de mañana", "2026-10-08 00:00", "2026-10-09 00:00", "la cena"},
+        {"la reunión del lunes", "2026-10-12 00:00", "2026-10-13 00:00", "la reunión"},
+        {"recoger a los niños a las 15", "2026-10-07 15:00", "2026-10-07 16:00", "recoger a los niños"},
+        {"Lavandería, viernes 7-10!", "2026-10-09 07:00", "2026-10-09 10:00", "Lavandería"},
+        {"cuarto de invitados viernes por 3 días", "2026-10-09 00:00", "2026-10-12 00:00", "cuarto de invitados"},
+        {"gimnasio por la mañana", "-", "-", "gimnasio por la mañana"},
+        {"llegar tarde", "-", "-", "llegar tarde"},
+        {"ver la tele en la noche", "-", "-", "ver la tele en la noche"},
+        {"la mañana", "-", "-", "la mañana"},
+        {"el coche", "-", "-", "el coche"},
+        {"de vez en cuando", "-", "-", "de vez en cuando"},
+        {"dentista el 15 a las 10", "2026-10-07 10:00", "2026-10-07 11:00", "dentista el 15"}, /* see ..._in_spanish */
+    };
+    RUN(cases);
+}
+
+/* What these meant before Spanish came (each checked against the parser without it): Swedish "el"
+ * (electricity), "dom" (they), "de" (they), "en" (a), "fin" (nice), "la" (laid), and English "a",
+ * "ya", "mayo", "julio", "dos". */
+TEST(when_spanish_leaves_english_and_swedish_alone) {
+    static const Case cases[] = {
+        {"betala el fredag", "2026-10-09 00:00", "2026-10-10 00:00", "betala el"},
+        {"betala el 12", "2026-10-07 12:00", "2026-10-07 13:00", "betala el"},
+        {"betala el 25", "-", "-", "betala el 25"},
+        {"läs del 2 fre", "2026-10-09 14:00", "2026-10-09 15:00", "läs del"},
+        {"dom kommer fre 18", "2026-10-09 18:00", "2026-10-09 19:00", "dom kommer"},
+        {"hämta dom 18", "2026-10-07 18:00", "2026-10-07 19:00", "hämta dom"},
+        {"fre till dom 18", "2026-10-09 18:00", "2026-10-09 19:00", "till dom"},
+        {"skicka till dom fre", "2026-10-09 00:00", "2026-10-10 00:00", "skicka till dom"},
+        {"de kommer 18", "2026-10-07 18:00", "2026-10-07 19:00", "de kommer"},
+        {"de 14-16 platserna", "2026-10-07 14:00", "2026-10-07 16:00", "de platserna"},
+        {"en 30 min promenad", "2026-10-07 10:00", "2026-10-07 10:30", "en promenad"},
+        {"en halvtimme", "2026-10-07 10:00", "2026-10-07 10:30", ""},
+        {"en kvart", "2026-10-07 10:00", "2026-10-07 10:15", ""},
+        {"fin middag fre 19", "2026-10-09 19:00", "2026-10-09 20:00", "fin middag"},
+        {"la 2 ägg fre", "2026-10-09 14:00", "2026-10-09 15:00", "la ägg"},
+        {"see ya fri 18", "2026-10-09 18:00", "2026-10-09 19:00", "see ya"},
+        {"buy 2 mayo", "2026-10-07 14:00", "2026-10-07 15:00", "buy mayo"},
+        {"dinner with julio 8", "2026-10-08 08:00", "2026-10-08 09:00", "dinner with julio"},
+        {"a midnight snack", "2026-10-08 00:00", "2026-10-08 01:00", "a snack"},
+        {"practice fri a 3rd time", "2026-10-09 00:00", "2026-10-10 00:00", "practice a 3rd time"},
+        {"at 2 a 3 hour drive", "2026-10-07 14:00", "2026-10-07 17:00", "a drive"},
+        {"take pills 2 a 3 times", "2026-10-07 14:00", "2026-10-07 15:00", "take pills a 3 times"},
+        {"media night fri", "2026-10-09 00:00", "2026-10-10 00:00", "media night"},
+        {"every friday night 11", "2026-10-09 23:00", "2026-10-10 00:00", "night"},
+        {"vie for it fri", "2026-10-09 00:00", "2026-10-10 00:00", "vie for it"},
+        {"las vegas trip fri", "2026-10-09 00:00", "2026-10-10 00:00", "las vegas trip"},
+        {"2 a day", "2026-10-07 14:00", "2026-10-08 14:00", ""},
+        {"call a 2 hours", "2026-10-07 10:00", "2026-10-07 12:00", "call a"},
+        {"buy dos fri", "2026-10-09 00:00", "2026-10-10 00:00", "buy dos"},
+        {"once a week", "2026-10-07 10:00", "2026-10-14 10:00", "once"},
+        {"dom 10", "2026-10-07 10:00", "2026-10-07 11:00", "dom"},
+        {"sauna ya", "-", "-", "sauna ya"},
+        {"mar 14", "2027-03-14 00:00", "2027-03-15 00:00", ""}, /* March, not "martes" */
+    };
+    RUN(cases);
+    RUN_IN(LANG_SV, cases); /* the same for someone using Hemma in Swedish */
+}
+
+/* For people who use Hemma in Spanish, the words Spanish shares with Swedish and English are read
+ * the Spanish way - and English and Swedish still work. */
+TEST(when_spanish_in_spanish) {
+    static const Case cases[] = {
+        {"el 12", "2026-10-12 00:00", "2026-10-13 00:00", ""},
+        {"dentista el 15 a las 10", "2026-10-15 10:00", "2026-10-15 11:00", "dentista"},
+        {"el 3", "2026-11-03 00:00", "2026-11-04 00:00", ""},
+        {"el 5/11", "2026-11-05 00:00", "2026-11-06 00:00", ""},
+        {"dom 10", "2026-10-11 10:00", "2026-10-11 11:00", ""},
+        {"vie 14-17", "2026-10-09 14:00", "2026-10-09 17:00", ""},
+        {"coche vie 14-17 viaje a ikea", "2026-10-09 14:00", "2026-10-09 17:00", "coche viaje a ikea"},
+        {"vie a dom", "2026-10-09 00:00", "2026-10-12 00:00", ""},
+        {"sauna 14 a 16", "2026-10-07 14:00", "2026-10-07 16:00", "sauna"},
+        {"sauna ya", "2026-10-07 10:00", "2026-10-07 11:00", "sauna"},
+        {"en 30 min", "2026-10-07 10:30", "2026-10-07 11:30", ""},
+        {"2 mayo", "2027-05-02 00:00", "2027-05-03 00:00", ""},
+        {"fri 14-17", "2026-10-09 14:00", "2026-10-09 17:00", ""},
+        {"bastu idag kl 19-21", "2026-10-07 19:00", "2026-10-07 21:00", "bastu"},
+        {"tonight 8", "2026-10-07 20:00", "2026-10-07 21:00", ""},
+    };
+    RUN_IN(LANG_ES, cases);
+}
+
+TEST(when_spanish_repeats) {
+    static const RepeatCase cases[] = {
+        {"cada martes", REPEAT_WEEKLY, 1, "2026-10-13", ""},
+        {"todos los martes", REPEAT_WEEKLY, 1, "2026-10-13", ""},
+        {"los martes", REPEAT_WEEKLY, 1, "2026-10-13", ""},
+        {"cada dom", REPEAT_WEEKLY, 6, "2026-10-11", ""},
+        {"los domingos", REPEAT_WEEKLY, 6, "2026-10-11", ""},
+        {"todos los domingos", REPEAT_WEEKLY, 6, "2026-10-11", ""},
+        {"los sábados", REPEAT_WEEKLY, 5, "2026-10-10", ""},
+        {"sábados", REPEAT_WEEKLY, 5, "2026-10-10", ""},
+        {"cada miércoles", REPEAT_WEEKLY, 2, "2026-10-07", ""},
+        {"cada día", REPEAT_DAILY, -1, NULL, ""},
+        {"cada dia", REPEAT_DAILY, -1, NULL, ""},
+        {"todos los días", REPEAT_DAILY, -1, NULL, ""},
+        {"todos los dias", REPEAT_DAILY, -1, NULL, ""},
+        {"a diario", REPEAT_DAILY, -1, NULL, ""},
+        {"diariamente", REPEAT_DAILY, -1, NULL, ""},
+        {"cada semana", REPEAT_WEEKLY, -1, NULL, ""},
+        {"todas las semanas", REPEAT_WEEKLY, -1, NULL, ""},
+        {"semanalmente", REPEAT_WEEKLY, -1, NULL, ""},
+        {"reunión semanal", REPEAT_WEEKLY, -1, NULL, "reunión"},
+        {"cada dos semanas", REPEAT_BIWEEKLY, -1, NULL, ""},
+        {"cada 2 semanas", REPEAT_BIWEEKLY, -1, NULL, ""},
+        {"cada quince días", REPEAT_BIWEEKLY, -1, NULL, ""},
+        {"cada 15 días", REPEAT_BIWEEKLY, -1, NULL, ""},
+        {"quincenal", REPEAT_BIWEEKLY, -1, NULL, ""},
+        {"cada dos viernes", REPEAT_BIWEEKLY, 4, "2026-10-09", ""},
+        {"cada mes", REPEAT_MONTHLY, -1, NULL, ""},
+        {"todos los meses", REPEAT_MONTHLY, -1, NULL, ""},
+        {"mensualmente", REPEAT_MONTHLY, -1, NULL, ""},
+        {"pago mensual", REPEAT_MONTHLY, -1, NULL, "pago"},
+        {"sacar la basura cada martes a las 19", REPEAT_WEEKLY, 1, "2026-10-13", "sacar la basura"},
+        {"regar las plantas @eva todos los domingos", REPEAT_WEEKLY, 6, "2026-10-11", "regar las plantas @eva"},
+        {"pizza los viernes por la noche", REPEAT_WEEKLY, 4, "2026-10-09", "pizza"},
+        {"comprar el diario", REPEAT_NONE, -1, NULL, "comprar el diario"}, /* the newspaper */
+    };
+    int64_t now = dt_make(2026, 10, 7, 10, 0);
+    for (int i = 0; i < countof(cases); i++) {
+        const RepeatCase *c = &cases[i];
+        Tokens t;
+        When w;
+        tok_split(&t, c->in);
+        bool any = when_parse(&t, now, &w);
+        char date[16] = "", rest[128];
+        if (w.has_date) snprintf(date, sizeof date, "%04d-%02d-%02d", w.y, w.m, w.d);
+        tok_rest(&t, rest, sizeof rest);
+        test_checks++;
+        if (any != (c->repeat != REPEAT_NONE) || w.repeat != c->repeat || w.repeat_wday != c->wday ||
+            w.has_date != (c->date != NULL) || (c->date && !str_eq(date, c->date)) || !str_eq(rest, c->rest))
+            test_fail(__FILE__, __LINE__, "\"%s\": repeat %d wday %d date \"%s\" rest \"%s\"", c->in, w.repeat,
+                      w.repeat_wday, date, rest);
+    }
+    /* a repeat at a time: the first one, at that time; "el martes" is one Tuesday */
+    static const Case timed[] = {
+        {"cada martes a las 19", "2026-10-13 19:00", "2026-10-13 20:00", ""},
+        {"los viernes por la noche a las 9", "2026-10-09 21:00", "2026-10-09 22:00", ""},
+        {"el martes", "2026-10-13 00:00", "2026-10-14 00:00", ""},
+    };
+    RUN(timed);
+    Tokens t;
+    When w;
+    tok_split(&t, "el martes");
+    CHECK(when_parse(&t, now, &w) && w.repeat == REPEAT_NONE);
+}
+
+TEST(when_describe_in_swedish_and_spanish) {
+    int64_t now = dt_make(2026, 10, 7, 10, 0);
+    char out[96];
+    struct {
+        int64_t s, e;
+        const char *sv, *es;
+    } cases[] = {
+        {dt_make(2026, 10, 7, 19, 0), dt_make(2026, 10, 7, 21, 0), "Idag 19:00–21:00", "Hoy 19:00–21:00"},
+        {dt_make(2026, 10, 8, 9, 0), dt_make(2026, 10, 8, 10, 30), "Imorgon 09:00–10:30", "Mañana 09:00–10:30"},
+        {dt_make(2026, 10, 6, 10, 0), dt_make(2026, 10, 6, 11, 0), "Igår 10:00–11:00", "Ayer 10:00–11:00"},
+        {dt_make(2026, 10, 16, 14, 0), dt_make(2026, 10, 16, 17, 0), "Fre 16 okt 14:00–17:00",
+         "Vie 16 oct 14:00–17:00"},
+        {dt_make(2026, 10, 16, 14, 0), dt_make(2026, 10, 17, 10, 0), "Fre 16 okt 14:00 – lör 17 okt 10:00",
+         "Vie 16 oct 14:00 – sáb 17 oct 10:00"},
+        {dt_make(2026, 10, 7, 22, 0), dt_make(2026, 10, 8, 2, 0), "Idag 22:00 – imorgon 02:00",
+         "Hoy 22:00 – mañana 02:00"},
+        {dt_make(2026, 10, 15, 22, 0), dt_make(2026, 10, 16, 2, 0), "Tors 15 okt 22:00 – fre 16 okt 02:00",
+         "Jue 15 oct 22:00 – vie 16 oct 02:00"},
+        {dt_make(2026, 10, 17, 0, 0), dt_make(2026, 10, 20, 0, 0), "Lör 17 – mån 19 okt", "Sáb 17 – lun 19 oct"},
+        {dt_make(2026, 10, 31, 0, 0), dt_make(2026, 11, 3, 0, 0), "Lör 31 okt – mån 2 nov", "Sáb 31 oct – lun 2 nov"},
+        {dt_make(2026, 12, 30, 0, 0), dt_make(2027, 1, 2, 0, 0), "Ons 30 dec – fre 1 jan 2027",
+         "Mié 30 dic – vie 1 ene 2027"},
+        {dt_make(2026, 10, 7, 0, 0), dt_make(2026, 10, 8, 0, 0), "Idag, heldag", "Hoy, todo el día"},
+        {dt_make(2026, 10, 17, 0, 0), dt_make(2026, 10, 18, 0, 0), "Lör 17 okt, heldag", "Sáb 17 oct, todo el día"},
+        {dt_make(2027, 1, 5, 10, 0), dt_make(2027, 1, 5, 11, 0), "Tis 5 jan 2027 10:00–11:00",
+         "Mar 5 ene 2027 10:00–11:00"},
+        {dt_make(2026, 10, 7, 10, 0), dt_make(2026, 10, 7, 10, 0), "Idag 10:00", "Hoy 10:00"},
+    };
+    Lang was = i18n_use(LANG_SV);
+    for (int i = 0; i < countof(cases); i++) {
+        when_describe(cases[i].s, cases[i].e, now, out, sizeof out);
+        CHECK_STR(out, cases[i].sv);
+    }
+    i18n_use(LANG_ES);
+    for (int i = 0; i < countof(cases); i++) {
+        when_describe(cases[i].s, cases[i].e, now, out, sizeof out);
+        CHECK_STR(out, cases[i].es);
+    }
+    i18n_use(was);
+}
+
+TEST(when_spanish_survives_garbage) {
+    int64_t now = dt_make(2026, 10, 7, 10, 0);
+    static const char *const inputs[] = {
+        "el", "del", "de", "a las", "a la", "hasta", "hasta las", "hasta el", "cada", "todos los", "los", "pasado",
+        "fin de", "fin de semana que", "y media", "menos cuarto", "de la", "por la", "en la", "entre las y",
+        "del al", "de a", "el día", "día", "próximo", "la semana", "a las 25", "a las 14h30", "14hh", "a las h",
+        "de la noche", "dentro de", "en", "ahora mismo mismo", "el el el 5", "del 5 al", "del 5 al 40 de noviembre",
+        "5 al 10 de", "las las las 3", "a las 0 menos cuarto", "a las 12 menos cuarto de la noche", "de 5 a",
+        "de lunes a", "lunes a", "del lunes al", "hasta mañana a las", "cada dos", "cada quince", "todos los x",
+        "a las 24 y media", "a las 00 de la tarde", "a la una y media de la madrugada", "el próximo", "el lunes que",
+        "semana que", "31 de febrero", "del 31 al 2 de febrero", "de hoy a", "dom", "el dom dom", "vie-dom-sab",
+        "a medianoche y media", "al", "en punto", "a las 9 en", "mañana por la", "esta", "este finde que viene",
+    };
+    Lang langs[] = {LANG_EN, LANG_ES};
+    for (int l = 0; l < countof(langs); l++) {
+        Lang was = i18n_use(langs[l]);
+        for (int i = 0; i < countof(inputs); i++) {
+            Tokens t;
+            When w;
+            int64_t s, e;
+            tok_split(&t, inputs[i]);
+            bool any = when_parse(&t, now, &w);
+            bool resolved = when_resolve(&w, now, 60, &s, &e);
+            test_checks++;
+            if (any != resolved || (resolved && e <= s))
+                test_fail(__FILE__, __LINE__, "\"%s\": parsed %d resolved %d", inputs[i], any, resolved);
+            char rest[128];
+            tok_rest(&t, rest, sizeof rest);
+        }
+        i18n_use(was);
+    }
+}
+
+TEST(when_spanish_fuzz_random_phrases) {
+    static const char *const pool[] = {
+        "cena",   "el",     "la",      "las",     "los",    "de",     "del",    "al",     "a",       "y",
+        "en",     "por",    "para",    "desde",   "hasta",  "entre",  "hoy",    "mañana", "pasado",  "lunes",
+        "vie",    "dom",    "sábado",  "próximo", "que",    "viene",  "semana", "fin",    "finde",   "esta",
+        "noche",  "tarde",  "madrugada", "14",    "16",     "9",      "12",     "1",      "una",     "dos",
+        "media",  "cuarto", "menos",   "horas",   "hora",   "minutos", "días",  "cada",   "todos",   "5",
+        "noviembre", "mayo", "ago",    "día",     "14h",    "14-16",  "5/11",   "31",     "septiembre", "febrero",
+        "29",     "2027",   "ahora",   "mismo",   "ya",     "dentro", "durante", "punto", "mediodía", "medianoche",
+        "fri",    "kl",     "tonight", "until",   "every",  "29/2",   "10/10",  "12/10",  "x",
+    };
+    const int64_t nows[] = {dt_make(2026, 10, 7, 10, 0), dt_make(2026, 3, 28, 10, 0), dt_make(2026, 10, 10, 0, 30)};
+    uint32_t seed = 4242;
+    char phrase[512], desc[96];
+    for (int iter = 0; iter < 6000; iter++) {
+        phrase[0] = '\0';
+        size_t len = 0;
+        seed = seed * 1103515245u + 12345u;
+        int n = 1 + (int)((seed >> 16) % 10);
+        for (int k = 0; k < n; k++) {
+            seed = seed * 1103515245u + 12345u;
+            const char *wd = pool[(seed >> 16) % (uint32_t)countof(pool)];
+            len += (size_t)snprintf(phrase + len, sizeof phrase - len, "%s%s", k ? " " : "", wd);
+        }
+        int64_t now = nows[iter % countof(nows)];
+        Lang was = i18n_use(iter & 2 ? LANG_ES : LANG_EN);
+        Tokens t;
+        When w;
+        int64_t s, e;
+        tok_split(&t, phrase);
+        t.used[0] = iter & 1;
+        bool any = when_parse(&t, now, &w);
+        bool fail = false;
+        if (w.refused[0]) {
+            bool restored = t.used[0] == (iter & 1);
+            for (int k = 1; k < t.n; k++) restored = restored && !t.used[k];
+            test_checks++;
+            if (any || when_resolve(&w, now, 60, &s, &e) || !restored) {
+                test_fail(__FILE__, __LINE__, "\"%s\": refused (%s) but not cleanly", phrase, w.refused);
+                fail = true;
+            }
+        } else if (any != when_resolve(&w, now, 60, &s, &e)) {
+            test_fail(__FILE__, __LINE__, "\"%s\": parsed %d but resolved %d", phrase, any, !any);
+            fail = true;
+        } else if (any) {
+            test_checks++;
+            when_describe(s, e, now, desc, sizeof desc);
+            if (e <= s || !utf8_valid(desc, strlen(desc)) || !desc[0]) {
+                test_fail(__FILE__, __LINE__, "\"%s\": end <= start or a bad description", phrase);
+                fail = true;
+            }
+        }
+        i18n_use(was);
+        if (fail) return;
     }
 }

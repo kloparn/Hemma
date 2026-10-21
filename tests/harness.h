@@ -30,5 +30,10 @@ void th_halt(void);
 int th_person(const char *name);
 const char *th_page(int person, const char *url); /* the rendered #app; valid until the next call */
 ThResult th_act(int person, const char *action, const char *form); /* form: "a=1&b=two" url-encoded */
+/* Issue #46: renders url as person (0 = signed out: the browser's language) in English, Swedish and
+   Spanish, and counts what reads the same in Swedish or Spanish as in English - text forgotten by
+   T(). Names, numbers, units and the words in allow (NULL-terminated, may be NULL) don't count.
+   out (may be NULL) gets a line for each. */
+int th_untranslated(int person, const char *url, const char *const *allow, Buf *out);
 
 #endif

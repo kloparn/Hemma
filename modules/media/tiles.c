@@ -47,7 +47,7 @@ void media_tv_open(Ctx *c, Buf *b, const char *back, const char *cls) {
        and the arrows reach it (wire.js [data-back], issue #57) */
     H(b, "<a class=\"media-tv-back\" href=\"%s\" data-esc data-back>", back);
     ui_icon(b, "left");
-    buf_puts(b, "<span>Back</span></a>");
+    H(b, "<span>%s</span></a>", T("Back"));
 }
 
 void media_tv_href(Buf *b, const char *path, int kind, const char *back) {
@@ -106,9 +106,11 @@ static void video_tile(Ctx *c, Buf *b, const MediaFile *f, int kind, const char 
         watch_href(b, f, kind, back);
         buf_puts(b, "\">");
     }
-    media_tile_art(b, f->name.title, f->name.kind == MEDIA_OTHER ? "Video" : NULL, NULL, media_picture(f),
+    char title[300];
+    media_title(f, title, sizeof title);
+    media_tile_art(b, f->name.title, f->name.kind == MEDIA_OTHER ? T("Video") : NULL, title, media_picture(f),
                    w && w->done ? 0 : media_percent(w));
-    H(b, "<b class=\"tile-t\">%s</b><span class=\"tile-s\">", f->name.title);
+    H(b, "<b class=\"tile-t\">%s</b><span class=\"tile-s\">", title);
     if (ep) {
         media_ep_code(b, f);
         if (f->name.ep_title[0]) H(b, " · %s", f->name.ep_title);
@@ -117,7 +119,7 @@ static void video_tile(Ctx *c, Buf *b, const MediaFile *f, int kind, const char 
         if (f->name.year && f->probe.duration_ms) buf_puts(b, " · ");
         if (f->probe.duration_ms) duration(b, f->probe.duration_ms);
     }
-    if (w && w->done) buf_puts(b, " · Watched");
+    if (w && w->done) H(b, " · %s", T("Watched"));
     buf_puts(b, wall ? "</span></div>" : "</span></a>");
 }
 
@@ -130,13 +132,16 @@ static void series_tile(Buf *b, const MediaSeries *s, int kind, const char *back
         series_href(b, s, kind, back);
         buf_puts(b, "\">");
     }
-    media_tile_art(b, s->title, "Series", NULL, s->poster, 0);
+    media_tile_art(b, s->title, T("Series"), NULL, s->poster, 0);
     H(b, "<b class=\"tile-t\">%s</b><span class=\"tile-s\">", s->title);
-    if (new_eps) H(b, "%d new episodes", new_eps);
+    if (new_eps) H(b, TN(new_eps, "%d new episode", "%d new episodes"), new_eps);
     else {
         int eps = media_episodes_in(s);
-        H(b, "%d episode%s", eps, eps == 1 ? "" : "s");
-        if (s->nseasons > 1) H(b, " · %d seasons", s->nseasons);
+        H(b, TN(eps, "%d episode", "%d episodes"), eps);
+        if (s->nseasons > 1) {
+            buf_puts(b, " · ");
+            H(b, T("%d seasons"), s->nseasons);
+        }
     }
     buf_puts(b, wall ? "</span></div>" : "</span></a>");
 }
@@ -159,13 +164,13 @@ static void episode_tile(Ctx *c, Buf *b, const MediaFile *e, const MediaSeries *
     buf_puts(b, "<b class=\"tile-t\">");
     media_ep_title(b, e);
     buf_puts(b, "</b><span class=\"tile-s\">");
-    if (up) buf_puts(b, going ? "Resume · " : "Next up · ");
+    if (up) H(b, "%s · ", going ? T("Resume") : T("Next up"));
     media_ep_code(b, e);
     if (e->probe.duration_ms) {
         buf_puts(b, " · ");
         duration(b, e->probe.duration_ms);
     }
-    if (done) buf_puts(b, " · Watched");
+    if (done) H(b, " · %s", T("Watched"));
     buf_puts(b, "</span></a>");
 }
 
@@ -186,14 +191,18 @@ static bool row_continue(Ctx *c, Buf *b, int kind, const char *arg) {
         buf_puts(b, "<a class=\"tile wide\" href=\"");
         watch_href(b, f, kind, back);
         buf_puts(b, "\">");
-        media_tile_art(b, f->name.title, NULL, NULL, media_picture(f), media_percent(w));
-        H(b, "<b class=\"tile-t\">%s</b><span class=\"tile-s\">", f->name.title);
+        char title[300];
+        media_title(f, title, sizeof title);
+        media_tile_art(b, f->name.title, NULL, title, media_picture(f), media_percent(w));
+        H(b, "<b class=\"tile-t\">%s</b><span class=\"tile-s\">", title);
         if (f->name.kind == MEDIA_EPISODE) {
             media_ep_code(b, f);
             if (f->name.ep_title[0]) H(b, " · %s", f->name.ep_title);
         } else if (w && w->dur > w->pos) {
-            ui_duration(b, w->dur - w->pos);
-            buf_puts(b, " left");
+            Buf left = {0};
+            ui_duration(&left, w->dur - w->pos);
+            H(b, T("%s left"), buf_cstr(&left));
+            buf_free(&left);
         }
         buf_puts(b, "</span></a>");
     }
@@ -262,10 +271,11 @@ static bool row_series_one(Ctx *c, Buf *b, int kind, const char *arg) {
     buf_puts(b, "<a class=\"tile wide media-tile-all\" href=\"");
     series_href(b, s, kind, back);
     buf_puts(b, "\">");
-    media_tile_art(b, s->title, "Series", NULL, s->poster, 0);
+    media_tile_art(b, s->title, T("Series"), NULL, s->poster, 0);
     int eps = media_episodes_in(s);
-    H(b, "<b class=\"tile-t\">All episodes</b><span class=\"tile-s\">%s · %d episode%s</span></a></div>", s->title, eps,
-      eps == 1 ? "" : "s");
+    H(b, "<b class=\"tile-t\">%s</b><span class=\"tile-s\">%s · ", T("All episodes"), s->title);
+    H(b, TN(eps, "%d episode", "%d episodes"), eps);
+    buf_puts(b, "</span></a></div>");
     return true;
 }
 
@@ -281,11 +291,11 @@ static int series_choices(Ctx *c, BlockChoice *out, int max) {
 }
 
 const Block media_blocks[] = {
-    {"media.continue", "Continue watching", SCREEN_TV, row_continue, NULL},
-    {"media.recent", "Recently added", SCREEN_TV | SCREEN_WALL, row_recent, NULL},
-    {"media.series", "Series", SCREEN_TV, row_series, NULL},
-    {"media.movies", "Movies", SCREEN_TV, row_movies, NULL},
-    {"media.series_one", "A series", SCREEN_TV, row_series_one, series_choices},
+    {"media.continue", N_("Continue watching"), SCREEN_TV, row_continue, NULL},
+    {"media.recent", N_("Recently added"), SCREEN_TV | SCREEN_WALL, row_recent, NULL},
+    {"media.series", N_("Series"), SCREEN_TV, row_series, NULL},
+    {"media.movies", N_("Movies"), SCREEN_TV, row_movies, NULL},
+    {"media.series_one", N_("A series"), SCREEN_TV, row_series_one, series_choices},
     {0},
 };
 
@@ -298,7 +308,9 @@ static void watching_as(const Ctx *c, Buf *b) {
     if (!p) return;
     buf_puts(b, "<p class=\"media-tv-who\">");
     ui_avatar_deco(b, p, "sm");
-    H(b, "<span>Watching as %s</span></p>", p->name);
+    buf_puts(b, "<span>");
+    H(b, T("Watching as %s"), p->name);
+    buf_puts(b, "</span></p>");
 }
 
 /* The player, full screen: it starts by itself where the browser allows (else OK on the
@@ -314,9 +326,10 @@ void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f) {
         media_ep_code(&t, f);
         ctx_title(c, "%s", buf_cstr(&t));
         buf_free(&t);
-    } else {
-        ctx_title(c, "%s", f->name.title);
     }
+    char title[300];
+    media_title(f, title, sizeof title);
+    if (!s) ctx_title(c, "%s", title);
     char back[400];
     media_tv_back(c, back, sizeof back);
     media_tv_open(c, b, back, "media-tv-watch");
@@ -353,7 +366,7 @@ void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f) {
         media_ep_code(b, f);
         H(b, " · %s", s->title);
     } else {
-        H(b, "<h1>%s</h1><p class=\"media-tv-sub\">", f->name.title);
+        H(b, "<h1>%s</h1><p class=\"media-tv-sub\">", title);
         if (f->name.year) H(b, "%d", f->name.year);
         if (f->name.year && f->probe.duration_ms) buf_puts(b, " · ");
     }
@@ -366,7 +379,7 @@ void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f) {
     buf_puts(b, "<div class=\"media-tv-acts\">");
     if (next) {
         H(b, "<a class=\"btn big\" href=\"%r\">", buf_cstr(&go));
-        buf_puts(b, "<span>Next episode · ");
+        H(b, "<span>%s · ", T("Next episode"));
         media_ep_code(b, next);
         buf_puts(b, "</span>");
         ui_icon(b, "right");
@@ -383,7 +396,7 @@ void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f) {
             buf_puts(b, "\">");
         }
         ui_icon(b, "list");
-        buf_puts(b, "<span>All episodes</span></a>");
+        H(b, "<span>%s</span></a>", T("All episodes"));
     }
     buf_puts(b, "</div></div></div>");
     buf_free(&go);
@@ -404,11 +417,14 @@ void media_series_tv(Ctx *c, Buf *b, const MediaSeries *s) {
 
     const MediaFile *up = media_next_up(c, s);
     buf_puts(b, "<header class=\"media-tv-head\"><div class=\"media-tv-poster\">");
-    media_tile_art(b, s->title, "Series", NULL, s->poster, 0);
+    media_tile_art(b, s->title, T("Series"), NULL, s->poster, 0);
     H(b, "</div><div class=\"media-tv-head-t\"><h1>%s</h1><p class=\"media-tv-sub\">", s->title);
-    if (s->nseasons > 1) H(b, "%d seasons · ", s->nseasons);
+    if (s->nseasons > 1) {
+        H(b, T("%d seasons"), s->nseasons);
+        buf_puts(b, " · ");
+    }
     int eps = media_episodes_in(s);
-    H(b, "%d episode%s", eps, eps == 1 ? "" : "s");
+    H(b, TN(eps, "%d episode", "%d episodes"), eps);
     if (s->year) H(b, " · %d", s->year);
     buf_puts(b, "</p>");
     watching_as(c, b);
@@ -424,7 +440,7 @@ void media_series_tv(Ctx *c, Buf *b, const MediaSeries *s) {
         watch_href(b, up, SCREEN_TV, self);
         buf_puts(b, "\">");
         ui_icon(b, "play");
-        H(b, "<span>%s ", going ? "Resume" : seen ? "Next up" : "Start watching");
+        H(b, "<span>%s ", going ? T("Resume") : seen ? T("Next up") : T("Start watching"));
         media_ep_code(b, up);
         buf_puts(b, "</span></a>");
     }
@@ -432,8 +448,11 @@ void media_series_tv(Ctx *c, Buf *b, const MediaSeries *s) {
 
     for (int i = 0; i < s->count;) { /* a row per season */
         int season = media_episode(s, i)->name.season;
-        if (s->nseasons > 1)
-            H(b, "<h2 class=\"media-tv-h\">%r %d</h2>", season == 0 ? "Specials" : "Season", season);
+        if (s->nseasons > 1) {
+            buf_puts(b, "<h2 class=\"media-tv-h\">");
+            H(b, season == 0 ? T("Specials %d") : T("Season %d"), season);
+            buf_puts(b, "</h2>");
+        }
         if (up && up->name.season == season) /* opens at the next episode (wire.js data-start) */
             H(b, "<div class=\"tiles\" data-start=\"media-t-%X\">", up->id);
         else buf_puts(b, "<div class=\"tiles\">");

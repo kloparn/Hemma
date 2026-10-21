@@ -31,8 +31,8 @@ void zone_sig(char *out, size_t cap) {
 
 void zone_words(const char *sig, char *out, size_t cap) {
     const char *slash = strchr(sig, '/');
-    if (slash) snprintf(out, cap, "UTC%.*s in January, UTC%s in July", (int)(slash - sig), sig, slash + 1);
-    else snprintf(out, cap, "UTC%s all year", sig);
+    if (slash) snprintf(out, cap, T("UTC%.*s in January, UTC%s in July"), (int)(slash - sig), sig, slash + 1);
+    else snprintf(out, cap, T("UTC%s all year"), sig);
 }
 
 static bool one_offset(const char *s, int *out) {

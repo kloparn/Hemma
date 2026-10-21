@@ -143,10 +143,11 @@ void cal_feed_ics(Ctx *c, int person, Buf *out) {
         if (for_whom) buf_printf(&s, " (%s)", for_whom->name);
         ics_prop_text(out, "SUMMARY", s.p);
         buf_reset(&s);
-        buf_puts(&s, it->kind[0] ? it->kind : (it->module ? it->module : ""));
-        if (for_whom) buf_printf(&s, " for %s", for_whom->name);
-        else if (it->who == person) buf_puts(&s, " for you");
-        buf_printf(&s, " - %s", app_name());
+        const Module *m = it->kind[0] || !it->module ? NULL : module_find(it->module);
+        const char *kind = it->kind[0] ? T(it->kind) : m ? T(m->title) : ""; /* (kind: English, "Booking") */
+        if (for_whom) buf_printf(&s, T("%s for %s - %s"), kind, for_whom->name, app_name());
+        else if (it->who == person) buf_printf(&s, T("%s for you - %s"), kind, app_name());
+        else buf_printf(&s, "%s - %s", kind, app_name());
         ics_prop_text(out, "DESCRIPTION", s.p);
         buf_free(&s);
         if (c->host[0] && it->link[0] == '/') {
@@ -178,8 +179,16 @@ void cal_feed_http(Conn *conn, HttpReq *r) {
     c.now = now_sec();
     const char *h = http_header(r, "Host");
     str_copy(c.host, sizeof c.host, h ? h : "");
+    /* in their language (issue #46): their own choice, else what the calendar app asks for */
+    const char *mine = pref(id, PREF_LANG, "");
+    if (!mine[0] || !i18n_parse(mine, &c.lang)) {
+        int dev = i18n_accept(http_header(r, "Accept-Language"));
+        c.lang = dev >= 0 ? (Lang)dev : LANG_EN;
+    }
+    Lang was = i18n_use(c.lang);
     Buf ics = {0};
     cal_feed_ics(&c, id, &ics);
+    i18n_use(was);
     conn_reply(conn, 200, "text/calendar; charset=utf-8", ics.p, ics.len,
                "Content-Disposition: inline; filename=\"hemma.ics\"\r\nCache-Control: no-cache\r\n");
     buf_free(&ics);

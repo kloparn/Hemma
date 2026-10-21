@@ -179,8 +179,9 @@ void system_log_start(const char *data_dir) {
     for (int i = np > TAIL_LINES ? np - TAIL_LINES : 0; i < np; i++)
         push(pl[i].level, pl[i].ts, true, tail.p + pl[i].off, pl[i].len);
     if (np) {
-        const char *div = g_unclean ? "Hemma restarted - it had stopped without warning (a power cut or a crash?)"
-                                    : "Hemma restarted";
+        /* (English in the ring, like every line; the page says a divider in its reader's language) */
+        const char *div = g_unclean ? N_("Hemma restarted - it had stopped without warning (a power cut or a crash?)")
+                                    : N_("Hemma restarted");
         push('-', keep_n ? MIN(keep[0].ts, now_sec()) : now_sec(), false, div, strlen(div));
     }
     for (int i = 0; i < keep_n; i++) {
@@ -190,7 +191,7 @@ void system_log_start(const char *data_dir) {
     /* the file: this start's mark, ahead of the lines already waiting */
     Buf pend = {0};
     char mark[64];
-    snprintf(mark, sizeof mark, "Hemma %s started", HEMMA_VERSION_FULL);
+    snprintf(mark, sizeof mark, N_("Hemma %s started"), HEMMA_VERSION_FULL);
     file_line(&pend, now_sec(), '-', mark);
     if (g_pending.len) buf_put(&pend, g_pending.p, g_pending.len);
     buf_free(&g_pending);
@@ -237,7 +238,7 @@ void system_log_tick(int64_t now, bool force) {
     } else if (!g_failed) { /* once: the warning itself would be the next thing that can't be written */
         g_failed = true;
         str_copy(g_failed_why, sizeof g_failed_why,
-                 f ? "writing to it failed (is the disk full?)" : "it can't be opened for writing");
+                 f ? N_("writing to it failed (is the disk full?)") : N_("it can't be opened for writing"));
         log_warn("system: can't keep the log file %s - %s", g_path, g_failed_why);
     }
     buf_free(&out);
@@ -246,7 +247,7 @@ void system_log_tick(int64_t now, bool force) {
 void system_log_stop(void) {
     if (!g_path[0]) return;
     lock_take(&g_lock);
-    file_line(&g_pending, now_sec(), '-', "Hemma stopped");
+    file_line(&g_pending, now_sec(), '-', N_("Hemma stopped"));
     lock_give(&g_lock);
     system_log_tick(now_ms(), true);
     g_path[0] = '\0';

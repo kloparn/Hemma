@@ -38,7 +38,7 @@ Table T_session = TABLE("session", Session, session_fields);
 typedef struct {
     int id;
     char key[48];
-    char val[512];
+    char val[1536]; /* (a rescue's report, packed, is the longest) */
 } Setting;
 static const FieldDef setting_fields[] = {FIELD(Setting, id, F_INT), FIELD(Setting, key, F_STR),
                                           FIELD(Setting, val, F_STR)};
@@ -57,6 +57,7 @@ static Table T_pref = TABLE("pref", Pref, pref_fields);
 static const FieldDef activity_fields[] = {
     FIELD(Activity, id, F_INT),   FIELD(Activity, ts, F_I64),   FIELD(Activity, who, F_INT),
     FIELD(Activity, icon, F_STR), FIELD(Activity, text, F_STR), FIELD(Activity, link, F_STR),
+    FIELD(Activity, msg, F_STR),
 };
 Table T_activity = TABLE("activity", Activity, activity_fields);
 
@@ -306,8 +307,8 @@ Person *person_at(int i) {
 bool person_signin_over(const Person *p, int64_t now) { return p && (p->left || (p->until && now >= p->until)); }
 
 const char *person_label(const Person *p, char *out, size_t cap) {
-    if (!p) snprintf(out, cap, "Someone");
-    else if (p->left) snprintf(out, cap, "%s (moved out)", p->name);
+    if (!p) snprintf(out, cap, "%s", T("Someone"));
+    else if (p->left) snprintf(out, cap, T("%s (moved out)"), p->name);
     else snprintf(out, cap, "%s", p->name);
     return out;
 }
@@ -363,13 +364,15 @@ static Session *session_by_token(const char *token) {
     return NULL;
 }
 
+/* "Chrome on Windows" - kept packed (i18n_pack), so Your account says it in the reader's language:
+   show Session.agent with i18n_unpack. */
 static void agent_summary(const char *ua, char *out, size_t cap) {
-    const char *browser = !ua                       ? "A browser"
+    const char *browser = !ua                       ? ""
                           : strstr(ua, "Edg/")      ? "Edge"
                           : strstr(ua, "Firefox/")  ? "Firefox"
                           : strstr(ua, "Chrome/")   ? "Chrome"
                           : strstr(ua, "Safari/")   ? "Safari"
-                                                    : "A browser";
+                                                    : "";
     const char *os = !ua                          ? ""
                      : strstr(ua, "iPhone")       ? "iPhone"
                      : strstr(ua, "iPad")         ? "iPad"
@@ -378,7 +381,10 @@ static void agent_summary(const char *ua, char *out, size_t cap) {
                      : strstr(ua, "Mac OS")       ? "Mac"
                      : strstr(ua, "Linux")        ? "Linux"
                                                   : "";
-    snprintf(out, cap, "%s%s%s", browser, os[0] ? " on " : "", os);
+    if (browser[0] && os[0]) i18n_pack(out, cap, N_("%s on %s"), browser, os);
+    else if (browser[0]) snprintf(out, cap, "%s", browser);
+    else if (os[0]) i18n_pack(out, cap, N_("A browser on %s"), os);
+    else i18n_pack(out, cap, N_("A browser"));
 }
 
 bool session_create(int person, bool remember, const char *user_agent, char sid_out[33]) {
@@ -471,6 +477,7 @@ struct Client {
     char host[96]; /* the Host it was opened by (Ctx.host) */
     char token[65]; /* session token (hash of the cookie), "" = signed out */
     char url[600];
+    int dev_lang;    /* the browser's language, from the request that opened the socket (-1 = none of ours) */
     char title[160]; /* the document title last sent */
     uint64_t html_hash, head_hash;
     bool ready, dirty, push;
@@ -494,6 +501,7 @@ static Client *client_new(Conn *conn, const char *token) {
     cl->conn = conn;
     str_copy(cl->token, sizeof cl->token, token);
     str_copy(cl->url, sizeof cl->url, "/");
+    cl->dev_lang = -1;
     conn->user = cl;
     if (nclients == capclients) {
         capclients = capclients ? capclients * 2 : 16;
@@ -571,11 +579,43 @@ static void ctx_init(Ctx *c, Session *s, Client *cl, uint32_t ip, const char *ur
     ctx_set_url(c, url);
 }
 
-static void ctx_free(Ctx *c) { fields_free(&c->q); }
+static void ctx_free(Ctx *c) {
+    fields_free(&c->q);
+    i18n_use(LANG_EN); /* (whatever runs next without a ctx - the tick - speaks English) */
+}
+
+/* The browser's own language (issue #46): the sign-in page switcher's cookie, else Accept-Language;
+   -1 = none of ours. */
+static int request_lang(const HttpReq *r) {
+    char v[16];
+    Lang l;
+    if (http_cookie(r, I18N_COOKIE, v, sizeof v) && i18n_parse(v, &l)) return (int)l;
+    return i18n_accept(http_header(r, "Accept-Language"));
+}
+
+/* What this request is shown in: the person's choice, else the browser's, else English - for the
+   whole request (the thread's language, i18n_use; ctx_free puts English back). */
+static void ctx_lang(Ctx *c, int dev) {
+    Lang l = LANG_EN;
+    const char *p = c->me ? pref(c->me->id, PREF_LANG, "") : "";
+    if (!p[0] || !i18n_parse(p, &l)) l = dev >= 0 && dev < LANG_COUNT ? (Lang)dev : LANG_EN;
+    c->lang = l;
+    c->dev_lang = dev;
+    i18n_use(l);
+}
 
 static void client_ctx(Client *cl, Ctx *c) {
     ctx_init(c, session_for(cl->token), cl, cl->conn ? cl->conn->ip : 0, cl->url);
     str_copy(c->host, sizeof c->host, cl->host);
+    ctx_lang(c, cl->dev_lang);
+}
+
+/* A screen's language, for what the core sends it unasked (toasts): its person's, else its browser's. */
+static Lang client_lang(const Client *cl, const Session *s) {
+    Lang l;
+    const char *p = s ? pref(s->person, PREF_LANG, "") : "";
+    if (p[0] && i18n_parse(p, &l)) return l;
+    return cl->dev_lang >= 0 && cl->dev_lang < LANG_COUNT ? (Lang)cl->dev_lang : LANG_EN;
 }
 
 /* the address the visitor opened Hemma by (already checked: http_host_ok) */
@@ -702,11 +742,11 @@ static void undo_run(Ctx *c, const char *k) {
             back++;
         }
         undo_free(s);
-        if (back) ctx_ok(c, "Put back");
-        else ctx_info(c, "Nothing left to put back");
+        if (back) ctx_ok(c, "%s", T("Put back"));
+        else ctx_info(c, "%s", T("Nothing left to put back"));
         return;
     }
-    ctx_fail(c, "Too late to undo that");
+    ctx_fail(c, "%s", T("Too late to undo that"));
 }
 
 static void undo_reset(void) {
@@ -1011,10 +1051,14 @@ int person_forget(Forget *f) {
         if (f->apply) tbl_del(&T_activity, a->id);
     }
     if (p->username[0] && signed_in)
-        forget_note(f, "Their sign-in goes (signed in on %d device%s now)", signed_in, signed_in == 1 ? "" : "s");
+        forget_note(f, TN(signed_in, "Their sign-in goes (signed in on %d device now)",
+                          "Their sign-in goes (signed in on %d devices now)"),
+                    signed_in);
     else if (p->username[0])
-        forget_note(f, "Their sign-in goes");
-    if (lines) forget_note(f, "%d line%s in Latest about what they did go%s", lines, lines == 1 ? "" : "s", lines == 1 ? "es" : "");
+        forget_note(f, "%s", T("Their sign-in goes"));
+    if (lines)
+        forget_note(f, TN(lines, "%d line in Latest about what they did goes", "%d lines in Latest about what they did go"),
+                    lines);
     n += signed_in + prefs + lines + watching;
     if (!f->apply) return n;
     auth_codes_drop(f->person);
@@ -1034,6 +1078,8 @@ int person_forget(Forget *f) {
 
 /* ============================================================== activity */
 
+/* The line goes in twice: in English (text: /api, and older Hemmas) and as its format and values
+   (msg), so each reader sees it in their own language (issue #46). */
 void activity_add(int who, const char *icon, const char *link, const char *fmt, ...) {
     Activity a = {0};
     a.ts = now_sec();
@@ -1044,8 +1090,16 @@ void activity_add(int who, const char *icon, const char *link, const char *fmt, 
     va_start(ap, fmt);
     vsnprintf(a.text, sizeof a.text, fmt, ap);
     va_end(ap);
+    va_start(ap, fmt);
+    if (!i18n_vpack(a.msg, sizeof a.msg, fmt, ap)) a.msg[0] = '\0'; /* too long: the English stays */
+    va_end(ap);
     tbl_put(&T_activity, &a);
     while (tbl_count(&T_activity) > 300) tbl_del(&T_activity, ((Activity *)tbl_at(&T_activity, 0))->id);
+}
+
+void activity_text(const Activity *a, Buf *b) {
+    if (a->msg[0]) i18n_unpack(b, a->msg);
+    else buf_puts(b, a->text);
 }
 
 /* ============================================================== rendering */
@@ -1078,32 +1132,36 @@ static void render_app(Ctx *c, Buf *out) {
         m = NULL;
     } else if (m && !module_visible(m, c)) { /* an admin's section: not there for anyone else */
         m = NULL;
-        ctx_title(c, "Not found");
-        ui_empty(&page, "🧭", "Nothing here", "That page doesn't exist (anymore).");
+        ctx_title(c, "%s", T("Not found"));
+        ui_empty(&page, "🧭", T("Nothing here"), T("That page doesn't exist (anymore)."));
     } else if (!m && str_eq(c->path, "/more")) {
         ui_more_page(c, &page);
     } else if (m && m->page) {
         if (store_damaged() && is_admin(c)) /* say so where someone can act on it */
-            buf_puts(&page, "<p class=\"notice bad\" role=\"alert\">Saving failed: the database file is damaged. Recent "
-                            "changes are only in memory. Restart Hemma - it rescues everything it can still read.</p>");
+            H(&page, "<p class=\"notice bad\" role=\"alert\">%s</p>",
+              T("Saving failed: the database file is damaged. Recent changes are only in memory. Restart Hemma - it "
+                "rescues everything it can still read."));
         else if (store_failed() && is_admin(c)) /* e.g. a full disk */
-            buf_puts(&page, "<p class=\"notice bad\" role=\"alert\">Saving to disk failed - the disk may be full. "
-                            "Recent changes are only in memory and will be lost on restart; see the server log.</p>");
+            H(&page, "<p class=\"notice bad\" role=\"alert\">%s</p>",
+              T("Saving to disk failed - the disk may be full. Recent changes are only in memory and will be lost on "
+                "restart; see the server log."));
         else if (setting(SETTING_RESCUED, "")[0] && is_admin(c) && !str_starts(c->path, "/system"))
-            buf_puts(&page, "<p class=\"notice bad\" role=\"alert\">The database was damaged, and Hemma rescued what it "
-                            "could still read. <a href=\"/system\">See what happened</a></p>");
+            H(&page, "<p class=\"notice bad\" role=\"alert\">%r</p>",
+              T("The database was damaged, and Hemma rescued what it could still read. <a href=\"/system\">See what "
+                "happened</a>"));
         else if (setting(SETTING_RESCUED, "")[0] && c->me && c->me->role != ROLE_DISPLAY && !auth_admin_can_sign_in())
             /* issue #87: no admin came back to read the System page - so everyone hears it */
-            buf_puts(&page, "<p class=\"notice bad\" role=\"alert\">The database was damaged, and Hemma rescued what it "
-                            "could still read - but no admin account came back. Whoever runs the Hemma server can bring "
-                            "one back (<b>Locked out</b> in docs/accounts.md).</p>");
+            H(&page, "<p class=\"notice bad\" role=\"alert\">%r</p>",
+              T("The database was damaged, and Hemma rescued what it could still read - but no admin account came back. "
+                "Whoever runs the Hemma server can bring one back (<b>Locked out</b> in docs/accounts.md)."));
         m->page(c, &page);
     } else {
-        ctx_title(c, "Not found");
-        ui_empty(&page, "🧭", "Nothing here", "That page doesn't exist (anymore).");
+        ctx_title(c, "%s", T("Not found"));
+        ui_empty(&page, "🧭", T("Nothing here"), T("That page doesn't exist (anymore)."));
     }
-    if (!c->title[0] && m) str_copy(c->title, sizeof c->title, m->title);
-    H(out, "<div id=\"app\" class=\"%s\" data-mod=\"%s\">", c->bare ? "bare" : "shell", m ? m->id : "auth");
+    if (!c->title[0] && m) str_copy(c->title, sizeof c->title, T(m->title));
+    H(out, "<div id=\"app\" class=\"%s\" data-mod=\"%s\" data-lang=\"%s\">", c->bare ? "bare" : "shell",
+      m ? m->id : "auth", i18n_code(c->lang));
     if (c->bare) buf_put(out, page.p, page.len);
     else ui_shell(c, out, m, page.p, page.len);
     buf_puts(out, "</div>");
@@ -1168,55 +1226,77 @@ static void flush_dirty(void) {
     all_dirty = false;
 }
 
-static void notify_all(const Ctx *except, int skip_a, int skip_b, int kind, const char *text) {
+/* GET /lang?to=sv&next=/login - the sign-in pages' language links (issue #46): this browser's language,
+   kept in a cookie for a year; to=auto forgets it (its Accept-Language again). Signed in, a person's
+   own choice (Your account) still comes first. next must be a page here. */
+static void lang_switch(Conn *conn, HttpReq *r) {
+    Fields q = {0};
+    const char *qs = strchr(r->target, '?');
+    if (qs) fields_parse(&q, qs + 1, strlen(qs + 1));
+    const char *next = fields_str(&q, "next");
+    if (next[0] != '/' || next[1] == '/' || next[1] == '\\' || strpbrk(next, "\r\n")) next = "/";
+    Lang l;
+    Buf extra = {0};
+    if (i18n_parse(fields_str(&q, "to"), &l))
+        buf_printf(&extra, "Set-Cookie: %s=%s; Path=/; Max-Age=31536000; SameSite=Lax\r\n", I18N_COOKIE, i18n_code(l));
+    else
+        buf_printf(&extra, "Set-Cookie: %s=; Path=/; Max-Age=0; SameSite=Lax\r\n", I18N_COOKIE);
+    buf_printf(&extra, "Location: %s\r\nCache-Control: no-store\r\n", next);
+    conn_reply(conn, 303, "text/plain", "", 0, extra.p);
+    buf_free(&extra);
+    fields_free(&q);
+}
+
+/* One toast, formatted for this screen: fmt (English) in its language, the values as they came. */
+static void toast_to(Client *cl, const Session *s, int kind, const char *fmt, va_list ap) {
+    char text[240];
+    va_list aq;
+    va_copy(aq, ap);
+    Lang was = i18n_use(client_lang(cl, s));
+    vsnprintf(text, sizeof text, T(fmt), aq);
+    i18n_use(was);
+    va_end(aq);
     Buf ops = {0};
     buf_printf(&ops, "[[\"toast\",%d,", kind);
     json_str(&ops, text);
     buf_puts(&ops, "]]");
+    send_ops(cl, &ops);
+    buf_free(&ops);
+}
+
+static void notify_all(const Ctx *except, int skip_a, int skip_b, int kind, const char *fmt, va_list ap) {
     int skip = except && except->me ? except->me->id : -1;
     for (int i = 0; i < nclients; i++) {
         Session *s = session_by_token(clients[i]->token);
         /* household news is for signed-in screens only (not the sign-in page, not revoked sessions) */
         if (!clients[i]->ready || !s || !person_get(s->person) || s->person == skip) continue;
         if ((skip_a && s->person == skip_a) || (skip_b && s->person == skip_b)) continue;
-        send_ops(clients[i], &ops);
+        toast_to(clients[i], s, kind, fmt, ap);
     }
-    buf_free(&ops);
 }
 
 void app_notify(const Ctx *except, int kind, const char *fmt, ...) {
-    char text[240];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(text, sizeof text, fmt, ap);
+    notify_all(except, 0, 0, kind, fmt, ap);
     va_end(ap);
-    notify_all(except, 0, 0, kind, text);
 }
 
 void app_notify_but(const Ctx *except, int skip_a, int skip_b, int kind, const char *fmt, ...) {
-    char text[240];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(text, sizeof text, fmt, ap);
+    notify_all(except, skip_a, skip_b, kind, fmt, ap);
     va_end(ap);
-    notify_all(except, skip_a, skip_b, kind, text);
 }
 
 void app_notify_person(int person, int kind, const char *fmt, ...) {
-    char text[240];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(text, sizeof text, fmt, ap);
-    va_end(ap);
-    Buf ops = {0};
-    buf_printf(&ops, "[[\"toast\",%d,", kind);
-    json_str(&ops, text);
-    buf_puts(&ops, "]]");
     for (int i = 0; i < nclients; i++) {
         Session *s = session_by_token(clients[i]->token);
-        if (clients[i]->ready && s && s->person == person) send_ops(clients[i], &ops);
+        if (clients[i]->ready && s && s->person == person) toast_to(clients[i], s, kind, fmt, ap);
     }
-    buf_free(&ops);
+    va_end(ap);
 }
 
 /* ================================================================= agenda */
@@ -1262,7 +1342,7 @@ static bool run_action(Ctx *c, const char *name, Fields *f, bool *ran, bool live
     if (ran) *ran = false;
     if (!live && str_eq(name, "core.undo")) { /* the toast's Undo (ctx_undo) */
         if (!c->me || c->me->role == ROLE_DISPLAY) {
-            ctx_fail(c, c->me ? "This screen is view-only" : "Sign in first");
+            ctx_fail(c, "%s", c->me ? T("This screen is view-only") : T("Sign in first"));
             return true;
         }
         db_begin();
@@ -1273,16 +1353,16 @@ static bool run_action(Ctx *c, const char *name, Fields *f, bool *ran, bool live
     }
     if (!a || (live && !a->live)) return false; /* a "live" message can't run a change: issue #8 */
     if (!c->me) {
-        ctx_fail(c, "Sign in first");
+        ctx_fail(c, "%s", T("Sign in first"));
         return true;
     }
     if (c->me->role == ROLE_DISPLAY && !a->display) { /* a TV may only watch (Action.display) */
-        ctx_fail(c, "This screen is view-only");
+        ctx_fail(c, "%s", T("This screen is view-only"));
         return true;
     }
     if (!app_action_open(name, c->me->role)) { /* children and guests: what's opened to them (issue #44) */
-        if (c->me->role == ROLE_CHILD) ctx_fail(c, "Ask a grown-up to do that");
-        else ctx_fail(c, "That isn't open to guests");
+        if (c->me->role == ROLE_CHILD) ctx_fail(c, "%s", T("Ask a grown-up to do that"));
+        else ctx_fail(c, "%s", T("That isn't open to guests"));
         return true;
     }
     int me = c->me->id;
@@ -1304,7 +1384,7 @@ static void ws_action(Client *cl, const char *name, Fields *f, long long id, boo
             ctx_free(&c);
             return;
         }
-        ctx_fail(&c, "Unknown action \"%s\"", name);
+        ctx_fail(&c, T("Unknown action \"%s\""), name);
     }
     Buf ops = {0};
     buf_putc(&ops, '[');
@@ -1879,6 +1959,7 @@ static void on_http(Conn *conn, HttpReq *r) {
         Ctx c;
         ctx_init(&c, session_for(token), NULL, conn->ip, r->target);
         ctx_host(&c, r);
+        ctx_lang(&c, request_lang(r));
         bool taken = false;
         for (int i = 0; i < nmods && !taken; i++)
             if (mods[i]->http && (c.me || (mods[i]->flags & MOD_PUBLIC)) && module_visible(mods[i], &c))
@@ -1901,6 +1982,7 @@ static void on_http(Conn *conn, HttpReq *r) {
             Ctx c;
             ctx_init(&c, keyed, NULL, conn->ip, r->target);
             ctx_host(&c, r);
+            ctx_lang(&c, request_lang(r));
             bool taken = false;
             for (int i = 0; i < nmods && !taken; i++)
                 if (mods[i]->http && c.me && module_visible(mods[i], &c)) taken = mods[i]->http(&c, conn, r);
@@ -1920,13 +2002,20 @@ static void on_http(Conn *conn, HttpReq *r) {
             Client *cl = client_new(conn, live ? token : "");
             const char *h = http_header(r, "Host");
             str_copy(cl->host, sizeof cl->host, h ? h : "");
+            cl->dev_lang = request_lang(r);
         }
+        return;
+    }
+
+    if (str_eq(r->path, "/lang")) { /* the sign-in pages' language links: this browser's choice, in a cookie */
+        lang_switch(conn, r);
         return;
     }
 
     Ctx c;
     ctx_init(&c, session_for(token), NULL, conn->ip, r->target);
     ctx_host(&c, r);
+    ctx_lang(&c, request_lang(r));
 
     if (auth_http(&c, conn, r)) {
         ctx_free(&c);
@@ -1945,7 +2034,7 @@ static void on_http(Conn *conn, HttpReq *r) {
             fields_parse(&f, r->body, r->body_len);
             ctx_set_url(&c, back);
             bool ran = false;
-            if (!run_action(&c, r->path + 3, &f, &ran, false)) ctx_fail(&c, "Unknown action");
+            if (!run_action(&c, r->path + 3, &f, &ran, false)) ctx_fail(&c, "%s", T("Unknown action"));
             if (c.toast[0] && token[0]) flash_set(token, c.toast_kind, c.toast);
             Buf extra = {0};
             buf_printf(&extra, "Location: %s\r\n", c.redirect[0] ? c.redirect : back);
@@ -2107,6 +2196,7 @@ bool app_boot(const char *data_dir) {
     g_tracking = false;
     browser_log_reset();
     auth_reset_throttle();
+    i18n_count(); /* the translations' index, made now: threads may look things up later */
     T_session.api_hidden = true;
     T_setting.api_hidden = true;
     T_pref.api_owner = "person";
@@ -2126,8 +2216,9 @@ bool app_boot(const char *data_dir) {
         if (mods[i]->init) mods[i]->init();
     store_set_program(HEMMA_VERSION); /* (kept with the data: a refusal names the Hemma that last used it) */
     if (!store_open(data_dir)) return false;
-    if (store_rescue_report()[0]) setting_set(SETTING_RESCUED, store_rescue_report()); /* (System: until seen) */
-    if (store_restore_report()[0]) setting_set(SETTING_RESTORED, store_restore_report());
+    /* (kept packed: each admin reads it in their language - i18n_unpack; System: until seen) */
+    if (store_rescue_packed()[0]) setting_set(SETTING_RESCUED, store_rescue_packed());
+    if (store_restore_packed()[0]) setting_set(SETTING_RESTORED, store_restore_packed());
     if (!g_testing) {
         char why[300];
         int made = auth_ensure_secret(g_cfg.env_file, why, sizeof why);
@@ -2155,6 +2246,8 @@ void app_halt(void) {
     g_tracking = false;
 }
 
+static int g_test_dev_lang = -1;
+void app_test_dev_lang(int lang) { g_test_dev_lang = lang; }
 static char g_test_ctx_host[96];
 void app_test_ctx_host(const char *host) { str_copy(g_test_ctx_host, sizeof g_test_ctx_host, host ? host : ""); }
 
@@ -2166,6 +2259,7 @@ void app_ctx(Ctx *c, int person, const char *url) {
     if (person > 0 && person < countof(g_test_viewer)) s.viewer = g_test_viewer[person];
     ctx_init(c, &s, NULL, 0x7F000001, url);
     str_copy(c->host, sizeof c->host, g_test_ctx_host);
+    ctx_lang(c, g_test_dev_lang);
 }
 
 void app_ctx_free(Ctx *c) { ctx_free(c); }

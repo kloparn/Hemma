@@ -7,6 +7,7 @@
  * bounds-checked: a truncated or hostile file yields "unknown", never a crash. */
 #define _FILE_OFFSET_BITS 64 /* 64-bit fseeko/off_t on 32-bit glibc and mingw */
 #include "mediainfo.h"
+#include "../../core/i18n.h"
 #include "../../core/plat.h"
 
 #include <ctype.h>
@@ -837,14 +838,18 @@ static const char *video_label(const char *c) {
 
 static int severity(Playable p) { return p == PLAY_NO ? 3 : p == PLAY_MAYBE ? 2 : p == PLAY_UNKNOWN ? 1 : 0; }
 
-static void judge(MediaProbe *o, bool parsed) {
+/* The verdict's words: kept in English in the probe (the scan's thread, the cache), said again in the
+   reader's language by media_probe_why() - tr = in the language in use. */
+static const char *W(bool tr, const char *en) { return tr ? T(en) : en; }
+
+static void judge_in(MediaProbe *o, bool parsed, bool tr) {
     const char *ct = o->container, *vc = o->vcodec, *ac = o->acodec;
     o->playable = PLAY_YES;
     o->why[0] = 0;
     if (!parsed) {
         o->playable = PLAY_UNKNOWN;
-        set_str(o->why, sizeof o->why, ct[0] ? "couldn't read the file header (incomplete or damaged?)"
-                                              : "unrecognised file format");
+        set_str(o->why, sizeof o->why, ct[0] ? W(tr, N_("couldn't read the file header (incomplete or damaged?)"))
+                                              : W(tr, N_("unrecognised file format")));
         return;
     }
     bool webm = !strcmp(ct, "webm"), mkv = !strcmp(ct, "mkv");
@@ -854,63 +859,64 @@ static void judge(MediaProbe *o, bool parsed) {
     if (!vc[0] || !strcmp(vc, "h264")) {
     } else if (!strcmp(vc, "hevc")) {
         pv = PLAY_MAYBE;
-        set_str(wv, sizeof wv, "HEVC needs hardware support (Safari/Edge, some Chrome)");
+        set_str(wv, sizeof wv, W(tr, N_("HEVC needs hardware support (Safari/Edge, some Chrome)")));
     } else if (!strcmp(vc, "vp9") || !strcmp(vc, "av1") || !strcmp(vc, "vp8")) {
         if (!webm && !mkv) {
             pv = PLAY_MAYBE;
-            snprintf(wv, sizeof wv, "%s in %s doesn't play everywhere", !strcmp(vc, "av1") ? "AV1" : !strcmp(vc, "vp9") ? "VP9" : "VP8",
-                     ct[0] ? ct : "this container");
+            const char *name = !strcmp(vc, "av1") ? "AV1" : !strcmp(vc, "vp9") ? "VP9" : "VP8";
+            if (ct[0]) snprintf(wv, sizeof wv, W(tr, N_("%s in %s doesn't play everywhere")), name, ct);
+            else snprintf(wv, sizeof wv, W(tr, N_("%s in this container doesn't play everywhere")), name);
         }
     } else {
         pv = PLAY_NO;
-        snprintf(wv, sizeof wv, "%s video needs conversion", video_label(vc));
+        snprintf(wv, sizeof wv, W(tr, N_("%s video needs conversion")), video_label(vc));
     }
 
     if (!ac[0] || !strcmp(ac, "aac") || !strcmp(ac, "mp3") || !strcmp(ac, "opus") || !strcmp(ac, "flac")) {
     } else if (!strcmp(ac, "vorbis")) {
         if (!webm && !mkv) {
             pa = PLAY_MAYBE;
-            set_str(wa, sizeof wa, "Vorbis audio outside WebM doesn't play everywhere");
+            set_str(wa, sizeof wa, W(tr, N_("Vorbis audio outside WebM doesn't play everywhere")));
         }
     } else if (!strcmp(ac, "ac3") || !strcmp(ac, "eac3")) {
         pa = PLAY_MAYBE;
-        set_str(wa, sizeof wa, "Dolby sound: Safari/Edge only - silent in Chrome and Firefox");
+        set_str(wa, sizeof wa, W(tr, N_("Dolby sound: Safari/Edge only - silent in Chrome and Firefox")));
     } else if (!strcmp(ac, "dts")) {
         pa = PLAY_NO;
-        set_str(wa, sizeof wa, "DTS audio isn't supported by browsers");
+        set_str(wa, sizeof wa, W(tr, N_("DTS audio isn't supported by browsers")));
     } else if (!strcmp(ac, "truehd")) {
         pa = PLAY_NO;
-        set_str(wa, sizeof wa, "TrueHD audio isn't supported by browsers");
+        set_str(wa, sizeof wa, W(tr, N_("TrueHD audio isn't supported by browsers")));
     } else if (!strcmp(ac, "alac")) {
         pa = PLAY_MAYBE;
-        set_str(wa, sizeof wa, "ALAC audio: Safari only");
+        set_str(wa, sizeof wa, W(tr, N_("ALAC audio: Safari only")));
     } else if (!strcmp(ac, "pcm")) {
         pa = PLAY_MAYBE;
-        set_str(wa, sizeof wa, "uncompressed PCM audio may not play");
+        set_str(wa, sizeof wa, W(tr, N_("uncompressed PCM audio may not play")));
     } else {
         pa = PLAY_NO;
-        snprintf(wa, sizeof wa, "%s audio isn't supported by browsers", ac);
+        snprintf(wa, sizeof wa, W(tr, N_("%s audio isn't supported by browsers")), ac);
     }
 
     if (!strcmp(ct, "mp4") || !strcmp(ct, "mov") || webm) {
     } else if (mkv) {
         pc = PLAY_MAYBE;
-        set_str(wc, sizeof wc, "MKV plays in Chrome/Edge, not Safari/iOS");
+        set_str(wc, sizeof wc, W(tr, N_("MKV plays in Chrome/Edge, not Safari/iOS")));
     } else if (!strcmp(ct, "avi")) {
         pc = PLAY_NO;
-        set_str(wc, sizeof wc, "AVI needs conversion");
+        set_str(wc, sizeof wc, W(tr, N_("AVI needs conversion")));
     } else if (!strcmp(ct, "ts")) {
         pc = PLAY_NO;
-        set_str(wc, sizeof wc, "MPEG-TS needs conversion");
+        set_str(wc, sizeof wc, W(tr, N_("MPEG-TS needs conversion")));
     } else if (!strcmp(ct, "wmv")) {
         pc = PLAY_NO;
-        set_str(wc, sizeof wc, "WMV needs conversion");
+        set_str(wc, sizeof wc, W(tr, N_("WMV needs conversion")));
     } else if (!strcmp(ct, "mpg")) {
         pc = PLAY_NO;
-        set_str(wc, sizeof wc, "MPEG-PS needs conversion");
+        set_str(wc, sizeof wc, W(tr, N_("MPEG-PS needs conversion")));
     } else {
         pc = PLAY_UNKNOWN;
-        set_str(wc, sizeof wc, "unknown container");
+        set_str(wc, sizeof wc, W(tr, N_("unknown container")));
     }
 
     /* most restrictive verdict wins; on ties codecs explain better than containers, and sound that
@@ -923,7 +929,21 @@ static void judge(MediaProbe *o, bool parsed) {
     set_str(o->why, sizeof o->why, best == PLAY_YES ? "" : why);
 }
 
+static void judge(MediaProbe *o, bool parsed) { judge_in(o, parsed, false); }
+
 void media_probe_judge(MediaProbe *p) { judge(p, true); }
+
+/* p->why in the language in use: the same verdict judged again in its words (a file whose header
+   couldn't be read: its English sentence looked up). Anything else stays as it was. */
+void media_probe_why(const MediaProbe *p, char *out, size_t cap) {
+    if (i18n_find(p->why)) {
+        str_copy(out, cap, T(p->why));
+        return;
+    }
+    MediaProbe again = *p;
+    judge_in(&again, true, true);
+    str_copy(out, cap, again.playable == p->playable && again.why[0] ? again.why : p->why);
+}
 
 /* ===================================================================== API */
 
@@ -984,10 +1004,10 @@ const char *media_mime(const char *c) {
 
 const char *media_playable_label(Playable p) {
     switch (p) {
-    case PLAY_YES: return "Plays in browsers";
-    case PLAY_MAYBE: return "May not play everywhere";
-    case PLAY_NO: return "Needs conversion";
-    default: return "Unknown";
+    case PLAY_YES: return N_("Plays in browsers");
+    case PLAY_MAYBE: return N_("May not play everywhere");
+    case PLAY_NO: return N_("Needs conversion");
+    default: return N_("Unknown");
     }
 }
 

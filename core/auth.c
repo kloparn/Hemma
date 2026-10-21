@@ -137,10 +137,11 @@ bool auth_needs_rehash(const char *stored) {
     return !parse_hash(stored, &iter, s, d) || iter < g_iter;
 }
 
+/* (in the language in use: people's forms show it as it is; at the start - the log - that's English) */
 const char *auth_password_problem(const char *pw) {
     size_t n = pw ? utf8_count(pw) : 0;
-    if (n < 8) return "Use at least 8 characters";
-    if (n > 200) return "That's a bit long — 200 characters at most";
+    if (n < 8) return T("Use at least 8 characters");
+    if (n > 200) return T("That's a bit long — 200 characters at most");
     return NULL;
 }
 
@@ -1229,76 +1230,88 @@ static bool anyone_can_sign_in(void) {
 
 static void wait_notice(Ctx *c, Buf *b) {
     long long w = ctx_qint(c, "w", 60);
+    buf_puts(b, "<p class=\"notice bad\" role=\"alert\">");
     if (*ctx_q(c, "busy")) { /* the hashing budget (LOGIN_BUSY), not a lock */
-        H(b, "<p class=\"notice bad\" role=\"alert\">Lots of sign-in tries right now. Wait %L second%r and try again.</p>",
-          MAX(1, w), w > 1 ? "s" : "");
-        return;
+        long long s = MAX(1, w);
+        H(b, TN(s, "Lots of sign-in tries right now. Wait %L second and try again.",
+                "Lots of sign-in tries right now. Wait %L seconds and try again."),
+          s);
+    } else {
+        long long m = MAX(1, (w + 59) / 60);
+        H(b, TN(m, "Too many tries. Wait %L minute and try again.", "Too many tries. Wait %L minutes and try again."), m);
     }
-    H(b, "<p class=\"notice bad\" role=\"alert\">Too many tries. Wait %L minute%r and try again.</p>",
-      MAX(1, (w + 59) / 60), w > 60 ? "s" : "");
+    buf_puts(b, "</p>");
 }
 
 static void password_pair(Buf *b, const char *label) {
     H(b,
       "<div class=\"field-row\"><label class=\"field\"><span>%s</span><input type=\"password\" name=\"password\" "
       "autocomplete=\"new-password\" required minlength=\"8\" maxlength=\"200\"></label><label class=\"field\">"
-      "<span>Again</span><input type=\"password\" name=\"again\" autocomplete=\"new-password\" required "
+      "<span>%s</span><input type=\"password\" name=\"again\" autocomplete=\"new-password\" required "
       "minlength=\"8\" maxlength=\"200\"></label></div>",
-      label);
+      label, T("Again"));
 }
 
 static void remember_box(Buf *b) {
-    buf_puts(b, "<label class=\"check\"><input type=\"checkbox\" name=\"remember\" value=\"1\" checked> Keep me signed in "
-                "on this device</label>");
+    H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"remember\" value=\"1\" checked> %s</label>",
+      T("Keep me signed in on this device"));
 }
 
 /* Passwords can't be hashed without the server salt: nothing works until it is set. */
 static void no_salt_page(Ctx *c, Buf *b) {
-    ctx_title(c, "Almost there");
-    H(b, "<h1>Almost there</h1><p class=\"sub\">%s needs a secret key before anyone can sign in.</p>", app_name());
-    buf_puts(b, "<ol class=\"steps\"><li>Make one: run <code>hemma --gen-salt</code>.</li><li>Put it in Hemma's settings "
-                "file as <code>HEMMA_AUTH_SALT=...</code>: <code>.env</code> next to Hemma, or "
-                "<code>/etc/hemma/hemma.env</code> on a Pi set up with install-pi.sh (see <code>.env.example</code>)."
-                "</li><li>Restart Hemma and open this page again to create the admin account.</li></ol>");
+    ctx_title(c, "%s", T("Almost there"));
+    H(b, "<h1>%s</h1><p class=\"sub\">", T("Almost there"));
+    H(b, T("%s needs a secret key before anyone can sign in."), app_name());
+    H(b, "</p><ol class=\"steps\"><li>%r</li><li>%r</li><li>%r</li></ol>",
+      T("Make one: run <code>hemma --gen-salt</code>."),
+      T("Put it in Hemma's settings file as <code>HEMMA_AUTH_SALT=...</code>: <code>.env</code> next to Hemma, or "
+        "<code>/etc/hemma/hemma.env</code> on a Pi set up with install-pi.sh (see <code>.env.example</code>)."),
+      T("Restart Hemma and open this page again to create the admin account."));
 }
 
 /* The household had an admin, but nobody can sign in any more. */
 static void locked_page(Ctx *c, Buf *b) {
-    ctx_title(c, "Sign in");
-    H(b, "<h1>Nobody can sign in</h1><p class=\"sub\">%s has no account that can sign in right now.</p>", app_name());
-    buf_puts(b, "<p>Whoever runs the Hemma server can bring the admin back: see <b>Locked out</b> in Hemma's "
-                "account docs (<code>docs/accounts.md</code>).</p>");
+    ctx_title(c, "%s", T("Sign in"));
+    H(b, "<h1>%s</h1><p class=\"sub\">", T("Nobody can sign in"));
+    H(b, T("%s has no account that can sign in right now."), app_name());
+    H(b, "</p><p>%r</p>",
+      T("Whoever runs the Hemma server can bring the admin back: see <b>Locked out</b> in Hemma's account docs "
+        "(<code>docs/accounts.md</code>)."));
 }
 
 /* Issue #87: a rescue that brought no admin back used to show "Welcome to Hemma" (set it up again, over
    the household's data) or "Nobody can sign in" with no word of the damage - and the rescue notice was
    for admins only. This page is for everyone: what happened, and where the way back is. */
 static void damaged_page(Ctx *c, Buf *b, bool others_can_sign_in) {
-    ctx_title(c, "Hemma's data was damaged");
-    buf_puts(b, "<h1>Hemma's data was damaged</h1><p class=\"sub\">Nothing has been deleted.</p>");
-    H(b, "<p class=\"notice bad\">%s</p>", setting(SETTING_RESCUED, ""));
-    buf_puts(b, "<p>No admin account could be read back, so nobody can look after Hemma right now. Whoever runs the "
-                "Hemma server can get more back from the damaged copy - see <b>A damaged database</b> in Hemma's "
-                "troubleshooting guide (<code>docs/troubleshooting.md</code>) - and bring an admin back: <b>Locked "
-                "out</b> in the account docs (<code>docs/accounts.md</code>).</p>");
-    if (others_can_sign_in) buf_puts(b, "<p class=\"small center mt\"><a href=\"/login\">Sign in</a></p>");
+    ctx_title(c, "%s", T("Hemma's data was damaged"));
+    H(b, "<h1>%r</h1><p class=\"sub\">%s</p>", T("Hemma's data was damaged"), T("Nothing has been deleted."));
+    Buf said = {0}; /* (the rescue's report, kept at the start: a packed text is shown in this reader's words) */
+    i18n_unpack(&said, setting(SETTING_RESCUED, ""));
+    H(b, "<p class=\"notice bad\">%s</p>", buf_cstr(&said));
+    buf_free(&said);
+    H(b, "<p>%r</p>",
+      T("No admin account could be read back, so nobody can look after Hemma right now. Whoever runs the Hemma server "
+        "can get more back from the damaged copy - see <b>A damaged database</b> in Hemma's troubleshooting guide "
+        "(<code>docs/troubleshooting.md</code>) - and bring an admin back: <b>Locked out</b> in the account docs "
+        "(<code>docs/accounts.md</code>)."));
+    if (others_can_sign_in) H(b, "<p class=\"small center mt\"><a href=\"/login\">%s</a></p>", T("Sign in"));
 }
 
 static const char *setup_error(const char *e) {
     static const struct {
         const char *key, *text;
     } msgs[] = {
-        {"setup", "That isn't the setup code. It was shown where Hemma was installed - see below where to look."},
-        {"name", "Please tell us your name."},
-        {"user", "Usernames are 2–32 characters: a–z, 0–9 and . _ -"},
-        {"taken", "That username is taken - pick another one."},
-        {"short", "Use at least 8 characters for the password."},
-        {"long", "That password is a bit long - 200 characters at most."},
-        {"again", "The two passwords don't match."},
-        {"code", "That username and recovery code don't match."},
+        {"setup", N_("That isn't the setup code. It was shown where Hemma was installed - see below where to look.")},
+        {"name", N_("Please tell us your name.")},
+        {"user", N_("Usernames are 2–32 characters: a–z, 0–9 and . _ -")},
+        {"taken", N_("That username is taken - pick another one.")},
+        {"short", N_("Use at least 8 characters for the password.")},
+        {"long", N_("That password is a bit long - 200 characters at most.")},
+        {"again", N_("The two passwords don't match.")},
+        {"code", N_("That username and recovery code don't match.")},
     };
     for (int i = 0; i < countof(msgs); i++)
-        if (str_eq(e, msgs[i].key)) return msgs[i].text;
+        if (str_eq(e, msgs[i].key)) return T(msgs[i].text);
     return NULL;
 }
 
@@ -1309,43 +1322,51 @@ static void error_notice(Ctx *c, Buf *b) {
 }
 
 static void setup_page(Ctx *c, Buf *b, bool others_can_sign_in) {
-    ctx_title(c, "Welcome");
-    H(b, "<h1>Welcome to Hemma</h1><p class=\"sub\">Let's create the admin account: the person who adds everyone else "
-         "and looks after the settings.</p>");
+    ctx_title(c, "%s", T("Welcome"));
+    H(b, "<h1>%s</h1><p class=\"sub\">%r</p>", T("Welcome to Hemma"),
+      T("Let's create the admin account: the person who adds everyone else and looks after the settings."));
     error_notice(c, b);
     const char *name = ctx_q(c, "name"), *u = ctx_q(c, "u");
-    buf_puts(b, "<form method=\"post\" action=\"/setup\" class=\"stack\">"
-                "<label class=\"field\"><span>Setup code</span><input name=\"code\" autocomplete=\"off\" "
-                "autocapitalize=\"characters\" autocorrect=\"off\" spellcheck=\"false\" required maxlength=\"20\" "
-                "placeholder=\"XXXX-XXXX\" autofocus><small class=\"muted\">From where Hemma was installed - see "
-                "below</small></label>");
     H(b,
-      "<label class=\"field\"><span>Your name</span><input name=\"name\" autocomplete=\"name\" required "
-      "maxlength=\"40\" value=\"%s\" placeholder=\"e.g. Alex\"></label>"
-      "<label class=\"field\"><span>Username</span><input name=\"username\" autocomplete=\"username\" "
+      "<form method=\"post\" action=\"/setup\" class=\"stack\">"
+      "<label class=\"field\"><span>%s</span><input name=\"code\" autocomplete=\"off\" "
+      "autocapitalize=\"characters\" autocorrect=\"off\" spellcheck=\"false\" required maxlength=\"20\" "
+      "placeholder=\"XXXX-XXXX\" autofocus><small class=\"muted\">%s</small></label>",
+      T("Setup code"), T("From where Hemma was installed - see below"));
+    H(b,
+      "<label class=\"field\"><span>%s</span><input name=\"name\" autocomplete=\"name\" required "
+      "maxlength=\"40\" value=\"%s\" placeholder=\"%s\"></label>"
+      "<label class=\"field\"><span>%s</span><input name=\"username\" autocomplete=\"username\" "
       "autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" required maxlength=\"32\" value=\"%s\" "
-      "placeholder=\"e.g. alex\"><small class=\"muted\">You sign in with this: a–z, 0–9 and . _ -</small></label>",
-      name, u);
-    password_pair(b, "Password");
+      "placeholder=\"%s\"><small class=\"muted\">%s</small></label>",
+      T("Your name"), name, T("e.g. Alex"), T("Username"), u, T("e.g. alex"), T("You sign in with this: a–z, 0–9 and . _ -"));
+    password_pair(b, T("Password"));
     H(b,
-      "<label class=\"field\"><span>Name of your home <span class=\"muted\">(optional)</span></span><input "
+      "<label class=\"field\"><span>%r</span><input "
       "name=\"home\" maxlength=\"40\" value=\"%s\" placeholder=\"Hemma\"></label>",
-      ctx_q(c, "home"));
+      T("Name of your home <span class=\"muted\">(optional)</span>"), ctx_q(c, "home"));
     remember_box(b);
-    buf_puts(b, "<button class=\"btn primary big\">Create the admin account</button></form>"
-                "<p class=\"muted small center mt\">Next you get recovery codes: your way back in if you ever forget the "
-                "password.</p>"
-                "<div class=\"notice mt\"><p><b>Where's the setup code?</b> It shows that you're the one setting Hemma "
-                "up - not just anyone on your Wi-Fi who opens this page first. You'll find it where Hemma was "
-                "installed:</p><ul class=\"small\">");
-    if (auth_setup_note_found()) /* (issue #72: a card any computer reads) */
-        buf_puts(b, "<li><b>On this Raspberry Pi's memory card</b>, in the file <code>" SETUP_NOTE_FILE "</code>: put "
-                    "the card in a computer and open it (then back in the Pi)</li>");
-    buf_puts(b, "<li><b>Raspberry Pi or Linux</b>: in the installer's last lines. Missed them? It's also in "
-                "<code>/etc/hemma/hemma.env</code>, or run <code>sudo journalctl -u hemma | grep \"setup code\"</code></li>"
-                "<li><b>Windows or Mac</b>: in Hemma's own window (or its log), right after it starts</li></ul>"
-                "<p class=\"small\">It works once: after this the welcome page and the code are gone for good.</p></div>");
-    if (others_can_sign_in) buf_puts(b, "<p class=\"small center mt\"><a href=\"/login\">I already have an account</a></p>");
+    H(b,
+      "<button class=\"btn primary big\">%s</button></form>"
+      "<p class=\"muted small center mt\">%s</p>"
+      "<div class=\"notice mt\"><p>%r</p><ul class=\"small\">",
+      T("Create the admin account"), T("Next you get recovery codes: your way back in if you ever forget the password."),
+      T("<b>Where's the setup code?</b> It shows that you're the one setting Hemma up - not just anyone on your Wi-Fi "
+        "who opens this page first. You'll find it where Hemma was installed:"));
+    if (auth_setup_note_found()) { /* (issue #72: a card any computer reads) */
+        buf_puts(b, "<li>");
+        H(b, T("<b>On this Raspberry Pi's memory card</b>, in the file <code>%s</code>: put the card in a computer and "
+               "open it (then back in the Pi)"),
+          SETUP_NOTE_FILE);
+        buf_puts(b, "</li>");
+    }
+    H(b, "<li>%r</li><li>%r</li></ul><p class=\"small\">%r</p></div>",
+      T("<b>Raspberry Pi or Linux</b>: in the installer's last lines. Missed them? It's also in "
+        "<code>/etc/hemma/hemma.env</code>, or run <code>sudo journalctl -u hemma | grep \"setup code\"</code>"),
+      T("<b>Windows or Mac</b>: in Hemma's own window (or its log), right after it starts"),
+      T("It works once: after this the welcome page and the code are gone for good."));
+    if (others_can_sign_in)
+        H(b, "<p class=\"small center mt\"><a href=\"/login\">%s</a></p>", T("I already have an account"));
 }
 
 /* Issue #100: what was typed into the name box went into the address after a failed try
@@ -1385,28 +1406,33 @@ static const char *typed_back(uint32_t ip) {
 
 /* Signed-out page: no names of the household on it (review). */
 static void forgot_page(Ctx *c, Buf *b) {
-    ctx_title(c, "Forgot password");
-    buf_puts(b, "<h1>Forgot your password?</h1><p class=\"sub\">Use one of your recovery codes to choose a new one.</p>");
+    ctx_title(c, "%s", T("Forgot password"));
+    H(b, "<h1>%s</h1><p class=\"sub\">%s</p>", T("Forgot your password?"),
+      T("Use one of your recovery codes to choose a new one."));
     error_notice(c, b);
     const char *u = typed_back(c->ip);
     buf_puts(b, "<form method=\"post\" action=\"/forgot\" class=\"stack\">");
     H(b,
-      "<label class=\"field\"><span>Username or name</span><input name=\"username\" autocomplete=\"username\" "
+      "<label class=\"field\"><span>%s</span><input name=\"username\" autocomplete=\"username\" "
       "autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" required maxlength=\"48\" value=\"%s\"%r>"
-      "</label><label class=\"field\"><span>Recovery code</span><input name=\"code\" autocomplete=\"off\" "
+      "</label><label class=\"field\"><span>%s</span><input name=\"code\" autocomplete=\"off\" "
       "autocapitalize=\"characters\" autocorrect=\"off\" spellcheck=\"false\" required maxlength=\"40\" "
       "placeholder=\"XXXX-XXXX-XXXX\"%r></label>",
-      u, *u ? "" : " autofocus", *u ? " autofocus" : "");
-    password_pair(b, "New password");
+      T("Username or name"), u, *u ? "" : " autofocus", T("Recovery code"), *u ? " autofocus" : "");
+    password_pair(b, T("New password"));
     remember_box(b);
-    buf_puts(b, "<button class=\"btn primary big\">Set the new password</button></form>"
-                "<p class=\"muted small center mt\">No codes left? Ask an admin of your household to set a new password "
-                "for you - or whoever runs the Hemma server can reset it there (see Hemma's account docs).</p>"
-                "<p class=\"small center mt\"><a href=\"/login\">Back to sign in</a></p>");
+    H(b,
+      "<button class=\"btn primary big\">%s</button></form>"
+      "<p class=\"muted small center mt\">%r</p>"
+      "<p class=\"small center mt\"><a href=\"/login\">%s</a></p>",
+      T("Set the new password"),
+      T("No codes left? Ask an admin of your household to set a new password for you - or whoever runs the Hemma "
+        "server can reset it there (see Hemma's account docs)."),
+      T("Back to sign in"));
 }
 
 static void signin_page(Ctx *c, Buf *b) {
-    ctx_title(c, "Sign in");
+    ctx_title(c, "%s", T("Sign in"));
     Person *guess = person_get(presence_guess(c->ip));
     const char *u = ctx_q(c, "e")[0] ? typed_back(c->ip) : "";
     const char *next = ctx_q(c, "next");
@@ -1416,43 +1442,101 @@ static void signin_page(Ctx *c, Buf *b) {
         u = guess->username;
         welcome_back = true;
     }
-    if (welcome_back) H(b, "<h1>Welcome back, %s</h1>", guess->name);
-    else buf_puts(b, "<h1>Sign in</h1>");
-    H(b, "<p class=\"sub\">to %s</p>", app_name());
-    if (app_demo()) /* (hemma --demo: a made-up household - its login is no secret) */
-        H(b, "<p class=\"notice\">A demo: sign in as <b>anna</b> (an admin) or <b>jonas</b>, password <b>%s</b>.</p>",
-          app_demo_password());
+    buf_puts(b, "<h1>");
+    if (welcome_back) H(b, T("Welcome back, %s"), guess->name);
+    else H(b, "%s", T("Sign in"));
+    buf_puts(b, "</h1><p class=\"sub\">");
+    H(b, T("to %s"), app_name());
+    buf_puts(b, "</p>");
+    if (app_demo()) { /* (hemma --demo: a made-up household - its login is no secret) */
+        buf_puts(b, "<p class=\"notice\">");
+        H(b, T("A demo: sign in as <b>anna</b> (an admin) or <b>jonas</b>, password <b>%s</b>."), app_demo_password());
+        buf_puts(b, "</p>");
+    }
     if (rescued()) /* (issue #87: the details are on the System page, for admins) */
-        buf_puts(b, "<p class=\"notice\">Hemma's data was damaged, and it rescued what it could still read: some "
-                    "things may be missing.</p>");
+        H(b, "<p class=\"notice\">%r</p>",
+          T("Hemma's data was damaged, and it rescued what it could still read: some things may be missing."));
     /* the guess is this address's last person: on a shared or reassigned device that's someone
        else (issue #3), so signing in as another person is one tap away */
-    if (welcome_back)
-        H(b, "<p class=\"small center\">Not %s? <a href=\"/login?other=1&amp;next=%u\">Sign in as someone else</a></p>",
-          guess->name, next);
+    if (welcome_back) {
+        buf_puts(b, "<p class=\"small center\">");
+        H(b, T("Not %s? <a href=\"/login?other=1&amp;next=%u\">Sign in as someone else</a>"), guess->name, next);
+        buf_puts(b, "</p>");
+    }
     long long e = ctx_qint(c, "e", 0);
-    if (e == 1) buf_puts(b, "<p class=\"notice bad\" role=\"alert\">That username and password don't match.</p>");
+    if (e == 1) H(b, "<p class=\"notice bad\" role=\"alert\">%r</p>", T("That username and password don't match."));
     else if (e == 2) wait_notice(c, b);
-    else if (e == 3) buf_puts(b, "<p class=\"notice\">You're signed out.</p>");
-    else if (e == 4) buf_puts(b, "<p class=\"notice\">This Hemma already has an admin. Sign in, or ask them to add you.</p>");
+    else if (e == 3) H(b, "<p class=\"notice\">%r</p>", T("You're signed out."));
+    else if (e == 4) H(b, "<p class=\"notice\">%r</p>", T("This Hemma already has an admin. Sign in, or ask them to add you."));
     else if (e == 5) { /* the password was right: a guest whose last day went by */
-        buf_puts(b, "<p class=\"notice bad\" role=\"alert\">Your sign-in has ended. To stay longer, ask ");
-        ui_admins(b);
-        buf_puts(b, " for more days.</p>");
+        Buf who = {0}; /* "Anna (admin)", "Anna or Jonas (admins)", "an admin": already HTML */
+        ui_admins(&who);
+        buf_puts(b, "<p class=\"notice bad\" role=\"alert\">");
+        H(b, T("Your sign-in has ended. To stay longer, ask %r for more days."), buf_cstr(&who));
+        buf_puts(b, "</p>");
+        buf_free(&who);
     }
     buf_puts(b, "<form method=\"post\" action=\"/login\" class=\"stack\">");
     ui_hidden(b, "next", next);
     H(b,
-      "<label class=\"field\"><span>Username or name</span><input name=\"username\" autocomplete=\"username\" "
+      "<label class=\"field\"><span>%s</span><input name=\"username\" autocomplete=\"username\" "
       "autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" required maxlength=\"48\" value=\"%s\"%r>"
-      "</label><label class=\"field\"><span>Password</span><input type=\"password\" name=\"password\" "
+      "</label><label class=\"field\"><span>%s</span><input type=\"password\" name=\"password\" "
       "autocomplete=\"current-password\" required maxlength=\"200\"%r></label>",
-      u, *u ? "" : " autofocus", *u ? " autofocus" : "");
+      T("Username or name"), u, *u ? "" : " autofocus", T("Password"), *u ? " autofocus" : "");
     remember_box(b);
-    buf_puts(b, "<button class=\"btn primary big\">Sign in</button></form>");
+    H(b, "<button class=\"btn primary big\">%s</button></form>", T("Sign in"));
     /* (what was typed comes along by the server's memory, not the address: issue #100) */
     if (!welcome_back && *u) typed_keep(c->ip, u);
-    buf_puts(b, "<p class=\"small center mt\"><a href=\"/forgot\">Forgot your password?</a></p>");
+    H(b, "<p class=\"small center mt\"><a href=\"/forgot\">%s</a></p>", T("Forgot your password?"));
+}
+
+/* Where a language link comes back to: this page, without what only one visit should show - an
+   error (e, w, busy) - or carry: /login's u (issue #100 keeps typed names out of addresses). The
+   welcome page's typed name, username and home do come along (that address carries them anyway). */
+static void lang_back(Ctx *c, Buf *out) {
+    static const char *const login_keeps[] = {"next", "other", NULL}, *const setup_keeps[] = {"name", "u", "home", NULL},
+                             *const none[] = {NULL};
+    const char *const *keep = str_eq(c->path, "/login")    ? login_keeps
+                              : str_eq(c->path, "/setup")  ? setup_keeps
+                              : str_eq(c->path, "/forgot") ? none
+                                                           : NULL;
+    if (!keep) { /* any other address: the page they wanted, as it is (the sign-in form's next too) */
+        buf_puts(out, c->url[0] ? c->url : "/");
+        return;
+    }
+    buf_puts(out, c->path);
+    char sep = '?';
+    for (int i = 0; keep[i]; i++) {
+        const char *v = ctx_q(c, keep[i]);
+        if (!*v) continue;
+        buf_printf(out, "%c%s=", sep, keep[i]);
+        url_encode(out, v, false);
+        sep = '&';
+    }
+}
+
+/* Issue #46: the signed-out pages in another language - each one named in itself, the one in use as
+   plain text. /lang (core/app.c) keeps the pick in a cookie and comes back here: a full load (the
+   cookie is an HTTP answer's), so data-native. */
+static void lang_links(Ctx *c, Buf *b) {
+    Buf back = {0};
+    lang_back(c, &back);
+    H(b, "<nav class=\"muted small center\" aria-label=\"%s\">", T("Language")); /* (the links' padding: 44 px taps) */
+    for (int l = 0; l < LANG_COUNT; l++) {
+        if (l) buf_puts(b, "<span aria-hidden=\"true\"> · </span>");
+        const char *code = i18n_code((Lang)l), *name = i18n_name((Lang)l);
+        if ((Lang)l == c->lang)
+            H(b, "<span lang=\"%s\" aria-current=\"true\" style=\"display:inline-block;padding:12px 6px;font-weight:650\">"
+                 "%s</span>",
+              code, name);
+        else
+            H(b, "<a href=\"/lang?to=%s&amp;next=%u\" lang=\"%s\" hreflang=\"%s\" data-native "
+                 "style=\"display:inline-block;padding:12px 6px\">%s</a>",
+              code, buf_cstr(&back), code, code, name);
+    }
+    buf_puts(b, "</nav>");
+    buf_free(&back);
 }
 
 void auth_page(Ctx *c, Buf *b) {
@@ -1468,6 +1552,7 @@ void auth_page(Ctx *c, Buf *b) {
     else if (!can) locked_page(c, b);
     else if (str_eq(c->path, "/forgot")) forgot_page(c, b);
     else signin_page(c, b);
+    lang_links(c, b);
     buf_puts(b, "</div></main>");
 }
 

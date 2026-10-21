@@ -86,6 +86,7 @@ void ui_modal_end(Buf *b);
 void ui_ago(Buf *b, int64_t t, int64_t now);           /* "just now" "5 min ago" "yesterday" "3 Oct" */
 void ui_day(Buf *b, int64_t day, int64_t now);         /* "Today" "Tomorrow" "Fri 16 Oct" */
 void ui_day_inline(Buf *b, int64_t day, int64_t now);  /* mid-sentence: "today" "tomorrow" "Friday" */
+const char *const *ui_wire_texts(int *n); /* wire.js's own words (WIRE_TEXTS), for core/i18n_test.c */
 void ui_hm(Buf *b, int64_t t);                         /* "14:30" */
 void ui_span(Buf *b, int64_t start, int64_t end);      /* "14:00–17:00" (or with days when it spans) */
 void ui_duration(Buf *b, int64_t seconds);             /* "1 h 25 min" */
