@@ -129,8 +129,44 @@ static bool neutral(const char *s, const char *const *allow) {
     return true;
 }
 
+/* Test-only modules (ids "zz...": a test registers one, and it stays for the rest of its process) speak
+   the tests' own words, never translated - whichever later test meets them, depending on how the
+   runner split the tests (CI's 4 processes put the screens builder after core/app_screen_test.c's
+   "first" and "second"): their titles, block titles and block choices count as names. */
+static char g_zz[96][96];
+static int g_nzz;
+
+static void zz_add(const char *s) {
+    if (s && *s && g_nzz < (int)(sizeof g_zz / sizeof g_zz[0])) str_copy(g_zz[g_nzz++], sizeof g_zz[0], s);
+}
+
+static void zz_collect(int person) {
+    g_nzz = 0;
+    Ctx c;
+    app_ctx(&c, person, "/");
+    for (int i = 0; i < module_count(); i++) {
+        const Module *m = module_at(i);
+        if (strncmp(m->id, "zz", 2) != 0) continue;
+        zz_add(m->title);
+        for (const Block *b = m->blocks; b && b->id; b++) {
+            zz_add(b->title);
+            BlockChoice ch[16];
+            int n = b->choices ? b->choices(&c, ch, 16) : 0;
+            for (int k = 0; k < n; k++) zz_add(ch[k].label);
+        }
+    }
+    app_ctx_free(&c);
+}
+
+static bool zz_word(const char *s) {
+    for (int i = 0; i < g_nzz; i++)
+        if (!strcmp(g_zz[i], s)) return true;
+    return false;
+}
+
 int th_untranslated(int person, const char *url, const char *const *allow, Buf *out) {
     static char en[1500][300], other[1500][300];
+    zz_collect(person);
     char was[16];
     str_copy(was, sizeof was, person ? pref(person, PREF_LANG, "") : "");
     int bad = 0, ne = 0;
@@ -146,7 +182,7 @@ int th_untranslated(int person, const char *url, const char *const *allow, Buf *
         }
         int no = readable(h, other, 1500);
         for (int i = 0; i < no; i++) {
-            if (neutral(other[i], allow)) continue;
+            if (neutral(other[i], allow) || zz_word(other[i])) continue;
             const Tr *tr = i18n_find(other[i]); /* translated - to the same word ("System" in Swedish) */
             if (tr && !strcmp(lang == LANG_SV ? (tr->sv ? tr->sv : "") : (tr->es ? tr->es : ""), other[i])) continue;
             if (!strchr(other[i], 32) && (strchr(other[i], 47) || strchr(other[i], 92))) continue; /* a path */

@@ -1031,7 +1031,10 @@ MODULE(things)   /* self-registers: no shared file to edit */
   `auth_configure("salt", 1000)` (low iterations keep tests fast). Tests run in English (no pref, no
   browser language); `th_untranslated(person, url, allow, &report)` renders a page in all three
   languages and counts what reads the same in Swedish or Spanish (text that missed its T()) - every
-  module has a `*_i18n_test.c` that keeps its pages at 0.
+  module has a `*_i18n_test.c` that keeps its pages at 0. A word translated to itself ("System" in Swedish)
+  and a test-only module's words (ids "zz...": its title, block titles, block choices) don't count. Tests
+  share a process with whatever the runner split puts before them - CI's runners use 4 processes, and
+  tools/ci/local.sh (./build.ps1 ci) does too (HEMMA_TEST_JOBS); a test-only module stays registered.
 - **Languages** (issue #46; core/i18n.h): every text people read goes through `T("English")` where it's
   said now (pages, ctx_ok/ctx_fail, health texts, labels, title=/aria-label=/placeholder, data-confirm)
   or `N_("English")` where it's said later or to others: app_notify*/activity_add formats (the core
