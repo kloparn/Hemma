@@ -18,7 +18,7 @@ A sign-in is one of five kinds:
 | **Member** | Use everything |
 | **Child** | Their own to-dos, the shopping list, the board, booking what's open to children, and watching - without the folders marked *Not for children* ([children](#children)) |
 | **Guest** | Until a last day: book what's open to guests, the shopping list, the board, watching ([guests](#guests)) |
-| **Admin** | Use everything, and also add and remove people, rename the home, manage media folders |
+| **Admin** | Use everything, and also add and remove people, rename the home, add, fix and remove videos and manage media folders |
 | **Display** | Only look. For the living-room TV or a tablet on the wall: it shows its screen but can't change anything ([a TV](#a-tv-whos-watching)) |
 
 There is always at least one admin who can sign in. Hemma refuses any change that would
@@ -106,6 +106,7 @@ still someone things are booked for, and they can be picked on the TV). Signed i
   doesn't play for them either. A series with an episode in such a folder goes whole, and
   so does a channel that would air something from one. The same goes for a TV while a
   child is picked under *Who's watching?*;
+- watches, but doesn't **download** videos (that's for grown-ups: members and admins);
 - doesn't get the **Network** page, the household's settings or anyone else's account.
 
 Anything else a child tries says **Ask a grown-up to do that**.
@@ -119,7 +120,7 @@ pick a later day (or make them a member).
 
 Until then a guest books what an admin opened to guests (tick **Guests may book it** on a
 thing: the guest room, laundry and sauna start ticked), uses the shopping list and the
-board, and watches. They don't see who's home, the household's news, calendar, to-dos,
+board, and watches (without downloading). They don't see who's home, the household's news, calendar, to-dos,
 screens or Network page, and under Household only their own account. Guests get no
 recovery codes: if they forget their password, an admin sets a new one.
 

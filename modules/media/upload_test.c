@@ -1,6 +1,8 @@
 /* Adding videos from a browser: names, the plan, streamed PUTs over real
  * sockets, resuming after a dropped connection, and what must be refused. */
+#include "../../core/assets.h"
 #include "../../core/auth.h"
+#include "../../core/codec.h"
 #include "../../core/plat.h"
 #include "../../core/server.h"
 #include "../../tests/harness.h"
@@ -555,7 +557,7 @@ TEST(upload_takes_copies_the_browser_makes) {
     CHECK_HAS(body_of(&r), "\"ok\":true");
     const char *page = th_page(adam_id, "/media/upload");
     CHECK_HAS(page, "0 of 2 play-everywhere copies ready");
-    CHECK_HAS(page, "S/x.web.mp4</code></span><progress class=\"media-up-bar\" max=\"1000\" value=\"420\">");
+    CHECK_HAS(page, "<span class=\"grow media-up-name\">x.mkv</span><progress class=\"media-up-bar\" max=\"1000\" value=\"420\">");
 
     /* no room for the copy: refused, and the upload stops */
     upload_test_free_space((1LL << 30) + 5);
@@ -1014,4 +1016,150 @@ TEST(upload_keeps_a_half_sent_file_an_upload_is_about_to_resume) {
     buf_free(&r);
     th_halt();
     g_fake_now = 0;
+}
+
+/* ------------------------------------------- the page: the preview, and Start doing what it said */
+
+/* the page's fields for a preview: the options, then files = [[path, size], ...] as JSON (url-encoded) */
+static void preview_of(int person, const char *opts, const char *files_json) {
+    Buf form = {0};
+    buf_printf(&form, "%s&all=0&files=", opts);
+    url_encode(&form, files_json, false);
+    upload_test_preview(person, buf_cstr(&form));
+    buf_free(&form);
+}
+
+TEST(upload_page_previews_where_everything_goes_and_start_does_that) {
+    th_boot();
+    auth_configure("upload-salt", 1000);
+    int adam_id = make_user("Adam", "adam", "pw-adam-123", ROLE_ADMIN);
+    int eva_id = make_user("Eva", "eva", "pw-eva-1234", ROLE_MEMBER);
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    put_file(root, "Series/Show/Season 01/Show.S01E01.mp4", "e1", 2);
+    setting_set("media.roots", root);
+    media_scan_sync();
+    CHECK_INT(media_lib()->nseries, 1);
+
+    /* the page before anything's chosen: one place to drop or pick, nothing else in the way */
+    const char *page = th_page(adam_id, "/media/upload");
+    CHECK_HAS(page, "data-drop>");
+    CHECK_HAS(page, "data-preview=\"media.upload_preview\"");
+    CHECK_HAS(page, "<input type=\"hidden\" name=\"sort\" value=\"1\">");
+    CHECK_HAS(page, "name=\"folder\" webkitdirectory");
+    CHECK_HAS(page, "<details class=\"media-up-more\" id=\"media-up-more\"><summary>More options</summary>");
+    CHECK(!strstr(page, "media-up-sum"));
+    CHECK(!strstr(page, "<select name=\"root\">")); /* (one library folder: no choice to make) */
+    CHECK_HAS(page, "id=\"media-up-force\" hidden"); /* nothing runs ... */
+    Buf css = {0}; /* ... and hidden it stays: .check's display beat the attribute once */
+    for (int i = 0; i < g_nassets; i++)
+        if (str_eq(g_assets[i].path, "/app.css")) buf_put(&css, g_assets[i].data, g_assets[i].len);
+    CHECK_HAS(buf_cstr(&css), ".media-up-form [hidden] { display: none !important; }");
+    buf_free(&css);
+
+    /* what Hemma makes of a few files: where each goes, what happens to it */
+    const char *files = "[[\"Show.S01E02.Second.mp4\",5000],[\"Show.S01E02.Second.en.srt\",300],"
+                        "[\"New/Season 2/New.S02E01.mkv\",4000],[\"Arrival (2016).mp4\",6000],[\"notes.txt\",10],"
+                        "[\"Season 1/03 - Third.mp4\",7]]";
+    preview_of(adam_id, "sort=1&root=0&conv=1", files);
+    page = th_page(adam_id, "/media/upload");
+    CHECK_HAS(page, "<p class=\"media-up-sum\" data-say>5 files to send · ");
+    CHECK_HAS(page, " · 1 to convert here first · 1 skipped</p>");
+    CHECK_HAS(page, "<span>Series <i>/</i> Show <i>/</i> Season 01</span></h3>"); /* next to the old one: no "New folder" */
+    CHECK_HAS(page, "<span>Series <i>/</i> New <i>/</i> Season 2</span><small class=\"badge\">New folder</small>");
+    CHECK_HAS(page, "<span>Movies <i>/</i> Arrival (2016)</span>");
+    CHECK_HAS(page, "1 episode, 1 subtitle file · ");
+    CHECK_HAS(page, "<span class=\"media-up-name\">Show.S01E02.Second.mp4</span><small>Show · S01E02 · Second</small>");
+    CHECK_HAS(page, "<small>Subtitles for Show · S01E02</small></div><span class=\"badge\">Sent as it is</span>");
+    CHECK_HAS(page, "<small>New · S02E01</small></div><span class=\"badge ok\">Converted here first</span>");
+    CHECK_HAS(page, "<span>Left out</span>");
+    CHECK_HAS(page, "<small>not a video, subtitle or poster</small></div><span class=\"badge warn\">Skipped</span>");
+    /* an episode of no series it can name: asked for, and it goes as chosen until then */
+    CHECK_HAS(page, "<details class=\"media-up-names\" id=\"media-up-names\" open><summary>Which series are these episodes from?");
+    CHECK_HAS(page, "<span>1 episode Hemma can't place</span><input name=\"to.");
+    CHECK_HAS(page, "<span>Season 1</span><small class=\"badge\">New folder</small></h3>");
+    CHECK_HAS(page, "Hemma can&#39;t tell where these belong, so they go in as they are");
+    CHECK_HAS(page, "<datalist id=\"media-up-shows\"><option value=\"Show\"></datalist>");
+    CHECK_HAS(page, "data-drop-clear>Clear the list</button>");
+    /* named: it goes with that series' others */
+    char opts[200];
+    snprintf(opts, sizeof opts, "sort=1&root=0&to.%016llx=show", (unsigned long long)upload_show_key("Unknown series"));
+    preview_of(adam_id, opts, files);
+    page = th_page(adam_id, "/media/upload");
+    CHECK_HAS(page, "<span class=\"media-up-name\">03 - Third.mp4</span><small>Show · S01E03 · Third</small>");
+    CHECK(!strstr(page, "go in as they are"));
+    /* keeping the folders' layout, under a folder of its own */
+    preview_of(adam_id, "sort=1&keep=1&root=0&into=Up", files);
+    page = th_page(adam_id, "/media/upload");
+    CHECK_HAS(page, "<span>Up <i>/</i> New <i>/</i> Season 2</span>");
+    CHECK(!strstr(page, "media-up-names"));
+    /* no room: said before anything is sent */
+    upload_test_free_space((1LL << 30) + 100);
+    preview_of(adam_id, "sort=1&root=0", files);
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "Not enough room: this needs ");
+    upload_test_free_space(-1);
+    /* a list that doesn't make sense, and too many files */
+    upload_test_preview(adam_id, "sort=1&root=0&files=%5B%5Bbroken");
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "That upload list didn&#39;t make sense");
+    /* nothing chosen any more: no preview; and only the person who chose sees it */
+    preview_of(adam_id, "sort=1&root=0", files);
+    CHECK(!strstr(th_page(eva_id, "/media/upload"), "media-up-sum"));
+    upload_test_preview(adam_id, NULL);
+    CHECK(!strstr(th_page(adam_id, "/media/upload"), "media-up-sum"));
+    CHECK(th_act(eva_id, "media.upload_preview", "files=%5B%5D").ok); /* (a member: nothing happens) */
+
+    /* "Add episodes" from the series' page: into its folder, whatever the names say */
+    char url[100], hex[17];
+    media_id_hex(media_lib()->series[0].id, hex);
+    snprintf(url, sizeof url, "/media/upload?series=%s", hex);
+    page = th_page(adam_id, url);
+    CHECK_HAS(page, "Everything goes into the folder of <b>Show</b>");
+    CHECK_HAS(page, "<input type=\"hidden\" name=\"series\" value=\"");
+    CHECK(!strstr(page, "name=\"keep\""));
+    snprintf(opts, sizeof opts, "sort=1&series=%s", hex);
+    preview_of(adam_id, opts, "[[\"Other.Name.S03E07.mp4\",9]]");
+    CHECK_HAS(th_page(adam_id, url), "<span>Series <i>/</i> Show <i>/</i> Season 3</span>");
+
+    /* Start: the plan puts every file where the preview said */
+    CHECK(server_listen("127.0.0.1", 0));
+    g_port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], batch[17];
+    sign_in("adam", "pw-adam-123", adam, sizeof adam);
+    Buf r = {0};
+    char plan[1200];
+    snprintf(plan, sizeof plan, "{\"sort\":\"1\",\"root\":\"0\",\"to.%016llx\":\"Show\",\"files\":%s}",
+             (unsigned long long)upload_show_key("Unknown series"), files);
+    plan_for(adam, plan, &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[[0,0],[1,0],[2,0],[3,0],[5,0]]");
+    static const struct {
+        int i;
+        const char *rel;
+    } want[] = {{0, "Series/Show/Season 01/Show.S01E02.Second.mp4"},
+                {1, "Series/Show/Season 01/Show.S01E02.Second.en.srt"},
+                {2, "Series/New/Season 2/New.S02E01.mkv"},
+                {3, "Movies/Arrival (2016)/Arrival (2016).mp4"},
+                {5, "Series/Show/Season 01/03 - Third.mp4"}};
+    char *bytes = xcalloc(1, 6000);
+    for (int k = 0; k < (int)countof(want); k++) {
+        static const int sizes[] = {5000, 300, 4000, 6000, 10, 7};
+        snprintf(url, sizeof url, "/media/upload/%s/%d?at=0", batch, want[k].i);
+        call("PUT", url, adam, NULL, bytes, (size_t)sizes[want[k].i], (size_t)sizes[want[k].i], &r);
+        CHECK_HAS(body_of(&r), "\"ok\":true");
+        CHECK(exists(root, want[k].rel));
+    }
+    free(bytes);
+    /* the same again: everything's there now, and the preview says so */
+    snprintf(opts, sizeof opts, "sort=1&root=0&to.%016llx=Show", (unsigned long long)upload_show_key("Unknown series"));
+    preview_of(adam_id, opts, files);
+    page = th_page(adam_id, "/media/upload");
+    CHECK_HAS(page, "<small>Show · S01E02 · Second · it&#39;s already there</small>");
+    CHECK_HAS(page, "0 files to send · 6 skipped</p>");
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    th_halt();
 }

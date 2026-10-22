@@ -14,6 +14,8 @@
 #include "upload.h"
 #include "health.h"
 #include "drives.h"
+#include "download.h"
+#include "manage.h"
 
 static int64_t g_disks_at; /* when the disks under the library were last measured (see "disk space") */
 
@@ -413,6 +415,14 @@ void media_lib_head(Ctx *c, Buf *b, const char *active, const char *title, const
         buf_puts(b, "</span>");
     }
     if (buttons) buf_puts(b, buttons);
+    /* adding videos, where an admin looks for it (1.1: it hid behind Library settings' corner) - once the library
+       has a folder to put them in (the empty page offers the folders first) */
+    char roots[MEDIA_MAX_ROOTS][300];
+    if (is_admin(c) && !str_eq(active, "tv") && media_roots(roots, MEDIA_MAX_ROOTS) > 0) {
+        buf_puts(b, "<a class=\"btn primary media-add\" href=\"/media/upload\">");
+        ui_icon(b, "plus");
+        H(b, "<span>%s</span></a>", T("Add videos"));
+    }
     H(b, "<a class=\"icon-btn\" href=\"/media/settings\" title=\"%s\" aria-label=\"%s\">", T("Library settings"),
       T("Library settings"));
     ui_icon(b, "settings");
@@ -842,7 +852,14 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
         media_ep_code(b, up);
         buf_puts(b, "</span></a>");
     }
+    media_manage_series_link(c, b, s); /* (admins: Manage - manage.c) */
+    if (is_admin(c) && !str_eq(ctx_q(c, "manage"), "1")) { /* into this series' folder (upload.c ?series=) */
+        H(b, " <a class=\"btn\" href=\"/media/upload?series=%X\">", s->id);
+        ui_icon(b, "plus");
+        H(b, "<span>%s</span></a>", T("Add episodes"));
+    }
     buf_puts(b, "</div></div>");
+    if (media_manage_series(c, b, s)) return; /* ?manage=1 */
 
     /* season tabs */
     int season = (int)ctx_qint(c, "s", up ? up->name.season : media_episode(s, 0)->name.season);
@@ -859,6 +876,7 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
         }
         buf_puts(b, "</nav>");
     }
+    media_download_series(c, b, s, season); /* "Download season 2 (8.2 GB)", "Download all": grown-ups (download.c) */
     buf_puts(b, "<ol class=\"media-eps\">");
     for (int i = 0; i < s->count; i++) {
         const MediaFile *e = media_episode(s, i);
@@ -1244,6 +1262,7 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         ui_icon(b, "trash");
         H(b, "<span>%s</span></a>", T("Remove"));
     }
+    media_manage_watch_button(c, b, f); /* (admins: Fix title - manage.c) */
     buf_puts(b, "</div></div>");
 
     static const char *const cls[] = {"", "ok", "warn", "bad"};
@@ -1268,6 +1287,7 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         tech_facts(b, pf);
         buf_puts(b, "</span></details>");
     }
+    media_download_link(c, b, f); /* "Download (1.2 GB)": grown-ups only (download.c) */
     buf_puts(b, "</div>");
     ConvertNeed need = convert_need(f);
     if (need != CONV_NONE) { /* Hemma makes a copy that plays everywhere, once */
@@ -1336,6 +1356,7 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         snprintf(close, sizeof close, "/media/watch/%016llx", (unsigned long long)f->id);
         remove_modal(c, b, f, close);
     }
+    media_manage_watch_dialog(c, b, f); /* ?fix=1 */
 }
 
 /* Who may rescan the library: admins, and the members an admin lets (setting "media.rescanners",
@@ -1632,6 +1653,7 @@ static void page_settings(Ctx *c, Buf *b) {
     left_card(c, b, ix);
     parts_card(c, b, ix);
     history_card(c, b);
+    media_manage_room_card(c, b); /* (admins: What takes room - manage.c) */
 
     if (c->me) {
         ui_card(b, T("Playback"), NULL, NULL);
@@ -1659,20 +1681,22 @@ static void page_settings(Ctx *c, Buf *b) {
     H(b, "<p class=\"muted media-plays\">%r</p>",
       T("Most videos play straight away. Some - DVD rips especially - need converting first: one button (<i>Play "
         "everywhere</i> above) makes a copy that plays on every phone, computer and TV."));
-    H(b, "<ul class=\"media-tips\"><li><span class=\"badge ok\">%s</span> %r</li>", T("Plays in browsers"),
+    /* (each item's words in ONE span: the list items are column flexboxes, so loose text, <i> and <b> each took a
+       row of their own - "Plays on newer devices" sat apart from its sentence) */
+    H(b, "<ul class=\"media-tips\"><li><span class=\"badge ok\">%s</span> <span>%r</span></li>", T("Plays in browsers"),
       T("On every screen."));
-    H(b, "<li><span class=\"badge warn\">%s</span> %r</li>", T("May not play everywhere"),
+    H(b, "<li><span class=\"badge warn\">%s</span> <span>%r</span></li>", T("May not play everywhere"),
       T("On computers and most phones, but a TV's browser or an iPhone may refuse it. <i>Plays on newer devices</i>: "
         "most from the last few years."));
-    H(b, "<li><span class=\"badge bad\">%s</span> %r</li></ul>", T("Needs conversion"),
+    H(b, "<li><span class=\"badge bad\">%s</span> <span>%r</span></li></ul>", T("Needs conversion"),
       T("Nowhere until Hemma has made its copy."));
     H(b, "<details class=\"media-formats\"><summary>%s</summary><ul class=\"media-tips\">", T("Which formats are which"));
-    H(b, "<li>%r</li>", T("<b>Plays in browsers:</b> MP4 or WebM with H.264/VP9 video and AAC/MP3/Opus sound."));
-    H(b, "<li>%r</li>",
+    H(b, "<li><span>%r</span></li>", T("<b>Plays in browsers:</b> MP4 or WebM with H.264/VP9 video and AAC/MP3/Opus sound."));
+    H(b, "<li><span>%r</span></li>",
       T("<b>May not play everywhere:</b> MKV, HEVC, or Dolby sound (Dolby Digital and Digital Plus: AC-3, E-AC-3) — fine "
         "in Chrome/Edge or Safari, not all of them; Dolby sound plays silently in Chrome and Firefox. An HEVC film "
         "converted here (<i>Plays on newer devices</i>) plays in Safari and on most devices from the last few years."));
-    H(b, "<li>%r</li></ul></details>",
+    H(b, "<li><span>%r</span></li></ul></details>",
       T("<b>Needs conversion:</b> MPEG-2 (DVD rips), AVI/XviD, DTS sound. Hemma converts MKV files with MPEG-2, H.264 or "
         "HEVC video and Dolby or AAC sound itself, and keeps their text subtitles as .srt files next to them."));
     ui_card_end(b);
@@ -2165,7 +2189,7 @@ static const Action actions[] = {
     {"media.search", act_search, true, .may = ACT_ALL}, {"media.progress", act_progress, true, true, ACT_ALL},
     {"media.watched", act_watched, false, true, ACT_ALL},
     {"media.rescan", act_rescan}, {"media.roots", act_roots}, {"media.roots_add", act_roots_add},       {"media.prefs", act_prefs, .may = ACT_ALL},
-    {"media.upload_stop", upload_act_stop}, {"media.art_remove", act_art_remove},
+    {"media.upload_stop", upload_act_stop}, {"media.upload_preview", upload_act_preview, true}, {"media.art_remove", act_art_remove},
     {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove},
     {"media.forget", act_forget, false, true, ACT_ALL}, {"media.kids", act_kids},
     {"media.drop_originals", act_drop_originals}, {"media.drop_auto", act_drop_auto},
@@ -2173,6 +2197,8 @@ static const Action actions[] = {
     {"media.history_forget", act_history_forget},
     {"media.drive_use", media_drives_act_use}, {"media.drive_format", media_drives_act_format},
     {"media.drive_forget", media_drives_act_forget}, {"media.drive_seen", media_drives_act_seen},
+    {"media.manage_remove", media_manage_act_remove}, {"media.fix_title", media_manage_act_fix_title},
+    {"media.fix_episode", media_manage_act_fix_episode},
     {0},
 };
 
@@ -2285,6 +2311,7 @@ static void tick(int64_t now) {
     convert_tick(now);
     media_health_tick(now);
     media_drives_tick(now);
+    media_manage_tick(now); /* (a removal finished on its thread) */
     if (!g_disks_at || now - g_disks_at >= 30000) disks_refresh(now);
 }
 

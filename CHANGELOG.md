@@ -4,6 +4,49 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 1.1.0 (2026-10-21)
+
+Watch becomes a library: easy to put videos into, to take them home from, and to look after.
+
+### New
+
+- **Download a video** to watch it away from home: **Download (1.2 GB)** on a video's page. You
+  get the version that plays everywhere (the converted copy when there is one), named the way
+  you'd name it yourself - "Clip (2020).mp4", "Show S01E03 - Title.mp4".
+- **A season or a whole series as one file:** **Download season 2 (8.2 GB)** and **Download all**
+  on a series' page give one .zip with a folder per season and each episode's subtitles beside it.
+- **Downloads give way to watching:** while someone in the home is watching, downloads slow down
+  so the film doesn't stutter, and speed up again when nobody is. Downloads are for grown-ups:
+  members and admins, not children, guests or a TV.
+- **Manage a series** (admins): **Manage** on a series' page lists every episode with its files
+  and their size. Remove an episode, a season or the whole series - the files, and the folders
+  they leave empty - after a dialog that says what goes and how much room it frees. Everyone's
+  progress in those videos goes with them.
+- **Fix a name** (admins): **Fix title** on a film's page sets its title and year, and **Fix
+  number** beside an episode under **Manage** puts it under the right season and number. Hemma renames the files on
+  the disk - the converted copy and the subtitles too - checks first that it will read the new
+  name the way you meant, never writes over a file, and everyone's progress follows.
+- **What takes room** under **Watch → Library settings**: the ten biggest series and films.
+
+### Changed
+
+- **Adding videos is easy to find and to understand:** **Add videos** sits at the top of Watch
+  (admins), and a series' page has **Add episodes**. Drop videos or a whole folder on the page (or
+  choose them), and before anything is sent Hemma shows where each file will go, what it converts
+  first, and what it skips and why. Start sends it all.
+- **Hemma sorts what you add:** an episode goes into its series' folder and season folder (the
+  ones the library already has, or new ones), a film into Movies under "Title (Year)", and
+  subtitles, posters and copies go along with their video. A series' name can be corrected right
+  in the preview. *Keep the folders' own layout* under **More options** sends things as they are.
+  File names never change.
+- The progress card names the original files, says to keep the tab open, and offers **See what's
+  new** when it's done.
+
+### Fixed
+
+- **Upload anyway** showed up when no other upload was running.
+- In **What plays where** (a video's page), the explanation and its badge sat on separate rows.
+
 ## 1.0.0 (2026-10-21)
 
 Hemma 1.0: everything planned for a first full version is in.

@@ -75,6 +75,7 @@
 .media-sdetail-art .media-art { width: 100%; }
 .media-sdetail-t h1 { font-size: 32px; margin-bottom: 6px; }
 .media-sdetail-t .sub { color: var(--muted); margin-bottom: 18px; }
+.media-sdetail-t .btn { margin-top: 8px; } /* Resume, Manage, Add episodes wrap on a phone */
 @media (max-width: 600px) {
   .media-sdetail { grid-template-columns: 110px 1fr; gap: 14px; }
   .media-sdetail-t h1 { font-size: 23px; }
@@ -231,6 +232,51 @@
 .media-up-list li { margin: 3px 0; overflow-wrap: anywhere; }
 .media-up-list li.bad { color: var(--danger); }
 .media-up form { margin-top: 10px; }
+.media-conv .row { padding: 6px 0; }
+.media-conv .media-up-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13.5px; }
+.media-conv .media-up-bar { flex: 0 0 38%; }
+
+/* the page: a place to drop videos, what Start will do with them (the server's preview), More options */
+.media-up-form [hidden] { display: none !important; } /* (.check's display beat the attribute: "Upload anyway" showed) */
+.media-up-drop {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 26px 16px; text-align: center;
+  border: 2px dashed var(--line-2); border-radius: var(--radius); background: var(--panel-2);
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.media-up-drop[data-over] { border-color: var(--accent); background: var(--accent-soft); }
+.media-up-ico { width: 40px; height: 40px; color: var(--accent); stroke-width: 1.6; }
+.media-up-drop-t, .media-up-drop-tap { font-size: 17px; font-weight: 650; }
+.media-up-drop-tap { display: none; }
+@media (hover: none) and (pointer: coarse) { /* a phone: nothing to drop, the picker it is */
+  .media-up-drop-t { display: none; }
+  .media-up-drop-tap { display: block; }
+}
+.media-up-drop > .media-small { max-width: 48ch; }
+.media-up-pick { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 8px; }
+.media-up-pick .btn { min-height: 44px; cursor: pointer; }
+.media-up-pick .btn:focus-within { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+html[data-nodir] .media-up-folder { display: none; } /* (wire.js: no folder picker in this browser) */
+.media-up-pv { display: flex; flex-direction: column; gap: 12px; }
+.media-up-pv:empty { display: none; }
+.media-up-pv .notice { margin: 0; }
+.media-up-sum { font-weight: 650; font-variant-numeric: tabular-nums; }
+.media-up-group { padding: 10px 14px 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.media-up-dir { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; font-size: 15px; overflow-wrap: anywhere; }
+.media-up-dir .i { width: 18px; height: 18px; color: var(--muted); }
+.media-up-dir i { font-style: normal; color: var(--muted); }
+.media-up-dir + p { margin-top: 2px; }
+.media-up-files .row { padding: 8px 0; gap: 10px; }
+.media-up-files .row-main { overflow-wrap: anywhere; }
+.media-up-files .badge { flex: none; }
+.media-up-name { font-size: 14px; font-weight: 600; }
+.media-up-group > p:last-child { margin-bottom: 8px; }
+.media-up-names, .media-up-more { border-top: 1px solid var(--line); }
+.media-up-names summary, .media-up-more summary { padding: 11px 0; cursor: pointer; font-weight: 650; }
+.media-up-names .field + .field { margin-top: 10px; }
+.media-up-names > p { margin-bottom: 10px; }
+.media-up-more > .stack { padding-bottom: 6px; }
+/* "Inside the folder" matters only when the folders keep their own layout */
+.media-up-more:has(input[name="keep"]:not(:checked)) .media-up-into { display: none; }
 
 /* Older TV browsers (Samsung before ~2023) lack aspect-ratio: posters keep a height anyway */
 @supports not (aspect-ratio: 1 / 1) {

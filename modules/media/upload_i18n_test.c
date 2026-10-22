@@ -3,6 +3,7 @@
  * checks on the System page - nothing left in English but names. Also: what the browser hears
  * (an upload's answers, a worker thread's too) comes in the uploader's language. */
 #include "../../core/auth.h"
+#include "../../core/codec.h"
 #include "../../core/plat.h"
 #include "../../core/server.h"
 #include "../../tests/harness.h"
@@ -149,7 +150,7 @@ TEST(media_upload_pages_speak_swedish_and_spanish) {
     char root[512];
     str_copy(root, sizeof root, test_tmpdir());
     /* (names, their initials, the library folder) */
-    const char *allow[] = {"Adam", "Maja", "Eva", "A", "M", "Show", root, SAME_EVERYWHERE, NULL};
+    const char *allow[] = {"Adam", "Maja", "Eva", "A", "M", "Show", "x.mkv", root, SAME_EVERYWHERE, NULL};
 
     /* no library folder yet; a member */
     static const char *const up[] = {"/media/upload"};
@@ -272,6 +273,77 @@ TEST(media_upload_pages_speak_swedish_and_spanish) {
     CHECK(g_done);
     server_shutdown();
     buf_free(&r);
+    th_halt();
+}
+
+/* --------------------------------------------- the upload page's preview (what Start will do) */
+
+TEST(media_upload_preview_speaks_swedish_and_spanish) {
+    th_boot();
+    int adam_id = make_user("Adam", "adam", NULL, ROLE_ADMIN);
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    put_file(root, "Series/Show/Season 1/Show.S01E01.mp4", "e1", 2);
+    put_file(root, "Series/Show/Season 1/Show.S01E02.mp4", "e2", 2);
+    setting_set("media.roots", root);
+    media_scan_sync();
+    char hex[17], url[100];
+    media_id_hex(media_lib()->series[0].id, hex);
+    snprintf(url, sizeof url, "/media/upload?series=%s", hex);
+    /* every kind of file, and every fate: sent, converted here, skipped, a play-all's header, left out, an
+       episode of no series, a disc rip, a film, an extra, subtitles, pictures, a copy beside its original */
+    const char *files =
+        "[[\"Show.S01E02.mp4\",2],[\"Show.S01E03.Third.mkv\",3000],[\"Show.S01E03.Third.en.srt\",30],"
+        "[\"Show/poster.jpg\",40],[\"Show/Show.S01E04.mp4\",50],[\"Film (2001).mp4\",60],[\"Film (2001)-trailer.mp4\",7],"
+        "[\"notes.txt\",3],[\"Season 2/01 - Unknown.mp4\",8],[\"Holiday/IMG_1.mov\",9],"
+        "[\"Rip/Season 1/Disc - 1/A1_t01.mkv\",943718400],[\"Rip/Season 1/Disc - 1/A2_t02.mkv\",996147200],"
+        "[\"Rip/Season 1/Disc - 1/A3_t03.mkv\",1048576000],[\"Rip/Season 1/Disc - 1/A4_t04.mkv\",1048576000],"
+        "[\"Rip/Season 1/Disc - 1/A7_t00.mkv\",4037017600],[\"Sub only.srt\",5]]";
+    Buf form = {0};
+    buf_puts(&form, "sort=1&root=0&conv=1&originals=1&all=99&files=");
+    url_encode(&form, files, false);
+    upload_test_free_space(1LL << 40);
+    upload_test_preview(adam_id, buf_cstr(&form));
+    const char *page = th_page(adam_id, "/media/upload");
+    CHECK_HAS(page, "This shows the first 16 of 99 files");
+    CHECK_HAS(page, "Which series are these episodes from?");
+    CHECK_HAS(page, "Rip · season 1, disc 1");
+    CHECK_HAS(page, "An extra for Film");
+    CHECK_HAS(page, "Just its first MB");
+    CHECK_HAS(page, "the copy of Show.S01E03.Third.mkv, made on this device");
+    /* (names, folders and file names are data; "Series"/"Movies" are folder names) */
+    static const char *const allow[] = {"Adam", "A", "Show", "Rip", "Film", "Season 1", "Season 2", "Holiday",
+                                        "Series", "Movies", "Disc - 1", "Film (2001)", "Show · S01E03 · Third",
+                                        "Show · S01E02", "Show · S01E04", "Show · S01E03",
+                                        /* the files' own names */
+                                        "01 - Unknown.mp4", "A1_t01.mkv", "A1_t01.web.mp4", "A2_t02.mkv",
+                                        "A2_t02.web.mp4", "A3_t03.mkv", "A3_t03.web.mp4", "A4_t04.mkv",
+                                        "A4_t04.web.mp4", "A7_t00.mkv", "Film (2001).mp4", "Film (2001)-trailer.mp4",
+                                        "IMG_1.mov", "notes.txt", "poster.jpg", "Show.S01E02.mp4",
+                                        "Show.S01E03.Third.en.srt", "Show.S01E03.Third.mkv", "Show.S01E03.Third.web.mp4",
+                                        "Show.S01E04.mp4", "Sub only.srt", "Other S02E01.mp4", NULL};
+    static const char *const pages[] = {"/media/upload"};
+    CHECK_INT(untranslated(adam_id, pages, 1, allow), 0);
+    upload_test_free_space((1LL << 30) + 10); /* no room */
+    upload_test_preview(adam_id, buf_cstr(&form));
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "Not enough room");
+    CHECK_INT(untranslated(adam_id, pages, 1, allow), 0);
+    upload_test_free_space(1LL << 40);
+    /* a refused list */
+    upload_test_preview(adam_id, "sort=1&root=0&files=%5B%5D");
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "No files were chosen");
+    CHECK_INT(untranslated(adam_id, pages, 1, allow), 0);
+    /* "Add episodes" on a series' page, with its preview */
+    buf_reset(&form);
+    buf_printf(&form, "sort=1&series=%s&files=", hex);
+    url_encode(&form, "[[\"Other S02E01.mp4\",4]]", false);
+    upload_test_preview(adam_id, buf_cstr(&form));
+    const char *series[] = {url};
+    CHECK_HAS(th_page(adam_id, url), "Season 2");
+    CHECK_INT(untranslated(adam_id, series, 1, allow), 0);
+    upload_test_free_space(-1);
+    upload_test_preview(adam_id, NULL);
+    buf_free(&form);
     th_halt();
 }
 
