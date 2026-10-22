@@ -1036,3 +1036,27 @@ TEST(media_offers_the_folders_the_installer_knows) {
     buf_free(&both);
     th_halt();
 }
+
+/* 1.1: adding videos where an admin looks for it - every library tab's header, not Library settings' corner */
+TEST(media_admins_find_add_videos_on_watch) {
+    int member = boot_with_library();
+    int admin = signing_admin("Anna", "anna");
+    static const char *const tabs[] = {"/media", "/media/movies", "/media/series", "/media/browse"};
+    for (size_t i = 0; i < sizeof tabs / sizeof tabs[0]; i++) {
+        CHECK_HAS(th_page(admin, tabs[i]), "<a class=\"btn primary media-add\" href=\"/media/upload\">");
+        CHECK(!strstr(th_page(member, tabs[i]), "href=\"/media/upload\""));
+    }
+    /* a series' page: "Add episodes" into its folder (not while managing it) */
+    CHECK(media_lib()->nseries > 0);
+    uint64_t sid = media_lib()->series[0].id;
+    char add[80], hex[17];
+    media_id_hex(sid, hex);
+    snprintf(add, sizeof add, "<a class=\"btn\" href=\"/media/upload?series=%s\">", hex);
+    CHECK_HAS(th_page(admin, url("/media/series/%s", sid)), add);
+    CHECK(!strstr(th_page(member, url("/media/series/%s", sid)), "/media/upload"));
+    CHECK(!strstr(th_page(admin, url("/media/series/%s?manage=1", sid)), add));
+    setting_set("media.roots", ""); /* no folder yet: the empty page offers folders first */
+    media_scan_sync();
+    CHECK(!strstr(th_page(admin, "/media"), "media-add"));
+    th_halt();
+}

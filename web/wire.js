@@ -12,7 +12,10 @@
 //               a[data-native] full page load · form[data-keep] don't reset · form[data-confirm]
 //               form[data-upload] send the chosen files (see upload() below); with
 //               data-convert/data-wasm the server's converter (C, as WebAssembly) can make
-//               play-everywhere copies first, in Workers (web/conv.js)
+//               play-everywhere copies first, in Workers (web/conv.js). A [data-drop] area in it:
+//               files and folders dropped (anywhere on the page) or picked are kept on the form,
+//               each choice adding to them ([data-drop-clear] empties the list), and with
+//               data-preview="<live action>" the server is told them to draw what Start will do
 //               input[type=file][data-shrink="N"] a photo goes in its form shrunk (N px, a JPEG data: URL)
 //               [data-start="id"] open a horizontal scroller at that child
 //               video[data-onair] live: plays at "now", no pausing or winding
@@ -65,6 +68,8 @@
       if (h) delete root.dataset.h;
       send(h ? { t: 'hello', url: here(), v: VERSION, h } : { t: 'hello', url: here(), v: VERSION });
       while (later.length) send({ t: 'log', url: here(), m: later.shift(), ua: navigator.userAgent });
+      // a new socket is a new screen to the server: an upload page's preview is asked for again
+      for (const f of document.querySelectorAll('form[data-preview]')) if (f._files && f._files.length && !uploading) preview(f, true);
     };
     ws.onmessage = (e) => {
       let ops;
@@ -535,24 +540,142 @@
     } catch (_) { return false; }
   })();
 
+  // What's chosen: a form with a [data-drop] area keeps its files itself (f._files: [{file, path}]) -
+  // dropped (folders too, walked with their paths) or picked, each choice adding to the list;
+  // [data-drop-clear] empties it. Others read their file inputs at submit (a picture's form).
+  const keeps = (f) => !!f.querySelector('[data-drop]');
+  const chosen = (f) => {
+    if (keeps(f)) return f._files || [];
+    const out = [];
+    for (const el of f.querySelectorAll('input[type=file]')) for (const file of el.files) out.push({ file, path: file.webkitRelativePath || file.name });
+    return out;
+  };
+  function keep(f, list) {
+    const have = f._files || (f._files = []), seen = new Set(have.map((x) => x.path));
+    for (const x of list) if (x.path && !seen.has(x.path)) { seen.add(x.path); have.push(x); }
+    preview(f, true);
+  }
+  // form[data-preview="<live action>"]: the server sorts the chosen files and draws what Start will do
+  // (where each goes, what's converted here, what's skipped) - asked again when an option changes. A
+  // socket message has room for about 1 MB: a long list goes cut ("all" says how many there are).
+  const PREVIEW_BYTES = 900 * 1024;
+  let previewTimer = 0;
+  function preview(f, now) {
+    if (!f.dataset.preview) return;
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => {
+      const all = chosen(f), base = pairs(new FormData(f)).filter(([k]) => k !== 'files' && k !== 'all');
+      if (!canConvert || !f.dataset.convert) for (let i = base.length - 1; i >= 0; i--) if (base[i][0] === 'conv') base.splice(i, 1);
+      let list = all.map((x) => [x.path, x.file.size]), msg;
+      for (;;) { // (the files first: a form's fields beyond 64 are dropped)
+        msg = { t: 'live', a: f.dataset.preview, url: here(), f: [['files', list.length ? JSON.stringify(list) : ''], ['all', String(all.length)], ...base] };
+        if (list.length <= 1 || new TextEncoder().encode(JSON.stringify(msg)).length <= PREVIEW_BYTES) break;
+        list = list.slice(0, Math.floor(list.length / 2));
+      }
+      send(msg);
+    }, now ? 0 : 400);
+  }
+  const previewing = (t) => t && t.form && t.form.dataset.upload && keeps(t.form) ? t.form : null;
+  document.addEventListener('change', (e) => {
+    const f = previewing(e.target);
+    if (!f) return;
+    if (e.target.type === 'file') { // picked: onto the list, and the input is ready for the next pick
+      keep(f, [...e.target.files].map((file) => ({ file, path: file.webkitRelativePath || file.name })));
+      e.target.value = '';
+    } else if (e.target.type !== 'range') preview(f, true); // (the room slider changes nothing there)
+  });
+  document.addEventListener('input', (e) => { // a series' new name, typed
+    const f = previewing(e.target);
+    if (f && e.target.type === 'text') preview(f);
+  });
+  document.addEventListener('keydown', (e) => { // Enter in a name field asks again; it doesn't start the upload
+    const f = previewing(e.target);
+    if (f && e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type === 'text') { e.preventDefault(); preview(f, true); }
+  });
+  document.addEventListener('click', (e) => {
+    const x = e.target.closest && e.target.closest('[data-drop-clear]'), f = x && x.form;
+    if (!f) return;
+    f._files = [];
+    preview(f, true);
+  });
+  // Dropping: anywhere on a page with a [data-drop] area (a near miss shouldn't open the video in the
+  // tab instead); the area shows [data-over] meanwhile. A dropped folder is walked: its files keep
+  // their paths ("Show/Season 1/x.mkv"), as a picked folder's do.
+  const dropZone = () => document.querySelector('form[data-upload] [data-drop]');
+  const hasFiles = (e) => !!e.dataTransfer && [...(e.dataTransfer.types || [])].indexOf('Files') >= 0;
+  let dragDepth = 0;
+  const over = (z, on) => (on ? z.setAttribute('data-over', '') : z.removeAttribute('data-over'));
+  document.addEventListener('dragenter', (e) => {
+    const z = dropZone();
+    if (!z || !hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    over(z, true);
+  });
+  document.addEventListener('dragover', (e) => {
+    const z = dropZone();
+    if (!z || !hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    over(z, true); // (a morph meanwhile took the mark away)
+  });
+  document.addEventListener('dragleave', () => {
+    const z = dropZone();
+    if (z && --dragDepth <= 0) { dragDepth = 0; over(z, false); }
+  });
+  document.addEventListener('drop', (e) => {
+    const z = dropZone();
+    if (!z || !hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    over(z, false);
+    const f = z.closest('form');
+    dropped(e.dataTransfer).then((list) => keep(f, list), (err) => report(`drop: ${err && err.message}`));
+  });
+  async function dropped(dt) {
+    // (entries are read now: the drop's items are gone once this event is over)
+    const entries = [...(dt.items || [])].map((it) => (it.kind === 'file' && it.webkitGetAsEntry ? it.webkitGetAsEntry() : null));
+    if (!entries.some(Boolean)) return [...dt.files].map((file) => ({ file, path: file.name }));
+    const out = [];
+    const fileOf = (en) => new Promise((ok) => en.file(ok, () => ok(null)));
+    const children = (dir) => new Promise((ok) => {
+      const r = dir.createReader(), all = [];
+      const more = () => r.readEntries((got) => { if (!got.length) ok(all); else { all.push(...got); more(); } }, () => ok(all));
+      more();
+    });
+    const walk = async (en) => {
+      if (en && en.isFile) {
+        const file = await fileOf(en);
+        if (file) out.push({ file, path: en.fullPath.replace(/^\/+/, '') });
+      } else if (en && en.isDirectory) for (const c of await children(en)) await walk(c);
+    };
+    for (const en of entries) await walk(en);
+    return out;
+  }
+  // A folder picker where the browser has one (phones: none - the page shows only the video picker there)
+  if (!('webkitdirectory' in document.createElement('input')) || /iPhone|iPad|iPod|Android/.test(navigator.userAgent))
+    root.dataset.nodir = '1';
+
   async function upload(f) {
     if (uploading) { toast(1, T('An upload is already running')); return; }
-    const files = [];
-    for (const el of f.querySelectorAll('input[type=file]')) files.push(...el.files);
+    const picked = chosen(f), files = picked.map((x) => x.file);
     if (!files.length) { toast(2, f.dataset.empty || T('Choose a folder or some files first')); return; }
     const base = f.dataset.upload, body = {};
     for (const [k, v] of pairs(new FormData(f))) body[k] = v;
     const use = { worker: f.dataset.convert, wasm: f.dataset.wasm }; // the page says where (if it has them)
     if (!canConvert || !use.worker || !use.wasm) delete body.conv;
-    body.files = files.map((x) => [x.webkitRelativePath || x.name, x.size]);
+    body.files = picked.map((x) => [x.path, x.file.size]);
     uploading = true;
     busy(f, true);
-    let made = null;
+    let made = null, sent = false;
     try {
       const plan = await fetch(base + '/plan', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       }).then(json);
       if (plan.error) throw new Error(plan.error);
+      // under way: the page shows its progress instead of the preview (the list stays here until it's done:
+      // Start again after a failure carries on)
+      if (f.dataset.preview) send({ t: 'live', a: f.dataset.preview, url: here(), f: [['files', '']] });
       // [i, at] = file i from byte `at`; [i, at, end] = only up to `end` (the server needs no more);
       // {i, f} = convert file f here first, then send the copy as entry i (the server says how)
       const copies = plan.todo.filter((t) => !Array.isArray(t));
@@ -570,12 +693,17 @@
           if (m.drop) m.drop(); // sent (or not needed): the browser lets go of the copy now
         }
       }
+      sent = true;
     } catch (err) {
       toast(2, err.message || T('The upload stopped'));
     } finally {
       if (made) made.stop();
       uploading = false;
       busy(f, false);
+      if (keeps(f)) { // done: the list goes; else it stays, shown again - Start carries on
+        if (sent) f._files = [];
+        else preview(f, true);
+      }
     }
   }
 

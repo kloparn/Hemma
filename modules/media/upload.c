@@ -73,6 +73,7 @@ typedef struct {
     bool extra;   /* a copy added next to its original ("also send originals"): dropped when it can't be made */
     bool dupe;    /* skipped: the library has this episode or film under another name */
     bool on_server; /* skipped midway: the server's converter makes this copy (answered like a sent file) */
+    bool out;     /* skipped before it had a place: not a video, subtitle or picture, a bad name ... (the preview) */
     int64_t orig; /* the original's size (copies) */
     char ext[8];  /* the original's extension, to fall back to its name */
 } UpFile;
@@ -213,14 +214,16 @@ static void drop_part(const Batch *b, const UpFile *f) {
    so a leftover is likely another picture), or a copy's from before this server started (the
    browser converts it again, maybe somewhere else: its bytes needn't match - a copy whose upload
    a restart cut off is sent again): then the leftover goes and it starts over. */
-static int64_t resume_point(const Batch *b, const UpFile *f) {
+static int64_t resume_from(const Batch *b, const UpFile *f, bool dry) { /* dry: only say (the preview) */
     int64_t mtime = 0, have = part_size(b, f, &mtime);
     if (have && (have > f->size || b->art || (media_is_web_copy(f->rel) && mtime < g_since))) {
-        drop_part(b, f);
+        if (!dry) drop_part(b, f);
         have = 0;
     }
     return have;
 }
+
+static int64_t resume_point(const Batch *b, const UpFile *f) { return resume_from(b, f, false); }
 
 static Batch *find(uint64_t id) {
     for (int i = 0; i < MAX_BATCHES; i++)
@@ -341,7 +344,7 @@ static void skip_companions(Batch *b) {
 
 static bool original_video(const UpFile *f) { return f->size > 0 && media_is_video_ext(f->rel) && !media_is_web_copy(f->rel); }
 
-static void play_alls(Batch *b) {
+static void play_alls(Batch *b, bool dry) {
     int *parts = xcalloc((size_t)b->nfiles + 1, sizeof *parts); /* decided first: sizes change below */
     for (int i = 0; i < b->nfiles; i++) {
         const UpFile *f = &b->files[i];
@@ -384,7 +387,7 @@ static void play_alls(Batch *b) {
             else why_set(f, N_("a \"play all\" copy of the %d episodes next to it - its header is there"), parts[i]);
             continue;
         }
-        f->saved = resume_point(b, f);
+        f->saved = resume_from(b, f, dry);
     }
     free(parts);
 }
@@ -644,84 +647,205 @@ static bool art_plan(Json *j, int at, Batch **out, char *err, size_t cap) {
     return true;
 }
 
-static void plan(Ctx *c, Conn *conn, HttpReq *r) {
-    int maxtok = 64 + MAX_FILES * 3;
-    JsonTok *tok = xmalloc((size_t)maxtok * sizeof *tok);
-    Json j;
-    Batch *b = NULL;
-    char err[400] = ""; /* (in the request's language: the browser shows it) */
-    char roots[MEDIA_MAX_ROOTS][300];
-    int nroots = media_roots(roots, MEDIA_MAX_ROOTS);
-    if (!r->body || !json_parse(&j, r->body, r->body_len, tok, maxtok) || json_type(&j, 0) != JSON_OBJECT) {
-        snprintf(err, sizeof err, T("That upload list didn't make sense (more than %d files?)"), MAX_FILES);
-        goto out;
+/* What a plan is asked for - by the page's Start (the JSON plan) or by its preview (the live action's
+   fields): read the same way from either, so both do the same. */
+#define NAMES_MAX 24
+typedef struct {
+    int root;        /* into media_roots(); -1 = none chosen */
+    bool sort;       /* by the files' names (upload_sort: the page's way); else as chosen, under `into` */
+    char into[256];  /* (as typed: plan_make checks it) */
+    bool conv, originals, dupes, force;
+    uint64_t series; /* /media/upload?series=: everything into that series' folder */
+    int room;        /* the slider (GB), -1 = not said */
+    UpName names[NAMES_MAX]; /* series renamed on the preview ("to.<16 hex>" fields) */
+    int nnames;
+    int n;           /* files chosen (over MAX_FILES: refused, and none are kept) */
+    char **paths;
+    int64_t *sizes;  /* -1: the browser didn't say */
+} PlanIn;
+
+static void plan_in_free(PlanIn *in) {
+    for (int i = 0; in->paths && i < in->n; i++) free(in->paths[i]);
+    free(in->paths);
+    free(in->sizes);
+    memset(in, 0, sizeof *in);
+}
+
+/* One option, from the JSON plan (j) or the preview's fields (f) */
+typedef struct {
+    const Json *j;
+    const Fields *f;
+} Ask;
+
+static bool ask_str(const Ask *a, const char *key, char *out, size_t cap) {
+    out[0] = '\0';
+    if (a->f) {
+        const char *v = fields_get(a->f, key);
+        if (v) str_copy(out, cap, v);
+        return v != NULL;
     }
-    int art = json_get(&j, 0, "art");
-    if (art >= 0) {
-        if (!art_plan(&j, art, &b, err, sizeof err)) goto out;
-        goto planned;
+    int t = json_get(a->j, 0, key);
+    long long v;
+    if (json_type(a->j, t) == JSON_NUMBER && json_integer(a->j, t, &v)) {
+        snprintf(out, cap, "%lld", v);
+        return true;
     }
-    char tmp[1024];
-    long long ri = -1;
-    int rt = json_get(&j, 0, "root");
-    if (json_type(&j, rt) == JSON_STRING && json_string(&j, rt, tmp, sizeof tmp)) ri = str_int_or(tmp, -1);
-    else json_integer(&j, rt, &ri);
-    if (ri < 0 || ri >= nroots) {
-        str_copy(err, sizeof err, T("Choose which library folder to upload into"));
-        goto out;
-    }
-    if (!path_is_dir(roots[ri])) {
-        snprintf(err, sizeof err, T("Can't reach the library folder %s right now"), roots[ri]);
-        goto out;
-    }
-    char into[256] = "";
-    if (json_string(&j, json_get(&j, 0, "into"), tmp, sizeof tmp)) {
+    return json_string(a->j, t, out, cap);
+}
+
+static bool ask_on(const Ask *a, const char *key) {
+    char v[8];
+    return ask_str(a, key, v, sizeof v) && str_eq(v, "1");
+}
+
+static void ask_name(PlanIn *in, const char *key, const char *val) { /* "to.<16 hex>" = "<a series' name>" */
+    uint64_t k;
+    if (in->nnames >= NAMES_MAX || !str_starts(key, "to.") || !media_parse_id(key + 3, &k)) return;
+    UpName *nm = &in->names[in->nnames];
+    str_copy(nm->name, sizeof nm->name, val);
+    str_trim(nm->name);
+    if (nm->name[0]) nm->key = k, in->nnames++;
+}
+
+static void plan_in(const Ask *a, PlanIn *in) {
+    char tmp[300];
+    in->root = ask_str(a, "root", tmp, sizeof tmp) ? (int)str_int_or(tmp, -1) : -1;
+    in->sort = ask_on(a, "sort") && !ask_on(a, "keep");
+    if (ask_str(a, "into", tmp, sizeof tmp)) {
         str_trim(tmp);
-        if (*tmp && !upload_clean_rel(tmp, into, 200)) {
-            snprintf(err, sizeof err, T("The folder name \"%.80s\" has characters a disk can't store"), tmp);
-            goto out;
+        str_copy(in->into, sizeof in->into, tmp);
+    }
+    in->conv = ask_on(a, "conv");
+    in->originals = ask_on(a, "originals");
+    in->dupes = ask_on(a, "dupes");
+    in->force = ask_on(a, "force");
+    in->room = ask_str(a, "room", tmp, sizeof tmp) ? (int)CLAMP(str_int_or(tmp, ROOM_DEFAULT), ROOM_MIN, ROOM_MAX) : -1;
+    if (!ask_str(a, "series", tmp, sizeof tmp) || !media_parse_id(tmp, &in->series)) in->series = 0;
+    if (a->f) {
+        for (int i = 0; i < a->f->n; i++) ask_name(in, a->f->k[i], a->f->v[i]);
+    } else {
+        for (int k = json_child(a->j, 0); k >= 0; k = json_next(a->j, 0, k)) {
+            char key[40], val[200];
+            if (json_string(a->j, k, key, sizeof key) && str_starts(key, "to.") && json_string(a->j, k + 1, val, sizeof val))
+                ask_name(in, key, val);
         }
     }
-    int arr = json_get(&j, 0, "files");
-    int n = json_type(&j, arr) == JSON_ARRAY ? j.tok[arr].count : 0;
-    if (n <= 0) {
-        str_copy(err, sizeof err, T("No files were chosen"));
-        goto out;
+}
+
+/* [[path, size], ...] */
+static void files_in(const Json *j, int arr, PlanIn *in) {
+    int n = json_type(j, arr) == JSON_ARRAY ? j->tok[arr].count : 0;
+    in->n = n;
+    if (n <= 0 || n > MAX_FILES) return; /* (plan_make says why) */
+    in->paths = xcalloc((size_t)n, sizeof *in->paths);
+    in->sizes = xcalloc((size_t)n, sizeof *in->sizes);
+    int i = 0;
+    for (int k = json_child(j, arr); k >= 0 && i < n; k = json_next(j, arr, k), i++) {
+        char raw[1024] = "";
+        long long size = -1;
+        json_string(j, json_index(j, k, 0), raw, sizeof raw);
+        json_integer(j, json_index(j, k, 1), &size);
+        in->paths[i] = xstrdup(raw);
+        in->sizes[i] = size;
     }
-    if (n > MAX_FILES) {
-        snprintf(err, sizeof err, T("That's more than %d files - upload a few folders at a time"), MAX_FILES);
-        goto out;
+    in->n = i;
+}
+
+static void batch_count(Batch *b) { /* what's skipped, and the bytes to send */
+    b->skipped = 0;
+    b->total = 0;
+    for (int k = 0; k < b->nfiles; k++) {
+        const UpFile *f = &b->files[k];
+        b->skipped += f->state == UP_SKIPPED;
+        if (f->state == UP_QUEUED) b->total += left_to_send(f);
+    }
+}
+
+/* What the plan does with in's files: a batch nobody shares yet. dry (the preview): nothing on the disk
+   changes. sorted (may be NULL) gets upload_sort's word on each chosen file (free it). NULL, with the
+   reason packed into err (i18n_pack: the plan says it in the request's words, the preview in the page's),
+   when there's nothing to plan. */
+static Batch *plan_make(Ctx *c, const PlanIn *in, bool dry, char *err, size_t cap, UpSorted **sorted) {
+    char roots[MEDIA_MAX_ROOTS][300];
+    int nroots = media_roots(roots, MEDIA_MAX_ROOTS), ri = in->root;
+    if (sorted) *sorted = NULL;
+    if (in->series) { /* everything into that series' folder: in its library folder */
+        const MediaIndex *ix = media_lib();
+        const MediaSeries *ms = media_series(in->series);
+        const MediaFile *e = ms && ms->count ? media_episode(ms, 0) : NULL;
+        ri = -1;
+        for (int i = 0; e && e->root < ix->nroots && i < nroots && ri < 0; i++)
+            if (str_eq(ix->roots[e->root], roots[i])) ri = i;
+        if (ri < 0) {
+            i18n_pack(err, cap, N_("That series isn't in the library any more"));
+            return NULL;
+        }
+    }
+    if (ri < 0 || ri >= nroots) {
+        i18n_pack(err, cap, N_("Choose which library folder to upload into"));
+        return NULL;
+    }
+    if (!path_is_dir(roots[ri])) {
+        i18n_pack(err, cap, N_("Can't reach the library folder %s right now"), roots[ri]);
+        return NULL;
+    }
+    char into[256] = "";
+    if (!in->sort && in->into[0] && !upload_clean_rel(in->into, into, 200)) {
+        char shown[84]; /* (cut at a whole character) */
+        str_copy(shown, sizeof shown, in->into);
+        i18n_pack(err, cap, N_("The folder name \"%s\" has characters a disk can't store"), shown);
+        return NULL;
+    }
+    if (in->n <= 0) {
+        i18n_pack(err, cap, N_("No files were chosen"));
+        return NULL;
+    }
+    if (in->n > MAX_FILES) {
+        i18n_pack(err, cap, N_("That's more than %d files - upload a few folders at a time"), MAX_FILES);
+        return NULL;
     }
 
-    b = xcalloc(1, sizeof *b);
+    int n = in->n;
+    Batch *b = xcalloc(1, sizeof *b);
     b->files = xcalloc((size_t)n, sizeof *b->files);
     b->nfiles = n;
     str_copy(b->root, sizeof b->root, roots[ri]);
+    /* every name checked first, then sorted all at once: subtitles go with their video, a show's folder
+       with its show (and the names say what each file is, for the preview, even when nothing's sorted) */
+    char **clean = xcalloc((size_t)n, sizeof *clean);
+    for (int i = 0; i < n; i++) {
+        char tmp[400];
+        if (in->sizes[i] >= 0 && upload_clean_rel(in->paths[i], tmp, sizeof tmp)) clean[i] = xstrdup(tmp);
+    }
+    UpSorted *srt = xcalloc((size_t)n, sizeof *srt);
+    UpSortOpts so = {.root = b->root, .series = in->series, .names = in->names, .nnames = in->nnames};
+    upload_sort(&so, (const char *const *)clean, n, srt);
     /* episodes and films the library has under another name stay behind (before any converting) */
-    bool dupes = json_string(&j, json_get(&j, 0, "dupes"), tmp, sizeof tmp) && str_eq(tmp, "1");
-    int i = 0;
-    for (int k = json_child(&j, arr); k >= 0 && i < n; k = json_next(&j, arr, k), i++) {
+    for (int i = 0; i < n; i++) {
         UpFile *f = &b->files[i];
-        long long size = -1;
-        char raw[1024] = "", clean[400], full[1024];
-        json_string(&j, json_index(&j, k, 0), raw, sizeof raw);
-        json_integer(&j, json_index(&j, k, 1), &size);
+        char full[1024], check[400];
         f->state = UP_SKIPPED;
         f->src = i;
-        str_copy(f->rel, sizeof f->rel, raw);
-        if (size < 0) {
+        f->out = true; /* (until it has a place) */
+        str_copy(f->rel, sizeof f->rel, in->paths[i]);
+        if (in->sizes[i] < 0) {
             why_set(f, N_("the browser didn't say how big it is"));
             continue;
         }
-        f->size = size;
-        if (!upload_clean_rel(raw, clean, sizeof clean)) {
+        f->size = in->sizes[i];
+        if (!clean[i]) {
             why_set(f, N_("its name has characters a disk can't store"));
             continue;
         }
-        if (*into) snprintf(f->rel, sizeof f->rel, "%s/%s", into, clean);
-        else str_copy(f->rel, sizeof f->rel, clean);
+        if (in->sort) str_copy(f->rel, sizeof f->rel, srt[i].dest);
+        else if (*into) snprintf(f->rel, sizeof f->rel, "%s/%s", into, clean[i]);
+        else str_copy(f->rel, sizeof f->rel, clean[i]);
         if (strlen(f->rel) > 380) {
             why_set(f, N_("the path is too long"));
+            continue;
+        }
+        if (in->sort && !upload_clean_rel(f->rel, check, sizeof check)) { /* (a folder named after a title) */
+            why_set(f, N_("its name has characters a disk can't store"));
             continue;
         }
         if (junk(f->rel)) {
@@ -732,6 +856,7 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
             why_set(f, N_("not a video, subtitle or poster"));
             continue;
         }
+        f->out = false;
         bool twice = false;
         for (int p = 0; p < i && !twice; p++) twice = b->files[p].state != UP_SKIPPED && str_eq(b->files[p].rel, f->rel);
         if (twice) {
@@ -756,30 +881,55 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
             continue;
         }
         char found[400], have_it[120];
-        if (!dupes && media_is_video_ext(f->rel) && media_have(b->root, f->rel, found, sizeof found)) {
+        if (!in->dupes && media_is_video_ext(f->rel) && media_have(b->root, f->rel, found, sizeof found)) {
             str_copy(have_it, sizeof have_it, tail2(found)); /* (cut at a whole character) */
             why_set(f, N_("the library has it: %s"), have_it);
             f->dupe = true;
             continue;
         }
         f->state = UP_QUEUED;
-        f->saved = resume_point(b, f);
+        f->saved = resume_from(b, f, dry);
     }
+    for (int i = 0; i < n; i++) free(clean[i]);
+    free(clean);
     skip_companions(b);
-    play_alls(b);
-    bool originals = json_string(&j, json_get(&j, 0, "originals"), tmp, sizeof tmp) && str_eq(tmp, "1");
-    if (!originals) skip_originals(b);
-    if (json_string(&j, json_get(&j, 0, "conv"), tmp, sizeof tmp) && str_eq(tmp, "1")) convert_here(b, originals, c->me->id);
-    if (json_string(&j, json_get(&j, 0, "room"), tmp, sizeof tmp)) { /* the slider's choice, for next time */
-        char v[8];
-        snprintf(v, sizeof v, "%d", (int)CLAMP(str_int_or(tmp, ROOM_DEFAULT), ROOM_MIN, ROOM_MAX));
-        pref_set(c->me->id, PREF_UPLOAD_ROOM, v);
+    play_alls(b, dry);
+    if (!in->originals) skip_originals(b);
+    if (in->conv) convert_here(b, in->originals, c->me->id);
+    batch_count(b);
+    if (sorted) *sorted = srt;
+    else free(srt);
+    return b;
+}
+
+static void plan(Ctx *c, Conn *conn, HttpReq *r) {
+    int maxtok = 64 + MAX_FILES * 3;
+    JsonTok *tok = xmalloc((size_t)maxtok * sizeof *tok);
+    Json j;
+    Batch *b = NULL;
+    PlanIn in = {0};
+    char err[400] = "", packed[400] = ""; /* (err in the request's language: the browser shows it) */
+    if (!r->body || !json_parse(&j, r->body, r->body_len, tok, maxtok) || json_type(&j, 0) != JSON_OBJECT) {
+        snprintf(err, sizeof err, T("That upload list didn't make sense (more than %d files?)"), MAX_FILES);
+        goto out;
     }
-planned:
-    for (int k = 0; k < b->nfiles; k++) {
-        const UpFile *f = &b->files[k];
-        b->skipped += f->state == UP_SKIPPED;
-        if (f->state == UP_QUEUED) b->total += left_to_send(f);
+    int art = json_get(&j, 0, "art");
+    if (art >= 0) {
+        if (!art_plan(&j, art, &b, err, sizeof err)) goto out;
+        batch_count(b);
+    } else {
+        Ask a = {.j = &j};
+        plan_in(&a, &in);
+        files_in(&j, json_get(&j, 0, "files"), &in);
+        if (!(b = plan_make(c, &in, false, packed, sizeof packed, NULL))) {
+            i18n_unpack_to(err, sizeof err, packed);
+            goto out;
+        }
+        if (in.room >= 0) { /* the slider's choice, for next time */
+            char v[12];
+            snprintf(v, sizeof v, "%d", in.room);
+            pref_set(c->me->id, PREF_UPLOAD_ROOM, v);
+        }
     }
     if (!room_for(b, c->me->id, err, sizeof err)) goto out;
 
@@ -788,7 +938,7 @@ planned:
        one still has to send were skipped above (claimed). A person's earlier upload that isn't
        running is replaced (picking the same files resumes it). A picture only replaces their
        previous picture, so one can be set while videos go up. */
-    bool force = json_string(&j, json_get(&j, 0, "force"), tmp, sizeof tmp) && str_eq(tmp, "1");
+    bool force = in.force;
     lock_take(&g_lock);
     int slot = -1;
     const Batch *other = NULL;
@@ -871,7 +1021,7 @@ planned:
     media_id_hex(b->id, hex);
     buf_printf(&out, "{\"batch\":\"%s\",\"todo\":[", hex);
     int k = 0;
-    for (i = 0; i < b->nfiles; i++) {
+    for (int i = 0; i < b->nfiles; i++) {
         const UpFile *f = &b->files[i];
         if (f->state != UP_QUEUED) continue;
         if (f->conv == CV_WAIT) { /* the browser converts its file f, then sends the copy as entry i */
@@ -900,6 +1050,7 @@ planned:
 out:
     if (err[0]) reply_err(conn, 422, true, err);
     if (b) batch_free(b);
+    plan_in_free(&in);
     free(tok);
 }
 
@@ -1393,6 +1544,514 @@ bool upload_http(Ctx *c, Conn *conn, HttpReq *r) {
     return true;
 }
 
+/* ------------------------------------------------------------- the preview */
+
+/* What Start would do with the files chosen on the page (owner, 2026-10-21: the upload page must be
+   "easy enough to understand"): the plan, made dry, grouped by the folder each file goes to - kept for
+   the screen that asked (its live state "media.up" holds the id), and drawn by upload_page in the
+   reader's words. Only data is kept: names, counts, the plan's reasons packed in English. */
+#define PV_SLOTS 8
+#define PV_ROWS 240       /* rows drawn in all ... */
+#define PV_GROUP_ROWS 40  /* ... and in one folder */
+#define PV_GROUPS 60
+#define PV_NAMES 16
+#define PV_LIVE "media.up"
+
+enum { FATE_SEND = 1, FATE_CONVERT, FATE_RESUME, FATE_HEAD, FATE_SKIP, FATE_COPY };
+
+typedef struct {
+    char name[200]; /* the file as chosen (a copy made here: the copy's name) */
+    char kind, fate; /* UpKind, FATE_* */
+    char title[128], ep[96];
+    int year, season, episode, episode_end, disc, pct;
+    bool kept;      /* sorting, but nothing said where it goes: as it was chosen */
+    char why[160];  /* FATE_SKIP: the reason (packed English); FATE_COPY: the original's name */
+} PvRow;
+
+typedef struct {
+    char dir[400];   /* where its files go, below the library folder ("" = the library folder itself) */
+    bool out, fresh, kept; /* the files with no place / a folder that isn't there yet / some go as chosen */
+    int files, eps, films, subs, pics, others, skipped;
+    int64_t bytes;
+    int row0, nrows, more;
+} PvGroup;
+
+typedef struct {
+    uint64_t key;    /* upload_show_key(found): the "to.<hex>" field renames it */
+    char found[128]; /* as the files name it ("Unknown series": none) */
+    char name[128];  /* what it's called now (the library's spelling, or the new name) */
+    int eps;
+    bool known;
+} PvName;
+
+typedef struct {
+    uint64_t id;
+    int person;
+    char root[300];
+    bool sorted;
+    int chosen, all;  /* files sent to the preview / chosen in the browser (a long list comes cut) */
+    int files, skipped, conv;
+    int64_t bytes;
+    char err[400];    /* the plan's refusal (packed) */
+    bool no_room;
+    int64_t need, spare, held;
+    PvGroup *groups;
+    int ngroups, more_groups;
+    PvRow *rows;
+    int nrows;
+    PvName names[PV_NAMES];
+    int nnames;
+} Preview;
+
+static Preview *g_pv[PV_SLOTS]; /* (main thread only) */
+static uint64_t g_test_pv;      /* upload_test_preview's */
+static int g_test_pv_person;
+
+static void pv_free(Preview *p) {
+    if (!p) return;
+    free(p->groups);
+    free(p->rows);
+    free(p);
+}
+
+static Preview *pv_find(uint64_t id, int person) {
+    for (int s = 0; s < PV_SLOTS; s++)
+        if (g_pv[s] && g_pv[s]->id == id && g_pv[s]->person == person) return g_pv[s];
+    return NULL;
+}
+
+static void pv_drop(uint64_t id, int person) {
+    for (int s = 0; s < PV_SLOTS; s++)
+        if (g_pv[s] && g_pv[s]->id == id && g_pv[s]->person == person) {
+            pv_free(g_pv[s]);
+            g_pv[s] = NULL;
+        }
+}
+
+static void pv_keep(Preview *p) { /* in a free slot, else the oldest's (ids are random: the slot order says) */
+    static unsigned turn;
+    int s = 0;
+    while (s < PV_SLOTS && g_pv[s]) s++;
+    if (s == PV_SLOTS) s = (int)(turn++ % PV_SLOTS);
+    pv_free(g_pv[s]);
+    g_pv[s] = p;
+}
+
+static void pv_clear(void) {
+    for (int s = 0; s < PV_SLOTS; s++) {
+        pv_free(g_pv[s]);
+        g_pv[s] = NULL;
+    }
+    g_test_pv = 0;
+    g_test_pv_person = 0;
+}
+
+static const char *base_name(const char *rel) {
+    const char *s = strrchr(rel, '/');
+    return s ? s + 1 : rel;
+}
+
+static void dir_of(const UpFile *f, char *out, size_t cap) {
+    const char *s = f->out ? NULL : strrchr(f->rel, '/');
+    str_ncopy(out, cap, f->rel, s ? (size_t)(s - f->rel) : 0);
+}
+
+static const Batch *g_order_b; /* (qsort has no context: main thread only) */
+static int by_place(const void *x, const void *y) {
+    const UpFile *a = &g_order_b->files[*(const int *)x], *b = &g_order_b->files[*(const int *)y];
+    if (a->out != b->out) return a->out ? 1 : -1;
+    char da[400], db[400];
+    dir_of(a, da, sizeof da);
+    dir_of(b, db, sizeof db);
+    int d = strcmp(da, db);
+    if (d) return d;
+    d = strcmp(base_name(a->rel), base_name(b->rel));
+    return d ? d : *(const int *)x - *(const int *)y;
+}
+
+static void pv_row(Preview *p, PvGroup *g, const PlanIn *in, const UpSorted *s, const UpFile *f) {
+    PvRow *r = &p->rows[p->nrows++];
+    g->nrows++;
+    str_copy(r->name, sizeof r->name, base_name(f->extra ? f->rel : in->paths[f->src]));
+    r->kind = s->kind;
+    str_copy(r->title, sizeof r->title, s->title);
+    str_copy(r->ep, sizeof r->ep, s->ep_title);
+    r->year = s->year;
+    r->season = s->season;
+    r->episode = s->episode;
+    r->episode_end = s->episode_end;
+    r->disc = s->disc;
+    r->kept = p->sorted && s->kept && !in->series;
+    if (f->state == UP_SKIPPED) {
+        r->fate = FATE_SKIP;
+        str_copy(r->why, sizeof r->why, f->why);
+    } else if (f->extra) {
+        r->fate = FATE_COPY;
+        str_copy(r->why, sizeof r->why, base_name(in->paths[f->src]));
+    } else if (f->conv == CV_WAIT) {
+        r->fate = FATE_CONVERT;
+    } else if (f->head) {
+        r->fate = FATE_HEAD;
+    } else if (f->saved > 0 && f->size > 0) {
+        r->fate = FATE_RESUME;
+        r->pct = (int)MIN(f->saved * 100 / f->size, 99);
+    } else {
+        r->fate = FATE_SEND;
+    }
+}
+
+/* The series the files name (sorting by names): each with a field to rename it on the page */
+static void pv_names(Preview *p, const PlanIn *in, const UpSorted *srt) {
+    for (int i = 0; i < in->n; i++) {
+        const UpSorted *s = &srt[i];
+        if (s->kind != UPK_EPISODE && s->kind != UPK_DISC && s->kind != UPK_ASK) continue;
+        PvName *nm = NULL;
+        for (int k = 0; k < p->nnames && !nm; k++)
+            if (p->names[k].key == s->show) nm = &p->names[k];
+        if (!nm && p->nnames == PV_NAMES) continue;
+        if (!nm) {
+            nm = &p->names[p->nnames++];
+            nm->key = s->show;
+            str_copy(nm->found, sizeof nm->found, s->found);
+            str_copy(nm->name, sizeof nm->name, s->kind == UPK_ASK ? "" : s->title);
+            nm->known = s->known;
+        }
+        nm->eps += s->kind == UPK_EPISODE ? MAX(s->episode_end - s->episode, 0) + 1 : 1;
+    }
+}
+
+static Preview *pv_build(Ctx *c, const PlanIn *in, int all) {
+    Preview *p = xcalloc(1, sizeof *p);
+    rand_bytes(&p->id, sizeof p->id);
+    p->id |= 1; /* (never 0) */
+    p->person = c->me->id;
+    p->sorted = in->sort;
+    p->chosen = in->n;
+    p->all = MAX(all, in->n);
+    UpSorted *srt = NULL;
+    Batch *b = plan_make(c, in, true, p->err, sizeof p->err, &srt);
+    if (!b) return p;
+    str_copy(p->root, sizeof p->root, b->root);
+    int64_t held = 0, spare = spare_for(b, b->root, c->me->id, &held); /* as the plan will ask */
+    if (b->total > spare) p->no_room = true, p->need = b->total, p->spare = spare, p->held = held;
+    if (in->sort && !in->series) pv_names(p, in, srt);
+
+    int n = b->nfiles, *ord = xmalloc((size_t)n * sizeof *ord);
+    for (int i = 0; i < n; i++) ord[i] = i;
+    g_order_b = b;
+    qsort(ord, (size_t)n, sizeof *ord, by_place);
+    p->groups = xcalloc((size_t)MIN(n, PV_GROUPS), sizeof *p->groups);
+    p->rows = xcalloc((size_t)MIN(n, PV_ROWS), sizeof *p->rows);
+    PvGroup *g = NULL, spill; /* (spill: the folders past PV_GROUPS, counted only) */
+    char dir[400], last[400] = "";
+    bool last_out = false;
+    for (int k = 0; k < n; k++) {
+        const UpFile *f = &b->files[ord[k]];
+        const UpSorted *s = &srt[f->src];
+        dir_of(f, dir, sizeof dir);
+        if (!g || f->out != last_out || !str_eq(dir, last)) {
+            if (p->ngroups < PV_GROUPS) g = &p->groups[p->ngroups++];
+            else g = &spill, p->more_groups++;
+            memset(g, 0, sizeof *g);
+            str_copy(g->dir, sizeof g->dir, dir);
+            g->out = f->out;
+            g->row0 = p->nrows;
+            if (!f->out) {
+                char full[1024];
+                join(full, sizeof full, b->root, dir);
+                g->fresh = !path_is_dir(full);
+            }
+            str_copy(last, sizeof last, dir);
+            last_out = f->out;
+        }
+        bool skip = f->state == UP_SKIPPED;
+        int64_t size = f->conv == CV_WAIT ? f->orig : f->size;
+        g->files++;
+        if (skip) g->skipped++, p->skipped++;
+        else g->bytes += size, p->bytes += size, p->files++;
+        p->conv += !skip && f->conv == CV_WAIT && !f->extra;
+        if (!f->extra) {
+            g->eps += s->kind == UPK_EPISODE || s->kind == UPK_DISC || s->kind == UPK_ASK;
+            g->films += s->kind == UPK_FILM;
+            g->subs += s->kind == UPK_SUB;
+            g->pics += s->kind == UPK_PIC;
+            g->others += s->kind == UPK_OTHER || s->kind == UPK_EXTRA;
+            g->kept |= p->sorted && !in->series && s->kept && s->kind != UPK_JUNK && !f->out;
+        }
+        if (g != &spill && g->nrows < PV_GROUP_ROWS && p->nrows < PV_ROWS) pv_row(p, g, in, s, f);
+        else if (g != &spill) g->more++;
+    }
+    free(ord);
+    free(srt);
+    batch_free(b);
+    return p;
+}
+
+/* The live action's fields -> a preview (NULL: no files - the screen's preview goes) */
+static Preview *pv_from(Ctx *c, const Fields *f) {
+    const char *files = fields_str(f, "files");
+    if (!*files) return NULL;
+    int maxtok = 16 + MAX_FILES * 3;
+    JsonTok *tok = xmalloc((size_t)maxtok * sizeof *tok);
+    Json j;
+    PlanIn in = {0};
+    Ask a = {.f = f};
+    plan_in(&a, &in);
+    Preview *p;
+    if (json_parse(&j, files, strlen(files), tok, maxtok) && json_type(&j, 0) == JSON_ARRAY) {
+        files_in(&j, 0, &in);
+        p = pv_build(c, &in, (int)fields_int(f, "all", in.n));
+    } else {
+        p = xcalloc(1, sizeof *p);
+        rand_bytes(&p->id, sizeof p->id);
+        p->id |= 1;
+        p->person = c->me->id;
+        i18n_pack(p->err, sizeof p->err, N_("That upload list didn't make sense (more than %d files?)"), MAX_FILES);
+    }
+    plan_in_free(&in);
+    free(tok);
+    return p;
+}
+
+void upload_act_preview(Ctx *c, Fields *f) {
+    if (!is_admin(c)) return; /* (a live action: nothing to say) */
+    uint64_t old = 0;
+    if (media_parse_id(ctx_live(c, PV_LIVE), &old)) pv_drop(old, c->me->id);
+    ctx_set_live(c, PV_LIVE, "");
+    Preview *p = pv_from(c, f);
+    if (!p) return;
+    pv_keep(p);
+    char hex[17];
+    media_id_hex(p->id, hex);
+    ctx_set_live(c, PV_LIVE, hex);
+}
+
+void upload_test_preview(int person, const char *form) {
+    pv_drop(g_test_pv, g_test_pv_person);
+    g_test_pv = 0;
+    g_test_pv_person = 0;
+    if (!form) return;
+    Ctx c;
+    app_ctx(&c, person, "/media/upload");
+    Fields f = {0};
+    fields_parse(&f, form, strlen(form));
+    Preview *p = c.me ? pv_from(&c, &f) : NULL;
+    if (p) {
+        pv_keep(p);
+        g_test_pv = p->id;
+        g_test_pv_person = person;
+    }
+    fields_free(&f);
+    app_ctx_free(&c);
+}
+
+static const Preview *pv_for(const Ctx *c) {
+    uint64_t id = 0;
+    if (media_parse_id(ctx_live(c, PV_LIVE), &id)) return pv_find(id, c->me->id);
+    if (!c->client && app_testing() && g_test_pv_person == c->me->id) return pv_find(g_test_pv, c->me->id);
+    return NULL;
+}
+
+/* "70's Show · S01E03" / "Inception (2010)" / "Friends" - what a subtitle or picture goes with */
+static void pv_label(Buf *b, const PvRow *r) {
+    if (r->episode > 0 && r->episode_end > r->episode)
+        H(b, "%s · S%02dE%02d–E%02d", r->title, r->season, r->episode, r->episode_end);
+    else if (r->episode > 0) H(b, "%s · S%02dE%02d", r->title, r->season, r->episode);
+    else if (r->year) H(b, "%s (%d)", r->title, r->year);
+    else H(b, "%s", r->title);
+}
+
+static void pv_what(Buf *b, const PvRow *r) { /* what Hemma thinks the file is */
+    Buf l = {0};
+    switch (r->kind) {
+    case UPK_EPISODE:
+        pv_label(b, r);
+        if (r->ep[0]) H(b, " · %s", r->ep);
+        break;
+    case UPK_DISC:
+        if (r->disc) H(b, T("%s · season %d, disc %d"), r->title, r->season, r->disc);
+        else H(b, T("%s · season %d"), r->title, r->season);
+        break;
+    case UPK_ASK: H(b, "%s", T("An episode - of which series? Name it above")); break;
+    case UPK_FILM: pv_label(b, r); break;
+    case UPK_EXTRA:
+        if (r->title[0]) H(b, T("An extra for %s"), r->title);
+        else H(b, "%s", T("An extra (a trailer, sample or bonus clip)"));
+        break;
+    case UPK_OTHER: H(b, "%s", T("A video that isn't an episode or a film")); break;
+    case UPK_SUB:
+    case UPK_PIC:
+        pv_label(&l, r);
+        if (r->title[0]) H(b, r->kind == UPK_SUB ? T("Subtitles for %s") : T("A picture for %s"), buf_cstr(&l));
+        else H(b, "%s", r->kind == UPK_SUB ? T("Subtitles") : T("A picture"));
+        break;
+    default: break;
+    }
+    buf_free(&l);
+}
+
+static void pv_fate(Buf *b, const PvRow *r) {
+    switch (r->fate) {
+    case FATE_CONVERT: H(b, "<span class=\"badge ok\">%s</span>", T("Converted here first")); break;
+    case FATE_RESUME:
+        buf_puts(b, "<span class=\"badge\">");
+        H(b, T("Continues: %d%% sent"), r->pct);
+        buf_puts(b, "</span>");
+        break;
+    case FATE_HEAD: H(b, "<span class=\"badge\">%s</span>", T("Just its first MB")); break;
+    case FATE_SKIP: H(b, "<span class=\"badge warn\">%s</span>", T("Skipped")); break;
+    case FATE_COPY: H(b, "<span class=\"badge ok\">%s</span>", T("Made here")); break;
+    default: H(b, "<span class=\"badge\">%s</span>", T("Sent as it is")); break;
+    }
+}
+
+static void pv_part(Buf *b, int *parts, int n, const char *fmt) { /* one count of a list ("3 episodes") */
+    if (!n) return;
+    if ((*parts)++) buf_puts(b, ", ");
+    H(b, fmt, n);
+}
+
+static void pv_group_sum(Buf *b, const PvGroup *g) { /* "3 episodes, 1 subtitle file · 2.1 GB" */
+    int parts = 0;
+    pv_part(b, &parts, g->eps, TN(g->eps, "%d episode", "%d episodes"));
+    pv_part(b, &parts, g->films, TN(g->films, "%d movie", "%d movies"));
+    pv_part(b, &parts, g->subs, TN(g->subs, "%d subtitle file", "%d subtitle files"));
+    pv_part(b, &parts, g->pics, TN(g->pics, "%d picture", "%d pictures"));
+    pv_part(b, &parts, g->others, TN(g->others, "%d other video", "%d other videos"));
+    pv_part(b, &parts, g->skipped, T("%d skipped"));
+    if (g->bytes) {
+        char size[24];
+        media_size_text(g->bytes, size, sizeof size);
+        H(b, "%r%s", parts ? " · " : "", size);
+    }
+}
+
+static void pv_draw(Ctx *c, Buf *b, const Preview *p) {
+    char why[400], size[24];
+    if (p->err[0]) {
+        i18n_unpack_to(why, sizeof why, p->err);
+        H(b, "<p class=\"notice bad\">%s</p>", why);
+        return;
+    }
+    /* the totals, read out when they change (a screen reader hears what the drop did) */
+    media_size_text(p->bytes, size, sizeof size);
+    buf_puts(b, "<p class=\"media-up-sum\" data-say>");
+    H(b, TN(p->files, "%d file to send", "%d files to send"), p->files);
+    if (p->files) H(b, " · %s", size);
+    if (p->conv) {
+        buf_puts(b, " · ");
+        H(b, T("%d to convert here first"), p->conv);
+    }
+    if (p->skipped) {
+        buf_puts(b, " · ");
+        H(b, T("%d skipped"), p->skipped);
+    }
+    buf_puts(b, "</p>");
+    if (p->all > p->chosen) {
+        buf_puts(b, "<p class=\"muted media-small\">");
+        H(b, T("This shows the first %d of %d files - Start sorts them all the same way."), p->chosen, p->all);
+        buf_puts(b, "</p>");
+    }
+    if (p->no_room) {
+        char need[24], tail[200], msg[400];
+        media_size_text(p->need, need, sizeof need);
+        media_room_text(tail, sizeof tail, p->spare, p->held);
+        snprintf(msg, sizeof msg, T("Not enough room: this needs %s, and %s"), need, tail);
+        H(b, "<p class=\"notice bad\">%s</p>", msg);
+    }
+    /* the series it found: renamed here when Hemma got one wrong (or knows none) */
+    int ask = 0;
+    for (int i = 0; i < p->nnames; i++) ask += !p->names[i].name[0];
+    if (p->nnames) {
+        H(b, "<details class=\"media-up-names\" id=\"media-up-names\"%r><summary>%s</summary><p class=\"muted media-small\">%s</p>",
+          ask ? " open" : "", ask ? T("Which series are these episodes from?") : T("Not the right series? Change a name"),
+          T("Type the series' name - one the library already has puts the episodes next to its own."));
+        for (int i = 0; i < p->nnames; i++) {
+            const PvName *nm = &p->names[i];
+            bool none = str_eq(nm->found, "Unknown series");
+            H(b, "<label class=\"field\" id=\"media-up-n-%X\"><span>", nm->key);
+            if (none) H(b, TN(nm->eps, "%d episode Hemma can't place", "%d episodes Hemma can't place"), nm->eps);
+            else {
+                H(b, "%s · ", nm->found);
+                H(b, TN(nm->eps, "%d episode", "%d episodes"), nm->eps);
+            }
+            H(b,
+              "</span><input name=\"to.%X\" value=\"%s\" placeholder=\"%s\" list=\"media-up-shows\" maxlength=\"120\" "
+              "autocomplete=\"off\" spellcheck=\"false\"></label>",
+              nm->key, nm->name, T("The series' name"));
+        }
+        const MediaIndex *ix = media_lib();
+        buf_puts(b, "<datalist id=\"media-up-shows\">");
+        for (int i = 0; i < ix->nseries && i < 400; i++) H(b, "<option value=\"%s\">", ix->series[i].title);
+        buf_puts(b, "</datalist></details>");
+    }
+    /* where it all goes, folder by folder */
+    for (int gi = 0; gi < p->ngroups; gi++) {
+        const PvGroup *g = &p->groups[gi];
+        H(b, "<section class=\"media-up-group\" id=\"media-up-g-%X\"><h3 class=\"media-up-dir\">",
+          hash64(g->dir, strlen(g->dir)) ^ (uint64_t)g->out);
+        ui_icon(b, g->out ? "x" : "folder");
+        if (g->out) H(b, "<span>%s</span>", T("Left out"));
+        else if (!g->dir[0]) H(b, "<span>%s</span>", T("The library folder itself"));
+        else {
+            buf_puts(b, "<span>");
+            for (const char *s = g->dir; *s;) { /* "Series / 70's Show / Season 1" (breaks between parts) */
+                size_t k = strcspn(s, "/");
+                char part[256];
+                str_ncopy(part, sizeof part, s, k);
+                H(b, "%r%s", s == g->dir ? "" : " <i>/</i> ", part);
+                s += k;
+                if (*s) s++;
+            }
+            buf_puts(b, "</span>");
+        }
+        if (!g->out && g->fresh && g->files > g->skipped) H(b, "<small class=\"badge\">%s</small>", T("New folder"));
+        buf_puts(b, "</h3><p class=\"muted media-small\">");
+        pv_group_sum(b, g);
+        if (g->kept) {
+            buf_puts(b, " · ");
+            H(b, "%s", T("Hemma can't tell where these belong, so they go in as they are"));
+        }
+        buf_puts(b, "</p><ul class=\"rows media-up-files\">");
+        for (int ri = g->row0; ri < g->row0 + g->nrows; ri++) {
+            const PvRow *r = &p->rows[ri];
+            Buf w = {0}; /* what it is, and why it stays behind */
+            pv_what(&w, r);
+            const char *sep = w.len ? " · " : "";
+            if (r->fate == FATE_SKIP) {
+                i18n_unpack_to(why, sizeof why, r->why);
+                H(&w, "%r%s", sep, why);
+            } else if (r->fate == FATE_COPY) {
+                buf_puts(&w, sep);
+                H(&w, T("the copy of %s, made on this device"), r->why);
+            } else if (r->fate == FATE_HEAD) {
+                H(&w, "%r%r", sep,
+                  T("only its first MB: it looks like a \"play all\" copy of the episodes next to it (if it isn't, "
+                    "upload it on its own)"));
+            }
+            H(b, "<li class=\"row\"><div class=\"row-main\"><span class=\"media-up-name\">%s</span>", r->name);
+            if (w.len) H(b, "<small>%r</small>", buf_cstr(&w));
+            buf_puts(b, "</div>");
+            pv_fate(b, r);
+            buf_puts(b, "</li>");
+            buf_free(&w);
+        }
+        buf_puts(b, "</ul>");
+        if (g->more) {
+            buf_puts(b, "<p class=\"muted media-small\">");
+            H(b, T("+%d more"), g->more);
+            buf_puts(b, "</p>");
+        }
+        buf_puts(b, "</section>");
+    }
+    if (p->more_groups) {
+        buf_puts(b, "<p class=\"muted media-small\">");
+        H(b, TN(p->more_groups, "…and %d more folder", "…and %d more folders"), p->more_groups);
+        buf_puts(b, "</p>");
+    }
+    (void)c;
+}
+
 /* --------------------------------------------------------------- the page */
 
 static Batch *batch_of(int person) { /* the latest of this person's video uploads (lock held) */
@@ -1519,16 +2178,22 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
         for (int i = 0; i < u->nfiles && shown < 12; i++) {
             const UpFile *f = &u->files[i];
             if (f->conv != CV_WAIT || f->state != UP_QUEUED || f->pm <= 0) continue;
-            H(b, "%r<li class=\"row\"><span class=\"grow\"><code class=\"media-code\">%s</code></span>"
+            char orig[300]; /* (by the name it has on the sending device: "x.mkv", not the copy's "x.web.mp4") */
+            const char *name = base_name(f->rel);
+            snprintf(orig, sizeof orig, "%.*s.%s", (int)(media_stem_len(name)), name, f->ext);
+            H(b, "%r<li class=\"row\"><span class=\"grow media-up-name\">%s</span>"
                  "<progress class=\"media-up-bar\" max=\"1000\" value=\"%d\"></progress></li>",
-              shown++ ? "" : "<ul class=\"rows media-conv\">", tail2(f->rel), f->pm);
+              shown++ ? "" : "<ul class=\"rows media-conv\">", orig, f->pm);
         }
         if (shown) buf_puts(b, "</ul>");
     }
     if (waiting)
-        H(b, "<p class=\"muted media-small\">%r</p>",
-          T("If the browser that started it was closed, choose the same folder again below - what's already on the "
-            "server is skipped, and half-sent files continue where they stopped."));
+        H(b, "<p class=\"muted media-small\">%s</p>",
+          T("If the browser that started it was closed, choose the same files again and press Start - what's already "
+            "on the server is skipped, and half-sent files continue where they stopped."));
+    else if (open)
+        H(b, "<p class=\"muted media-small\">%s</p>",
+          T("Keep the tab that started it open until it's done - you can use other pages meanwhile."));
     if (as_is) { /* said out loud, not only in the list below: such a video may play silent or not at all */
         const UpFile *first = NULL;
         for (int i = 0; i < u->nfiles && !first; i++)
@@ -1582,16 +2247,34 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
                         T("Stop the upload? Everything already sent stays on the server."));
         H(b, "<input type=\"hidden\" name=\"batch\" value=\"%X\"><button class=\"btn\">%s</button>", u->id, T("Stop"));
         ui_form_end(b);
+    } else if (!u->stopped && u->done) { /* (the library finds them by itself a moment after) */
+        H(b, "<p><a class=\"btn sm\" href=\"/media\">%s</a></p>", T("See what's new"));
     }
     buf_puts(b, "</section>");
 }
 
+/* The drop area's picture (core/ui.c has no icon for sending something up) */
+#define UPLOAD_ICON                                                                                                    \
+    "<svg class=\"i media-up-ico\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 15.5V4M7.5 8.5 12 4l4.5 "  \
+    "4.5\"/><path d=\"M4 14.5v4A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-4\"/></svg>"
+
+/* The upload page (owner, 2026-10-21: "easy enough to understand"): one big place to drop videos or a
+   folder (or choose them), then the server's preview of what Start will do - where each file goes, what
+   gets converted here, what's skipped and why - then Start. The rest is folded under "More options".
+   The form comes first and keeps its place (it holds the chosen files, wire.js keeps them on it):
+   progress cards appear after it, so live updates never rebuild it. */
 void upload_page(Ctx *c, Buf *b) {
-    ctx_title(c, "%s", T("Add videos"));
-    buf_puts(b, "<a class=\"media-back\" href=\"/media/settings\">");
+    /* ?series=<id> (a series page's "Add episodes"): everything goes into that series' folder */
+    uint64_t sid = 0;
+    const MediaSeries *ser = media_parse_id(ctx_q(c, "series"), &sid) ? media_series(sid) : NULL;
+    char shex[17] = "";
+    if (ser) media_id_hex(ser->id, shex);
+    ctx_title(c, "%s", ser ? T("Add episodes") : T("Add videos"));
+    if (ser) H(b, "<a class=\"media-back\" href=\"/media/series/%s\">", shex);
+    else buf_puts(b, "<a class=\"media-back\" href=\"/media\">"); /* (Add videos sits in Watch's header) */
     ui_icon(b, "left");
-    H(b, "%s</a>", T("Library"));
-    ui_head(b, T("Add videos"), T("Send movies and series from this device to the library"));
+    H(b, "%s</a>", ser ? ser->title : T("Watch"));
+    ui_head(b, ser ? T("Add episodes") : T("Add videos"), T("Send movies and series from this device to the library"));
     ui_head_end(b);
     if (!is_admin(c)) {
         ui_empty(b, "🔒", T("Admins only"), NULL);
@@ -1611,29 +2294,67 @@ void upload_page(Ctx *c, Buf *b) {
         H(b, "<p class=\"center\"><a class=\"btn primary\" href=\"/media/settings\">%s</a></p>", T("Library settings"));
         return;
     }
-    /* The form comes first and keeps its place: progress cards appear after it,
-       so live updates never rebuild the form (and lose the chosen files). */
     const Asset *wasm = asset_named("/av.wasm"), *worker = asset_named("/conv.js");
     bool here = wasm && worker; /* the browser converter is built in (it needs zig to build) */
-    bool busy_now = false; /* someone's upload is running: a new one needs "upload anyway" */
+    bool busy_now = false;      /* someone's upload is running: a new one needs "upload anyway" */
     lock_take(&g_lock);
     for (int s = 0; s < MAX_BATCHES; s++) busy_now |= running(g_batch[s]);
     lock_give(&g_lock);
+    const Preview *pv = pv_for(c);
+
     buf_puts(b, "<div class=\"grid2\">");
-    ui_card(b, T("Upload"), NULL, NULL);
-    H(b, "<form class=\"stack\" data-upload=\"/media/upload\" data-empty=\"%s\"",
-      T("Choose a folder or some files first"));
-    if (here) H(b, " data-convert=\"/static/conv.js?v=%s\" data-wasm=\"/static/av.wasm?v=%s\"", worker->etag, wasm->etag);
-    H(b, "><label class=\"field\"><span>%s</span><select name=\"root\">", T("Save into"));
-    for (int i = 0; i < nroots; i++) H(b, "<option value=\"%d\">%s</option>", i, roots[i]);
+    ui_card(b, NULL, NULL, NULL);
     H(b,
-      "</select></label>"
-      "<label class=\"field\"><span>%s</span><input name=\"into\" maxlength=\"120\" placeholder=\"%s\" "
-      "spellcheck=\"false\"></label>"
-      "<label class=\"field\"><span>%s</span><input type=\"file\" name=\"folder\" webkitdirectory multiple></label>"
-      "<label class=\"field\"><span>%s</span><input type=\"file\" name=\"files\" multiple "
-      "accept=\"video/*,.mkv,.avi,.m2ts,.ts,.srt,.vtt,.jpg,.jpeg,.png,.webp\"></label>",
-      T("Inside the folder (optional)"), T("e.g. Series"), T("A whole folder"), T("…or single files"));
+      "<form class=\"stack media-up-form\" id=\"media-up-form\" data-upload=\"/media/upload\" "
+      "data-preview=\"media.upload_preview\" data-empty=\"%s\"",
+      T("Choose videos or a folder first"));
+    if (here) H(b, " data-convert=\"/static/conv.js?v=%s\" data-wasm=\"/static/av.wasm?v=%s\"", worker->etag, wasm->etag);
+    buf_puts(b, "><input type=\"hidden\" name=\"sort\" value=\"1\">");
+    if (ser) {
+        H(b, "<input type=\"hidden\" name=\"series\" value=\"%s\"><p class=\"notice\">", shex);
+        H(b, T("Everything goes into the folder of <b>%s</b> - each episode into its season, whatever the file names say "
+               "about the show."),
+          ser->title);
+        buf_puts(b, "</p>");
+    }
+
+    /* 1. the drop area (a phone gets the picker: nothing to drop there) */
+    H(b,
+      "<div class=\"media-up-drop\" id=\"media-up-drop\" data-drop>%r<p class=\"media-up-drop-t\">%s</p>"
+      "<p class=\"media-up-drop-tap\">%s</p><p class=\"muted media-small\">%s</p><div class=\"media-up-pick\">"
+      "<label class=\"btn primary\">%s<input type=\"file\" name=\"files\" multiple class=\"sr-only\" "
+      "accept=\"video/*,.mkv,.avi,.m2ts,.ts,.srt,.vtt,.jpg,.jpeg,.png,.webp\"></label>"
+      "<label class=\"btn media-up-folder\">%s<input type=\"file\" name=\"folder\" webkitdirectory multiple "
+      "class=\"sr-only\"></label></div></div>",
+      UPLOAD_ICON, T("Drop videos or a whole folder here"), T("Choose videos from this device"),
+      ser ? T("Hemma reads each file's name first, and nothing is sent before you press Start.")
+          : T("Hemma sorts them by their names - series into Series, films into Movies - and shows you where each "
+              "one goes before anything is sent."),
+      T("Choose videos"), T("Choose a folder"));
+
+    /* 2. what Start will do with them */
+    buf_puts(b, "<div class=\"media-up-pv\" id=\"media-up-pv\">");
+    if (pv) pv_draw(c, b, pv);
+    buf_puts(b, "</div>");
+
+    /* 3. the rest, folded away */
+    H(b, "<details class=\"media-up-more\" id=\"media-up-more\"><summary>%s</summary><div class=\"stack\">",
+      T("More options"));
+    if (!ser) {
+        if (nroots > 1) {
+            H(b, "<label class=\"field\"><span>%s</span><select name=\"root\">", T("Save into"));
+            for (int i = 0; i < nroots; i++) H(b, "<option value=\"%d\">%s</option>", i, roots[i]);
+            buf_puts(b, "</select></label>");
+        } else {
+            buf_puts(b, "<input type=\"hidden\" name=\"root\" value=\"0\">");
+        }
+        H(b,
+          "<label class=\"check\"><input type=\"checkbox\" name=\"keep\" value=\"1\"> %s</label>"
+          "<label class=\"field media-up-into\"><span>%s</span><input name=\"into\" maxlength=\"120\" placeholder=\"%s\" "
+          "spellcheck=\"false\"></label>",
+          T("Keep the folders' own layout instead of sorting by names"), T("Inside the folder (optional)"),
+          T("e.g. Series"));
+    }
     if (here) {
         H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"conv\" value=\"1\" checked> %s</label>",
           T("Make videos play everywhere on this device first (recommended)"));
@@ -1651,27 +2372,26 @@ void upload_page(Ctx *c, Buf *b) {
     H(b,
       "<label class=\"check\"><input type=\"checkbox\" name=\"originals\" value=\"1\"> %s</label>"
       "<label class=\"check\"><input type=\"checkbox\" name=\"dupes\" value=\"1\"> %s</label>"
-      "<p class=\"muted media-small\">%r</p>",
+      "<p class=\"muted media-small\">%s</p><p class=\"muted media-small\">%r</p></div></details>",
       T("Also send the originals"), T("Also send episodes and films the library already has under another name"),
-      T("A folder keeps its layout, so <code class=\"media-code\">My Show/Season 1/…</code> arrives just like that. "
-        "Files already on the server are skipped - and so are episodes and films the library already has under another "
-        "name (the same show, season and episode; the same film, year and part), before anything is converted. If the "
-        "connection drops it carries on where it stopped."));
-    H(b, "<p class=\"muted media-small\">%r %r</p>",
-      here ? T("Videos that not every phone, TV or browser can play (DVD rips, MKV files, Dolby sound) are converted "
-               "right here, on this device, and only the converted copy is sent: about a third of the size, and it "
-               "plays everywhere. That keeps this device busy while it runs - a computer does it much faster than a "
-               "phone.")
+      T("What's already on the server is skipped, and so is what the library has under another name - before "
+        "anything is converted. If the connection drops, Start again carries on where it stopped."),
+      here ? T("Converting makes a copy that plays everywhere, about a third of the size, and only the copy is sent. "
+               "It keeps this device busy meanwhile - a computer does it much faster than a phone.")
            : T("This Hemma was built without the video converter, so videos are sent as they are (convert them under "
-               "Library settings afterwards)."),
-      T("A folder that already holds a converted <code class=\"media-code\">x.web.mp4</code> sends just that. A DVD's "
-        "\"play all\" title (every episode again, in one file) stays behind: only its first MB goes, so the library can "
-        "still tell episodes from bonus clips. Keep this tab open while it runs - you can use other pages meanwhile."));
+               "Library settings afterwards)."));
+
+    H(b, "<noscript><p class=\"notice\">%s</p></noscript>",
+      T("Adding videos needs JavaScript - turn it on for this page, or use another browser."));
     /* always there, hidden while nothing runs: live updates then never rebuild the form (and lose the files) */
     H(b, "<label class=\"check\" id=\"media-up-force\"%r><input type=\"checkbox\" name=\"force\" value=\"1\"> %r</label>",
       busy_now ? "" : " hidden",
       T("Upload anyway, alongside the upload that's running (its files are left to it)"));
-    H(b, "<div class=\"modal-f\"><button class=\"btn primary\">%s</button></div></form>", T("Upload"));
+    buf_puts(b, "<div class=\"modal-f\">");
+    if (pv)
+        H(b, "<button type=\"button\" class=\"btn ghost\" id=\"media-up-clear\" data-drop-clear>%s</button>",
+          T("Clear the list"));
+    H(b, "<button class=\"btn primary\" id=\"media-up-start\">%s</button></div></form>", T("Start"));
     ui_card_end(b);
     lock_take(&g_lock);
     const Batch *mine = batch_of(c->me->id);
@@ -1824,6 +2544,7 @@ void upload_stop(void) {
         }
     g_files_saved = g_pictures_saved = 0;
     lock_give(&g_lock);
+    pv_clear();
     g_rescan_at = g_rescan_first = 0;
     g_shown = 0;
     g_done_seen = g_pictures_seen = 0;

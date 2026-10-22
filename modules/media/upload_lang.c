@@ -21,8 +21,6 @@ static const Tr TR[] = {
     {"Save into", "Spara i", "Guardar en"},
     {"Inside the folder (optional)", "Inuti mappen (valfritt)", "Dentro de la carpeta (opcional)"},
     {"e.g. Series", "t.ex. Serier", "p. ej. Series"},
-    {"A whole folder", "En hel mapp", "Una carpeta entera"},
-    {"…or single files", "…eller enstaka filer", "…o archivos sueltos"},
     {"Make videos play everywhere on this device first (recommended)",
      "Gör så att videorna spelas överallt på den här enheten först (rekommenderas)",
      "Hacer primero en este dispositivo que los vídeos se reproduzcan en todas partes (recomendado)"},
@@ -39,51 +37,115 @@ static const Tr TR[] = {
     {"Also send episodes and films the library already has under another name",
      "Skicka även avsnitt och filmer som biblioteket redan har under ett annat namn",
      "Enviar también episodios y películas que la biblioteca ya tiene con otro nombre"},
-    {"A folder keeps its layout, so <code class=\"media-code\">My Show/Season 1/…</code> arrives just like that. Files "
-     "already on the server are skipped - and so are episodes and films the library already has under another name "
-     "(the same show, season and episode; the same film, year and part), before anything is converted. If the "
-     "connection drops it carries on where it stopped.",
-     "En mapp behåller sin struktur, så <code class=\"media-code\">Min serie/Säsong 1/…</code> kommer fram precis så. "
-     "Filer som redan finns på servern hoppas över - och det gör även avsnitt och filmer som biblioteket redan har "
-     "under ett annat namn (samma serie, säsong och avsnitt; samma film, år och del), innan något konverteras. Om "
-     "anslutningen bryts fortsätter den där den stannade.",
-     "Una carpeta conserva su estructura, así que <code class=\"media-code\">Mi serie/Temporada 1/…</code> llega tal "
-     "cual. Los archivos que ya están en el servidor se omiten - y también los episodios y películas que la biblioteca "
-     "ya tiene con otro nombre (la misma serie, temporada y episodio; la misma película, año y parte), antes de "
-     "convertir nada. Si se corta la conexión, sigue donde se quedó."},
-    {"Videos that not every phone, TV or browser can play (DVD rips, MKV files, Dolby sound) are converted right here, "
-     "on this device, and only the converted copy is sent: about a third of the size, and it plays everywhere. That "
-     "keeps this device busy while it runs - a computer does it much faster than a phone.",
-     "Videor som inte alla telefoner, tv-apparater eller webbläsare kan spela (DVD-rippar, MKV-filer, Dolby-ljud) "
-     "konverteras här, på den här enheten, och bara den konverterade kopian skickas: ungefär en tredjedel så stor, och "
-     "den spelas överallt. Det håller enheten upptagen medan det pågår - en dator gör det mycket snabbare än en "
-     "telefon.",
-     "Los vídeos que no todos los móviles, televisores o navegadores pueden reproducir (vídeos de DVD, archivos MKV, "
-     "sonido Dolby) se convierten aquí mismo, en este dispositivo, y solo se envía la copia convertida: más o menos un "
-     "tercio del tamaño, y se reproduce en todas partes. Eso mantiene ocupado este dispositivo mientras dura - un "
-     "ordenador lo hace mucho más rápido que un móvil."},
     {"This Hemma was built without the video converter, so videos are sent as they are (convert them under Library "
      "settings afterwards).",
      "Den här Hemma byggdes utan videokonverteraren, så videor skickas som de är (konvertera dem under "
      "Biblioteksinställningar efteråt).",
      "Este Hemma se compiló sin el conversor de vídeo, así que los vídeos se envían tal cual (conviértelos después en "
      "Ajustes de la biblioteca)."},
-    {"A folder that already holds a converted <code class=\"media-code\">x.web.mp4</code> sends just that. A DVD's "
-     "\"play all\" title (every episode again, in one file) stays behind: only its first MB goes, so the library can "
-     "still tell episodes from bonus clips. Keep this tab open while it runs - you can use other pages meanwhile.",
-     "En mapp som redan har en konverterad <code class=\"media-code\">x.web.mp4</code> skickar bara den. En DVD:s "
-     "\"spela alla\"-titel (alla avsnitt igen, i en fil) stannar kvar: bara dess första MB skickas, så att biblioteket "
-     "ändå kan skilja avsnitt från extramaterial. Håll den här fliken öppen medan det pågår - du kan använda andra "
-     "sidor under tiden.",
-     "Una carpeta que ya tiene un <code class=\"media-code\">x.web.mp4</code> convertido envía solo eso. El título "
-     "\"reproducir todo\" de un DVD (todos los episodios otra vez, en un archivo) se queda atrás: solo se envía su "
-     "primer MB, para que la biblioteca pueda seguir distinguiendo los episodios de los extras. Mantén esta pestaña "
-     "abierta mientras dura - puedes usar otras páginas mientras tanto."},
     {"Upload anyway, alongside the upload that's running (its files are left to it)",
      "Ladda upp ändå, vid sidan av uppladdningen som pågår (dess filer lämnas åt den)",
      "Subir de todos modos, junto a la subida en curso (sus archivos se le dejan a ella)"},
     {"Your upload", "Din uppladdning", "Tu subida"},
     {"Someone", "Någon", "Alguien"},
+
+    /* the upload page since 1.1: the drop area, More options (the owner: "easy enough to understand") */
+    {"Add episodes", "Lägg till avsnitt", "Añadir episodios"},
+    {"Choose videos or a folder first", "Välj videor eller en mapp först", "Elige primero vídeos o una carpeta"},
+    {"Everything goes into the folder of <b>%s</b> - each episode into its season, whatever the file names say about "
+     "the show.",
+     "Allt hamnar i mappen för <b>%s</b> - varje avsnitt i sin säsong, vad filnamnen än säger om serien.",
+     "Todo va a la carpeta de <b>%s</b> - cada episodio a su temporada, digan lo que digan los nombres de los archivos "
+     "sobre la serie."},
+    {"Drop videos or a whole folder here", "Släpp videor eller en hel mapp här", "Suelta aquí vídeos o una carpeta entera"},
+    {"Choose videos from this device", "Välj videor från den här enheten", "Elige vídeos de este dispositivo"},
+    {"Hemma reads each file's name first, and nothing is sent before you press Start.",
+     "Hemma läser först varje fils namn, och inget skickas förrän du trycker på Starta.",
+     "Hemma lee primero el nombre de cada archivo, y no se envía nada hasta que pulses Empezar."},
+    {"Hemma sorts them by their names - series into Series, films into Movies - and shows you where each one goes "
+     "before anything is sent.",
+     "Hemma sorterar dem efter namnen - serier i Series, filmer i Movies - och visar var var och en hamnar innan något "
+     "skickas.",
+     "Hemma los ordena por sus nombres - las series en Series, las películas en Movies - y te muestra adónde va cada "
+     "uno antes de enviar nada."},
+    {"Choose videos", "Välj videor", "Elegir vídeos"},
+    {"Choose a folder", "Välj en mapp", "Elegir una carpeta"},
+    {"More options", "Fler val", "Más opciones"},
+    {"Keep the folders' own layout instead of sorting by names",
+     "Behåll mapparnas egen struktur i stället för att sortera efter namn",
+     "Mantener la estructura de las carpetas en vez de ordenar por nombres"},
+    {"What's already on the server is skipped, and so is what the library has under another name - before anything is "
+     "converted. If the connection drops, Start again carries on where it stopped.",
+     "Det som redan finns på servern hoppas över, och det gör även det som biblioteket har under ett annat namn - innan "
+     "något konverteras. Om anslutningen bryts fortsätter Starta igen där det stannade.",
+     "Lo que ya está en el servidor se omite, y también lo que la biblioteca tiene con otro nombre - antes de convertir "
+     "nada. Si se corta la conexión, al pulsar Empezar otra vez sigue donde se quedó."},
+    {"Converting makes a copy that plays everywhere, about a third of the size, and only the copy is sent. It keeps "
+     "this device busy meanwhile - a computer does it much faster than a phone.",
+     "Konverteringen gör en kopia som spelas överallt, ungefär en tredjedel så stor, och bara kopian skickas. Den "
+     "håller enheten upptagen under tiden - en dator gör det mycket snabbare än en telefon.",
+     "Al convertir se hace una copia que se reproduce en todas partes, más o menos un tercio del tamaño, y solo se "
+     "envía la copia. Mantiene ocupado este dispositivo mientras tanto - un ordenador lo hace mucho más rápido que un "
+     "móvil."},
+    {"Adding videos needs JavaScript - turn it on for this page, or use another browser.",
+     "För att lägga till videor behövs JavaScript - slå på det för den här sidan, eller använd en annan webbläsare.",
+     "Para añadir vídeos hace falta JavaScript - actívalo para esta página o usa otro navegador."},
+    {"Clear the list", "Töm listan", "Vaciar la lista"},
+
+    /* the preview: what Start will do with the chosen files, folder by folder */
+    {"That series isn't in the library any more", "Den serien finns inte i biblioteket längre",
+     "Esa serie ya no está en la biblioteca"},
+    {"%d file to send", "%d fil att skicka", "%d archivo para enviar"},
+    {"%d files to send", "%d filer att skicka", "%d archivos para enviar"},
+    {"%d to convert here first", "%d att konvertera här först", "%d para convertir aquí primero"},
+    {"This shows the first %d of %d files - Start sorts them all the same way.",
+     "Här visas de första %d av %d filerna - Starta sorterar alla på samma sätt.",
+     "Aquí se ven los primeros %d de %d archivos - Empezar los ordena todos igual."},
+    {"Which series are these episodes from?", "Vilken serie är de här avsnitten från?",
+     "¿De qué serie son estos episodios?"},
+    {"Not the right series? Change a name", "Fel serie? Ändra ett namn", "¿No es la serie correcta? Cambia un nombre"},
+    {"Type the series' name - one the library already has puts the episodes next to its own.",
+     "Skriv seriens namn - en serie som biblioteket redan har får avsnitten bredvid sina egna.",
+     "Escribe el nombre de la serie - si la biblioteca ya la tiene, los episodios van junto a los suyos."},
+    {"%d episode Hemma can't place", "%d avsnitt som Hemma inte kan placera", "%d episodio que Hemma no sabe dónde poner"},
+    {"%d episodes Hemma can't place", "%d avsnitt som Hemma inte kan placera",
+     "%d episodios que Hemma no sabe dónde poner"},
+    {"The series' name", "Seriens namn", "Nombre de la serie"},
+    {"The library folder itself", "Själva biblioteksmappen", "La propia carpeta de la biblioteca"},
+    {"New folder", "Ny mapp", "Carpeta nueva"},
+    {"Hemma can't tell where these belong, so they go in as they are",
+     "Hemma kan inte avgöra var de hör hemma, så de kommer in som de är",
+     "Hemma no sabe dónde van, así que entran tal cual"},
+    {"%d subtitle file", "%d undertextfil", "%d archivo de subtítulos"},
+    {"%d subtitle files", "%d undertextfiler", "%d archivos de subtítulos"},
+    {"%d picture", "%d bild", "%d imagen"},
+    {"%d pictures", "%d bilder", "%d imágenes"},
+    {"%d other video", "%d annan video", "%d otro vídeo"},
+    {"%d other videos", "%d andra videor", "%d otros vídeos"},
+    {"…and %d more folder", "…och %d mapp till", "…y %d carpeta más"},
+    {"…and %d more folders", "…och %d mappar till", "…y %d carpetas más"},
+    /* what Hemma thinks a file is */
+    {"%s · season %d, disc %d", "%s · säsong %d, skiva %d", "%s · temporada %d, disco %d"},
+    {"%s · season %d", "%s · säsong %d", "%s · temporada %d"},
+    {"An episode - of which series? Name it above", "Ett avsnitt - av vilken serie? Skriv namnet ovanför",
+     "Un episodio - ¿de qué serie? Escribe su nombre arriba"},
+    {"An extra for %s", "Extramaterial till %s", "Un extra de %s"},
+    {"An extra (a trailer, sample or bonus clip)", "Extramaterial (en trailer, ett smakprov eller ett bonusklipp)",
+     "Un extra (un tráiler, una muestra o un clip adicional)"},
+    {"A video that isn't an episode or a film", "En video som inte är ett avsnitt eller en film",
+     "Un vídeo que no es un episodio ni una película"},
+    {"Subtitles for %s", "Undertexter till %s", "Subtítulos de %s"},
+    {"A picture for %s", "En bild till %s", "Una imagen para %s"},
+    {"A picture", "En bild", "Una imagen"},
+    {"the copy of %s, made on this device", "kopian av %s, gjord på den här enheten",
+     "la copia de %s, hecha en este dispositivo"},
+    /* ... and what happens to it */
+    {"Sent as it is", "Skickas som den är", "Se envía tal cual"},
+    {"Converted here first", "Konverteras här först", "Se convierte aquí primero"},
+    {"Continues: %d%% sent", "Fortsätter: %d%% skickat", "Continúa: %d%% enviado"},
+    {"Just its first MB", "Bara första MB:n", "Solo su primer MB"},
+    {"Skipped", "Hoppas över", "Se omite"},
+    {"Made here", "Görs här", "Se hace aquí"},
 
     /* an upload's card */
     {"Stopped · %d of %d file sent", "Stoppad · %d av %d fil skickad", "Detenida · %d de %d archivo enviado"},
@@ -108,12 +170,16 @@ static const Tr TR[] = {
     {"Made on the sending device: %d of %d play-everywhere copies ready",
      "Görs på enheten som skickar: %d av %d kopior som spelas överallt klara",
      "Hechas en el dispositivo que envía: %d de %d copias que se reproducen en todas partes listas"},
-    {"If the browser that started it was closed, choose the same folder again below - what's already on the server is "
-     "skipped, and half-sent files continue where they stopped.",
-     "Om webbläsaren som startade den stängdes, välj samma mapp igen nedan - det som redan finns på servern hoppas "
-     "över, och halvskickade filer fortsätter där de stannade.",
-     "Si se cerró el navegador que la empezó, elige otra vez la misma carpeta abajo - lo que ya está en el servidor se "
-     "omite, y los archivos a medio enviar siguen donde se quedaron."},
+    {"If the browser that started it was closed, choose the same files again and press Start - what's already on the "
+     "server is skipped, and half-sent files continue where they stopped.",
+     "Om webbläsaren som startade den stängdes, välj samma filer igen och tryck på Starta - det som redan finns på "
+     "servern hoppas över, och halvskickade filer fortsätter där de stannade.",
+     "Si se cerró el navegador que la empezó, elige otra vez los mismos archivos y pulsa Empezar - lo que ya está en el "
+     "servidor se omite, y los archivos a medio enviar siguen donde se quedaron."},
+    {"Keep the tab that started it open until it's done - you can use other pages meanwhile.",
+     "Håll fliken som startade den öppen tills den är klar - du kan använda andra sidor under tiden.",
+     "Mantén abierta la pestaña que la empezó hasta que termine - puedes usar otras páginas mientras tanto."},
+    {"See what's new", "Se vad som är nytt", "Ver las novedades"},
     {"%d video couldn't be converted on this device and went up as it was - it may not play everywhere. Why: %s.",
      "%d video kunde inte konverteras på den här enheten och laddades upp som den var - den kanske inte spelas "
      "överallt. Varför: %s.",
@@ -242,9 +308,8 @@ static const Tr TR[] = {
      "Elige en qué carpeta de la biblioteca subir"},
     {"Can't reach the library folder %s right now", "Kommer inte åt biblioteksmappen %s just nu",
      "No se puede acceder ahora a la carpeta de la biblioteca %s"},
-    {"The folder name \"%.80s\" has characters a disk can't store",
-     "Mappnamnet \"%.80s\" har tecken som en disk inte kan lagra",
-     "El nombre de carpeta \"%.80s\" tiene caracteres que un disco no puede guardar"},
+    {"The folder name \"%s\" has characters a disk can't store", "Mappnamnet \"%s\" har tecken som en disk inte kan lagra",
+     "El nombre de carpeta \"%s\" tiene caracteres que un disco no puede guardar"},
     {"No files were chosen", "Inga filer valdes", "No se eligió ningún archivo"},
     {"That's more than %d files - upload a few folders at a time", "Det är fler än %d filer - ladda upp några mappar i taget",
      "Son más de %d archivos - sube unas pocas carpetas cada vez"},

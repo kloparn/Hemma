@@ -446,6 +446,68 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  plan/PUT path sets pictures: {"art":"<series|film id>"} + one JPEG/PNG/WebP (magic-checked,
                  25 MB max) saved as <show folder>/poster.<ext> or <film folder>/<film name>.<ext> - where
                  the scan looks first (library.c media_art_target/_current/_prune); the page dialog is ?pic=1.
+                 THE PAGE (1.1; owner, 2026-10-21: "easy enough to understand"; "Add videos" in Watch's header,
+                 "Add episodes" on a series page): form[data-upload][data-preview] with a [data-drop] area (wire.js
+                 keeps dropped/picked files and folders on the form, each choice adding; [data-drop-clear] empties),
+                 then the server's PREVIEW: live action media.upload_preview ("files" = [[path,size]] JSON cut at
+                 ~900 KB, "all" = the count; kept in 8 slots by the screen's live "media.up"; upload_test_preview()
+                 in tests) = plan_make() dry (nothing on the disk changes), grouped by destination folder, each file
+                 what Hemma thinks it is + its fate; the series found get rename fields "to.<16 hex of
+                 upload_show_key(found)>"; Start = the same plan (PlanIn read alike from JSON and fields). More
+                 options in a <details>. ?series=<hex>: everything into that series' folder. "Upload anyway" is
+                 [hidden] unless one is running (media.css: .media-up-form [hidden] beats .check's display).
+                 SORTING (upload_sort.c; hidden sort=1 - keep=1 or no sort = the chosen layout under into): episode
+                 -> <Series|Serier|TV Shows|TV|Anime, else Series; '' when the library folder is one>/<the library's
+                 folder for that show in this library folder, else its name>/<its season folder (not a disc's),
+                 else Season N|Specials>/<name>; disc rips keep their path below their show folder; film ->
+                 <Movies|Films|Filmer>/<Title (Year)> or the film's folder; subtitles/pictures/copies go with their
+                 video; what sits in a show's or film's own folder goes along; the rest (and episodes of no named
+                 series) as chosen. File names never change. upload_safe_name: ':' -> ' -', no leading dots.
+  media/download.c + zip.c  DOWNLOADS (1.1; owner, 2026-10-21: grown-ups only - members and admins, never
+                 children, guests or display accounts, media_grown_up; the version that plays everywhere; a season
+                 or a series as ONE .zip): GET|HEAD /media/file/<id>?download=1 = the playable file +
+                 Content-Disposition (media_download_name: "Film (2020).mp4", "Show S01E03-E04 - Title.mp4", else
+                 its own name; media_safe_name drops \/:*?"<>| and Windows' device names; filename= ASCII +
+                 filename*=UTF-8''), Range as ever. /media/zip/<series>[?s=N] (stream.c zip_thread; MEDIA_MAX_ZIPS
+                 2, else 503 + Retry-After: 60) = "<Show>/Season N|Specials/<episode name>" per MAIN episode's
+                 playable file + its subtitles (".sv.forced.srt" tags kept), names unique ("(2)"), STORED + data
+                 descriptors, UTF-8 names, DOS times from the mtimes, ZIP64 only where a number needs it,
+                 Accept-Ranges: none; folder/zip names stay English (media software and our parser read them).
+                 zip.c is pure: zip_size = Content-Length to the byte (the thread stats the files again first),
+                 zip_write driven by read/write callbacks. Buttons (never in TV mode): media_download_link at the
+                 end of the watch page's .media-playable row, media_download_series = .toolbar#media-dl under the
+                 season tabs (a one-season series: "Download all" only; sizes media_size_text, a series' =
+                 media_zip_bytes). GIVING WAY (a Pi 3B+'s disk and network share one USB 2 bus): while an
+                 ordinary video stream runs (g_watching; downloads counted apart, g_downloads) each download sends
+                 at most MEDIA_DOWNLOAD_SLOW (4 MB/s) - pace(), re-asked every second; full speed when nobody
+                 watches; DOWNLOAD_STALL_MS 5 min (a zip can't resume). Logged ("media: eva downloads ...").
+                 Tests: media_zip_test_busy, media_download_test_pace; download_test.c holds a little unzip (end
+                 records, central directory, local headers, descriptors, CRCs).
+  media/manage.c LOOKING AFTER THE LIBRARY (1.1; owner, 2026-10-21: "easier and better control of the stuff
+                 inside"), admins only: the series page's Manage (/media/series/<id>?manage=1[&s=N]: per season
+                 each episode/extra with its files (Original / Converted copy badges) and size, "Fix number"
+                 (&fix=<id>), Remove (&rm=<id>); Remove season (&rm=season), Remove series (&rm=series)); the watch
+                 page's "Fix title" (?fix=1; films and other videos - a film without a year shows up as one);
+                 Library settings' "What takes room" (10 biggest series/films of 1 MB or more, originals + copies).
+                 REMOVING: remove.c media_purge_episode/_season/_series plan from the index (no disk work: the
+                 dialog); media_purge_job + media_purge_run delete on a thread (one at a time, g_removing; tests
+                 run it in the action): the item's files, then its OWN folders whole (a season's "Season N"; a show
+                 folder that names the show, media_names_show) when the walk finds nothing else - a video neither
+                 the item's nor an extra by name, a .hemma-part/.conv.part, a link, > PURGE_MAX 5000 entries,
+                 another library folder inside = kept - then empty folders up to (never) a top-level one.
+                 media_manage_tick: the gone videos' watch history goes, Latest "removed %s from the library", a
+                 toast to the asker, rescan. Refused while converting. FIXING renames on disk: a film -> "<Title>
+                 (<Year>)<ext>" (+ .web.mp4 copy, subtitles/picture sharing its stem, its own folder as
+                 media_remove_plan finds it); an episode -> "<Show> S01E03[-E04][ - title]<ext>" moved into the
+                 show's season folder (one there for that number, else "Season N"/"Specials"; only when the show
+                 has a folder of its own). clean_part + upload_clean_rel for names; the new name is parsed first as
+                 the library will ("Hemma would read that name as ..."); never over a file (rename_safe; a
+                 case-only change goes through a temp name); every move or none. Watch history moves to the new id
+                 at once (media_watch_move; the rescan's watch_follow fills the rest); "Not for children" marks of
+                 a renamed folder follow (kids_follow), an episode leaving a marked folder marks its new one. A
+                 whole series isn't renamed (its id is its title; tv channels and screen rows keep series ids).
+                 Numbering one ripped disc's title by hand makes library.c number the rest after the season's
+                 highest (the fix dialog says so).
   media/convert.c "play everywhere": MKV -> <name>.web.mp4 next to the original (H.264 + AAC, faststart),
                  by av/conv.c (the same engine browsers run): MPEG-2 decoded, inverse-telecined/deinterlaced
                  (av/deint, chosen by sampling 4 windows) and re-encoded; H.264 copied; HEVC copied as 'hvc1'
@@ -528,8 +590,9 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  a wrong id or "no such name" too (net_dns_packet). Presence from devices is labelled a guess
                  (ARP can't be authenticated: any device can borrow a phone's MAC).
   media/ + tv/   ONE Watch section: tabs Home | Movies | Series | Live TV | Folders (media_lib_head() in
-                 media/media.h; tv's pages draw it too; Live TV only while tv is built). tv = .nav 0,
-                 .parent "media". Recently added groups a series' episodes that arrived within a week of
+                 media/media.h; tv's pages draw it too; Live TV only while tv is built; admins get "Add videos"
+                 there once the library has a folder, not on Live TV - 1.1: it hid behind Library settings).
+                 tv = .nav 0, .parent "media". Recently added groups a series' episodes that arrived within a week of
                  each other (media_recent). Blocks (media/tiles.c): media.continue (TV), media.recent (TV +
                  wall), media.series, media.movies, media.series_one (choices = every series by hex id;
                  next-up first), tv.onnow (TV + wall). Drawn posters: media_tile_art / media_art_style
@@ -563,7 +626,8 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  (folder name parses to the film's title/year, nothing inside but the film and extras - the
                  library never indexes extras, so belongs() asks the name parser; a link (DirEntry.is_link),
                  >400 entries or >4 levels deep keeps the folder). Empty parents go, never a top-level folder
-                 ("Movies"). Also drops watch progress, logs to the activity feed. Episodes: not here.
+                 ("Movies"). Also drops watch progress, logs to the activity feed. Episodes, seasons and series:
+                 media_purge_* here too, driven by manage.c.
   av/            pure-C codec library, no MODULE(), libc only (no core/ deps, no globals) so it also
                  builds for wasm32: mkv.* (Matroska demuxer: cues/bisect seeking, lacing, unknown
                  sizes), mpeg2.* (MPEG-2 MP@ML + MPEG-1 video decoder, display-order frames, IEEE 1180
@@ -1175,7 +1239,11 @@ any submit, socket or not) · `form[data-upload="/base"]` (files: POST base/plan
 to base/<batch>/<i>?at=<offset>, resuming from GET base/<batch>/<i>; a todo entry `[i, at, end]` sends
 only the bytes before `end`; `{i, f}` = convert file f here first (web/conv.js Workers, half the cores,
 max 8, a few ahead of the upload), POST ?size= / ?original=1, then PUT the result as entry i; a `conv`
-form field is dropped when the browser can't run WebAssembly; the server renders progress) ·
+form field is dropped when the browser can't run WebAssembly; the server renders progress; with a
+`[data-drop]` area inside, the form keeps its chosen files itself - dropped anywhere on the page, folders
+walked with their paths, each choice adding, the area `[data-over]` while dragging, `[data-drop-clear]`
+empties - and `form[data-preview="<live action>"]` sends them as [[path,size]] for the server to draw what
+Start will do) ·
 `video[data-resume|data-report|data-next]` (THE PLAYER'S RULES - issue #49, each held by tests/browser:
 player.spec.mjs / live.spec.mjs: data-resume = where it starts once loaded, never in its last 5 s; data-report
 = media.progress (live) every 15 s of the video's own time, at a pause and at the end; ended -> data-next; the
@@ -1346,7 +1414,11 @@ What each version changed is [CHANGELOG.md](CHANGELOG.md); why the big choices a
 (Issue #51, 2026-10-21: the dated Status diary that lived here - every version's work, review passes -
 is the CHANGELOG's now.) 1.0.0 (2026-10-21) = the outside reviews' issues (#3-#103) and the planned
 household features (#27 #39 #41-#47 #71-#74) all done, plus languages (#46), the browser's side tested
-(#49), reviews, releases and codec scope settled (#48 #50), docs for contributors (#51).
+(#49), reviews, releases and codec scope settled (#48 #50), docs for contributors (#51). 1.1.0 (branch
+feat/library, owner's own wish, no issue) = Watch as a library: downloads (a video, a season or series as one
+.zip, giving way to watching), uploads you can see before sending (drop area, the server's preview, Hemma
+sorting into Series/Movies, "Add videos" on Watch, "Add episodes" on a series), and Manage (remove an episode,
+season or series; fix a film's title or an episode's number on disk; what takes room).
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
@@ -1366,6 +1438,7 @@ is signed or cleared with Microsoft (see Owner preferences).
 
 Next ideas: builder-style UI helpers / less raw HTML (owner asked), calmer home cards (hide empty ones), touch
 on the wall (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only),
-MKV→MP4 remux on the fly for Safari/iPhone, "Open in VLC" links, router integration, DLNA, API tokens for
+MKV→MP4 remux on the fly for Safari/iPhone (planned as 1.2, owner 2026-10-21: a "virtual MP4" over the MKV,
+Dolby passed through for Apple devices; live AC-3 -> AAC after), "Open in VLC" links, router integration, DLNA, API tokens for
 scripts, "tune in" on the TV's browser via a QR code, more video formats as files need them (HEVC decoding,
 DTS - each with its fuzz seed: docs/decisions/0006).
