@@ -4,6 +4,18 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 1.1.1 (2026-10-22)
+
+A fix the nightly fuzzing found.
+
+### Fixed
+
+- **An interlaced DVD video that begins on a half-finished frame** (a rip cut in the middle of the
+  disc's stream, where the frame's second half points back to a frame that isn't in the file) made
+  the converter read the very picture it was writing: that frame came out black or garbled. The
+  frame's first half now stands in for the missing one. The nightly fuzzing of the MPEG-2 decoder
+  found it on its first night; a test now holds it.
+
 ## 1.1.0 (2026-10-21)
 
 Watch becomes a library: easy to put videos into, to take them home from, and to look after.

@@ -936,11 +936,20 @@ static void pred(Mpeg2 *d, const Pic *ref, int rsel, int dsel, int lx, int ly, i
     Pic *cur = d->cur;
     int mode = (mvx & 1) | (mvy & 1) << 1 | (avg ? 4 : 0);
     uint8_t *dst = cur->y + (dsel > 0 ? S : 0) + (size_t)ly * (size_t)(S * fd) + (size_t)lx;
+    int cmx = mvx / 2, cmy = mvy / 2, cx = lx / 2, cy = ly / 2;
+    size_t co = (size_t)cy * (size_t)(C * fd) + (size_t)cx + (dsel > 0 ? (size_t)C : 0);
+    if (!ref) { /* nothing to predict from (only a damaged stream gets here): mid-grey */
+        if (avg) return;
+        for (int j = 0; j < lh; j++) memset(dst + (size_t)j * (size_t)(S * fd), 128, 16);
+        for (int j = 0; j < lh / 2; j++) {
+            memset(cur->u + co + (size_t)j * (size_t)(C * fd), 128, 8);
+            memset(cur->v + co + (size_t)j * (size_t)(C * fd), 128, 8);
+        }
+        return;
+    }
     mc_plane(dst, S * fd, ref->y + (rsel > 0 ? S : 0), S * fs, d->coded_w, ph, lx + (mvx >> 1), ly + (mvy >> 1), mode,
              16, lh);
-    int cmx = mvx / 2, cmy = mvy / 2, cx = lx / 2, cy = ly / 2;
     mode = (cmx & 1) | (cmy & 1) << 1 | (avg ? 4 : 0);
-    size_t co = (size_t)cy * (size_t)(C * fd) + (size_t)cx + (dsel > 0 ? (size_t)C : 0);
     int cxs = cx + (cmx >> 1), cys = cy + (cmy >> 1);
     mc_plane(cur->u + co, C * fd, ref->u + (rsel > 0 ? C : 0), C * fs, d->coded_w / 2, ph / 2, cxs, cys, mode, 8,
              lh / 2);
@@ -948,16 +957,26 @@ static void pred(Mpeg2 *d, const Pic *ref, int rsel, int dsel, int lx, int ly, i
              lh / 2);
 }
 
-/* Reference frame for a direction, falling back to whatever exists. */
+/* Reference frame for a direction, falling back to whatever exists - never the picture being decoded
+   (a P picture is d->bwd already): NULL when there's nothing else. */
 static const Pic *pick(const Mpeg2 *d, int dir) {
-    const Pic *r = dir ? d->bwd : d->fwd;
-    if (!r) r = dir ? d->fwd : d->bwd;
-    return r ? r : d->cur;
+    const Pic *a = dir ? d->bwd : d->fwd, *b = dir ? d->fwd : d->bwd;
+    if (a && a != d->cur) return a;
+    return b && b != d->cur ? b : NULL;
 }
 
-/* Field pictures: the second field of a P frame may predict from the first. */
-static const Pic *field_ref(const Mpeg2 *d, int dir, int sel) {
-    if (!dir && d->ptype == 2 && d->second_field && sel != (d->structure == 2)) return d->cur;
+/* Field pictures: the second field of a P frame may predict from the first (the other parity), its own
+   parity from the previous reference frame. When that frame isn't there (an I + P field frame at the
+   start of a stream or after a seek), the first field stands in: *sel is changed to it. Reading the field
+   being written instead was what nightly fuzzing found on 2026-10-22 (overlapping copies). */
+static const Pic *field_ref(const Mpeg2 *d, int dir, int *sel) {
+    if (!dir && d->ptype == 2 && d->second_field) {
+        int first = d->structure != 2;
+        if (*sel == first || !pick(d, 0)) {
+            *sel = first;
+            return d->cur;
+        }
+    }
     return pick(d, dir);
 }
 
@@ -982,17 +1001,22 @@ static void predict(Mpeg2 *d, int x, int y, int flags, int mtype, const MbMv *m)
                 pred(d, ref, 0, 1, 16 * x, 8 * y, 8, v[3][0], v[3][1], true);
             }
         } else {
+            /* (the field first, then the call: field_ref may change s) */
             if (mtype == MT_FIELD) {
                 int s = m->sel[dir][0];
-                pred(d, field_ref(d, dir, s), s, cp, 16 * x, 16 * y, 16, v[0][0], v[0][1], avg);
+                const Pic *ref = field_ref(d, dir, &s);
+                pred(d, ref, s, cp, 16 * x, 16 * y, 16, v[0][0], v[0][1], avg);
             } else if (mtype == MT_16X8) {
                 for (int r = 0; r < 2; r++) {
                     int s = m->sel[dir][r];
-                    pred(d, field_ref(d, dir, s), s, cp, 16 * x, 16 * y + 8 * r, 8, v[r][0], v[r][1], avg);
+                    const Pic *ref = field_ref(d, dir, &s);
+                    pred(d, ref, s, cp, 16 * x, 16 * y + 8 * r, 8, v[r][0], v[r][1], avg);
                 }
             } else {
-                pred(d, field_ref(d, 0, cp), cp, cp, 16 * x, 16 * y, 16, v[0][0], v[0][1], false);
-                pred(d, field_ref(d, 0, !cp), !cp, cp, 16 * x, 16 * y, 16, v[2][0], v[2][1], true);
+                int same = cp, other = !cp;
+                const Pic *rs = field_ref(d, 0, &same), *ro = field_ref(d, 0, &other);
+                pred(d, rs, same, cp, 16 * x, 16 * y, 16, v[0][0], v[0][1], false);
+                pred(d, ro, other, cp, 16 * x, 16 * y, 16, v[2][0], v[2][1], true);
             }
         }
     }

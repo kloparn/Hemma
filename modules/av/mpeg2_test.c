@@ -514,6 +514,61 @@ TEST(mpeg2_field_pictures_and_field_prediction) {
     mpeg2_free(d);
 }
 
+/* A stream (or a seek) that starts on an I field + P field frame: the P field's own parity would come
+ * from the previous frame, which isn't there. Nightly fuzzing (2026-10-22) found the decoder then read
+ * the very field it was writing - overlapping copies. The first field stands in now. 48x32: an I top
+ * field of 100, then a P bottom field: (0) from its own parity 1 px to the right, (1) skipped (own
+ * parity, zero vector), (2) from its own parity 1 px to the left. */
+TEST(mpeg2_second_field_without_a_previous_frame) {
+    static Bw w;
+    memset(&w, 0, sizeof w);
+    int pred[3];
+    seq_header(&w, 48, 32, false);
+    gop(&w, true);
+    Pic hdr = {.type = 1, .tref = 0, .f = {{15, 15}, {15, 15}}, .structure = 1, .tff = true};
+    picture(&w, &hdr);
+    slice(&w, 0, 8);
+    reset_pred(pred);
+    for (int x = 0; x < 3; x++) {
+        mba(&w, 1);
+        put(&w, 1, 1);
+        intra_flat(&w, pred, 100, 128, 128);
+    }
+    hdr = (Pic){.type = 2, .tref = 0, .f = {{1, 1}, {15, 15}}, .structure = 2, .tff = true};
+    picture(&w, &hdr);
+    slice(&w, 0, 8);
+    mba(&w, 1);
+    put(&w, 1, 3); /* MC, not coded */
+    put(&w, 1, 2); /* field */
+    put(&w, 1, 1); /* the bottom field: this one's own parity */
+    mv(&w, 1, 2), mv(&w, 1, 0);
+    mba(&w, 2); /* (1) skipped */
+    put(&w, 1, 3);
+    put(&w, 1, 2);
+    put(&w, 1, 1);
+    mv(&w, 1, -2), mv(&w, 1, 0);
+    for (int seek = 0; seek < 2; seek++) {
+        Mpeg2 *d = mpeg2_new();
+        static Out o;
+        memset(&o, 0, sizeof o);
+        if (seek) { /* the same frame right after a seek, with an earlier frame decoded first */
+            static Bw a, b, c;
+            memset(&a, 0, sizeof a), memset(&b, 0, sizeof b), memset(&c, 0, sizeof c);
+            field_stream(&a, &b, &c);
+            mpeg2_decode(d, a.b, bytes(&a), 0);
+            mpeg2_reset(d);
+        }
+        mpeg2_decode(d, w.b, bytes(&w), 5);
+        mpeg2_flush(d);
+        collect(d, &o);
+        CHECK_INT(o.n, 1);
+        CHECK_INT(o.f[0].pts, 5);
+        for (int y = 0; y < 32; y += 3)
+            for (int x = 0; x < 48; x += 5) CHECK_INT(luma(&o, 0, x, y), 100);
+        mpeg2_free(d);
+    }
+}
+
 /* After A (top field 100, bottom 50):
  *   16x8 field pair: top field upper half from A's top (100), lower half from
  *   A's bottom (50); bottom field upper half from A's bottom (50), lower half
