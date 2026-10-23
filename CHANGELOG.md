@@ -4,6 +4,18 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 1.1.2 (2026-10-23)
+
+Dolby sound in TV rips converts too.
+
+### Fixed
+
+- **Videos with Dolby sound at 44.1 kHz** (common in rips of TV broadcasts) were sent or kept as
+  they were - "Can't convert Dolby sound that isn't 48 kHz yet" - and played silently in Chrome and
+  Firefox. The converter now makes their AAC sound at the same 44.1 kHz (or 32 kHz), which every
+  browser plays; on the server and in the uploading browser alike. Videos already in the library:
+  **Watch → Library settings → Convert**, or upload them again.
+
 ## 1.1.1 (2026-10-22)
 
 A fix the nightly fuzzing found.

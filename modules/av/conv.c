@@ -76,6 +76,7 @@ typedef struct {
     int nfifo;
     int a_good, a_bad; /* Dolby frames decoded / not */
     int a_frame;       /* samples in the last Dolby frame (1536; E-AC-3 may send 256, 512 or 768) */
+    int arate;         /* the Dolby track's rate - 48000, 44100 or 32000 - and so the AAC's */
     int64_t a_next, skip; /* expected pts of the next Dolby frame (ns); samples to drop at the start */
     uint8_t au[AAC_MAX_AU];
     /* text subtitles, gathered as SRT (j->want_subs) */
@@ -127,12 +128,22 @@ const AvCodec *av_conv_codec(const char *id) {
 
 static bool dolby(const char *codec) { return !strcmp(codec, "A_AC3") || !strcmp(codec, "A_EAC3"); }
 
-/* Sound we can make AAC of: AAC itself, or Dolby AC-3 / E-AC-3 at 48 kHz (the decoder's output
-   rate - DVDs and films always are; anything else would play at the wrong speed). */
+/* The rate of a Dolby track we can make AAC of at that same rate: AC-3's three (48 kHz on DVDs and
+   films; 44.1 kHz in TV rips - an AAC of that rate plays everywhere), 48000 when the file doesn't say.
+   0 for E-AC-3's half rates and the rest. */
+static int dolby_rate(const MkvTrack *t) {
+    if (t->rate <= 0) return 48000;
+    static const int RATES[] = {48000, 44100, 32000};
+    for (int i = 0; i < 3; i++)
+        if (t->rate > RATES[i] - 1 && t->rate < RATES[i] + 1) return RATES[i];
+    return 0;
+}
+
+/* Sound we can make AAC of: AAC itself, or Dolby AC-3 / E-AC-3 at one of its rates (dolby_rate). */
 static bool audio_ok(const MkvTrack *t) {
     const AvCodec *k = av_conv_codec(t->codec);
     if (t->compressed || !k || k->type != MKV_AUDIO) return false;
-    if (k->how == AV_DECODE) return t->rate <= 0 || (t->rate > 47999 && t->rate < 48001);
+    if (k->how == AV_DECODE) return dolby_rate(t) > 0;
     return true;
 }
 
@@ -282,7 +293,7 @@ static bool push_pcm(Conv *c, const float *pcm, int frames) {
 static bool code_audio(Conv *c, const MkvFrame *fr) {
     static const float silence[AC3_SAMPLES * 2];
     float pcm[AC3_SAMPLES * AC3_MAX_CHANNELS];
-    const int64_t frame_ns = (int64_t)c->a_frame * NS / 48000;
+    const int64_t frame_ns = (int64_t)c->a_frame * NS / c->arate;
     if (fr->pts != MKV_NOPTS && c->a_next != MKV_NOPTS && fr->pts > c->a_next + frame_ns / 2) {
         /* a hole in the sound (damaged disc): fill it with silence so the picture stays in sync */
         int64_t gap = CMIN((fr->pts - c->a_next + frame_ns / 2) / frame_ns, 10 * NS / frame_ns); /* <= ~10 s: a bigger jump is a broken timestamp, not a hole */
@@ -301,13 +312,15 @@ static bool code_audio(Conv *c, const MkvFrame *fr) {
         if (rc == AC3_SKIP) continue;
         if (rc == AC3_ERR_UNSUPPORTED)
             return unsupported(c, "Its sound is %s coded in a way the converter can't decode yet", in.eac3 ? "Dolby Digital Plus" : "Dolby");
+        if (rc == AC3_OK && in.sample_rate != c->arate) /* the file said another rate: the copy would play too fast or slow */
+            return unsupported(c, "Its %s sound isn't at the rate the file says", in.eac3 ? "Dolby Digital Plus" : "Dolby");
         int n = in.samples > 0 && in.samples <= AC3_SAMPLES ? in.samples : AC3_SAMPLES;
         c->a_frame = n;
         if (rc == AC3_OK && ch == 2) push_pcm(c, pcm, n), c->a_good++;
         else push_pcm(c, silence, n), c->a_bad++; /* damaged: silence keeps the timing */
         samples += n;
     }
-    int64_t took = samples * NS / 48000;
+    int64_t took = samples * NS / c->arate;
     if (fr->pts != MKV_NOPTS) c->a_next = fr->pts + took;
     else if (c->a_next != MKV_NOPTS) c->a_next += took;
     return !c->failed;
@@ -555,13 +568,13 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
     if (c->at) {
         int64_t lead = c->a0 != MKV_NOPTS && c->v0 != MKV_NOPTS ? c->a0 - c->v0 : 0; /* > 0: sound starts later */
         at.codec = MP4_AAC;
-        at.timescale = 48000;
+        at.timescale = (uint32_t)c->arate;
         at.channels = 2;
-        at.sample_rate = 48000;
+        at.sample_rate = c->arate;
         snprintf(at.lang, sizeof at.lang, "%s", strlen(c->at->lang) == 3 ? c->at->lang : "und");
         uint8_t asc[2];
         if (c->acode) {
-            AacConfig ac = {48000, 2, (c->j->audio_kbps ? c->j->audio_kbps : 160) * 1000, 0, 0};
+            AacConfig ac = {c->arate, 2, (c->j->audio_kbps ? c->j->audio_kbps : 160) * 1000, 0, 0};
             char err[120] = "";
             c->ac3 = ac3_open();
             c->aac = aac_open(&ac, err, sizeof err);
@@ -579,7 +592,7 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
             if (!c->fifo) return fail(c, "Out of memory", NULL);
             c->a_next = MKV_NOPTS;
             c->a_frame = AC3_SAMPLES;
-            if (lead < 0) c->skip = ticks(-lead, 48000);
+            if (lead < 0) c->skip = ticks(-lead, c->arate);
             append(c->j->what, sizeof c->j->what,
                    strcmp(c->at->codec, "A_EAC3") ? " · Dolby Digital → AAC" : " · Dolby Digital Plus → AAC");
         } else {
@@ -663,7 +676,7 @@ static int64_t index_room(const Conv *c, const Mpeg2Frame *first) {
     double fps = first->rate_den > 0 ? 2.0 * first->rate_num / first->rate_den : 60;
     int64_t v = c->vcode ? CMIN((int64_t)(secs * CMIN(fps, 120)), CMIN(c->vmax, c->j->in.size / 4)) + 16
                          : (int64_t)c->nvpts + 16;
-    double rate = !c->at ? 0 : c->acode || c->at->rate <= 0 ? 48000 : c->at->rate;
+    double rate = !c->at ? 0 : c->acode ? c->arate : c->at->rate <= 0 ? 48000 : c->at->rate;
     int64_t a = c->at ? CMIN((int64_t)(secs * rate / AAC_FRAME), c->amax) + 16 : 0;
     int64_t chunks = a ? 2 * CMIN(v, a) + 2 : 2;
     return 16384 + v * (c->vcode ? 16 : 24) + a * 4 + chunks * 20;
@@ -709,11 +722,12 @@ bool av_convert(AvConvJob *j) {
     else c->hevc = !strcmp(vk->id, "V_MPEGH/ISO/HEVC"); /* copied: Safari plays it in MP4, never in MKV */
     if (!c->failed && first_audio && !c->at) { /* sound, but none we can convert: say why for the first */
         if (first_audio->compressed) unsupported(c, "The sound is compressed or encrypted inside the file", NULL);
-        else if (dolby(first_audio->codec)) unsupported(c, "Can't convert Dolby sound that isn't 48 kHz yet", NULL);
+        else if (dolby(first_audio->codec)) unsupported(c, "Can't convert Dolby sound that isn't at 48, 44.1 or 32 kHz yet", NULL);
         else unsupported(c, "Its sound is %s, which the converter can't change yet (browsers play it silently)",
                          codec_words(first_audio->codec));
     }
     if (c->at) c->acode = dolby(c->at->codec);
+    c->arate = c->acode ? dolby_rate(c->at) : 48000;
     for (int i = 0; j->want_subs && i < mkv_track_count(c->mkv) && c->nsub < AV_CONV_MAX_SUBS; i++) {
         const MkvTrack *t = mkv_track(c->mkv, i);
         int kind = sub_kind(t);

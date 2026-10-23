@@ -221,6 +221,7 @@ typedef struct {
         const char *codec, *lang, *name;
         bool forced;
     } sub[2];
+    int arate; /* the sound's SamplingFrequency (0: 48000) */
 } Tracks;
 
 /* a BlockGroup: a Block with its BlockDuration (subtitles come so) */
@@ -269,7 +270,7 @@ static size_t start_file(W *w, const Tracks *t, double ms) {
         if (t->apriv) w_bin(w, 0x63A2, t->apriv, t->apriv_len);
         w_bin(w, 0x22B59C, "swe", 3);
         size_t a = w_open(w, 0xE1);
-        w_float(w, 0xB5, 48000.0);
+        w_float(w, 0xB5, t->arate ? t->arate : 48000.0);
         w_uint(w, 0x9F, 2);
         w_close(w, a);
         w_close(w, tr);
@@ -602,6 +603,92 @@ TEST(conv_turns_dolby_into_aac) {
         free(in.p), free(out.p);
     }
     CHECK_INT(aac[1], aac[0]); /* the hole became silence of the same length */
+}
+
+/* a track's timescale (its mdhd box, k-th in the file), or -1 */
+static int64_t track_timescale(const W *w, int k) {
+    size_t moov = box(w, "moov");
+    if (!moov) return -1;
+    size_t end = moov + be32(w->p + moov);
+    int seen = 0;
+    for (size_t at = moov; at + 24 <= end; at++)
+        if (!memcmp(w->p + at, "mdhd", 4) && seen++ == k) return be32(w->p + at + (w->p[at + 4] == 1 ? 24 : 16));
+    return -1;
+}
+
+/* Dolby at 44.1 kHz (TV rips) or 32 kHz becomes AAC at that same rate: 1536 samples a frame take
+   longer, and the copy has to play at the right speed (it was refused until 1.1.2). */
+TEST(conv_turns_dolby_at_44_1_and_32_khz_into_aac) {
+    static const int RATES[] = {44100, 32000};
+    for (int r = 0; r < 2; r++) {
+        int rate = RATES[r];
+        static uint8_t ac3[24 * 1152];
+        size_t bytes = ac3_test_tone_at(ac3, sizeof ac3, 24, rate);
+        int fsize = ac3_frame_size(ac3, bytes), nf = fsize > 0 ? (int)(bytes / (size_t)fsize) : 0;
+        CHECK_INT(fsize, rate == 44100 ? 834 : 1152);
+        CHECK_INT(nf, 24);
+        W in;
+        Tracks t = {"V_MPEG2", NULL, 0, 48, 32, "A_AC3", NULL, 0, .arate = rate};
+        size_t seg = start_file(&in, &t, 1200);
+        size_t cl = w_open(&in, 0x1F43B675);
+        w_uint(&in, 0xE7, 0);
+        static uint8_t pic[4096];
+        for (int k = 0, a = 0; k < 23 || a < nf;) {
+            int a_ms = (int)((int64_t)a * 1536 * 1000 / rate);
+            if (k < 23 && (a >= nf || frame_ms(k) <= a_ms)) {
+                w_simple(&in, 1, frame_ms(k), true, pic, mpeg2_picture(pic, k));
+                k++;
+            } else {
+                w_simple(&in, 2, a_ms, true, ac3 + (size_t)a * fsize, (size_t)fsize);
+                a++;
+            }
+        }
+        w_close(&in, cl);
+        w_close(&in, seg);
+        W out;
+        AvConvJob j = {0};
+        Seen s;
+        CHECK(run(&in, &out, &j, &s));
+        CHECK_STR(j.err, "");
+        CHECK_HAS(j.what, "Dolby Digital → AAC");
+        CHECK_INT(track_timescale(&out, 1), rate);
+        int n[2];
+        counts(&out, n);
+        CHECK(n[1] >= nf * 3 / 2 && n[1] <= nf * 3 / 2 + 3); /* the same samples, at their own rate */
+        CHECK(track_bytes(&out, 1) / n[1] > 40);              /* a tone, not silence */
+        free(in.p), free(out.p);
+    }
+    /* a file that says 44.1 kHz around 48 kHz frames would play too fast: refused, in words */
+    static uint8_t ac3[8 * 768];
+    size_t bytes = ac3_test_tone(ac3, sizeof ac3, 8);
+    W in;
+    Tracks t = {"V_MPEG2", NULL, 0, 48, 32, "A_AC3", NULL, 0, .arate = 44100};
+    size_t seg = start_file(&in, &t, 300);
+    size_t cl = w_open(&in, 0x1F43B675);
+    w_uint(&in, 0xE7, 0);
+    static uint8_t pic[4096];
+    for (int k = 0; k < 8; k++) {
+        w_simple(&in, 1, frame_ms(k), true, pic, mpeg2_picture(pic, k));
+        w_simple(&in, 2, k * 32, true, ac3 + (size_t)k * 768, 768);
+    }
+    w_close(&in, cl);
+    w_close(&in, seg);
+    CHECK_INT((int)bytes, 8 * 768);
+    W out;
+    AvConvJob j = {0};
+    Seen s;
+    CHECK(!run(&in, &out, &j, &s));
+    CHECK(j.unsupported);
+    CHECK_STR(j.err, "Its Dolby sound isn't at the rate the file says");
+    free(in.p), free(out.p);
+    /* E-AC-3's half rates stay refused, with the rates that work named */
+    Tracks half = {"V_MPEG2", NULL, 0, 48, 32, "A_EAC3", NULL, 0, .arate = 24000};
+    seg = start_file(&in, &half, 300);
+    w_close(&in, seg);
+    CHECK(!run(&in, &out, &j, &s));
+    CHECK(j.unsupported);
+    CHECK_STR(j.err, "Can't convert Dolby sound that isn't at 48, 44.1 or 32 kHz yet");
+    free(in.p), free(out.p);
 }
 
 /* Dolby Digital Plus (E-AC-3, here in 3-block frames of 16 ms) becomes AAC too, and the file's text

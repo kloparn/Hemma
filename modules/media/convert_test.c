@@ -373,16 +373,19 @@ TEST(convert_saves_subtitles_next_to_the_original) {
     CHECK(media_sub_for("x.mkv", "x.sdh.forced.srt", lang, sizeof lang) && str_eq(lang, ""));
 }
 
-/* HEMMA_TEST_CONVERT=<an .mkv>: convert its first 30 s and check what came out (its text subtitles
-   land next to it as .srt: point it at a copy, not at a household's original). */
+/* HEMMA_TEST_CONVERT=<an .mkv>: convert its first 30 s (HEMMA_TEST_CONVERT_S: another length) and check
+   what came out (its text subtitles land next to it as .srt: point it at a copy, not at a household's
+   original). */
 TEST(convert_real_file_when_given) {
     const char *src = plat_getenv("HEMMA_TEST_CONVERT");
     if (!src || !*src) return;
+    const char *len = plat_getenv("HEMMA_TEST_CONVERT_S");
+    int secs = len && atoi(len) > 0 ? atoi(len) : 30;
     ConvertJob j;
     memset(&j, 0, sizeof j);
     str_copy(j.src, sizeof j.src, src);
     snprintf(j.dst, sizeof j.dst, "%s/out.web.mp4", test_tmpdir());
-    j.limit_ns = 30LL * 1000000000LL;
+    j.limit_ns = secs * 1000000000LL;
     int64_t t0 = now_ms();
     bool ok = convert_file(&j);
     if (!ok) test_fail(__FILE__, __LINE__, "convert failed: %s", j.err);
@@ -393,7 +396,7 @@ TEST(convert_real_file_when_given) {
     CHECK(str_eq(p.vcodec, "h264") || str_eq(p.vcodec, "hevc")); /* (HEVC is copied) */
     CHECK_STR(p.acodec, "aac");
     CHECK_INT(p.playable, str_eq(p.vcodec, "h264") ? PLAY_YES : PLAY_MAYBE);
-    CHECK(p.duration_ms > 28000 && p.duration_ms < 32000);
-    fprintf(stderr, "    converted 30 s in %lld ms: %s, %lld KB, %dx%d, %d subtitle track(s) saved -> %s\n",
+    CHECK(p.duration_ms > secs * 1000LL - 2000 && p.duration_ms < secs * 1000LL + 2000);
+    fprintf(stderr, "    converted %d s in %lld ms: %s, %lld KB, %dx%d, %d subtitle track(s) saved -> %s\n", secs,
             (long long)(now_ms() - t0), j.what, (long long)(j.out_bytes >> 10), p.width, p.height, j.subs, j.dst);
 }

@@ -514,7 +514,7 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  (hvcC arrays marked complete - what Safari needs; no HEVC decoder here, so it plays on Apple
                  devices and browsers with HEVC hardware, not everywhere; Convert says "play in Safari too", the watch page
                  badge "Plays on newer devices");
-                 AC-3 / E-AC-3 (Dolby Digital Plus) -> AAC; AAC copied; the file's text subtitles -> .srt next to the
+                 AC-3 / E-AC-3 (Dolby Digital Plus) -> AAC at the track's own rate (48, 44.1 or 32 kHz - TV rips are 44.1; 1.1.2; E-AC-3 half rates refused; a frame at another rate than the file says = unsupported); AAC copied; the file's text subtitles -> .srt next to the
                  ORIGINAL (convert_save_sub: media_sub_sidecar names "x.en.srt", "x.sv.forced.srt", "x.sdh.srt";
                  the library gives x.*.srt to x.web.mp4 once x.mkv is gone; never over a file there; the watch page's
                  card for HEVC + Dolby says "Fix the sound"). convert.c = files + the queue: one file per worker thread
@@ -854,7 +854,7 @@ build*/ data/ .env   generated / runtime / secrets (gitignored)
   local notes say where it lives on their machine.
 - Real-media checks (never part of the suite; the owner's media is read-only apart from `.web.mp4` copies):
   `HEMMA_TEST_SHOW=<show folder> ./build/test.exe media_real` lists how the library sees that folder;
-  `HEMMA_TEST_MKV=<file.mkv>` / `HEMMA_TEST_AC3=<file>` run the av decoders over a real file.
+  `HEMMA_TEST_MKV=<file.mkv>` / `HEMMA_TEST_AC3=<file>` run the av decoders over a real file; `HEMMA_TEST_CONVERT=<a copy of an .mkv>` (+ `HEMMA_TEST_CONVERT_S=90`: seconds, 30 by default) `./build/test.exe convert_real_file_when_given` converts its start like the server does - its .srt files land next to that copy.
 
 ## How the live UI works
 

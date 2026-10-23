@@ -21,11 +21,11 @@ static void put(BitW *w, unsigned v, int n) {
     }
 }
 
-/* syncinfo + bsi for a 48 kHz frame of frmsizecod; crc1 left 0 */
-static void put_header(BitW *w, int frmsizecod, int acmod, bool lfe, int dialnorm) {
+/* syncinfo + bsi for a frame of frmsizecod at fscod (0 48 kHz, 1 44.1, 2 32); crc1 left 0 */
+static void put_header_at(BitW *w, int fscod, int frmsizecod, int acmod, bool lfe, int dialnorm) {
     put(w, 0x0B77, 16);
-    put(w, 0, 16);         /* crc1 */
-    put(w, 0, 2);          /* fscod 48 kHz */
+    put(w, 0, 16); /* crc1 */
+    put(w, (unsigned)fscod, 2);
     put(w, (unsigned)frmsizecod, 6);
     put(w, 8, 5);          /* bsid */
     put(w, 0, 3);          /* bsmod */
@@ -42,6 +42,10 @@ static void put_header(BitW *w, int frmsizecod, int acmod, bool lfe, int dialnor
     }
     put(w, 0, 2); /* copyrightb, origbs */
     put(w, 0, 3); /* timecod1e, timecod2e, addbsie */
+}
+
+static void put_header(BitW *w, int frmsizecod, int acmod, bool lfe, int dialnorm) {
+    put_header_at(w, 0, frmsizecod, acmod, lfe, dialnorm);
 }
 
 /* make both CRCs of a frame valid (crc1 by search: it sits at the start of what it covers) */
@@ -350,6 +354,7 @@ typedef struct {
     bool lfe;
     bool shorts[6]; /* blocks using the short transform (full-bandwidth channels) */
     bool dither;
+    int fscod;      /* 0 48 kHz, 1 44.1, 2 32 (encode_frame_ch only) */
 } EncOpts;
 
 static const uint8_t NFULL_CH[8] = {2, 1, 2, 3, 3, 4, 4, 5};
@@ -445,7 +450,9 @@ static int encode_frame_ch(double *const *sig, const EncOpts *o, uint8_t *frame)
     static const int rates[19] = {32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640};
     int kbps = o->kbps ? o->kbps : 192, frmsizecod = 0;
     while (rates[frmsizecod >> 1] != kbps) frmsizecod += 2;
-    const int size = 4 * kbps, nf = NFULL_CH[o->acmod], nch = nf + o->lfe; /* 48 kHz: 4 bytes per kbit/s */
+    /* bytes: 48 kHz 4 per kbit/s, 32 kHz 6, 44.1 kHz the words 1536 samples take (A/52 table 5.18, even codes) */
+    const int size = o->fscod == 2 ? 6 * kbps : o->fscod == 1 ? 2 * (kbps * 1000 * 1536 / (44100 * 16)) : 4 * kbps;
+    const int nf = NFULL_CH[o->acmod], nch = nf + o->lfe;
     int end[6];
     static int8_t exps[6][6][256];
     static double mant[6][6][256];
@@ -461,8 +468,9 @@ static int encode_frame_ch(double *const *sig, const EncOpts *o, uint8_t *frame)
     for (int csnr = 63; csnr >= 0; csnr--) {
         memset(frame, 0, (size_t)size);
         BitW wr = {frame, 0, size};
-        put_header(&wr, frmsizecod, o->acmod, o->lfe, 27);
+        put_header_at(&wr, o->fscod, frmsizecod, o->acmod, o->lfe, 27);
         Ac3BitAlloc p = params(csnr, 0, 4, -2048, 0x900);
+        p.fscod = o->fscod;
         for (int b = 0; b < 6; b++) {
             for (int ch = 0; ch < nf; ch++) put(&wr, o->shorts[b], 1); /* blksw */
             for (int ch = 0; ch < nf; ch++) put(&wr, o->dither, 1);    /* dithflag */
@@ -710,16 +718,18 @@ TEST(ac3_encode_decode_round_trip_5_1) {
     }
 }
 
-size_t ac3_test_tone(uint8_t *out, size_t cap, int frames) {
+size_t ac3_test_tone(uint8_t *out, size_t cap, int frames) { return ac3_test_tone_at(out, cap, frames, 48000); }
+
+size_t ac3_test_tone_at(uint8_t *out, size_t cap, int frames, int rate) {
     enum { MAXF = 64 };
     static double l[1536 * MAXF + 256], r[1536 * MAXF + 256];
     if (frames > MAXF) frames = MAXF;
     for (int i = 0; i < 1536 * frames + 256; i++) {
-        double t = i / 48000.0;
+        double t = i / (double)rate;
         l[i] = 0.3 * sin(2 * PI * 440 * t);
         r[i] = 0.3 * sin(2 * PI * 660 * t);
     }
-    EncOpts o = {.bw = 40, .kbps = 192, .acmod = 2};
+    EncOpts o = {.bw = 40, .kbps = 192, .acmod = 2, .fscod = rate == 44100 ? 1 : rate == 32000 ? 2 : 0};
     size_t n = 0;
     for (int f = 0; f < frames; f++) {
         double *chans[2] = {l + 1536 * f, r + 1536 * f};
