@@ -83,7 +83,7 @@ void media_probe_why(const MediaProbe *p, char *out, size_t cap);
 
 const char *media_mime(const char *container);    /* "video/mp4", "video/webm", "video/x-matroska", ... */
 bool media_is_video_ext(const char *name);        /* .mp4 .m4v .mkv .webm .mov .avi .ts .m2ts .mts .wmv .mpg .mpeg */
-bool media_is_sub_ext(const char *name);          /* .srt .vtt */
+bool media_is_sub_ext(const char *name);          /* .srt .vtt .sup .idx (a VobSub's .sub: media_is_vobsub_data) */
 bool media_is_image_ext(const char *name);        /* .jpg .jpeg .png .webp (posters, folder art) */
 const char *media_playable_label(Playable p);     /* "Plays in browsers", "May not play everywhere", ... (English: T() it) */
 void media_fmt_duration(int64_t ms, char *out, size_t cap); /* "1 h 42 min", "42 min", "45 s", "" */
@@ -96,16 +96,43 @@ void media_fmt_duration(int64_t ms, char *out, size_t cap); /* "1 h 42 min", "42
    header; returns false when no cue could be read. */
 bool srt_to_vtt(const char *src, size_t n, Buf *out);
 
-/* Does subtitle file `sub` (e.g. "Movie.sv.forced.srt") belong to video file
-   `video` ("Movie.mkv")? Plain file names, case-insensitive. On success
-   copies a language code ("sv", "en", ... or "" when untagged) into lang. */
-bool media_sub_for(const char *video, const char *sub, char *lang, size_t cap);
+/* Subtitle files: text (.srt .vtt), Blu-ray PGS pictures (.sup) and DVD VobSub pictures (.idx, whose
+   pictures are in the .sub of the same name beside it - the library indexes such a .sub with its .idx,
+   never on its own: a .sub alone is MicroDVD text, which Hemma doesn't read). */
+bool media_is_sub_pic(const char *name);     /* .sup .idx .sub: pictures, which a browser can't show as a <track> */
+bool media_is_vobsub_data(const char *name); /* .sub: an .idx's pictures */
 
-/* The .srt a subtitle track taken out of `video` (a path or name; a copy "x.web.mp4" counts as "x")
-   is saved as: "<video without its extension>.<code>[.sdh][.forced].srt" - code = the track's
-   language in two letters ("eng", "en-US" -> "en"), none for "und" or one we don't know; sdh when
-   the track's name says so ("SDH", "hearing impaired", "CC"), forced when the track is. media_sub_for
+/* What a subtitle's name says beyond its video's: "Movie.en.sdh.2.srt" -> en, sdh, the second. */
+typedef struct {
+    char lang[16]; /* "en", "sv" ... or "" when it doesn't say */
+    bool sdh;      /* for the deaf and hard of hearing: "sdh", "cc", "hi" */
+    bool forced;   /* only what's said in another language (and signs): "forced", "foreign" */
+    int n;         /* 2, 3 ...: the second, third track of one video in the same language and flags; 0 = the first */
+} MediaSubTags;
+
+/* Does subtitle file `sub` (e.g. "Movie.sv.forced.srt", "Movie.en.2.sup", "Movie.en.idx", a VobSub's
+   "Movie.en.sub") belong to video file `video` ("Movie.mkv"; "Movie.web.mp4" counts as "Movie")? Plain
+   file names, case-insensitive. A number counts only after a language ("Movie.en.2.srt"; "Movie 2.srt"
+   is another video's), "und" is a language that names none. */
+bool media_sub_tags(const char *video, const char *sub, MediaSubTags *t);
+/* The same, giving only the language code ("sv", "en", ... or "" when untagged). */
+bool media_sub_for(const char *video, const char *sub, char *lang, size_t cap);
+/* The variant as a key, unique among one video's subtitles: "en", "en.sdh", "en.forced", "en.sdh.forced",
+   "en.2", "und" (no language). Letters, digits and dots only. */
+void media_sub_key(const MediaSubTags *t, char *out, size_t cap);
+
+/* A subtitle track's tags from what a file says of it: its language as the file names it ("eng",
+   "en-US" -> "en"; none for "und" or one we don't know), sdh when its name says so ("SDH", "hearing
+   impaired", "CC"), forced when it is (or its name says so). n = 0. */
+void media_sub_track_tags(const char *lang, const char *name, bool forced, MediaSubTags *t);
+/* "<video without its extension>[.<lang>][.sdh][.forced][.<n>].<ext>" ("x.web.mp4" counts as "x"; a
+   numbered one with no language is "x.und.2.srt", so media_sub_tags takes it back). false = too long. */
+bool media_sub_name(const char *video, const MediaSubTags *t, const char *ext, char *out, size_t cap);
+/* What a subtitle track taken out of `video` (a path or name) is saved as: media_sub_name of the
+   track's tags (media_sub_track_tags), ext "srt" / "sup" / "idx" (NULL or "" = "srt"), n = 2, 3 ... for
+   the second, third track of one file in one language and flags (0 or 1 = the first). media_sub_for
    gives that file to the video. false when the name would be too long. */
-bool media_sub_sidecar(const char *video, const char *lang, const char *name, bool forced, char *out, size_t cap);
+bool media_sub_sidecar(const char *video, const char *lang, const char *name, bool forced, const char *ext, int n,
+                       char *out, size_t cap);
 
 #endif

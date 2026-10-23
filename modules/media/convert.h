@@ -6,6 +6,7 @@
 
 #include <stdatomic.h>
 
+#include "../av/conv.h"
 #include "library.h"
 
 typedef enum {
@@ -31,18 +32,30 @@ typedef struct {
     char err[200];             /* why it failed */
     char what[120];            /* what was done: "DVD video (film) → H.264 · Dolby Digital → AAC" */
     int64_t out_bytes;
-    int subs;                  /* text subtitle tracks saved next to the original as .srt */
+    int subs;                  /* subtitle tracks saved next to the original (convert_save_subs) */
 } ConvertJob;
 
 /* Blocking - run it on a worker thread. True when dst is complete. Uses only
    the av library and plain file I/O, so any number may run at once. Never
-   replaces a file already at dst. The original's text subtitle tracks become
-   .srt files next to it (convert_save_sub). */
+   replaces a file already at dst. The original's subtitle tracks become files
+   next to it (convert_save_subs) - also when the converter refuses the file for
+   what it holds (an AV1 picture, DTS sound): its subtitles still come out. */
 bool convert_file(ConvertJob *j);
 
-/* Save one subtitle track taken out of `video` (a path) next to it, named by media_sub_sidecar -
-   never over a file that is there (one saved earlier, or the household's own). True when written. */
-bool convert_save_sub(const char *video, const char *lang, const char *name, bool forced, const char *srt, size_t len);
+/* The tracks of one file met so far, in its order: a second track in the same language and flags
+   is named ".2", a third ".3" (contract C1) - whether the first was saved or not. */
+typedef struct {
+    char keys[AV_CONV_MAX_SUBS][40]; /* media_sub_key of each (the first AV_CONV_MAX_SUBS) */
+    int n;
+} ConvertSubs;
+
+/* Save one subtitle track taken out of `video` (a path) next to it, named by media_sub_sidecar:
+   text -> "x.en.srt", Blu-ray PGS -> "x.en.sup", DVD VobSub -> "x.en.idx" + "x.en.sub" (both or
+   neither). `seen` (NULL: the file's first) numbers it and remembers it. Never over a file that is
+   there (one saved earlier, or the household's own): that track is skipped. True when written. */
+bool convert_save_sub(const char *video, const AvConvSub *s, ConvertSubs *seen);
+/* Every track of one file, in its order: how many were written. */
+int convert_save_subs(const char *video, const AvConvSub *subs, int n);
 
 /* The queue (event-loop side): one file per worker thread, progress on screen. Before a file
    starts, its original's size must fit on the disk next to it (room.h): what doesn't wait while
@@ -53,6 +66,7 @@ void convert_card(Ctx *c, Buf *b);          /* library settings: what needs conv
 void convert_act_start(Ctx *c, Fields *f);  /* media.convert: id=<hex> for one video, else all */
 void convert_act_stop(Ctx *c, Fields *f);   /* media.convert_stop */
 bool convert_queued(uint64_t id);           /* waiting or being converted */
+bool convert_busy(void);                    /* any video waiting or being converted (subtake.c gives way) */
 /* Still on the card: conversions set aside for lack of room, and failed ones (the System page). */
 void convert_trouble(int *noroom, int *failed);
 /* The copy at dst lasts as long as the original (library id, file src): delete the original, its

@@ -288,12 +288,27 @@ static const struct {
     {"tur", "tr"},      {"icelandic", "is"}, {"isl", "is"},        {"ice", "is"},
 };
 
-static const char *const SUB_FLAGS[] = {"forced", "sdh", "cc", "hi", "default", "full", "sub", "subs", "subtitle",
-                                        "subtitles", "foreign", "text", NULL};
+/* words a subtitle's name may carry besides its language: SDH ones, forced ones, and words that say nothing */
+static const char *const SUB_SDH[] = {"sdh", "cc", "hi", NULL};
+static const char *const SUB_FORCED[] = {"forced", "foreign", NULL};
+static const char *const SUB_FLAGS[] = {"default", "full", "sub", "subs", "subtitle", "subtitles", "text", NULL};
 
-bool media_sub_for(const char *video, const char *sub, char *lang, size_t cap) {
-    if (lang && cap) lang[0] = 0;
-    if (!video || !sub || !media_is_sub_ext(sub)) return false;
+static bool word_of(const char *t, const char *const *list) {
+    for (; *list; list++)
+        if (!strcmp(t, *list)) return true;
+    return false;
+}
+
+bool media_is_sub_pic(const char *name) {
+    return name && (str_iends(name, ".sup") || str_iends(name, ".idx") || str_iends(name, ".sub"));
+}
+
+bool media_is_vobsub_data(const char *name) { return name && str_iends(name, ".sub"); }
+
+bool media_sub_tags(const char *video, const char *sub, MediaSubTags *out) {
+    MediaSubTags t = {0};
+    if (out) *out = t;
+    if (!video || !sub || (!media_is_sub_ext(sub) && !media_is_vobsub_data(sub))) return false;
     char vb[512], sb[512];
     fold_copy(vb, sizeof vb, video);
     fold_copy(sb, sizeof sb, sub);
@@ -306,33 +321,55 @@ bool media_sub_for(const char *video, const char *sub, char *lang, size_t cap) {
     size_t n = strlen(vb);
     if (!n || strncmp(sb, vb, n) != 0) return false;
     const char *rest = sb + n;
-    if (!*rest) return true;
+    if (!*rest) {
+        if (out) *out = t;
+        return true;
+    }
     if (!strchr("._- ", *rest)) return false;
 
-    char found[16] = "";
+    bool said = false; /* a language came: a number may follow ("x.en.2.srt" - never "Movie 2.srt") */
     char tags[256];
     str_copy(tags, sizeof tags, rest + 1);
-    for (char *t = tags;;) {
-        char *e = t + strcspn(t, "._- ");
+    for (char *w = tags;;) {
+        char *e = w + strcspn(w, "._- ");
         char c = *e;
         *e = 0;
-        if (*t) {
+        if (*w) {
             const char *code = NULL;
             for (size_t i = 0; i < sizeof LANGS / sizeof LANGS[0] && !code; i++)
-                if (!strcmp(t, LANGS[i].name)) code = LANGS[i].code;
-            bool flag = false;
-            for (int i = 0; SUB_FLAGS[i]; i++)
-                if (!strcmp(t, SUB_FLAGS[i])) flag = true;
-            if (!code && !flag && strlen(t) == 2 && isalpha((unsigned char)t[0]) && isalpha((unsigned char)t[1]))
-                code = t;
-            if (!code && !flag) return false; /* "Movie 2.srt" is not a subtitle for "Movie.mkv" */
-            if (code && !found[0]) str_copy(found, sizeof found, code);
+                if (!strcmp(w, LANGS[i].name)) code = LANGS[i].code;
+            size_t wl = strlen(w);
+            bool digits = wl <= 2 && isdigit((unsigned char)w[0]) && (wl == 1 || isdigit((unsigned char)w[1]));
+            if (word_of(w, SUB_SDH)) t.sdh = true;
+            else if (word_of(w, SUB_FORCED)) t.forced = true;
+            else if (word_of(w, SUB_FLAGS)) ;
+            else if (!strcmp(w, "und")) said = true; /* "undetermined": a language tag that names none */
+            else if (digits && said) t.n = atoi(w) > 1 ? atoi(w) : 0;
+            else if (code || (wl == 2 && isalpha((unsigned char)w[0]) && isalpha((unsigned char)w[1]))) {
+                if (!t.lang[0]) str_copy(t.lang, sizeof t.lang, code ? code : w);
+                said = true;
+            } else {
+                return false; /* "Movie 2.srt", "Movie Extended.srt" are not subtitles for "Movie.mkv" */
+            }
         }
         if (!c) break;
-        t = e + 1;
+        w = e + 1;
     }
-    if (lang && cap) str_copy(lang, cap, found);
+    if (out) *out = t;
     return true;
+}
+
+bool media_sub_for(const char *video, const char *sub, char *lang, size_t cap) {
+    MediaSubTags t;
+    bool ok = media_sub_tags(video, sub, &t);
+    if (lang && cap) str_copy(lang, cap, t.lang);
+    return ok;
+}
+
+void media_sub_key(const MediaSubTags *t, char *out, size_t cap) {
+    char n[16] = "";
+    if (t->n >= 2) snprintf(n, sizeof n, ".%d", t->n);
+    snprintf(out, cap, "%s%s%s%s", t->lang[0] ? t->lang : "und", t->sdh ? ".sdh" : "", t->forced ? ".forced" : "", n);
 }
 
 /* ISO 639-2 (bibliographic and terminology) -> 639-1, for the languages subtitle tracks come in */
@@ -363,26 +400,42 @@ static bool word_in(const char *hay, const char *word) { /* case-insensitive, as
     return false;
 }
 
-bool media_sub_sidecar(const char *video, const char *lang, const char *name, bool forced, char *out, size_t cap) {
-    if (!video || !out || !cap) return false;
-    size_t vn = strlen(video), stem = vn;
-    const char *slash = strrchr(video, '/'), *dot = strrchr(video, '.');
-    if (vn > 8 && str_iends(video, ".web.mp4")) stem = vn - 8;
-    else if (dot && (!slash || dot > slash)) stem = (size_t)(dot - video);
-    char code[4] = "", l[8] = "";
+void media_sub_track_tags(const char *lang, const char *name, bool forced, MediaSubTags *t) {
+    memset(t, 0, sizeof *t);
+    char l[8] = "";
     size_t ln = lang ? strcspn(lang, "-_") : 0;
     if (ln == 2 || ln == 3) {
         for (size_t i = 0; i < ln; i++) l[i] = (char)tolower((unsigned char)lang[i]);
         l[ln] = 0;
-        if (ln == 2 && isalpha((unsigned char)l[0]) && isalpha((unsigned char)l[1])) str_copy(code, sizeof code, l);
+        if (ln == 2 && isalpha((unsigned char)l[0]) && isalpha((unsigned char)l[1])) str_copy(t->lang, sizeof t->lang, l);
         for (size_t i = 0; ln == 3 && i < sizeof LANG3 / sizeof LANG3[0]; i++)
-            if (!strcmp(l, LANG3[i][0])) str_copy(code, sizeof code, LANG3[i][1]);
+            if (!strcmp(l, LANG3[i][0])) str_copy(t->lang, sizeof t->lang, LANG3[i][1]);
     }
-    if (!strcmp(code, "hi") || !strcmp(code, "cc")) code[0] = 0; /* names that read as "hearing impaired" / "closed captions" */
+    if (!strcmp(t->lang, "hi") || !strcmp(t->lang, "cc")) t->lang[0] = 0; /* names that read as "hearing impaired" / "closed captions" */
     name = name ? name : "";
-    bool sdh = word_in(name, "sdh") || word_in(name, "cc") || word_in(name, "hearing impaired");
-    forced = forced || word_in(name, "forced");
-    int n = snprintf(out, cap, "%.*s%s%s%s%s.srt", (int)stem, video, code[0] ? "." : "", code, sdh ? ".sdh" : "",
-                     forced ? ".forced" : "");
-    return n > 0 && (size_t)n < cap;
+    t->sdh = word_in(name, "sdh") || word_in(name, "cc") || word_in(name, "hearing impaired");
+    t->forced = forced || word_in(name, "forced");
+}
+
+bool media_sub_name(const char *video, const MediaSubTags *t, const char *ext, char *out, size_t cap) {
+    if (!video || !t || !ext || !out || !cap) return false;
+    size_t vn = strlen(video), stem = vn;
+    const char *slash = strrchr(video, '/'), *dot = strrchr(video, '.');
+    if (vn > 8 && str_iends(video, ".web.mp4")) stem = vn - 8;
+    else if (dot && (!slash || dot > slash)) stem = (size_t)(dot - video);
+    char n[16] = "";
+    if (t->n >= 2) snprintf(n, sizeof n, ".%d", t->n);
+    /* (a number counts only after a language: "x.und.2.srt" for a second one in a language not known) */
+    const char *lang = t->lang[0] ? t->lang : n[0] ? "und" : "";
+    int k = snprintf(out, cap, "%.*s%s%s%s%s%s.%s", (int)stem, video, lang[0] ? "." : "", lang, t->sdh ? ".sdh" : "",
+                     t->forced ? ".forced" : "", n, ext);
+    return k > 0 && (size_t)k < cap;
+}
+
+bool media_sub_sidecar(const char *video, const char *lang, const char *name, bool forced, const char *ext, int n,
+                       char *out, size_t cap) {
+    MediaSubTags t;
+    media_sub_track_tags(lang, name, forced, &t);
+    t.n = n >= 2 ? n : 0;
+    return media_sub_name(video, &t, ext && *ext ? ext : "srt", out, cap);
 }

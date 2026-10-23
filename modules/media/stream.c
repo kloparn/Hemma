@@ -4,6 +4,8 @@
  *   /media/zip/<series>   a season (?s=<season>) or the whole series as one .zip (download.h)
  *   /media/img/<id>       poster / folder art
  *   /media/sub/<id>.vtt   subtitles, SRT converted to WebVTT on the fly
+ *   /media/subpic/<id>.json, /media/subpic/<id>/<n>.png   picture subtitles (.sup, .idx + .sub): the cues,
+ *                         and one drawn (contract C5) - the player lays them over the video
  *
  * Files are streamed by worker threads: the request is parsed on the event
  * loop, then the socket is detached and handed to a thread that sends the
@@ -17,8 +19,10 @@
 #include "download.h"
 #include "library.h"
 #include "media.h"
+#include "subtake.h"
 #include "zip.h"
 #include "../../core/plat.h"
+#include "../av/subpic.h"
 
 #include <stdatomic.h>
 
@@ -36,11 +40,17 @@ static atomic_int g_fake_zips, g_fake_watching; /* tests */
 static atomic_int g_pace_cap; /* tests: bytes a second, 0 = MEDIA_DOWNLOAD_SLOW (an int: a Pi 1 has no 64-bit atomics) */
 
 int media_streams_active(void) { return atomic_load(&g_active); }
-void media_stream_stop(void) { atomic_store(&g_stopping, true); }
-void media_stream_resume(void) { atomic_store(&g_stopping, false); }
+void media_stream_stop(void) {
+    atomic_store(&g_stopping, true);
+    media_subpic_drop();
+}
+void media_stream_resume(void) {
+    atomic_store(&g_stopping, false);
+    media_subpic_drop();
+}
 int media_downloads_active(void) { return atomic_load(&g_downloads); }
 int media_zips_active(void) { return atomic_load(&g_zips); }
-int media_watching_active(void) { return atomic_load(&g_watching); }
+int media_watching_active(void) { return atomic_load(&g_watching) + atomic_load(&g_fake_watching); }
 void media_zip_test_busy(int zips) { atomic_store(&g_fake_zips, zips); }
 void media_download_test_pace(int64_t cap, int watching) {
     atomic_store(&g_pace_cap, (int)CLAMP(cap, 0, 1 << 30));
@@ -82,7 +92,7 @@ typedef struct {
 
 /* bytes a second for each download now: 0 = no limit (nobody is watching) */
 static int64_t pace_cap(void) {
-    if (atomic_load(&g_watching) + atomic_load(&g_fake_watching) <= 0) return 0;
+    if (media_watching_active() <= 0) return 0;
     int c = atomic_load(&g_pace_cap);
     return c > 0 ? (int64_t)c : MEDIA_DOWNLOAD_SLOW;
 }
@@ -486,10 +496,300 @@ static bool serve_sub(Conn *conn, const char *idhex) {
     return true;
 }
 
+/* ------------------------------------------------- picture subtitles (C5) */
+
+/* Blu-ray PGS (.sup) and DVD VobSub (.idx + its .sub) can't be a <track>: the player draws them as
+   pictures. GET /media/subpic/<id>.json gives the cues ({"w","h"} = the frame they're placed on, then
+   [start_ms, end_ms, x, y, w, h] each), GET /media/subpic/<id>/<n>.png cue n drawn. Opening a file indexes
+   it - a film's .sup is ~30 MB of segment headers on a USB disk - so the last few opened stay (by id, size
+   and mtime: a file made again is opened again); each answer runs on a thread of its own. The files are
+   open only while they're read: nothing is held between requests (Windows can't delete an open file). */
+#define PIC_JOBS 4             /* answered at once (each may draw a picture up to 4096 x 4096: 16 MB) */
+#define PIC_IDX_MAX (4u << 20) /* the most an .idx may be (a film's is ~100 KB) */
+
+typedef struct {
+    FILE *f; /* the pictures' file, while it's read */
+} PicIo;
+
+typedef struct {
+    uint64_t id;
+    int64_t size, mtime; /* the .sup / .idx as it was opened */
+    char data[1024];     /* the file the pictures are in: the .sup, or the .idx's .sub */
+    SubPic *sp;
+    PicIo io;            /* the reader's ctx (subpic keeps a copy of the reader) */
+    int users;           /* threads using it (g_picl) */
+    uint64_t used;       /* when last asked for: g_pic_seq then (a clock's milliseconds tie on Linux) */
+    bool dead;           /* out of the cache while still in use: its last user frees it */
+} PicEnt;
+
+static PicEnt *g_pics[MEDIA_SUBPIC_CACHE];
+static Lock g_picl = LOCK_INIT;   /* the cache */
+static Lock g_picuse = LOCK_INIT; /* every subpic_* call on a cached one (a SubPic is one thread's at a time) */
+static atomic_int g_pic_jobs, g_pic_opens;
+static uint64_t g_pic_seq; /* (g_picl) */
+
+int media_subpic_test_opens(void) { return atomic_load(&g_pic_opens); }
+
+static bool pic_read(void *ctx, int64_t off, void *dst, size_t n) {
+    PicIo *io = ctx;
+    return io->f && file_pread(io->f, off, dst, n);
+}
+
+static void pic_free(PicEnt *e) {
+    if (!e) return;
+    subpic_close(e->sp);
+    free(e);
+}
+
+void media_subpic_drop(void) {
+    lock_take(&g_picl);
+    for (int i = 0; i < MEDIA_SUBPIC_CACHE; i++) {
+        PicEnt *e = g_pics[i];
+        g_pics[i] = NULL;
+        if (e && e->users) e->dead = true;
+        else pic_free(e);
+    }
+    atomic_store(&g_pic_opens, 0);
+    lock_give(&g_picl);
+}
+
+typedef struct {
+    sock_t s;
+    Buf head;            /* the connection's unsent bytes (pipelined answers), then this answer */
+    uint64_t id;
+    int64_t size, mtime; /* of the .sup / .idx, now */
+    char path[1024];     /* the .sup / .idx */
+    char data[1024];     /* where its pictures are: the .sup itself, or the .idx's .sub */
+    bool vobsub, head_only;
+    int n; /* the cue to draw; -1 = the cue list */
+} PicJob;
+
+static PicEnt *pic_open(const PicJob *j) {
+    PicEnt *e = xcalloc(1, sizeof *e);
+    e->id = j->id;
+    e->size = j->size;
+    e->mtime = j->mtime;
+    str_copy(e->data, sizeof e->data, j->data);
+    int64_t dsize = 0;
+    Buf idx = {0};
+    char err[160] = "";
+    if (!path_stat(e->data, &dsize, NULL, NULL) || (j->vobsub && !file_read_all(j->path, &idx, PIC_IDX_MAX)) ||
+        !(e->io.f = file_open(e->data, "rb"))) {
+        buf_free(&idx);
+        free(e);
+        return NULL;
+    }
+    MkvReader rd = {&e->io, dsize, pic_read};
+    e->sp = j->vobsub ? subpic_open_vobsub(idx.p ? idx.p : "", idx.len, &rd, err, sizeof err)
+                      : subpic_open_sup(&rd, err, sizeof err);
+    fclose(e->io.f);
+    e->io.f = NULL;
+    buf_free(&idx);
+    if (!e->sp) {
+        log_info("media: picture subtitles %s: %s", j->path, err);
+        free(e);
+        return NULL;
+    }
+    atomic_fetch_add(&g_pic_opens, 1);
+    return e;
+}
+
+static PicEnt *pic_cached(const PicJob *j) { /* g_picl held */
+    for (int i = 0; i < MEDIA_SUBPIC_CACHE; i++) {
+        PicEnt *e = g_pics[i];
+        if (e && e->id == j->id && e->size == j->size && e->mtime == j->mtime) return e;
+    }
+    return NULL;
+}
+
+/* The opened file, from the cache or opened now (and kept: the least lately used goes) - NULL when it
+   can't be read. pic_put() it when done. */
+static PicEnt *pic_get(const PicJob *j) {
+    lock_take(&g_picl);
+    PicEnt *e = pic_cached(j);
+    if (e) e->users++, e->used = ++g_pic_seq;
+    lock_give(&g_picl);
+    if (e) return e;
+    PicEnt *made = pic_open(j), *out = NULL; /* (outside the lock: it reads the whole file's headers) */
+    if (!made) return NULL;
+    lock_take(&g_picl);
+    e = pic_cached(j); /* (opened by another thread meanwhile: that one) */
+    if (!e) {
+        int slot = -1;
+        for (int i = 0; i < MEDIA_SUBPIC_CACHE && slot < 0; i++)
+            if (!g_pics[i]) slot = i;
+        if (slot < 0) { /* full: the least lately used goes - one not in use before one that is */
+            slot = 0;
+            for (int i = 1; i < MEDIA_SUBPIC_CACHE; i++) {
+                const PicEnt *a = g_pics[i], *b = g_pics[slot];
+                if (!a->users != !b->users ? !a->users : a->used < b->used) slot = i;
+            }
+        }
+        out = g_pics[slot];
+        if (out && out->users) out->dead = true, out = NULL; /* (its last user frees it) */
+        g_pics[slot] = e = made;
+        made = NULL;
+    }
+    e->users++;
+    e->used = ++g_pic_seq;
+    lock_give(&g_picl);
+    pic_free(made);
+    pic_free(out);
+    return e;
+}
+
+static void pic_put(PicEnt *e) {
+    lock_take(&g_picl);
+    bool last = --e->users == 0 && e->dead;
+    lock_give(&g_picl);
+    if (last) pic_free(e);
+}
+
+static void pic_answer(PicJob *j, int status, const char *ctype, const void *body, size_t n) {
+    buf_printf(&j->head,
+               "HTTP/1.1 %d %s\r\nServer: hemma\r\nX-Content-Type-Options: nosniff\r\nContent-Type: %s\r\n"
+               "Content-Length: %lld\r\nCache-Control: %s\r\nConnection: close\r\n\r\n",
+               status, http_status_text(status), ctype, (long long)n, status == 200 ? "private, max-age=86400" : "no-cache");
+    if (!j->head_only && n) buf_put(&j->head, body, n);
+    sock_nonblock(j->s, true);
+    send_all(j->s, j->head.p, j->head.len);
+    sock_shutdown_write(j->s);
+    sock_close(j->s);
+}
+
+/* Cue n's picture as a PNG into out (g_picuse held); false when there's no such cue or it can't be drawn */
+static bool pic_png(PicEnt *e, int n, Buf *out) {
+    const SubPicCue *c = subpic_cue(e->sp, n);
+    if (!c || c->w < 1 || c->h < 1 || c->w > SUBPIC_MAX_SIDE || c->h > SUBPIC_MAX_SIDE) return false;
+    int w = c->w, h = c->h;
+    size_t npx = (size_t)w * (size_t)h, len = 0;
+    uint8_t *px = malloc(npx), *png = NULL;
+    uint32_t pal[256];
+    int ncolors = 0;
+    e->io.f = px ? file_open(e->data, "rb") : NULL;
+    if (e->io.f && subpic_render(e->sp, n, px, npx, pal, &ncolors)) png = png_indexed(px, w, h, pal, ncolors, &len);
+    if (e->io.f) fclose(e->io.f);
+    e->io.f = NULL;
+    free(px);
+    if (png) buf_put(out, png, len);
+    free(png);
+    return png != NULL;
+}
+
+static void pic_thread(void *arg) {
+    PicJob *j = arg;
+    PicEnt *e = pic_get(j);
+    Buf body = {0};
+    bool ok = false;
+    if (e) {
+        lock_take(&g_picuse);
+        if (j->n < 0) {
+            int fw = 0, fh = 0;
+            subpic_frame(e->sp, &fw, &fh);
+            buf_printf(&body, "{\"w\":%d,\"h\":%d,\"cues\":[", fw, fh);
+            for (int i = 0; i < subpic_count(e->sp); i++) {
+                const SubPicCue *c = subpic_cue(e->sp, i);
+                buf_printf(&body, "%s[%lld,%lld,%d,%d,%d,%d]", i ? "," : "", (long long)c->start_ms, (long long)c->end_ms,
+                           c->x, c->y, c->w, c->h);
+            }
+            buf_puts(&body, "]}");
+            ok = true;
+        } else {
+            ok = pic_png(e, j->n, &body);
+        }
+        lock_give(&g_picuse);
+        pic_put(e);
+    }
+    if (ok) pic_answer(j, 200, j->n < 0 ? "application/json" : "image/png", body.p, body.len);
+    else {
+        const char *why = !e ? "these subtitles can't be read\n" : "no such picture\n";
+        pic_answer(j, 404, "text/plain; charset=utf-8", why, strlen(why));
+    }
+    buf_free(&body);
+    buf_free(&j->head);
+    free(j);
+    atomic_fetch_sub(&g_pic_jobs, 1);
+    count_job(JOB_OTHER, -1);
+}
+
+/* "<16 hex>.json" -> -1, "<16 hex>/<n>.png" -> n; -2 = neither */
+static int subpic_which(const char *p) {
+    if (strlen(p) < 16) return -2;
+    p += 16;
+    if (str_eq(p, ".json")) return -1;
+    if (*p++ != '/' || *p < '0' || *p > '9') return -2;
+    long n = 0;
+    for (; *p >= '0' && *p <= '9'; p++)
+        if ((n = n * 10 + (*p - '0')) >= SUBPIC_MAX_CUES) return -2;
+    return str_eq(p, ".png") ? (int)n : -2;
+}
+
+static bool serve_subpic(Ctx *c, Conn *conn, HttpReq *r) {
+    if (!str_eq(r->method, "GET") && !str_eq(r->method, "HEAD")) {
+        conn_reply(conn, 405, "text/plain; charset=utf-8", "GET only\n", 9, "Allow: GET, HEAD\r\n");
+        return true;
+    }
+    const char *p = r->path + 14; /* after "/media/subpic/" */
+    uint64_t id = 0;
+    int n = subpic_which(p);
+    const MediaFile *f = n > -2 && media_parse_id(p, &id) ? media_file(id) : NULL;
+    bool sup = f && str_iends(f->rel, ".sup"), idx = f && str_iends(f->rel, ".idx");
+    if (!f || f->type != MF_SUB || (!sup && !idx) || !media_kids_ok(c, f)) {
+        plain(conn, 404, "no such picture subtitle\n");
+        return true;
+    }
+    PicJob *j = xcalloc(1, sizeof *j);
+    bool dir = false;
+    if (!media_full_path(f, j->path, sizeof j->path) || !path_stat(j->path, &j->size, &j->mtime, &dir) || dir) {
+        free(j);
+        plain(conn, 404, "the file has gone - rescan the library?\n");
+        return true;
+    }
+    str_copy(j->data, sizeof j->data, j->path);
+    if (idx) { /* its pictures: the .sub of the same name beside it */
+        size_t k = strlen(j->data) - 3;
+        bool there = false;
+        for (int up = 0; up < 2 && !there; up++) {
+            memcpy(j->data + k, up ? "SUB" : "sub", 3);
+            there = path_stat(j->data, NULL, NULL, &dir) && !dir;
+        }
+        if (!there) {
+            free(j);
+            plain(conn, 404, "the .sub beside it has gone - rescan the library?\n");
+            return true;
+        }
+    }
+    if (atomic_load(&g_pic_jobs) >= PIC_JOBS || atomic_load(&g_active) >= MAX_STREAMS) {
+        free(j);
+        conn_reply(conn, 503, "text/plain; charset=utf-8", "busy, try again\n", 16, "Retry-After: 1\r\n");
+        return true;
+    }
+    j->id = id;
+    j->vobsub = idx;
+    j->n = n;
+    j->head_only = str_eq(r->method, "HEAD");
+    atomic_fetch_add(&g_pic_jobs, 1);
+    count_job(JOB_OTHER, +1);
+    Detached d;
+    conn_detach(conn, r, &d);
+    j->s = d.fd;
+    j->head = d.unsent;
+    buf_free(&d.body);
+    if (!thread_spawn(pic_thread, j)) {
+        sock_close(j->s);
+        buf_free(&j->head);
+        free(j);
+        atomic_fetch_sub(&g_pic_jobs, 1);
+        count_job(JOB_OTHER, -1);
+    }
+    return true;
+}
+
 bool media_http(Ctx *c, Conn *conn, HttpReq *r) {
     bool file = str_starts(r->path, "/media/file/"), img = str_starts(r->path, "/media/img/"),
-         sub = str_starts(r->path, "/media/sub/"), zip = str_starts(r->path, "/media/zip/");
-    if (!file && !img && !sub && !zip) return false;
+         sub = str_starts(r->path, "/media/sub/"), zip = str_starts(r->path, "/media/zip/"),
+         pic = str_starts(r->path, "/media/subpic/");
+    if (!file && !img && !sub && !zip && !pic) return false;
     /* The household's videos (and home photos used as posters) are for signed-in
        people only; browsers send the session cookie with <video>/<img> requests. */
     if (!c->me) {
@@ -497,6 +797,7 @@ bool media_http(Ctx *c, Conn *conn, HttpReq *r) {
         return true;
     }
     if (zip) return serve_zip(c, conn, r);
+    if (pic) return serve_subpic(c, conn, r);
     if (file) {
         uint64_t id = 0;
         const MediaFile *f = media_parse_id(r->path + 12, &id) ? media_file(id) : NULL;

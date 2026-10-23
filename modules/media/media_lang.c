@@ -171,6 +171,11 @@ static const Tr TR[] = {
 
     /* the watch page and its player */
     {"Subtitles", "Undertexter", "Subtítulos"},
+    /* which of two subtitles in one language ("English (for the hard of hearing)": SDH) */
+    {"%s (for the hard of hearing)", "%s (för hörselskadade)", "%s (para personas sordas)"},
+    {"%s (foreign speech only)", "%s (bara främmande språk)", "%s (solo otros idiomas)"},
+    {"%s (for the hard of hearing, foreign speech only)", "%s (för hörselskadade, bara främmande språk)",
+     "%s (para personas sordas, solo otros idiomas)"},
     {"This video is HEVC (x265), which this browser can't play. Most phones, computers and iPads can.",
      "Den här videon är HEVC (x265), som den här webbläsaren inte kan spela. De flesta telefoner, datorer och iPads kan.",
      "Este vídeo es HEVC (x265), que este navegador no puede reproducir. La mayoría de móviles, ordenadores e iPads sí."},

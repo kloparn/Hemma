@@ -39,8 +39,12 @@ void ui_admins(Buf *b);
    video shows there too). The same in every browser and for a TV's remote. It arrives hidden: without
    wire.js the video keeps the browser's controls (render it with `controls`; wire.js takes them off). */
 typedef struct {
-    const char *lang, *label; /* the <track>'s srclang, the words in the menu */
-    bool on;                  /* shown now (the <track> is default) */
+    const char *key;   /* which one: "en", "en.sdh", "en.forced", "en.2" (unique per video; letters, digits,
+                          dots) - a text track is the <track id="sub-<key>">; wire.js picks by it */
+    const char *lang;  /* its language ("en"; "und" = not known) */
+    const char *label; /* the words in the menu, in the reader's language ("English (SDH)") */
+    const char *pic;   /* a picture track's cue list address (wire.js draws it); NULL = a text track */
+    bool on;           /* shown now (the <track> is default) */
 } UiSub;
 typedef struct {
     const char *box, *video; /* ids */

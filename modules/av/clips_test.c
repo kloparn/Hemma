@@ -4,14 +4,17 @@
  *   HEMMA_TEST_CLIPS=<folder> build/test av_test_clips
  *
  * writes a library under <folder>/library (a series of two 100-second episodes - long enough for the
- * "next episode" card, which wants three times its 30 seconds - and a 40-second film) and one
- * clip to upload under <folder>/upload. Without the variable it only makes one clip in memory and
- * checks it - so the suite keeps the generator working. */
+ * "next episode" card, which wants three times its 30 seconds - and a 40-second film), one clip to
+ * upload under <folder>/upload, and picture subtitles (Blu-ray .sup files) in <folder>/sidecars
+ * - outside the library: the test that wants them puts them beside the episodes. Without the variable
+ * it only makes one clip and the .sup files in memory and checks them - so the suite keeps the generator
+ * working. */
 #include "../../tests/test.h"
 #include "../../core/plat.h"
 #include "aac.h"
 #include "h264enc.h"
 #include "mp4.h"
+#include "subpic.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -103,6 +106,97 @@ static bool clip(Sink *s, int seconds, int pitch) {
     return ok;
 }
 
+/* ------------------------------------------------- picture subtitles (a .sup)
+   Blu-ray PGS, written the way a disc has it (subpic.h reads it back): per segment "PG", PTS (90 kHz), DTS,
+   type, u16 size, payload. Two cues each: a box low in the middle at 2-9 s, a smaller one at the top left
+   at 20-24 s - white with a black edge, so a test can find it on the picture. pictures.sup is on a 640 x 480
+   frame (the clips' 4:3); pictures-576.sup on 720 x 576, the frame MakeMKV's .idx gives even an NTSC DVD
+   (not the video's shape: the player maps the frame onto the shown picture, whatever their sizes). The
+   browser tests put them beside the episodes (tests/browser/subpictures.spec.mjs). */
+typedef struct {
+    int start_ms, end_ms, x, y, w, h;
+} SupCue;
+static const struct {
+    const char *name;
+    int fw, fh;
+    SupCue cues[2];
+} SUPS[] = {
+    {"pictures.sup", 640, 480, {{2000, 9000, 160, 380, 320, 60}, {20000, 24000, 40, 40, 200, 50}}},
+    {"pictures-576.sup", 720, 576, {{2000, 9000, 180, 448, 360, 74}, {20000, 24000, 45, 48, 225, 60}}},
+};
+
+static void put8(Buf *b, unsigned v) {
+    uint8_t c = (uint8_t)v;
+    buf_put(b, &c, 1);
+}
+static void put16(Buf *b, unsigned v) { put8(b, v >> 8), put8(b, v); }
+
+static void sup_seg(Buf *b, int ms, int type, const Buf *pay) {
+    uint32_t pts = (uint32_t)ms * 90;
+    buf_put(b, "PG", 2);
+    put16(b, pts >> 16), put16(b, pts & 0xFFFF), put16(b, 0), put16(b, 0); /* PTS, DTS */
+    put8(b, (unsigned)type), put16(b, (unsigned)pay->len);
+    buf_put(b, pay->p, pay->len);
+}
+
+/* PGS RLE: a run of colour c (0 = clear): 00 LL (6 bits) / 00 4L LL (14 bits), coloured 00 8L C / 00 CL LL C */
+static void sup_run(Buf *o, int c, int n) {
+    put8(o, 0);
+    if (n < 64) put8(o, (c ? 0x80u : 0) | (unsigned)n);
+    else put8(o, (c ? 0xC0u : 0x40u) | (unsigned)n >> 8), put8(o, (unsigned)n & 0xFF);
+    if (c) put8(o, (unsigned)c);
+}
+
+static void sup_cue(Buf *b, int fw, int fh, const SupCue *c, int k) {
+    const int w = c->w, h = c->h, at = c->start_ms;
+    Buf p = {0}, rle = {0};
+    put16(&p, (unsigned)fw), put16(&p, (unsigned)fh), put8(&p, 0x10), put16(&p, (unsigned)k), put8(&p, 0x80); /* epoch start */
+    put8(&p, 0), put8(&p, 0), put8(&p, 1); /* palette 0, one object: */
+    put16(&p, 0), put8(&p, 0), put8(&p, 0), put16(&p, (unsigned)c->x), put16(&p, (unsigned)c->y);
+    sup_seg(b, at, 0x16, &p); /* PCS */
+    buf_reset(&p);
+    put8(&p, 1), put8(&p, 0), put16(&p, (unsigned)c->x), put16(&p, (unsigned)c->y);
+    put16(&p, (unsigned)w), put16(&p, (unsigned)h);
+    sup_seg(b, at, 0x17, &p); /* WDS */
+    buf_reset(&p);
+    put8(&p, 0), put8(&p, 0);
+    put8(&p, 1), put8(&p, 235), put8(&p, 128), put8(&p, 128), put8(&p, 255); /* 1: white (Y Cr Cb A) */
+    put8(&p, 2), put8(&p, 16), put8(&p, 128), put8(&p, 128), put8(&p, 255);  /* 2: black */
+    sup_seg(b, at, 0x14, &p); /* PDS */
+    for (int y = 0; y < h; y++) {
+        if (y < 4 || y >= h - 4) sup_run(&rle, 2, w);
+        else sup_run(&rle, 2, 4), sup_run(&rle, 1, w - 8), sup_run(&rle, 2, 4);
+        put8(&rle, 0), put8(&rle, 0); /* the line's end */
+    }
+    buf_reset(&p);
+    put16(&p, 0), put8(&p, 0), put8(&p, 0xC0); /* object 0, the first and last of its segments */
+    put8(&p, (unsigned)(rle.len + 4) >> 16), put16(&p, (unsigned)(rle.len + 4) & 0xFFFF), put16(&p, (unsigned)w),
+        put16(&p, (unsigned)h);
+    buf_put(&p, rle.p, rle.len);
+    sup_seg(b, at, 0x15, &p); /* ODS */
+    buf_reset(&p);
+    sup_seg(b, at, 0x80, &p); /* END */
+    /* the end: a display set showing nothing */
+    put16(&p, (unsigned)fw), put16(&p, (unsigned)fh), put8(&p, 0x10), put16(&p, (unsigned)k + 100), put8(&p, 0),
+        put8(&p, 0), put8(&p, 0), put8(&p, 0);
+    sup_seg(b, c->end_ms, 0x16, &p);
+    buf_reset(&p);
+    sup_seg(b, c->end_ms, 0x80, &p);
+    buf_free(&p);
+    buf_free(&rle);
+}
+
+static void sup_file(Buf *b, int s) {
+    for (int k = 0; k < (int)countof(SUPS[s].cues); k++) sup_cue(b, SUPS[s].fw, SUPS[s].fh, &SUPS[s].cues[k], k);
+}
+
+static bool sup_mem_read(void *ctx, int64_t off, void *dst, size_t n) {
+    const Buf *b = ctx;
+    if (off < 0 || (uint64_t)off > b->len || n > b->len - (size_t)off) return false;
+    memcpy(dst, b->p + off, n);
+    return true;
+}
+
 static bool clip_file(const char *dir, const char *rel, int seconds, int pitch) {
     char path[600], folder[600];
     snprintf(path, sizeof path, "%s/%s", dir, rel);
@@ -140,14 +234,56 @@ TEST(av_test_clips) {
         }
         CHECK(moov > 0 && mdat > moov);
         buf_free(&s.mem);
+
+        /* each .sup reads back as written: its frame, two cues, their times and places, a white box with a
+           black edge */
+        for (int s = 0; s < (int)countof(SUPS); s++) {
+            Buf sup = {0};
+            sup_file(&sup, s);
+            MkvReader r = {&sup, (int64_t)sup.len, sup_mem_read};
+            char err[100];
+            SubPic *sp = subpic_open_sup(&r, err, sizeof err);
+            CHECK(sp != NULL);
+            int fw = 0, fh = 0;
+            subpic_frame(sp, &fw, &fh);
+            CHECK_INT(fw, SUPS[s].fw);
+            CHECK_INT(fh, SUPS[s].fh);
+            CHECK_INT(subpic_count(sp), (int)countof(SUPS[s].cues));
+            for (int k = 0; k < subpic_count(sp) && k < (int)countof(SUPS[s].cues); k++) {
+                const SubPicCue *c = subpic_cue(sp, k);
+                const SupCue *w = &SUPS[s].cues[k];
+                CHECK(c->start_ms == w->start_ms && c->end_ms == w->end_ms);
+                CHECK(c->x == w->x && c->y == w->y && c->w == w->w && c->h == w->h);
+                uint8_t *px = malloc((size_t)c->w * (size_t)c->h);
+                uint32_t pal[256];
+                int n = 0;
+                CHECK(px && subpic_render(sp, k, px, (size_t)c->w * (size_t)c->h, pal, &n));
+                if (px && n > px[0] && n > px[5 * c->w + 5]) {
+                    CHECK(pal[px[0]] == 0x000000FFu);            /* the edge: black, solid */
+                    CHECK(pal[px[5 * c->w + 5]] == 0xFFFFFFFFu); /* inside: white, solid */
+                }
+                free(px);
+            }
+            subpic_close(sp);
+            buf_free(&sup);
+        }
         return;
     }
-    char lib[600], up[600];
+    char lib[600], up[600], sides[600], path[700];
     snprintf(lib, sizeof lib, "%s/library", dir);
     snprintf(up, sizeof up, "%s/upload", dir);
+    snprintf(sides, sizeof sides, "%s/sidecars", dir);
     CHECK(clip_file(lib, "Series/Testshow/Season 1/Testshow S01E01.mp4", 100, 440));
     CHECK(clip_file(lib, "Series/Testshow/Season 1/Testshow S01E02.mp4", 100, 550));
     CHECK(clip_file(lib, "Movies/Clip (2020)/Clip (2020).mp4", 40, 660));
     CHECK(clip_file(up, "Upload test (2021).mp4", 4, 330));
+    CHECK(dir_make(sides));
+    for (int s = 0; s < (int)countof(SUPS); s++) {
+        Buf sup = {0};
+        sup_file(&sup, s);
+        snprintf(path, sizeof path, "%s/%s", sides, SUPS[s].name);
+        CHECK(file_write_atomic(path, sup.p, sup.len));
+        buf_free(&sup);
+    }
     printf("test clips in %s\n", dir);
 }

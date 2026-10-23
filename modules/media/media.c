@@ -16,6 +16,7 @@
 #include "drives.h"
 #include "download.h"
 #include "manage.h"
+#include "subtake.h"
 
 static int64_t g_disks_at; /* when the disks under the library were last measured (see "disk space") */
 
@@ -61,43 +62,132 @@ void media_sub_src(const Ctx *c, uint64_t id, char *out, size_t cap) {
     keyed_src(c, path, out, cap);
 }
 
-/* The video's subtitles as <track>s; the viewer's language (Library settings) is on by default. */
-void media_tracks(const Ctx *c, Buf *b, const MediaFile *f) {
-    const MediaIndex *ix = media_lib();
-    int v = ctx_viewer(c);
-    const char *want = v ? pref(v, "media.sublang", "") : "";
-    bool defaulted = false;
-    for (int i = 0; i < ix->nfiles; i++) {
-        const MediaFile *sub = &ix->files[i];
-        if (sub->type != MF_SUB || sub->video != f->id) continue;
-        bool def = !defaulted && *want && str_ieq(sub->lang, want);
-        defaulted |= def;
-        char src[100];
-        media_sub_src(c, sub->id, src, sizeof src);
-        H(b, "<track kind=\"subtitles\" src=\"%s\" srclang=\"%s\" label=\"%s\"%r>", src,
-          sub->lang[0] ? sub->lang : "und", lang_name(sub->lang), def ? " default" : "");
-    }
+/* ------------------------------------------------------------- subtitles */
+
+#define MEDIA_MAX_SUBS 48 /* subtitles one video offers (a file's 13 tracks + the household's own) */
+
+/* One of a video's subtitles as the player offers it */
+typedef struct {
+    const MediaFile *f;
+    MediaSubTags t;
+    char key[40];    /* unique among the video's: "en", "en.sdh", "en.2" (media_sub_key) */
+    char label[160]; /* in the reader's words: "English", "English (for the hard of hearing)", "English 2" */
+    bool named;      /* its name is the one Hemma gives such a subtitle ("x.en.2.srt"): it keeps its key */
+    bool on;         /* the viewer's language: shown from the start */
+    bool pic;        /* pictures (.sup, a VobSub's .idx): drawn by the player from its cue list, no <track> */
+    char cues[240];  /* ... that list's address (C5: keyed, ?v=<size>-<mtime>) */
+} SubChoice;
+
+static int sub_order(const void *pa, const void *pb) {
+    const SubChoice *a = pa, *b = pb;
+    if (!a->t.lang[0] != !b->t.lang[0]) return a->t.lang[0] ? -1 : 1; /* (a language not known: last) */
+    int k = strcmp(a->t.lang, b->t.lang);
+    if (k) return k;
+    if (a->t.forced != b->t.forced) return a->t.forced ? 1 : -1; /* the plain one first, then SDH, then forced */
+    if (a->t.sdh != b->t.sdh) return a->t.sdh ? 1 : -1;
+    if (a->t.n != b->t.n) return a->t.n < b->t.n ? -1 : 1;
+    if (a->named != b->named) return a->named ? -1 : 1; /* ("x.en.srt" before "x.English.srt") */
+    return strcmp(a->f->rel, b->f->rel);
 }
 
-/* The same tracks as a player's subtitle menu: same order, same one on. */
-static int media_subs(const Ctx *c, const MediaFile *f, UiSub *out, int max) {
+static bool key_taken(const SubChoice *s, int n, const char *key, int except) {
+    for (int i = 0; i < n; i++)
+        if (i != except && str_eq(s[i].key, key)) return true;
+    return false;
+}
+
+/* The words for a subtitle: its language in itself ("Svenska", "English"), then which one in the
+   reader's words. Two that would read the same differ by their number ("English 2"). */
+static void sub_label(const MediaSubTags *t, char *out, size_t cap) {
+    char name[96];
+    if (t->n >= 2) snprintf(name, sizeof name, "%s %d", lang_name(t->lang), t->n);
+    else str_copy(name, sizeof name, lang_name(t->lang));
+    if (t->sdh && t->forced) snprintf(out, cap, T("%s (for the hard of hearing, foreign speech only)"), name);
+    else if (t->sdh) snprintf(out, cap, T("%s (for the hard of hearing)"), name);
+    else if (t->forced) snprintf(out, cap, T("%s (foreign speech only)"), name);
+    else str_copy(out, cap, name);
+}
+
+/* A video's subtitles as the player offers them (C4): by language, the plain one before SDH and forced
+   ones, then the second (".2") ... - each with a key of its own (two files that would share one: the
+   later gets the next free number). Picture subtitles (.sup, a VobSub's .idx - never its .sub) are in the
+   same list by the same rules (C5: x.en.srt + x.en.2.sup); the player draws them from their cue list. The
+   viewer's language (Library settings) turns on its first text one - a picture one only when it has no
+   text one (pictures need wire.js; a <track> shows without it). */
+static int sub_choices(const Ctx *c, const MediaFile *f, SubChoice *out, int max) {
     const MediaIndex *ix = media_lib();
-    int v = ctx_viewer(c);
-    const char *want = v ? pref(v, "media.sublang", "") : "";
-    bool defaulted = false;
     int n = 0;
     for (int i = 0; i < ix->nfiles && n < max; i++) {
         const MediaFile *sub = &ix->files[i];
-        if (sub->type != MF_SUB || sub->video != f->id) continue;
-        bool def = !defaulted && *want && str_ieq(sub->lang, want);
-        defaulted |= def;
-        out[n++] = (UiSub){sub->lang[0] ? sub->lang : "und", lang_name(sub->lang), def};
+        if (sub->type != MF_SUB || sub->video != f->id || media_is_vobsub_data(sub->rel)) continue;
+        SubChoice *s = &out[n];
+        memset(s, 0, sizeof *s);
+        s->f = sub;
+        s->pic = media_is_sub_pic(sub->rel);
+        if (s->pic) { /* "/media/subpic/<id>.json?v=<size>-<mtime>&k=...": a file made again is another address,
+                         and the key (as keyed_src's) lets a screen without the page's cookie in too */
+            char path[60], k[CTX_KEY_LEN];
+            snprintf(path, sizeof path, "/media/subpic/%016llx.json", (unsigned long long)sub->id);
+            ctx_url_key(c, path, k);
+            snprintf(s->cues, sizeof s->cues, "%s?v=%lld-%lld%s%s", path, (long long)sub->size, (long long)sub->mtime,
+                     k[0] ? "&k=" : "", k);
+        }
+        const char *vb = strrchr(f->rel, '/'), *sb = strrchr(sub->rel, '/'), *ext = strrchr(sub->rel, '.');
+        vb = vb ? vb + 1 : f->rel;
+        sb = sb ? sb + 1 : sub->rel;
+        media_sub_tags(vb, sb, &s->t);
+        if (!s->t.lang[0]) str_copy(s->t.lang, sizeof s->t.lang, sub->lang); /* (as the library read it) */
+        char own[400];
+        s->named = ext && media_sub_name(vb, &s->t, ext + 1, own, sizeof own) && str_ieq(own, sb);
+        n++;
+    }
+    qsort(out, (size_t)n, sizeof *out, sub_order);
+    /* keys: each its own first (in this order), then those whose key was taken get the next free number */
+    for (int i = 0; i < n; i++) {
+        media_sub_key(&out[i].t, out[i].key, sizeof out[i].key);
+        if (key_taken(out, i, out[i].key, -1)) out[i].key[0] = '\0';
+    }
+    bool moved = false;
+    for (int i = 0; i < n; i++) {
+        if (out[i].key[0]) continue;
+        for (out[i].t.n = MAX(out[i].t.n, 1) + 1;; out[i].t.n++) {
+            media_sub_key(&out[i].t, out[i].key, sizeof out[i].key);
+            if (!key_taken(out, n, out[i].key, i)) break;
+        }
+        moved = true;
+    }
+    if (moved) qsort(out, (size_t)n, sizeof *out, sub_order);
+    int v = ctx_viewer(c);
+    const char *want = v ? pref(v, "media.sublang", "") : "";
+    int on = -1;
+    for (int pass = 0; pass < 2 && on < 0 && *want; pass++) /* (text first, then pictures) */
+        for (int i = 0; i < n && on < 0; i++)
+            if (out[i].pic == (pass == 1) && str_ieq(out[i].t.lang, want)) on = i;
+    for (int i = 0; i < n; i++) {
+        sub_label(&out[i].t, out[i].label, sizeof out[i].label);
+        out[i].on = i == on;
     }
     return n;
 }
 
+/* The video's text subtitles as <track>s (id "sub-<key>": wire.js picks by it); the viewer's language
+   (Library settings) is on by default. (Picture ones have none: the player draws them.) */
+void media_tracks(const Ctx *c, Buf *b, const MediaFile *f) {
+    SubChoice *s = xmalloc(MEDIA_MAX_SUBS * sizeof *s);
+    int n = sub_choices(c, f, s, MEDIA_MAX_SUBS);
+    for (int i = 0; i < n; i++) {
+        if (s[i].pic) continue;
+        char src[100];
+        media_sub_src(c, s[i].f->id, src, sizeof src);
+        H(b, "<track id=\"sub-%s\" kind=\"subtitles\" src=\"%s\" srclang=\"%s\" label=\"%s\"%r>", s[i].key, src,
+          s[i].t.lang[0] ? s[i].t.lang : "und", s[i].label, s[i].on ? " default" : "");
+    }
+    free(s);
+}
+
 void media_controls(const Ctx *c, Buf *b, const MediaFile *f, bool tv) {
-    UiSub subs[16];
+    SubChoice *choice = xmalloc(MEDIA_MAX_SUBS * sizeof *choice); /* the same as the <track>s: same order, same one on */
+    UiSub subs[MEDIA_MAX_SUBS];
     char key[17];
     media_id_hex(f->id, key);
     const MediaFile *pf = media_playable(f);
@@ -105,8 +195,14 @@ void media_controls(const Ctx *c, Buf *b, const MediaFile *f, bool tv) {
     UiPlayer p = {.box = "media-box", .video = "media-video", .key = key, .seconds = (int)(ms / 1000), .subs = subs, .tv = tv};
     if (str_eq(pf->probe.vcodec, "hevc")) /* (an HEVC copy plays where the device decodes HEVC - not every TV's browser) */
         p.trouble = T("This video is HEVC (x265), which this browser can't play. Most phones, computers and iPads can.");
-    p.nsubs = media_subs(c, f, subs, countof(subs));
+    p.nsubs = sub_choices(c, f, choice, MEDIA_MAX_SUBS);
+    for (int i = 0; i < p.nsubs; i++) {
+        const SubChoice *s = &choice[i];
+        subs[i] = (UiSub){.key = s->key, .lang = s->t.lang[0] ? s->t.lang : "und", .label = s->label,
+                          .pic = s->pic ? s->cues : NULL, .on = s->on};
+    }
     ui_player(b, &p);
+    free(choice);
 }
 
 static const char *query(const Ctx *c) {
@@ -1623,6 +1719,7 @@ static void page_settings(Ctx *c, Buf *b) {
         ui_card_end(b);
     }
     convert_card(c, b);
+    subtake_card(c, b); /* (admins: the subtitles inside the MKVs, taken out by themselves) */
 
     ui_card(b, T("Status"), NULL, NULL);
     buf_puts(b, "<dl class=\"media-stats\">");
@@ -2198,7 +2295,7 @@ static const Action actions[] = {
     {"media.drive_use", media_drives_act_use}, {"media.drive_format", media_drives_act_format},
     {"media.drive_forget", media_drives_act_forget}, {"media.drive_seen", media_drives_act_seen},
     {"media.manage_remove", media_manage_act_remove}, {"media.fix_title", media_manage_act_fix_title},
-    {"media.fix_episode", media_manage_act_fix_episode},
+    {"media.fix_episode", media_manage_act_fix_episode}, {"media.take_subs", subtake_act_switch},
     {0},
 };
 
@@ -2229,6 +2326,7 @@ static void start(void) {
     media_stream_resume();
     upload_start();
     media_lib_start();
+    subtake_start(); /* (after the library: its table sits beside the library's cache) */
     media_health_reset();
     g_disks_at = 0; /* (a start measures afresh: a test before this one may have measured other folders) */
     media_drives_start(); /* (after the library: a disk the helper just mounted becomes a folder of it) */
@@ -2236,6 +2334,7 @@ static void start(void) {
 
 static void stop(void) {
     media_drives_stop();
+    subtake_stop(); /* (the file it was reading goes back on its list) */
     media_stream_stop();
     upload_stop();
     convert_stop();
@@ -2309,6 +2408,7 @@ static void tick(int64_t now) {
     media_lib_tick(now);
     upload_tick(now);
     convert_tick(now);
+    subtake_tick(now); /* (after the queue's: a conversion that just started makes it wait) */
     media_health_tick(now);
     media_drives_tick(now);
     media_manage_tick(now); /* (a removal finished on its thread) */

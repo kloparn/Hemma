@@ -124,27 +124,27 @@ TEST(srt_random_bytes_never_crash) {
 /* What a subtitle track taken out of a video is saved as - and that its video takes it back. */
 TEST(subtitle_sidecar_names) {
     char out[300], lang[16];
-    CHECK(media_sub_sidecar("/m/Show/x.mkv", "eng", "", false, out, sizeof out));
+    CHECK(media_sub_sidecar("/m/Show/x.mkv", "eng", "", false, "srt", 0, out, sizeof out));
     CHECK_STR(out, "/m/Show/x.en.srt");
-    CHECK(media_sub_sidecar("Show/x.web.mp4", "swe", NULL, true, out, sizeof out)); /* a copy: named for "x" */
+    CHECK(media_sub_sidecar("Show/x.web.mp4", "swe", NULL, true, "srt", 0, out, sizeof out)); /* a copy: named for "x" */
     CHECK_STR(out, "Show/x.sv.forced.srt");
-    CHECK(media_sub_sidecar("dir.v2/x", "en-US", "English (SDH)", false, out, sizeof out));
+    CHECK(media_sub_sidecar("dir.v2/x", "en-US", "English (SDH)", false, "srt", 0, out, sizeof out));
     CHECK_STR(out, "dir.v2/x.en.sdh.srt");
-    CHECK(media_sub_sidecar("x.mkv", "und", "", false, out, sizeof out));
+    CHECK(media_sub_sidecar("x.mkv", "und", "", false, "srt", 0, out, sizeof out));
     CHECK_STR(out, "x.srt");
-    CHECK(media_sub_sidecar("x.mkv", "hun", "Hungarian", false, out, sizeof out));
+    CHECK(media_sub_sidecar("x.mkv", "hun", "Hungarian", false, "srt", 0, out, sizeof out));
     CHECK_STR(out, "x.hu.srt");
-    CHECK(media_sub_sidecar("x.mkv", "qaa", "", false, out, sizeof out)); /* a code we don't know: none */
+    CHECK(media_sub_sidecar("x.mkv", "qaa", "", false, "srt", 0, out, sizeof out)); /* a code we don't know: none */
     CHECK_STR(out, "x.srt");
-    CHECK(media_sub_sidecar("x.mkv", "hi", "", false, out, sizeof out)); /* reads as "hearing impaired" */
+    CHECK(media_sub_sidecar("x.mkv", "hi", "", false, "srt", 0, out, sizeof out)); /* reads as "hearing impaired" */
     CHECK_STR(out, "x.srt");
-    CHECK(media_sub_sidecar("x.mkv", "ENG", "Forced", false, out, sizeof out));
+    CHECK(media_sub_sidecar("x.mkv", "ENG", "Forced", false, "srt", 0, out, sizeof out));
     CHECK_STR(out, "x.en.forced.srt");
-    CHECK(media_sub_sidecar("x.mkv", "eng", "English, hearing impaired", false, out, sizeof out));
+    CHECK(media_sub_sidecar("x.mkv", "eng", "English, hearing impaired", false, "srt", 0, out, sizeof out));
     CHECK_STR(out, "x.en.sdh.srt");
-    CHECK(media_sub_sidecar("x.mkv", "eng", "Accented English", false, out, sizeof out)); /* "cc" inside a word: not CC */
+    CHECK(media_sub_sidecar("x.mkv", "eng", "Accented English", false, "srt", 0, out, sizeof out)); /* "cc" inside a word: not CC */
     CHECK_STR(out, "x.en.srt");
-    CHECK(!media_sub_sidecar("a-long-name.mkv", "eng", "", false, out, 12));
+    CHECK(!media_sub_sidecar("a-long-name.mkv", "eng", "", false, "srt", 0, out, 12));
     const char *names[] = {"x.en.srt", "x.sv.forced.srt", "x.en.sdh.srt", "x.hu.srt"};
     const char *langs[] = {"en", "sv", "en", "hu"};
     for (int i = 0; i < 4; i++) {
@@ -176,4 +176,63 @@ TEST(subtitle_matching_by_file_name) {
     CHECK(!media_sub_for("Movie.mkv", "Other.srt", lang, sizeof lang));
     CHECK(!media_sub_for("Movie.mkv", "Mov.srt", lang, sizeof lang));
     CHECK(media_sub_for("Movie.mkv", "Movie.sv.srt", NULL, 0));
+}
+
+/* Contract C1: every kind of subtitle a file holds, and a second track in one language and flags. */
+TEST(subtitle_sidecar_names_for_every_kind_and_the_second_of_one_variant) {
+    char out[300];
+    CHECK(media_sub_sidecar("/m/x.mkv", "eng", "", false, "sup", 0, out, sizeof out));
+    CHECK_STR(out, "/m/x.en.sup");
+    CHECK(media_sub_sidecar("/m/x.mkv", "eng", "", false, "idx", 0, out, sizeof out));
+    CHECK_STR(out, "/m/x.en.idx");
+    CHECK(media_sub_sidecar("/m/x.mkv", "eng", "", false, NULL, 0, out, sizeof out)); /* (none: .srt) */
+    CHECK_STR(out, "/m/x.en.srt");
+    CHECK(media_sub_sidecar("/m/x.mkv", "eng", "", false, "srt", 1, out, sizeof out)); /* (1: the first) */
+    CHECK_STR(out, "/m/x.en.srt");
+    CHECK(media_sub_sidecar("/m/x.mkv", "eng", "", false, "srt", 2, out, sizeof out));
+    CHECK_STR(out, "/m/x.en.2.srt");
+    CHECK(media_sub_sidecar("x.web.mp4", "eng", "SDH", true, "sup", 3, out, sizeof out));
+    CHECK_STR(out, "x.en.sdh.forced.3.sup");
+    CHECK(media_sub_sidecar("x.mkv", "und", "", false, "srt", 2, out, sizeof out)); /* a number needs a language */
+    CHECK_STR(out, "x.und.2.srt");
+    CHECK(media_sub_sidecar("x.mkv", "", "SDH", false, "idx", 2, out, sizeof out));
+    CHECK_STR(out, "x.und.sdh.2.idx");
+    /* ... and every one of them goes back to its video, with what its name says */
+    static const struct {
+        const char *name, *key;
+    } back[] = {{"x.en.srt", "en"},          {"x.en.2.srt", "en.2"},        {"x.en.sdh.srt", "en.sdh"},
+                {"x.en.forced.srt", "en.forced"}, {"x.en.sdh.forced.3.sup", "en.sdh.forced.3"},
+                {"x.und.2.srt", "und.2"},    {"x.und.sdh.2.idx", "und.sdh.2"}, {"x.srt", "und"},
+                {"x.en.idx", "en"},          {"x.en.sub", "en"},            {"x.sv.sup", "sv"},
+                {"x.English.SDH.srt", "en.sdh"}, {"x.eng.hi.srt", "en.sdh"}, {"x.en.cc.2.srt", "en.sdh.2"},
+                {"x.Swedish.foreign.srt", "sv.forced"}, {"x.en.1.srt", "en"}};
+    for (size_t i = 0; i < sizeof back / sizeof back[0]; i++) {
+        MediaSubTags t;
+        char key[40];
+        bool ok = media_sub_tags("x.mkv", back[i].name, &t);
+        if (!ok) test_fail(__FILE__, __LINE__, "%s isn't x.mkv's", back[i].name);
+        CHECK(ok);
+        CHECK(media_sub_tags("x.web.mp4", back[i].name, NULL));
+        media_sub_key(&t, key, sizeof key);
+        CHECK_STR(key, back[i].key);
+    }
+    MediaSubTags t;
+    CHECK(media_sub_tags("x.mkv", "x.en.sdh.2.srt", &t));
+    CHECK_STR(t.lang, "en");
+    CHECK(t.sdh && !t.forced && t.n == 2);
+    /* a number only after a language: "Movie 2" is another video */
+    CHECK(!media_sub_tags("Movie.mkv", "Movie 2.srt", &t));
+    CHECK(!media_sub_tags("Movie.mkv", "Movie.2.srt", &t));
+    CHECK(!media_sub_tags("Movie.mkv", "Movie.sdh.2.srt", &t));
+    CHECK(!media_sub_tags("Movie.mkv", "Movie.2.en.srt", &t));
+    CHECK(!media_sub_tags("Movie.mkv", "Movie.en.123.srt", &t)); /* (not a track's number) */
+    CHECK(media_sub_tags("Movie.mkv", "Movie.en 2.srt", &t) && t.n == 2);
+    /* the new kinds belong to their videos; a MicroDVD .sub is still a .sub (the library asks for its .idx) */
+    char lang[16];
+    CHECK(media_sub_for("Movie.mkv", "Movie.sv.sup", lang, sizeof lang) && str_eq(lang, "sv"));
+    CHECK(media_sub_for("Movie.mkv", "Movie.idx", lang, sizeof lang) && str_eq(lang, ""));
+    CHECK(!media_sub_for("Movie.mkv", "Movie.sv.txt", lang, sizeof lang));
+    CHECK(media_is_sub_ext("a.SUP") && media_is_sub_ext("a.idx") && !media_is_sub_ext("a.sub"));
+    CHECK(media_is_sub_pic("a.sup") && media_is_sub_pic("a.IDX") && media_is_sub_pic("a.sub") && !media_is_sub_pic("a.srt"));
+    CHECK(media_is_vobsub_data("a.SUB") && !media_is_vobsub_data("a.idx"));
 }

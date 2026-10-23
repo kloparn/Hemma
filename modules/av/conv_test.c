@@ -209,6 +209,18 @@ static int make_aac(uint8_t aus[][AAC_MAX_AU], int *sizes, int cap, double secon
     return n;
 }
 
+#define MANY_SUBS 34 /* subtitle tracks a test file may have: two more than the converter takes */
+
+typedef struct { /* a subtitle track (codec NULL: none) */
+    const char *codec, *lang, *name;
+    bool forced;
+    const void *priv; /* its CodecPrivate (VobSub: the .idx header) */
+    size_t priv_len;
+    const void *strip; /* header stripping: these bytes are left out of every block (ContentEncoding) */
+    size_t strip_len;
+    bool zlib; /* its blocks said to be zlib-compressed (ContentEncoding) */
+} SubTrack;
+
 typedef struct {
     const char *vcodec;
     const uint8_t *vpriv;
@@ -217,10 +229,8 @@ typedef struct {
     const char *acodec; /* NULL: no sound */
     const uint8_t *apriv;
     size_t apriv_len;
-    struct { /* subtitle tracks 3 and 4 (codec NULL: none) */
-        const char *codec, *lang, *name;
-        bool forced;
-    } sub[2];
+    SubTrack sub[MANY_SUBS]; /* tracks 3, 4, ... */
+    int arate; /* the sound's SamplingFrequency (0: 48000) */
 } Tracks;
 
 /* a BlockGroup: a Block with its BlockDuration (subtitles come so) */
@@ -269,12 +279,12 @@ static size_t start_file(W *w, const Tracks *t, double ms) {
         if (t->apriv) w_bin(w, 0x63A2, t->apriv, t->apriv_len);
         w_bin(w, 0x22B59C, "swe", 3);
         size_t a = w_open(w, 0xE1);
-        w_float(w, 0xB5, 48000.0);
+        w_float(w, 0xB5, t->arate ? t->arate : 48000.0);
         w_uint(w, 0x9F, 2);
         w_close(w, a);
         w_close(w, tr);
     }
-    for (int k = 0; k < 2; k++) {
+    for (int k = 0; k < MANY_SUBS; k++) {
         if (!t->sub[k].codec) continue;
         tr = w_open(w, 0xAE);
         w_uint(w, 0xD7, (uint64_t)(3 + k));
@@ -283,6 +293,18 @@ static size_t start_file(W *w, const Tracks *t, double ms) {
         if (t->sub[k].lang) w_bin(w, 0x22B59C, t->sub[k].lang, strlen(t->sub[k].lang));
         if (t->sub[k].name) w_bin(w, 0x536E, t->sub[k].name, strlen(t->sub[k].name));
         if (t->sub[k].forced) w_uint(w, 0x55AA, 1);
+        if (t->sub[k].priv) w_bin(w, 0x63A2, t->sub[k].priv, t->sub[k].priv_len);
+        if (t->sub[k].strip || t->sub[k].zlib) { /* ContentEncodings: one, header stripping (algorithm 3) or zlib (0) */
+            size_t encs = w_open(w, 0x6D80), enc = w_open(w, 0x6240);
+            w_uint(w, 0x5032, 1); /* scope: the frames */
+            w_uint(w, 0x5033, 0); /* type: compression */
+            size_t comp = w_open(w, 0x5034);
+            w_uint(w, 0x4254, t->sub[k].zlib ? 0 : 3);
+            if (t->sub[k].strip) w_bin(w, 0x4255, t->sub[k].strip, t->sub[k].strip_len);
+            w_close(w, comp);
+            w_close(w, enc);
+            w_close(w, encs);
+        }
         w_close(w, tr);
     }
     w_close(w, tracks);
@@ -604,6 +626,92 @@ TEST(conv_turns_dolby_into_aac) {
     CHECK_INT(aac[1], aac[0]); /* the hole became silence of the same length */
 }
 
+/* a track's timescale (its mdhd box, k-th in the file), or -1 */
+static int64_t track_timescale(const W *w, int k) {
+    size_t moov = box(w, "moov");
+    if (!moov) return -1;
+    size_t end = moov + be32(w->p + moov);
+    int seen = 0;
+    for (size_t at = moov; at + 24 <= end; at++)
+        if (!memcmp(w->p + at, "mdhd", 4) && seen++ == k) return be32(w->p + at + (w->p[at + 4] == 1 ? 24 : 16));
+    return -1;
+}
+
+/* Dolby at 44.1 kHz (TV rips) or 32 kHz becomes AAC at that same rate: 1536 samples a frame take
+   longer, and the copy has to play at the right speed (it was refused until 1.1.2). */
+TEST(conv_turns_dolby_at_44_1_and_32_khz_into_aac) {
+    static const int RATES[] = {44100, 32000};
+    for (int r = 0; r < 2; r++) {
+        int rate = RATES[r];
+        static uint8_t ac3[24 * 1152];
+        size_t bytes = ac3_test_tone_at(ac3, sizeof ac3, 24, rate);
+        int fsize = ac3_frame_size(ac3, bytes), nf = fsize > 0 ? (int)(bytes / (size_t)fsize) : 0;
+        CHECK_INT(fsize, rate == 44100 ? 834 : 1152);
+        CHECK_INT(nf, 24);
+        W in;
+        Tracks t = {"V_MPEG2", NULL, 0, 48, 32, "A_AC3", NULL, 0, .arate = rate};
+        size_t seg = start_file(&in, &t, 1200);
+        size_t cl = w_open(&in, 0x1F43B675);
+        w_uint(&in, 0xE7, 0);
+        static uint8_t pic[4096];
+        for (int k = 0, a = 0; k < 23 || a < nf;) {
+            int a_ms = (int)((int64_t)a * 1536 * 1000 / rate);
+            if (k < 23 && (a >= nf || frame_ms(k) <= a_ms)) {
+                w_simple(&in, 1, frame_ms(k), true, pic, mpeg2_picture(pic, k));
+                k++;
+            } else {
+                w_simple(&in, 2, a_ms, true, ac3 + (size_t)a * fsize, (size_t)fsize);
+                a++;
+            }
+        }
+        w_close(&in, cl);
+        w_close(&in, seg);
+        W out;
+        AvConvJob j = {0};
+        Seen s;
+        CHECK(run(&in, &out, &j, &s));
+        CHECK_STR(j.err, "");
+        CHECK_HAS(j.what, "Dolby Digital → AAC");
+        CHECK_INT(track_timescale(&out, 1), rate);
+        int n[2];
+        counts(&out, n);
+        CHECK(n[1] >= nf * 3 / 2 && n[1] <= nf * 3 / 2 + 3); /* the same samples, at their own rate */
+        CHECK(track_bytes(&out, 1) / n[1] > 40);              /* a tone, not silence */
+        free(in.p), free(out.p);
+    }
+    /* a file that says 44.1 kHz around 48 kHz frames would play too fast: refused, in words */
+    static uint8_t ac3[8 * 768];
+    size_t bytes = ac3_test_tone(ac3, sizeof ac3, 8);
+    W in;
+    Tracks t = {"V_MPEG2", NULL, 0, 48, 32, "A_AC3", NULL, 0, .arate = 44100};
+    size_t seg = start_file(&in, &t, 300);
+    size_t cl = w_open(&in, 0x1F43B675);
+    w_uint(&in, 0xE7, 0);
+    static uint8_t pic[4096];
+    for (int k = 0; k < 8; k++) {
+        w_simple(&in, 1, frame_ms(k), true, pic, mpeg2_picture(pic, k));
+        w_simple(&in, 2, k * 32, true, ac3 + (size_t)k * 768, 768);
+    }
+    w_close(&in, cl);
+    w_close(&in, seg);
+    CHECK_INT((int)bytes, 8 * 768);
+    W out;
+    AvConvJob j = {0};
+    Seen s;
+    CHECK(!run(&in, &out, &j, &s));
+    CHECK(j.unsupported);
+    CHECK_STR(j.err, "Its Dolby sound isn't at the rate the file says");
+    free(in.p), free(out.p);
+    /* E-AC-3's half rates stay refused, with the rates that work named */
+    Tracks half = {"V_MPEG2", NULL, 0, 48, 32, "A_EAC3", NULL, 0, .arate = 24000};
+    seg = start_file(&in, &half, 300);
+    w_close(&in, seg);
+    CHECK(!run(&in, &out, &j, &s));
+    CHECK(j.unsupported);
+    CHECK_STR(j.err, "Can't convert Dolby sound that isn't at 48, 44.1 or 32 kHz yet");
+    free(in.p), free(out.p);
+}
+
 /* Dolby Digital Plus (E-AC-3, here in 3-block frames of 16 ms) becomes AAC too, and the file's text
    subtitles - SRT and ASS - come back as SubRip texts on the copy's clock. */
 TEST(conv_turns_dolby_digital_plus_into_aac_and_keeps_text_subtitles) {
@@ -666,7 +774,8 @@ TEST(conv_turns_dolby_digital_plus_into_aac_and_keeps_text_subtitles) {
     free(in.p);
 }
 
-/* Sound the converter can't change: said in words people know, and nothing is made. */
+/* Sound the converter can't change: said in words people know, and no copy is made - but its subtitles
+   still come out (1.2: they used to go with the refusal). */
 TEST(conv_names_the_sound_it_cant_convert) {
     W in;
     Tracks t = {"V_MPEG2", NULL, 0, 48, 32, "A_DTS", NULL, 0, {{"S_TEXT/UTF8", "eng", NULL, false}}};
@@ -684,8 +793,368 @@ TEST(conv_names_the_sound_it_cant_convert) {
     CHECK(!run(&in, &out, &j, &s));
     CHECK(j.unsupported);
     CHECK_STR(j.err, "Its sound is DTS, which the converter can't change yet (browsers play it silently)");
-    CHECK_INT(j.nsubs, 0);
+    CHECK_INT((int)out.len, 0);
+    CHECK_INT(j.nsubs, 1);
+    CHECK_STR(j.subs[0].srt, "1\n00:00:00,000 --> 00:00:00,500\nHi\n\n");
+    av_convert_free(&j);
     free(in.p), free(out.p);
+}
+
+/* ------------------------------------------------------------ subtitles */
+
+/* a PGS segment: type, u16 size, payload */
+static size_t pgs_seg(uint8_t *o, int type, const uint8_t *payload, size_t n) {
+    o[0] = (uint8_t)type, o[1] = (uint8_t)(n >> 8), o[2] = (uint8_t)n;
+    if (n) memcpy(o + 3, payload, n);
+    return 3 + n;
+}
+
+/* One PGS display set as a Blu-ray holds it: a presentation composition (number k) showing `objects` (0 = a
+   clear: what was shown goes), its window, palette and object when it shows one, then the end segment. */
+static size_t pgs_set(uint8_t *o, int k, int objects) {
+    const uint8_t pcs[19] = {0x07, 0x80, 0x04, 0x38, 0x10, (uint8_t)(k >> 8), (uint8_t)k, 0x80, 0, 0, (uint8_t)objects,
+                             0, 0, 0, 0, 0x02, 0x00, 0x03, 0xC0}; /* 1920x1080; object 0, window 0, at 512,960 */
+    size_t n = pgs_seg(o, 0x16, pcs, objects ? sizeof pcs : 11);
+    if (objects) {
+        static const uint8_t wds[10] = {1, 0, 0x02, 0x00, 0x03, 0xC0, 0x00, 0x40, 0x00, 0x10};
+        static const uint8_t pds[7] = {0, 0, 1, 235, 128, 128, 255};
+        static const uint8_t ods[15] = {0, 0, 0, 0xC0, 0, 0, 8, 0x00, 0x40, 0x00, 0x10, 1, 1, 0, 0};
+        n += pgs_seg(o + n, 0x17, wds, sizeof wds);
+        n += pgs_seg(o + n, 0x14, pds, sizeof pds);
+        n += pgs_seg(o + n, 0x15, ods, sizeof ods);
+    }
+    return n + pgs_seg(o + n, 0x80, NULL, 0);
+}
+
+/* A DVD subpicture unit of n bytes: its size first, then made-up bytes (the converter only carries them) */
+static void spu_of(uint8_t *o, size_t n, int k) {
+    o[0] = (uint8_t)(n >> 8), o[1] = (uint8_t)n;
+    for (size_t i = 2; i < n; i++) o[i] = (uint8_t)(i * 7 + (size_t)k * 13);
+}
+
+/* The .sup back: records ("PG", PTS, DTS 0, a segment) one after another to the very end, their PTS and
+   segment types into pts[] / types[] (up to cap). The count, or -1 when it isn't a whole .sup. */
+static int read_sup(const uint8_t *p, size_t n, uint32_t *pts, uint8_t *types, int cap) {
+    int k = 0;
+    for (size_t at = 0; at < n; k++) {
+        if (n - at < 13 || p[at] != 'P' || p[at + 1] != 'G' || be32(p + at + 6) != 0) return -1;
+        size_t len = 13 + ((size_t)p[at + 11] << 8 | p[at + 12]);
+        if (len > n - at) return -1;
+        if (k < cap) pts[k] = be32(p + at + 2), types[k] = p[at + 10];
+        at += len;
+    }
+    return k;
+}
+
+typedef struct {
+    uint64_t pts;
+    size_t at, len; /* its first pack's place in the .sub; its bytes */
+    uint8_t data[8192];
+} Spu;
+
+static uint64_t pts_of(const uint8_t *q) {
+    return (uint64_t)(q[0] >> 1 & 7) << 30 | (uint64_t)q[1] << 22 | (uint64_t)(q[2] >> 1) << 15 | (uint64_t)q[3] << 7 | q[4] >> 1;
+}
+
+/* The .sub back, pack by pack: each 2048 bytes - a pack header, a private stream 1 PES (substream 0x20),
+   then nothing or a padding stream to its end; a PES with a PTS starts the next subpicture, the others
+   carry on with its bytes. The subpictures (into s, up to cap), or -1 and why. */
+static int read_sub(const uint8_t *p, size_t n, Spu *s, int cap, const char **why) {
+    int k = -1;
+    for (size_t at = 0; at < n; at += 2048) {
+        const uint8_t *q = p + at;
+        if (n - at < 2048) return *why = "a pack cut short", -1;
+        if (memcmp(q, "\0\0\1\xBA", 4) || (q[4] & 0xC4) != 0x44 || (q[6] & 0x04) != 0x04 || q[13] != 0xF8)
+            return *why = "no pack header", -1;
+        q += 14;
+        if (memcmp(q, "\0\0\1\xBD", 4) || q[6] != 0x81) return *why = "no private stream 1", -1;
+        size_t pes = (size_t)q[4] << 8 | q[5], hlen = q[8];
+        bool has_pts = q[7] == 0x80;
+        if ((!has_pts && q[7]) || (has_pts && hlen < 5) || 3 + hlen + 1 > pes) return *why = "a bad PES header", -1;
+        if (has_pts) {
+            if ((q[9] & 0xF1) != 0x21 || !(q[11] & 1) || !(q[13] & 1)) return *why = "a bad PTS", -1;
+            if (++k < cap) s[k].pts = pts_of(q + 9), s[k].at = at, s[k].len = 0;
+        }
+        if (k < 0) return *why = "a subpicture without a PTS", -1;
+        for (size_t i = has_pts ? 14 : 9; i < 9 + hlen; i++)
+            if (q[i] != 0xFF) return *why = "stuffing that isn't 0xFF", -1;
+        if (q[9 + hlen] != 0x20) return *why = "not substream 0x20", -1;
+        size_t take = pes - 3 - hlen - 1, used = 14 + 6 + pes;
+        if (used > 2048) return *why = "a PES past its pack", -1;
+        if (k < cap) {
+            if (s[k].len + take > sizeof s[k].data) return *why = "a subpicture too big for the test", -1;
+            memcpy(s[k].data + s[k].len, q + 10 + hlen, take);
+            s[k].len += take;
+        }
+        if (used < 2048) { /* the rest: a padding stream */
+            const uint8_t *pad = p + at + used;
+            size_t left = 2048 - used;
+            if (left < 6 || memcmp(pad, "\0\0\1\xBE", 4) || ((size_t)pad[4] << 8 | pad[5]) != left - 6)
+                return *why = "a pack not filled by a padding stream", -1;
+            for (size_t i = 6; i < left; i++)
+                if (pad[i] != 0xFF) return *why = "padding that isn't 0xFF", -1;
+        }
+    }
+    return k + 1;
+}
+
+/* WebVTT (S_TEXT/WEBVTT) cues become SubRip: italics, bold and underline stay, the rest of WebVTT's own
+   markup goes (voices, classes, languages, ruby readings, karaoke timestamps), entities are unescaped, and
+   what WebVTT keeps in BlockAdditions (cue settings, ids) changes nothing. A zlib-compressed track (none of
+   the household's files have one) is left out quietly. */
+TEST(conv_cleans_webvtt_into_srt) {
+    W in;
+    Tracks t = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0,
+                {{"S_TEXT/WEBVTT", "eng", "English", false}, {"S_TEXT/UTF8", "eng", "Packed", false, .zlib = true}}};
+    size_t seg = start_file(&in, &t, 300);
+    size_t cl = w_open(&in, 0x1F43B675);
+    w_uint(&in, 0xE7, 0);
+    static uint8_t pic[4096];
+    w_simple(&in, 1, 0, true, pic, mpeg2_picture(pic, 0));
+    const char *cues[] = {
+        "<v Roger>Hello <i.loud>there</i> &amp; <c.yellow>you</c></v>",
+        "<ruby>\xE6\xBC\xA2<rt>kan</rt></ruby>\xE5\xAD\x97 &lt;3&gt; &nbsp;x&lrm;y&rlm;",
+        "a<00:00:01.500>b<c>c</c>\n<lang sv>hej</lang>",
+        "&unknown; &amp <b>bold</b> <u>u</u> <I>shout</I>",
+        "<v.loud Mary>\n\n",
+    };
+    for (int k = 0; k < 5; k++) {
+        size_t g = w_open(&in, 0xA0); /* a BlockGroup: the Block, its BlockAdditions (settings), its length */
+        w_id(&in, 0xA1);
+        w_size8(&in, 4 + strlen(cues[k]));
+        w_byte(&in, 0x83), w_byte(&in, 0), w_byte(&in, (k + 1) * 10), w_byte(&in, 0);
+        w_put(&in, cues[k], strlen(cues[k]));
+        size_t adds = w_open(&in, 0x75A1), more = w_open(&in, 0xA6);
+        w_uint(&in, 0xEE, 1);
+        w_bin(&in, 0xA5, "align:start line:0", 18);
+        w_close(&in, more);
+        w_close(&in, adds);
+        w_uint(&in, 0x9B, 100);
+        w_close(&in, g);
+    }
+    w_group(&in, 4, 20, 100, "\x78\x9C\xF3\x48\xCD\xC9\xC9\x07\x00", 9); /* (packed bytes, as zlib would leave them) */
+    for (int k = 1; k < 9; k++) w_simple(&in, 1, frame_ms(k), true, pic, mpeg2_picture(pic, k));
+    w_close(&in, cl);
+    w_close(&in, seg);
+    W out;
+    AvConvJob j = {.want_subs = true};
+    Seen s;
+    CHECK(run(&in, &out, &j, &s));
+    CHECK_INT(j.nsubs, 1);
+    CHECK_INT(j.subs[0].kind, AV_SUB_TEXT);
+    CHECK_INT(j.subs[0].cues, 4); /* the last held nothing to show */
+    CHECK_STR(j.subs[0].srt, "1\n00:00:00,010 --> 00:00:00,110\nHello <i>there</i> & you\n\n"
+                             "2\n00:00:00,020 --> 00:00:00,120\n\xE6\xBC\xA2\xE5\xAD\x97 <3> \xC2\xA0x\xE2\x80\x8Ey\xE2\x80\x8F\n\n"
+                             "3\n00:00:00,030 --> 00:00:00,130\nabc\nhej\n\n"
+                             "4\n00:00:00,040 --> 00:00:00,140\n&unknown; &amp <b>bold</b> <u>u</u> shout\n\n");
+    av_convert_free(&j);
+    free(in.p), free(out.p);
+}
+
+/* Blu-ray PGS (S_HDMV/PGS) becomes the bytes of a .sup file: each segment of a block (a block may hold a
+   whole display set) as its own record, the block's time on the copy's clock (90 kHz; before the first
+   picture: 0) - what VLC, mpv, Plex and Hemma's own player read. A segment cut short is left out. */
+TEST(conv_turns_pgs_into_a_sup_file) {
+    W in;
+    Tracks t = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0, {{"S_HDMV/PGS", "swe", "Svenska", true}}};
+    size_t seg = start_file(&in, &t, 3000);
+    size_t cl = w_open(&in, 0x1F43B675);
+    w_uint(&in, 0xE7, 0);
+    static uint8_t set[1024], pic[4096];
+    w_simple(&in, 3, 100, true, set, pgs_set(set, 0, 1)); /* before the first picture (200 ms): at 0 */
+    for (int k = 0; k < 60; k++) w_simple(&in, 1, 200 + frame_ms(k), true, pic, mpeg2_picture(pic, k));
+    w_simple(&in, 3, 1200, true, set, pgs_set(set, 1, 0)); /* a clear: no subpicture */
+    size_t n = pgs_set(set, 2, 1);                       /* one display set over two blocks */
+    w_simple(&in, 3, 1500, true, set, 22 + 13);          /* (its composition and window) */
+    w_simple(&in, 3, 1500, true, set + 35, n - 35);
+    n = pgs_set(set, 3, 1);
+    set[n] = 0x15, set[n + 1] = 0, set[n + 2] = 100; /* + an object said to hold 100 bytes, with 10 */
+    w_simple(&in, 3, 2100, true, set, n + 13);
+    w_close(&in, cl);
+    w_close(&in, seg);
+    W out;
+    AvConvJob j = {.want_subs = true};
+    Seen s;
+    CHECK(run(&in, &out, &j, &s));
+    CHECK_INT(j.nsubs, 1);
+    AvConvSub *o = &j.subs[0];
+    CHECK_INT(o->kind, AV_SUB_PGS);
+    CHECK_STR(o->lang, "swe");
+    CHECK_STR(o->name, "Svenska");
+    CHECK(o->forced);
+    CHECK(o->srt == NULL && o->idx == NULL);
+    CHECK_INT(o->cues, 3); /* compositions that show something */
+    uint32_t pts[32];
+    uint8_t types[32];
+    CHECK_INT(read_sup(o->data, o->size, pts, types, 32), 5 + 2 + 5 + 5);
+    static const uint8_t want_types[] = {0x16, 0x17, 0x14, 0x15, 0x80, 0x16, 0x80, 0x16, 0x17, 0x14, 0x15, 0x80, 0x16, 0x17, 0x14, 0x15, 0x80};
+    static const uint32_t want_pts[] = {0, 0, 0, 0, 0, 90000, 90000, 117000, 117000, 117000, 117000, 117000, 171000, 171000, 171000, 171000, 171000};
+    for (int k = 0; k < 17; k++) {
+        CHECK_INT(types[k], want_types[k]);
+        CHECK_INT(pts[k], want_pts[k]);
+    }
+    /* the segments are the block's bytes as they were */
+    n = pgs_set(set, 0, 1);
+    CHECK(!memcmp(o->data + 10, set, 22)); /* (the first: the composition, 3 + 19 bytes) */
+    av_convert_free(&j);
+    CHECK(o->data == NULL);
+    free(in.p), free(out.p);
+}
+
+/* DVD VobSub (S_VOBSUB) becomes an .idx + .sub pair as mkvextract writes it: the .idx is the track's own
+   header (size, palette) behind the line players look for, "id: en, index: 0", and one timestamp + file
+   position a subpicture; the .sub an MPEG program stream of 2048-byte packs holding each subpicture whole,
+   its PTS on the first. Header stripping (a ContentEncoding some muxers use) is undone. */
+TEST(conv_turns_vobsub_into_idx_and_sub) {
+    static const char head[] = "size: 720x480\npalette: 000000, f0f0f0, cccccc, 999999, 3333fa, 1111bb, fa3333, 7b1a1a, "
+                               "3333fa, 1111bb, fa3333, 7b1a1a, 33fa33, 0b7b0b, ffffff, 000000\ncustom colors: OFF\n";
+    static const char head_v7[] = "# VobSub index file, v7 (do not modify this line!)\nsize: 720x576\n";
+    static const uint8_t strip[1] = {0x01}; /* every subpicture of the second track starts so (300..400 bytes) */
+    W in;
+    Tracks t = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0,
+                {{"S_VOBSUB", "eng", NULL, false, head, sizeof head - 1},
+                 {"S_VOBSUB", "fre", "Commentaire", false, head_v7, sizeof head_v7 - 1, strip, 1}}};
+    size_t seg = start_file(&in, &t, 30000);
+    static const size_t sizes[] = {100, 2015, 2019, 3000, 6100}; /* 1 pack (padding stream), 1 (stuffing), 1 exactly,
+                                                                    2, 4 */
+    static const int at_ms[] = {100, 1000, 2500, 3725, 29999};
+    static uint8_t spu[5][6100], small[2][400], pic[4096];
+    size_t cl = w_open(&in, 0x1F43B675);
+    w_uint(&in, 0xE7, 0);
+    for (int k = 0, f = 0; k < 5; k++) {
+        for (; f < 30 && 200 + frame_ms(f) <= at_ms[k]; f++) w_simple(&in, 1, 200 + frame_ms(f), true, pic, mpeg2_picture(pic, f));
+        spu_of(spu[k], sizes[k], k);
+        w_group(&in, 3, at_ms[k], 2000, spu[k], sizes[k]);
+        if (k < 2) {
+            spu_of(small[k], 300 + (size_t)k * 100, 7 + k);
+            w_group(&in, 4, at_ms[k] + 1, 0, small[k] + 1, 300 + (size_t)k * 100 - 1); /* (stripped: the first byte) */
+        }
+    }
+    w_close(&in, cl);
+    w_close(&in, seg);
+    W out;
+    AvConvJob j = {.want_subs = true};
+    Seen s;
+    CHECK(run(&in, &out, &j, &s));
+    CHECK_INT(j.nsubs, 2);
+    AvConvSub *o = &j.subs[0];
+    CHECK_INT(o->kind, AV_SUB_VOBSUB);
+    CHECK_INT(o->cues, 5);
+    CHECK(o->srt == NULL);
+    CHECK_INT((int)(o->size % 2048), 0);
+    CHECK_INT((int)o->size, (1 + 1 + 1 + 2 + 4) * 2048);
+    static Spu got[8];
+    const char *why = "";
+    int n = read_sub(o->data, o->size, got, 8, &why);
+    if (n < 0) test_fail(__FILE__, __LINE__, "the .sub: %s", why);
+    CHECK_INT(n, 5);
+    static const size_t at[] = {0, 2048, 4096, 6144, 10240}; /* where each starts */
+    for (int k = 0; k < 5; k++) {
+        CHECK_INT((int)got[k].len, (int)sizes[k]);
+        CHECK(!memcmp(got[k].data, spu[k], sizes[k])); /* whole, byte for byte */
+        CHECK_INT((long long)got[k].pts, k ? (at_ms[k] - 200) * 90LL : 0);
+        CHECK_INT((int)got[k].at, (int)at[k]);
+    }
+    char want[1024];
+    snprintf(want, sizeof want,
+             "# VobSub index file, v7 (do not modify this line!)\n%s\nid: en, index: 0\n"
+             "timestamp: 00:00:00:000, filepos: 000000000\ntimestamp: 00:00:00:800, filepos: 000000800\n"
+             "timestamp: 00:00:02:300, filepos: 000001000\ntimestamp: 00:00:03:525, filepos: 000001800\n"
+             "timestamp: 00:00:29:799, filepos: 000002800\n",
+             head);
+    CHECK_STR(o->idx, want);
+    CHECK_INT((int)o->idx_len, (int)strlen(want));
+    /* the second: its own v7 line kept (not twice), French by its two letters, the stripped byte back */
+    o = &j.subs[1];
+    CHECK_STR(o->name, "Commentaire");
+    CHECK_STR(o->idx, "# VobSub index file, v7 (do not modify this line!)\nsize: 720x576\n\nid: fr, index: 0\n"
+                      "timestamp: 00:00:00:000, filepos: 000000000\ntimestamp: 00:00:00:801, filepos: 000000800\n");
+    n = read_sub(o->data, o->size, got, 8, &why);
+    CHECK_INT(n, 2);
+    CHECK(got[0].len == 300 && !memcmp(got[0].data, small[0], 300));
+    CHECK(got[1].len == 400 && !memcmp(got[1].data, small[1], 400));
+    av_convert_free(&j);
+    free(in.p), free(out.p);
+}
+
+/* 1.2: 32 subtitle tracks (the Simpsons carry 13), the first 32 in file order; past them, left out. */
+TEST(conv_takes_32_subtitle_tracks) {
+    W in;
+    Tracks t = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0};
+    static char names[MANY_SUBS][16], cue[MANY_SUBS][16];
+    for (int k = 0; k < MANY_SUBS; k++) {
+        snprintf(names[k], sizeof names[k], "Track %d", k + 1);
+        snprintf(cue[k], sizeof cue[k], "Line %d", k + 1);
+        t.sub[k].codec = k % 2 ? "S_TEXT/ASS" : "S_TEXT/UTF8";
+        t.sub[k].lang = "eng";
+        t.sub[k].name = names[k];
+    }
+    size_t seg = start_file(&in, &t, 300);
+    size_t cl = w_open(&in, 0x1F43B675);
+    w_uint(&in, 0xE7, 0);
+    static uint8_t pic[4096];
+    w_simple(&in, 1, 0, true, pic, mpeg2_picture(pic, 0));
+    for (int k = 0; k < MANY_SUBS; k++) {
+        char ass[64];
+        snprintf(ass, sizeof ass, "%d,0,Default,,0,0,0,,%.15s", k, cue[k]);
+        const char *text = k % 2 ? ass : cue[k];
+        w_group(&in, 3 + k, 10 + k, 100, text, strlen(text));
+    }
+    for (int k = 1; k < 9; k++) w_simple(&in, 1, frame_ms(k), true, pic, mpeg2_picture(pic, k));
+    w_close(&in, cl);
+    w_close(&in, seg);
+    W out;
+    AvConvJob j = {.want_subs = true};
+    Seen s;
+    CHECK(run(&in, &out, &j, &s));
+    CHECK_INT(j.nsubs, AV_CONV_MAX_SUBS);
+    CHECK_INT(AV_CONV_MAX_SUBS, 32);
+    for (int k = 0; k < 32; k++) {
+        CHECK_STR(j.subs[k].name, names[k]);
+        CHECK_HAS(j.subs[k].srt, cue[k]);
+        CHECK(strstr(j.subs[k].srt, "\n\n") == j.subs[k].srt + j.subs[k].len - 2); /* its own cue only */
+    }
+    av_convert_free(&j);
+    free(in.p), free(out.p);
+}
+
+/* HEMMA_TEST_SUBS=<an .mkv> (opt-in, never in the suite): av_subtitles over a real file, each track written
+   to HEMMA_TEST_SUBS_OUT (a folder; default: this test's scratch folder, removed after) as
+   sub-<k>.<language>.srt / .sup / .idx + .sub - to open in VLC or ffprobe. Reads the file, never writes
+   next to it. */
+static bool real_read(void *ctx, int64_t off, void *dst, size_t n) { return file_pread(ctx, off, dst, n); }
+
+TEST(conv_subtitles_of_a_real_file_when_given) {
+    const char *path = plat_getenv("HEMMA_TEST_SUBS");
+    if (!path || !*path) return;
+    const char *dir = plat_getenv("HEMMA_TEST_SUBS_OUT");
+    if (!dir || !*dir) dir = test_tmpdir();
+    CHECK(dir_make(dir));
+    int64_t size = 0;
+    FILE *fp = file_open(path, "rb");
+    CHECK(fp && path_stat(path, &size, NULL, NULL));
+    AvConvJob j = {.in = {fp, size, real_read}};
+    int64_t t0 = now_ms();
+    bool ok = av_subtitles(&j);
+    fclose(fp);
+    if (!ok) test_fail(__FILE__, __LINE__, "av_subtitles: %s", j.err);
+    CHECK(ok);
+    fprintf(stderr, "    %d subtitle track(s) in %lld ms (%lld MB read) -> %s\n", j.nsubs, (long long)(now_ms() - t0),
+            (long long)(size >> 20), dir);
+    for (int k = 0; k < j.nsubs; k++) {
+        const AvConvSub *s = &j.subs[k];
+        static const char *const ext[] = {"srt", "sup", "sub"};
+        char out[1200];
+        snprintf(out, sizeof out, "%s/sub-%d.%s.%s", dir, k, s->lang, ext[s->kind]);
+        CHECK(file_write_atomic(out, s->kind == AV_SUB_TEXT ? (const void *)s->srt : s->data, s->kind == AV_SUB_TEXT ? s->len : s->size));
+        if (s->kind == AV_SUB_VOBSUB) {
+            snprintf(out, sizeof out, "%s/sub-%d.%s.idx", dir, k, s->lang);
+            CHECK(file_write_atomic(out, s->idx, s->idx_len));
+        }
+        fprintf(stderr, "    %d: %s %s \"%s\"%s%s: %d cue(s), %zu bytes\n", k, ext[s->kind], s->lang, s->name, s->forced ? " forced" : "",
+                s->is_default ? " default" : "", s->cues, s->kind == AV_SUB_TEXT ? s->len : s->size);
+    }
+    av_convert_free(&j);
 }
 
 /* ------------------------------------------------- files built from streams of blocks */
@@ -1004,6 +1473,258 @@ TEST(conv_keeps_wild_timestamps_and_lengths_in_check) {
         }
 }
 
+/* 1.2: a file the converter refuses for what it holds (an AV1 picture, DTS sound) still gives its subtitles,
+   read once more on their own and timed on the copy's clock (from the first picture, whatever its codec).
+   Not when asked to skip that (the browser: the original goes to the server, which takes them itself); a
+   real error (stopped) gives none. */
+TEST(conv_takes_subtitles_from_a_file_it_refuses) {
+    static uint8_t set[1024], spu[600], pic[4096];
+    static const char head[] = "size: 720x480\n";
+    for (int dts = 0; dts < 2; dts++) {
+        W in;
+        Tracks t = {dts ? "V_MPEG2" : "V_AV1", NULL, 0, 48, 32, dts ? "A_DTS" : NULL, NULL, 0,
+                    {{"S_TEXT/UTF8", "swe", NULL, false},
+                     {"S_HDMV/PGS", "eng", NULL, false},
+                     {"S_VOBSUB", "eng", NULL, false, head, sizeof head - 1},
+                     {"S_TEXT/ASS", "eng", NULL, false}}};
+        size_t seg = start_file(&in, &t, 3000);
+        size_t cl = w_open(&in, 0x1F43B675);
+        w_uint(&in, 0xE7, 0);
+        for (int k = 0; k < 20; k++) {
+            if (dts) {
+                w_simple(&in, 1, 300 + frame_ms(k), true, pic, mpeg2_picture(pic, k));
+                w_simple(&in, 2, 300 + k * 32, true, "\x7F\xFE\x80\x01", 4);
+            } else {
+                const uint8_t av1[8] = {0x12, 0, 0x0A, (uint8_t)k};
+                w_simple(&in, 1, 300 + frame_ms(k), k == 0, av1, sizeof av1);
+            }
+        }
+        w_group(&in, 3, 1300, 1000, "Hej", 3);
+        w_simple(&in, 4, 800, true, set, pgs_set(set, 0, 1));
+        spu_of(spu, sizeof spu, 1);
+        w_group(&in, 5, 2300, 0, spu, sizeof spu);
+        const char *ass = "0,0,Default,,0,0,0,,Hi";
+        w_group(&in, 6, 2400, 500, ass, strlen(ass));
+        w_close(&in, cl);
+        w_close(&in, seg);
+        for (int how = 0; how < 3; how++) { /* asked, not asked, asked to skip them after a refusal */
+            W out;
+            AvConvJob j = {.want_subs = how != 1, .skip_refused_subs = how == 2};
+            Seen s;
+            CHECK(!run(&in, &out, &j, &s));
+            CHECK(j.unsupported);
+            CHECK_HAS(j.err, dts ? "Its sound is DTS" : "Its picture is AV1"); /* the refusal stays the reason */
+            CHECK_INT((int)out.len, 0);
+            CHECK_INT(j.nsubs, how ? 0 : 4);
+            if (!how) {
+                CHECK_STR(j.subs[0].lang, "swe");
+                CHECK_STR(j.subs[0].srt, "1\n00:00:01,000 --> 00:00:02,000\nHej\n\n");
+                CHECK_INT(j.subs[1].kind, AV_SUB_PGS);
+                uint32_t pts[8];
+                uint8_t types[8];
+                CHECK_INT(read_sup(j.subs[1].data, j.subs[1].size, pts, types, 8), 5);
+                CHECK_INT(pts[0], 500 * 90);
+                CHECK_INT(j.subs[2].kind, AV_SUB_VOBSUB);
+                CHECK_HAS(j.subs[2].idx, "\nid: en, index: 0\ntimestamp: 00:00:02:000, filepos: 000000000\n");
+                CHECK_STR(j.subs[3].srt, "1\n00:00:02,100 --> 00:00:02,600\nHi\n\n");
+                CHECK(s.rising && s.last > 900 && s.last < 1000); /* (read to the end; a refusal never says 1000) */
+            }
+            av_convert_free(&j);
+            free(out.p);
+        }
+        volatile int stop = 1; /* stopped while reading them: none, and still the refusal */
+        W out;
+        AvConvJob j = {.want_subs = true, .stop = &stop};
+        Seen s;
+        CHECK(!run(&in, &out, &j, &s));
+        CHECK(j.unsupported);
+        CHECK_HAS(j.err, dts ? "Its sound is DTS" : "Its picture is AV1");
+        CHECK_INT(j.nsubs, 0);
+        free(in.p), free(out.p);
+    }
+
+    /* refused part-way (the picture changes size): the subtitles read again from the start - each once */
+    static Stream v;
+    add_mpeg2(&v, 0, 20, 48, 32, false, 0, false);
+    add_mpeg2(&v, 20, 20, 48, 16, false, 0, false);
+    W in, out;
+    Tracks t = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0, {{"S_TEXT/UTF8", "eng", NULL, false}}};
+    size_t seg = start_file(&in, &t, 1400);
+    size_t cl = w_open(&in, 0x1F43B675);
+    w_uint(&in, 0xE7, 0);
+    w_group(&in, 3, 100, 200, "One", 3); /* gathered before the refusal */
+    for (int k = 0; k < v.n; k++) w_simple(&in, 1, v.ms[k], v.key[k], s_block(&v, k), s_size(&v, k));
+    w_group(&in, 3, 1200, 200, "Two", 3); /* after it */
+    w_close(&in, cl);
+    w_close(&in, seg);
+    AvConvJob j = {.want_subs = true};
+    Seen s;
+    CHECK(!run(&in, &out, &j, &s));
+    CHECK_HAS(j.err, "changes size");
+    CHECK_INT(j.nsubs, 1);
+    CHECK_STR(j.subs[0].srt, "1\n00:00:00,100 --> 00:00:00,300\nOne\n\n2\n00:00:01,200 --> 00:00:01,400\nTwo\n\n");
+    av_convert_free(&j);
+    free(in.p), free(out.p);
+    s_free(&v);
+}
+
+static bool run_subs(W *in, W *out, AvConvJob *j, Seen *s) {
+    memset(out, 0, sizeof *out);
+    j->in = (MkvReader){in, (int64_t)in->len, mem_read};
+    j->out = (Mp4Out){out, mem_write, mem_write_at};
+    memset(s, 0, sizeof *s);
+    s->rising = true;
+    j->progress = seen;
+    j->progress_ctx = s;
+    return av_subtitles(j);
+}
+
+/* av_subtitles: the subtitle tracks alone, for a video that is never converted - timed exactly as a
+   conversion times them (the clock starts at the first picture, found without decoding anything), and
+   nothing written. */
+TEST(conv_subtitles_alone_time_like_a_conversion) {
+    static uint8_t set[1024], spu[3000];
+    static const char head[] = "size: 720x480\n";
+    for (int copy = 0; copy < 2; copy++) { /* MPEG-2 (re-encoded by a conversion), H.264 (copied) */
+        static Stream v;
+        uint8_t avcc[256];
+        size_t avcc_len = 0;
+        if (copy) add_h264(&v, 30, avcc, &avcc_len);
+        else add_mpeg2(&v, 0, 30, 48, 32, false, 0, false);
+        W in;
+        Tracks t = {copy ? "V_MPEG4/ISO/AVC" : "V_MPEG2", copy ? avcc : NULL, avcc_len, copy ? 64 : 48, copy ? 48 : 32, NULL, NULL, 0,
+                    {{"S_TEXT/UTF8", "eng", NULL, false},
+                     {"S_TEXT/WEBVTT", "eng", "SDH", false},
+                     {"S_HDMV/PGS", "eng", NULL, false},
+                     {"S_VOBSUB", "eng", NULL, false, head, sizeof head - 1}}};
+        size_t seg = start_file(&in, &t, 1500);
+        size_t cl = w_open(&in, 0x1F43B675);
+        w_uint(&in, 0xE7, 0);
+        w_group(&in, 3, 50, 900, "Early", 5); /* before the first picture (400 ms): from 0, shortened */
+        w_group(&in, 4, 60, 100, "Gone", 4);  /* over before it: left out */
+        for (int k = 0; k < v.n; k++) {
+            w_simple(&in, 1, 400 + v.ms[k], v.key[k], s_block(&v, k), s_size(&v, k));
+            if (k == 12) {
+                w_group(&in, 3, 820, 300, "Later", 5);
+                w_group(&in, 4, 830, 300, "<v Al>Also</v>", 14);
+                w_simple(&in, 5, 840, true, set, pgs_set(set, 1, 1));
+                spu_of(spu, sizeof spu, 2);
+                w_group(&in, 6, 850, 0, spu, sizeof spu);
+            }
+        }
+        w_close(&in, cl);
+        w_close(&in, seg);
+        W out, none;
+        AvConvJob conv = {.want_subs = true}, alone = {0};
+        Seen s;
+        CHECK(run(&in, &out, &conv, &s));
+        CHECK(run_subs(&in, &none, &alone, &s));
+        CHECK_INT((int)none.len, 0); /* nothing written */
+        CHECK(s.rising && s.last == 1000);
+        CHECK_STR(alone.err, "");
+        CHECK_INT(alone.nsubs, 4);
+        CHECK_INT(conv.nsubs, 4);
+        CHECK_STR(alone.subs[0].srt, "1\n00:00:00,000 --> 00:00:00,550\nEarly\n\n2\n00:00:00,420 --> 00:00:00,720\nLater\n\n");
+        CHECK_STR(alone.subs[1].srt, "1\n00:00:00,430 --> 00:00:00,730\nAlso\n\n");
+        for (int k = 0; k < 4; k++) { /* the very same as the conversion's */
+            AvConvSub *a = &alone.subs[k], *b = &conv.subs[k];
+            CHECK_INT(a->kind, b->kind);
+            CHECK_INT(a->cues, b->cues);
+            CHECK(a->len == b->len && (!a->len || !memcmp(a->srt, b->srt, a->len)));
+            CHECK(a->size == b->size && (!a->size || !memcmp(a->data, b->data, a->size)));
+            CHECK(a->idx_len == b->idx_len && (!a->idx_len || !strcmp(a->idx, b->idx)));
+        }
+        uint32_t pts[8];
+        uint8_t types[8];
+        CHECK_INT(read_sup(alone.subs[2].data, alone.subs[2].size, pts, types, 8), 5);
+        CHECK_INT(pts[0], 440 * 90);
+        CHECK_HAS(alone.subs[3].idx, "timestamp: 00:00:00:450, filepos: 000000000\n");
+        av_convert_free(&conv);
+        av_convert_free(&alone);
+        CHECK_INT(alone.nsubs, 0);
+
+        volatile int stop = 1; /* stopped: none */
+        AvConvJob stopped = {.stop = &stop};
+        CHECK(!run_subs(&in, &none, &stopped, &s));
+        CHECK_STR(stopped.err, "Stopped");
+        CHECK(!stopped.unsupported);
+        CHECK_INT(stopped.nsubs, 0);
+        free(in.p), free(out.p), free(none.p);
+        s_free(&v);
+    }
+    W in, none; /* a file without subtitles: read at once, none; not Matroska: says so */
+    Tracks t = {"V_MPEG2", NULL, 0, 48, 32, "A_DTS", NULL, 0};
+    w_close(&in, start_file(&in, &t, 100));
+    AvConvJob j = {0};
+    Seen s;
+    CHECK(run_subs(&in, &none, &j, &s));
+    CHECK_INT(j.nsubs, 0);
+    CHECK_INT(s.last, 1000);
+    free(in.p), free(none.p);
+    memset(&in, 0, sizeof in);
+    w_put(&in, "RIFF....AVI LIST", 16);
+    CHECK(!run_subs(&in, &none, &j, &s));
+    CHECK(j.unsupported);
+    CHECK_HAS(j.err, "Not a readable MKV file");
+    free(in.p), free(none.p);
+}
+
+/* The bounds (a job may ask for less, as here: 64 KB a track, 256 KB in all): a picture track past its
+   most is left out whole - one subpicture too big, or growing past it part-way - never cut; past the most
+   all picture tracks may hold together, the track that would cross it goes, and room given back by a
+   dropped one is used again. Text tracks are none of it. */
+TEST(conv_bounds_picture_subtitles) {
+    static const char head[] = "size: 720x480\n";
+    static const char *const names[8] = {"0", "1", "2", "3", "4", "5", "6", "7"};
+    W in;
+    Tracks t = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0};
+    for (int k = 0; k < 8; k++)
+        t.sub[k] = (SubTrack){k == 7 ? "S_TEXT/UTF8" : k == 1 ? "S_HDMV/PGS" : "S_VOBSUB", "eng", names[k], false,
+                              k == 7 || k == 1 ? NULL : head, sizeof head - 1};
+    size_t seg = start_file(&in, &t, 3000);
+    size_t cl = w_open(&in, 0x1F43B675);
+    w_uint(&in, 0xE7, 0);
+    static uint8_t pic[4096], big[70000], spu[1000], set[4096];
+    w_simple(&in, 1, 0, true, pic, mpeg2_picture(pic, 0));
+    for (int i = 0; i < 40; i++) {
+        int ms = 100 + i * 50;
+        if (i == 0) { /* track 3: one subpicture bigger than a track may be */
+            spu_of(big, sizeof big, 0);
+            w_group(&in, 3, ms, 0, big, sizeof big);
+        }
+        size_t n = pgs_set(set, i, 1); /* track 4: ~2 KB a block, 80 KB in all: past 64 KB part-way */
+        static uint8_t fill[2000];
+        n += pgs_seg(set + n, 0x15, fill, sizeof fill);
+        w_simple(&in, 4, ms, true, set, n);
+        spu_of(spu, sizeof spu, i); /* 1000 bytes: one 2 KB pack each */
+        for (int k = 2; k < 6 && i < 30; k++) w_group(&in, 3 + k, ms, 0, spu, sizeof spu); /* tracks 5-8: 60 KB each */
+        if (i >= 35) w_group(&in, 9, ms, 0, spu, sizeof spu); /* track 9: after track 4 gave its room back */
+        if (i == 0) w_group(&in, 10, ms, 500, "Text", 4);
+    }
+    w_close(&in, cl);
+    w_close(&in, seg);
+    W none;
+    AvConvJob j = {.pic_bytes = 65536};
+    Seen s;
+    CHECK(run_subs(&in, &none, &j, &s));
+    CHECK_INT(j.nsubs, 5);
+    static const char *const kept[] = {"2", "3", "4", "6", "7"}; /* 0: too big, 1: grew past, 5: no room left */
+    for (int k = 0; k < 5; k++) CHECK_STR(j.subs[k].name, kept[k]);
+    CHECK_INT(j.subs[0].cues, 30);
+    CHECK_INT((int)j.subs[0].size, 30 * 2048);
+    CHECK_INT(j.subs[3].cues, 5);
+    CHECK_INT(j.subs[4].kind, AV_SUB_TEXT);
+    av_convert_free(&j);
+    /* the same file with the built-in bounds: everything (the PGS track's 80 KB, the 70 KB subpicture) */
+    AvConvJob roomy = {0};
+    CHECK(run_subs(&in, &none, &roomy, &s));
+    CHECK_INT(roomy.nsubs, 8);
+    CHECK_INT(roomy.subs[1].kind, AV_SUB_PGS);
+    CHECK_INT(roomy.subs[1].cues, 40);
+    av_convert_free(&roomy);
+    free(in.p), free(none.p);
+}
+
 /* ------------------------------------------------------------ fuzzing seeds */
 
 /* Xiph lacing: the sound's blocks 4 at a time, as some muxers write them */
@@ -1080,14 +1801,55 @@ TEST(conv_fuzz_seeds) {
                                    0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
     char took[64][40]; /* every CodecID a seed carries: each format the converter takes needs one (below) */
     int ntook = 0;
-    for (int seed = 0; seed < 11; seed++) {
+    for (int seed = 0; seed < 13; seed++) {
         uint8_t avcc[256], asc[2];
         size_t avcc_len = 0;
         Tracks mp2 = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0}, t = mp2;
         const char *name = "";
         bool fails = false, laced = false, built = false;
+        int subs = -1; /* subtitle tracks it gives (-1: not checked) */
         W in, out;
         switch (seed) {
+        case 11:   /* H.264 with every subtitle kind a conversion carries: WebVTT, PGS (.sup), VobSub (.idx/.sub) */
+        case 12: { /* refused (an AV1 picture) - its subtitles taken alone: SRT, PGS, VobSub with header stripping */
+            static const char head[] = "size: 720x480\npalette: 000000, f0f0f0, cccccc, 999999, 3333fa, 1111bb, fa3333, 7b1a1a, "
+                                       "3333fa, 1111bb, fa3333, 7b1a1a, 33fa33, 0b7b0b, ffffff, 000000\n";
+            static const uint8_t strip[1] = {0x01};
+            static uint8_t set[1024], spu[2][2600];
+            name = seed == 11 ? "h264-webvtt-pgs-vobsub.mkv" : "av1-refused-srt-pgs-vobsub.mkv";
+            if (seed == 11) add_h264(&v, 12, avcc, &avcc_len);
+            else
+                for (int k = 0; k < 12; k++) {
+                    const uint8_t av1[8] = {0x12, 0, 0x0A, (uint8_t)k};
+                    s_add(&v, av1, sizeof av1, frame_ms(k), k == 0);
+                }
+            t = (Tracks){seed == 11 ? "V_MPEG4/ISO/AVC" : "V_AV1", seed == 11 ? avcc : NULL, avcc_len, 64, 48, NULL, NULL, 0,
+                         {{seed == 11 ? "S_TEXT/WEBVTT" : "S_TEXT/UTF8", "eng", NULL, false},
+                          {"S_HDMV/PGS", "eng", "English", false},
+                          {"S_VOBSUB", "fre", NULL, true, head, sizeof head - 1, seed == 12 ? strip : NULL, 1}}};
+            size_t seg = start_file(&in, &t, 400), cl = w_open(&in, 0x1F43B675);
+            w_uint(&in, 0xE7, 0);
+            for (int k = 0; k < v.n; k++) {
+                w_simple(&in, 1, v.ms[k], v.key[k], s_block(&v, k), s_size(&v, k));
+                if (k == 2) {
+                    const char *cue = seed == 11 ? "<v Ann>Hi <i>you</i> &amp; me</v>" : "Hi <i>you</i>";
+                    w_group(&in, 3, 70, 200, cue, strlen(cue));
+                    w_simple(&in, 4, 80, true, set, pgs_set(set, 0, 1));
+                    spu_of(spu[0], 2600, 0); /* two packs */
+                    spu[0][0] = 0x01;        /* (what the stripping takes off) */
+                    w_group(&in, 5, 90, 0, spu[0] + (seed == 12), 2600 - (seed == 12));
+                }
+                if (k == 8) {
+                    w_simple(&in, 4, 270, true, set, pgs_set(set, 1, 0));
+                    spu_of(spu[1], 300, 1);
+                    w_group(&in, 5, 280, 0, spu[1] + (seed == 12), 300 - (seed == 12));
+                }
+            }
+            w_close(&in, cl);
+            w_close(&in, seg);
+            built = true, fails = seed == 12, subs = 3;
+            break;
+        }
         case 9: { /* Dolby Digital Plus and two text subtitle tracks (SRT, ASS) */
             name = "mpeg2-eac3-subs.mkv";
             t = (Tracks){"V_MPEG2", NULL, 0, 48, 32, "A_EAC3", NULL, 0,
@@ -1104,7 +1866,7 @@ TEST(conv_fuzz_seeds) {
             }
             w_close(&in, cl);
             w_close(&in, seg);
-            built = true;
+            built = true, subs = 2;
             break;
         }
         case 10: { /* MPEG-1 by its CodecID (the stream inside is MPEG-2: the fuzzer turns it into MPEG-1), AAC
@@ -1123,7 +1885,7 @@ TEST(conv_fuzz_seeds) {
             }
             w_close(&in, cl);
             w_close(&in, seg);
-            built = true;
+            built = true, subs = 1;
             break;
         }
         case 0:
@@ -1182,10 +1944,11 @@ TEST(conv_fuzz_seeds) {
         bool ok = run(&in, &out, &j, &s);
         if (fails) CHECK(!ok && j.unsupported);
         else if (!ok) test_fail(__FILE__, __LINE__, "seed %s: %s", name, j.err);
-        if (built) CHECK_INT(j.nsubs, seed == 10 ? 1 : 2);
+        if (subs >= 0) CHECK_INT(j.nsubs, subs);
         av_convert_free(&j);
-        const char *ids[] = {t.vcodec, t.acodec, t.sub[0].codec, t.sub[1].codec};
-        for (int i = 0; i < 4 && ntook < 64; i++)
+        const char *ids[2 + MANY_SUBS] = {t.vcodec, t.acodec};
+        for (int i = 0; i < MANY_SUBS; i++) ids[2 + i] = t.sub[i].codec;
+        for (int i = 0; i < 2 + MANY_SUBS && ntook < 64; i++)
             if (ids[i]) snprintf(took[ntook++], sizeof took[0], "%s", ids[i]);
         if (dir && *dir) {
             char path[1024];

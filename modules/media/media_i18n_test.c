@@ -362,3 +362,37 @@ TEST(media_toasts_and_checks_in_the_actors_language) {
     pref_set(anna, PREF_LANG, "");
     th_halt();
 }
+
+/* Two subtitles in one language (English and English SDH, two plain English ones, a forced one): the
+   player's choices read in the reader's words - the language's own name and the rest translated. */
+TEST(media_subtitle_choices_speak_swedish_and_spanish) {
+    th_boot();
+    int anna = admin("Anna", "anna");
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    put_text(root, "Kino/Nightmare (1993)/Nightmare (1993).mp4", "film");
+    static const char *const subs[] = {"en", "en.2", "en.sdh", "en.forced", "en.sdh.forced", "sv", "und.2"};
+    for (int i = 0; i < countof(subs); i++) {
+        char rel[200];
+        snprintf(rel, sizeof rel, "Kino/Nightmare (1993)/Nightmare (1993).%s.srt", subs[i]);
+        put_text(root, rel, "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
+    }
+    setting_set("media.roots", root);
+    media_scan_sync();
+    const MediaFile *f = find("Nightmare (1993).mp4");
+    CHECK(f);
+    if (!f) {
+        th_halt();
+        return;
+    }
+    g_nurls = 0;
+    add_url("/media/watch/%s", f->id);
+    add_url("/media/watch/%s?tv=1&back=%%2F", f->id);
+    allow_also("Nightmare");
+    Buf r = {0};
+    int n = untranslated(anna, &r);
+    if (n) printf("%s", buf_cstr(&r));
+    CHECK_INT(n, 0);
+    buf_free(&r);
+    th_halt();
+}

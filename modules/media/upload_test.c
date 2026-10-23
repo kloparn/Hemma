@@ -582,16 +582,28 @@ TEST(upload_takes_copies_the_browser_makes) {
     CHECK(same_file(path, "copy-bytes", 10));
     CHECK(!exists(root, "Up/S/x.mkv")); /* the original never came */
 
-    /* the file's text subtitles, taken out by the browser's converter: saved next to the copy, once */
+    /* the file's text subtitles, taken out by the browser's converter: saved next to the copy, once - a
+       second English track in the file as ".2" (as the server's converter names it), never over a file */
     const char *srt = "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n";
     snprintf(url, sizeof url, "/media/upload/%s/0?sub=1&lang=eng&name=English&forced=0", batch);
     call("POST", url, adam, "Content-Type: text/plain; charset=utf-8\r\n", srt, strlen(srt), strlen(srt), &r);
     CHECK_HAS(body_of(&r), "\"ok\":true");
     snprintf(path, sizeof path, "%s/Up/S/x.en.srt", root);
     CHECK(same_file(path, srt, strlen(srt)));
+    call("POST", url, adam, "Content-Type: text/plain; charset=utf-8\r\n", srt, strlen(srt), strlen(srt), &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true"); /* sent again (its answer was lost): the same answer, nothing new */
+    CHECK(!exists(root, "Up/S/x.en.2.srt"));
     call("POST", url, adam, "Content-Type: text/plain; charset=utf-8\r\n", "other", 5, 5, &r);
-    CHECK_HAS(body_of(&r), "\"skip\":true");
+    CHECK_HAS(body_of(&r), "\"ok\":true"); /* the file's second English track */
     CHECK(same_file(path, srt, strlen(srt)));
+    snprintf(path, sizeof path, "%s/Up/S/x.en.2.srt", root);
+    CHECK(same_file(path, "other", 5));
+    put_file(root, "Up/S/x.sv.srt", "the household's own", 19);
+    snprintf(url, sizeof url, "/media/upload/%s/0?sub=1&lang=swe&name=&forced=0", batch);
+    call("POST", url, adam, "Content-Type: text/plain; charset=utf-8\r\n", srt, strlen(srt), strlen(srt), &r);
+    CHECK_HAS(body_of(&r), "\"skip\":true"); /* (a file there stays) */
+    snprintf(path, sizeof path, "%s/Up/S/x.sv.srt", root);
+    CHECK(same_file(path, "the household's own", 19));
     snprintf(url, sizeof url, "/media/upload/%s/0?sub=1&lang=swe&forced=1", batch);
     call("POST", url, adam, NULL, "", 0, 0, &r);
     CHECK_HAS(buf_cstr(&r), "400");
@@ -702,6 +714,178 @@ TEST(upload_takes_copies_the_browser_makes) {
     CHECK(g_done);
     server_shutdown();
     buf_free(&r);
+    th_halt();
+}
+
+/* ------------------------------------------- picture subtitles */
+
+/* A picture subtitle track's PUT, sent again while the server says "busy" (an earlier try still being written) */
+static void put_pic(const char *cookie, const char *url, const void *body, size_t n, Buf *r) {
+    for (int64_t end = now_ms() + 5000; now_ms() < end; plat_sleep_ms(20)) {
+        call("PUT", url, cookie, NULL, body, n, n, r);
+        if (!strstr(body_of(r), "busy")) return;
+    }
+}
+
+TEST(upload_saves_picture_subtitles_next_to_the_copy) {
+    th_boot();
+    auth_configure("upload-salt", 1000);
+    int adam_id = make_user("Adam", "adam", "pw-adam-123", ROLE_ADMIN);
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    setting_set("media.roots", root);
+    CHECK(server_listen("127.0.0.1", 0));
+    g_port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], batch[17], url[200], path[1024];
+    sign_in("adam", "pw-adam-123", adam, sizeof adam);
+    Buf r = {0};
+
+    /* the browser made x's copy (and couldn't make y's) */
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"conv\":\"1\",\"files\":[[\"S/x.mkv\",3000],[\"S/y.mkv\",20]]}", &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[{\"i\":0,\"f\":0},{\"i\":1,\"f\":1}]");
+    snprintf(url, sizeof url, "/media/upload/%s/0?size=10", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    snprintf(url, sizeof url, "/media/upload/%s/0?at=0", batch);
+    call("PUT", url, adam, NULL, "copy-bytes", 10, 10, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+
+    /* the file's tracks in its order: English text, then English pictures - the file's second English
+       track, so ".2" (text and pictures are counted together, as the server's converter counts them) */
+    const char *srt = "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n";
+    snprintf(url, sizeof url, "/media/upload/%s/0?sub=1&lang=eng&name=English&forced=0&t=0", batch);
+    call("POST", url, adam, "Content-Type: text/plain; charset=utf-8\r\n", srt, strlen(srt), strlen(srt), &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    static const char sup[] = "PG\0\0\0\0\0\0\0\0\x80\0\0 pretend the rest is a Blu-ray track";
+    snprintf(url, sizeof url, "/media/upload/%s/0?pic=pgs&lang=eng&name=English&forced=0&t=1", batch);
+    put_pic(adam, url, sup, sizeof sup - 1, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    snprintf(path, sizeof path, "%s/Up/S/x.en.srt", root);
+    CHECK(same_file(path, srt, strlen(srt)));
+    snprintf(path, sizeof path, "%s/Up/S/x.en.2.sup", root);
+    CHECK(same_file(path, sup, sizeof sup - 1));
+    put_pic(adam, url, sup, sizeof sup - 1, &r); /* sent again (its answer was lost): the same answer, nothing new */
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    CHECK(!exists(root, "Up/S/x.en.3.sup"));
+
+    /* a DVD VobSub: its .idx text first (idx= bytes), then its .sub - saved as the pair */
+    static const char idx[] = "# VobSub index file, v7\nsize: 720x480\nid: sv, index: 0\n"
+                              "timestamp: 00:00:01:000, filepos: 000000000\n";
+    static const char pics[] = "\0\0\1\xBA pretend the rest is MPEG-PS";
+    Buf both = {0};
+    buf_put(&both, idx, sizeof idx - 1);
+    buf_put(&both, pics, sizeof pics - 1);
+    snprintf(url, sizeof url, "/media/upload/%s/0?pic=vobsub&lang=swe&name=&forced=0&t=2&idx=%zu", batch, sizeof idx - 1);
+    put_pic(adam, url, both.p, both.len, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    snprintf(path, sizeof path, "%s/Up/S/x.sv.idx", root);
+    CHECK(same_file(path, idx, sizeof idx - 1));
+    snprintf(path, sizeof path, "%s/Up/S/x.sv.sub", root);
+    CHECK(same_file(path, pics, sizeof pics - 1));
+
+    /* never over a file: the household's own .sup stays, and a VobSub whose .sub is taken saves neither half */
+    put_file(root, "Up/S/x.de.sup", "the household's own", 19);
+    snprintf(url, sizeof url, "/media/upload/%s/0?pic=pgs&lang=ger&name=&forced=0&t=3", batch);
+    put_pic(adam, url, sup, sizeof sup - 1, &r);
+    CHECK_HAS(body_of(&r), "\"skip\":true");
+    snprintf(path, sizeof path, "%s/Up/S/x.de.sup", root);
+    CHECK(same_file(path, "the household's own", 19));
+    put_file(root, "Up/S/x.fi.sub", "{1}{25}MicroDVD", 15);
+    snprintf(url, sizeof url, "/media/upload/%s/0?pic=vobsub&lang=fin&name=&forced=0&t=4&idx=%zu", batch, sizeof idx - 1);
+    put_pic(adam, url, both.p, both.len, &r);
+    CHECK_HAS(body_of(&r), "\"skip\":true");
+    CHECK(!exists(root, "Up/S/x.fi.idx"));
+    snprintf(path, sizeof path, "%s/Up/S/x.fi.sub", root);
+    CHECK(same_file(path, "{1}{25}MicroDVD", 15));
+
+    /* what isn't a picture track is refused, and leaves nothing behind */
+    snprintf(url, sizeof url, "/media/upload/%s/0?pic=pgs&lang=fre&name=&forced=0&t=5", batch);
+    put_pic(adam, url, "not a .sup at all", 17, &r);
+    CHECK_HAS(buf_cstr(&r), "415");
+    CHECK_HAS(body_of(&r), "aren't subtitle pictures");
+    CHECK(!exists(root, "Up/S/x.fr.sup"));
+    CHECK(!exists(root, "Up/S/x.fr.sup.hemma-part"));
+
+    /* a big track streams to the disk (past what one request may hold) ... */
+    Buf big = {0};
+    buf_put(&big, "PG", 2);
+    for (int k = 0; k < 3 << 20; k += 4) buf_put(&big, "\x01\x02\x03\x04", 4);
+    snprintf(url, sizeof url, "/media/upload/%s/0?pic=pgs&lang=ita&name=&forced=0&t=6", batch);
+    put_pic(adam, url, big.p, big.len, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    snprintf(path, sizeof path, "%s/Up/S/x.it.sup", root);
+    CHECK(same_file(path, big.p, big.len));
+    /* ... and one that broke off is sent again whole, under the same name */
+    snprintf(url, sizeof url, "/media/upload/%s/0?pic=pgs&lang=spa&name=&forced=0&t=7", batch);
+    call("PUT", url, adam, NULL, big.p, big.len, 200000, &r);
+    put_pic(adam, url, big.p, big.len, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    snprintf(path, sizeof path, "%s/Up/S/x.es.sup", root);
+    CHECK(same_file(path, big.p, big.len));
+    CHECK(!exists(root, "Up/S/x.es.2.sup"));
+    CHECK(!exists(root, "Up/S/x.es.sup.hemma-part"));
+
+    /* refused: an .idx longer than the body, a track past 64 MB, a file sent as it was (no copy made here) */
+    snprintf(url, sizeof url, "/media/upload/%s/0?pic=vobsub&lang=dan&name=&forced=0&t=8&idx=999", batch);
+    put_pic(adam, url, pics, sizeof pics - 1, &r);
+    CHECK_HAS(buf_cstr(&r), "400");
+    sock_t s = dial();
+    CHECK(s != SOCK_BAD);
+    if (s != SOCK_BAD) {
+        char head[400];
+        snprintf(head, sizeof head,
+                 "PUT /media/upload/%s/0?pic=pgs&lang=nor&t=9 HTTP/1.1\r\nHost: t\r\nCookie: hemma=%s\r\n"
+                 "Content-Length: %lld\r\nConnection: close\r\n\r\n",
+                 batch, adam, (long long)AV_CONV_PIC_BYTES + 1);
+        send_all(s, head, strlen(head));
+        read_reply(s, &r);
+        sock_close(s);
+    }
+    CHECK_HAS(buf_cstr(&r), "413");
+    CHECK_HAS(body_of(&r), "too big");
+    snprintf(url, sizeof url, "/media/upload/%s/1?original=1", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    snprintf(url, sizeof url, "/media/upload/%s/1?pic=pgs&lang=eng&t=0", batch);
+    put_pic(adam, url, sup, sizeof sup - 1, &r);
+    CHECK_HAS(buf_cstr(&r), "404");
+    CHECK(!exists(root, "Up/S/y.en.sup"));
+    call("POST", "/a/media.upload_stop", adam, "Content-Type: application/x-www-form-urlencoded\r\n", "", 0, 0, &r);
+
+    /* a VobSub the household drops in: the .idx and the .sub go together, the .sub first; a .sub alone
+       is MicroDVD text - not taken */
+    plan_for(adam,
+             "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"D/y.mkv\",10],[\"D/y.en.idx\",5],[\"D/y.en.sub\",7],"
+             "[\"D/z.sub\",3]]}",
+             &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[[0,0],[2,0],[1,0]]");
+    CHECK_HAS(body_of(&r), "\"skipped\":1");
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "D/z.sub</code> — not a video, subtitle or poster");
+    /* both or neither: a different .sub has the name - the .idx stays behind too ... */
+    put_file(root, "Up/E/w.en.sub", "someone else's", 14);
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"E/w.mkv\",10],[\"E/w.en.idx\",5],[\"E/w.en.sub\",7]]}", &r,
+             batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[[0,0]]");
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "E/w.en.idx</code> — goes with w.en.sub, which isn&#39;t sent");
+    /* ... but the same .idx there already: the pictures complete the pair */
+    put_file(root, "Up/F/v.en.idx", "12345", 5);
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"F/v.mkv\",10],[\"F/v.en.idx\",5],[\"F/v.en.sub\",7]]}", &r,
+             batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[[0,0],[2,0]]");
+    /* and sent like any file */
+    snprintf(url, sizeof url, "/media/upload/%s/2?at=0", batch);
+    call("PUT", url, adam, NULL, "\0\0\1\xBA..", 7, 7, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    CHECK(exists(root, "Up/F/v.en.sub"));
+    CHECK_HAS(th_page(adam_id, "/media/upload"), ".sup,.idx,.sub,"); /* the file picker offers them */
+
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    buf_free(&both);
+    buf_free(&big);
     th_halt();
 }
 

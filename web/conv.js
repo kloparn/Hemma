@@ -5,8 +5,11 @@
 //   in:  {file, wasm}        a File and the module's URL
 //        {put, at}           send the copy, from byte `at`, to that address (a PUT)
 //   out: {pm}                progress, 0..1000
-//        {size, subs}        the copy is made, this many bytes: it waits here to be sent; subs = the
-//                            file's text subtitles as SRT, [{lang, name, forced, text}] (maybe none)
+//        {size, subs, pics}  the copy is made, this many bytes: it waits here to be sent; subs = the
+//                            file's text subtitles as SRT, [{t, lang, name, forced, text}] (maybe none);
+//                            pics = its picture subtitles, [{t, kind: 'pgs'|'vobsub', lang, name, forced,
+//                            data: ArrayBuffer (the .sup file / VobSub's .sub), idx: VobSub's .idx text}];
+//                            t = the track's place among the file's subtitle tracks (they go in that order)
 //        {status, body}      the PUT's answer; status 0 = none came (the connection dropped)
 //        {lost: true}        the copy can't be read any more (the browser's disk filled up?)
 //        {error}             why there is none (the original is sent instead)
@@ -90,13 +93,20 @@ self.onmessage = async (e) => {
     fold();
     if (rc === 1) {
       made = new Blob([copy], { type: 'video/mp4' });
-      const subs = [];
+      const subs = [], pics = [], raw = (at, n) => new TextDecoder().decode(bytes().subarray(at, at + n));
       for (let i = 0; i < x.conv_subs(); i++) {
-        const at = x.conv_sub_text(i);
-        subs.push({ lang: text(x.conv_sub_lang(i)), name: text(x.conv_sub_name(i)), forced: !!x.conv_sub_forced(i),
-          text: new TextDecoder().decode(bytes().subarray(at, at + x.conv_sub_len(i))) });
+        const about = { t: i, lang: text(x.conv_sub_lang(i)), name: text(x.conv_sub_name(i)), forced: !!x.conv_sub_forced(i) };
+        const kind = x.conv_sub_kind(i);
+        if (kind === 0) {
+          subs.push({ ...about, text: raw(x.conv_sub_text(i), x.conv_sub_len(i)) });
+          continue;
+        }
+        const at = x.conv_sub_data(i); // (a copy of its bytes: they leave this memory)
+        pics.push({ kind: kind === 1 ? 'pgs' : 'vobsub', ...about,
+          data: bytes().slice(at, at + x.conv_sub_size(i)).buffer,
+          idx: kind === 2 ? raw(x.conv_sub_idx(i), x.conv_sub_idx_len(i)) : '' });
       }
-      postMessage({ size: made.size, subs });
+      postMessage({ size: made.size, subs, pics }, pics.map((p) => p.data));
     } else {
       postMessage({ error: text(x.conv_err()) });
     }

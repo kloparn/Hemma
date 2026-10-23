@@ -352,6 +352,45 @@ TEST(download_names_and_zip_contents_follow_the_library) {
     th_halt();
 }
 
+/* A DVD VobSub is two files: in a zip they go as a pair under the episode's name (an .idx without its
+   .sub is nothing, and a .sub alone is MicroDVD text - not the library's); picture subtitles (.sup) and
+   numbered ones (".2") go along like any. */
+TEST(download_zips_keep_a_vobsub_pair_together) {
+    th_boot();
+    const char *root = test_tmpdir();
+    put(root, "Show/Season 1/Show.S01E01.mkv", "e1", 2);
+    put(root, "Show/Season 1/Show.S01E01.en.idx", "idx", 3);
+    put(root, "Show/Season 1/Show.S01E01.en.sub", "pictures", 8);
+    put(root, "Show/Season 1/Show.S01E01.en.2.srt", "srt", 3);
+    put(root, "Show/Season 1/Show.S01E01.sv.sup", "PG", 2);
+    put(root, "Show/Season 1/Show.S01E01.fr.idx", "idx alone", 9);
+    put(root, "Show/Season 1/Show.S01E02.mkv", "e2", 2);
+    put(root, "Show/Season 1/Show.S01E02.de.sub", "{1}{2}MicroDVD", 14);
+    setting_set("media.roots", root);
+    media_scan_sync();
+    const MediaFile *e1 = file_named("Show.S01E01.mkv");
+    CHECK(e1);
+    if (!e1) {
+        th_halt();
+        return;
+    }
+    int n = 0;
+    MediaZipItem *it = media_zip_items(media_series(e1->series), 1, &n);
+    CHECK_INT(n, 6);
+    int idx = -1, sub = -1, srt = -1, sup = -1;
+    for (int i = 0; i < n; i++) {
+        if (str_eq(it[i].name, "Show/Season 1/Show S01E01.en.idx")) idx = i;
+        if (str_eq(it[i].name, "Show/Season 1/Show S01E01.en.sub")) sub = i;
+        if (str_eq(it[i].name, "Show/Season 1/Show S01E01.en.2.srt")) srt = i;
+        if (str_eq(it[i].name, "Show/Season 1/Show S01E01.sv.sup")) sup = i;
+        CHECK(!strstr(it[i].name, ".fr.") && !strstr(it[i].name, ".de."));
+    }
+    CHECK(idx >= 0 && sub == idx + 1 && srt >= 0 && sup >= 0);
+    if (sub >= 0) CHECK(it[sub].file == file_named("Show.S01E01.en.sub")->id && it[sub].size == 8);
+    free(it);
+    th_halt();
+}
+
 /* ----------------------------------------------- the endpoints, over sockets */
 
 static volatile int g_done;
