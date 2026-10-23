@@ -875,3 +875,52 @@ TEST(media_library_lists_unfinished_uploads) {
     g_fake_now = 0;
     th_halt();
 }
+
+/* Every subtitle file of a video: text, Blu-ray PGS (.sup), a DVD VobSub (.idx + its .sub, one subtitle in
+   two files), numbered ones (".2"); a .sub alone is MicroDVD text, which Hemma doesn't read. And the
+   cache brings them back the same. */
+TEST(media_library_knows_every_subtitle_file) {
+    char data[512], root[512];
+    str_copy(data, sizeof data, test_tmpdir());
+    str_copy(root, sizeof root, test_tmpdir());
+    app_set_testing(true);
+    CHECK(app_boot(data));
+    puts_file(root, "Movies/Nightmare (1993)/Nightmare (1993).mkv", "film");
+    puts_file(root, "Movies/Nightmare (1993)/Nightmare (1993).en.srt", SRT);
+    puts_file(root, "Movies/Nightmare (1993)/Nightmare (1993).en.2.srt", SRT);
+    puts_file(root, "Movies/Nightmare (1993)/Nightmare (1993).en.sdh.srt", SRT);
+    puts_file(root, "Movies/Nightmare (1993)/Nightmare (1993).en.sup", "PG");
+    puts_file(root, "Movies/Nightmare (1993)/Nightmare (1993).sv.idx", "size: 720x480\n");
+    puts_file(root, "Movies/Nightmare (1993)/Nightmare (1993).sv.sub", "pictures");
+    puts_file(root, "Movies/Nightmare (1993)/Nightmare (1993).fr.sub", "{1}{25}MicroDVD");
+    puts_file(root, "Movies/Nightmare (1993)/Nightmare (1993) 2.srt", SRT); /* another video's name */
+    setting_set("media.roots", root);
+    for (int pass = 0; pass < 2; pass++) { /* a scan, then the cache at the next start */
+        if (pass) {
+            app_halt();
+            CHECK(app_boot(data));
+            CHECK_INT(media_lib()->scanned_at, 0); /* (from SQLite) */
+        } else {
+            media_scan_sync();
+        }
+        const MediaFile *v = by_rel("Movies/Nightmare (1993)/Nightmare (1993).mkv");
+        CHECK(v && v->type == MF_VIDEO);
+        if (!v) break;
+        static const struct {
+            const char *rel, *lang;
+        } subs[] = {{"Nightmare (1993).en.srt", "en"}, {"Nightmare (1993).en.2.srt", "en"},
+                    {"Nightmare (1993).en.sdh.srt", "en"}, {"Nightmare (1993).en.sup", "en"},
+                    {"Nightmare (1993).sv.idx", "sv"}, {"Nightmare (1993).sv.sub", "sv"}};
+        for (size_t i = 0; i < sizeof subs / sizeof subs[0]; i++) {
+            char rel[200];
+            snprintf(rel, sizeof rel, "Movies/Nightmare (1993)/%s", subs[i].rel);
+            const MediaFile *s = by_rel(rel);
+            if (!s || s->type != MF_SUB || s->video != v->id) test_fail(__FILE__, __LINE__, "%s isn't the film's", rel);
+            CHECK(s && s->type == MF_SUB && s->video == v->id && str_eq(s->lang, subs[i].lang));
+        }
+        CHECK(by_rel("Movies/Nightmare (1993)/Nightmare (1993).fr.sub") == NULL); /* (no .idx beside it) */
+        const MediaFile *other = by_rel("Movies/Nightmare (1993)/Nightmare (1993) 2.srt");
+        CHECK(other && other->video == 0);
+    }
+    app_halt();
+}

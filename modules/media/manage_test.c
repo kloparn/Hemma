@@ -426,6 +426,48 @@ TEST(manage_fixes_an_episodes_number) {
     th_halt();
 }
 
+/* Renaming carries every subtitle along - a DVD VobSub's .idx and its .sub as a pair, a Blu-ray .sup,
+   numbered ones - and a .sub with no .idx (MicroDVD text, not the library's) stays where it was. */
+TEST(manage_renames_carry_every_subtitle_along) {
+    int adam, eva;
+    boot(&adam, &eva);
+    (void)eva;
+    put("Movies/Nightmare 1993/Nightmare.1993.mkv", "film");
+    put("Movies/Nightmare 1993/Nightmare.1993.en.idx", "idx");
+    put("Movies/Nightmare 1993/Nightmare.1993.en.sub", "pictures");
+    put("Movies/Nightmare 1993/Nightmare.1993.en.2.srt", SRT);
+    put("Movies/Nightmare 1993/Nightmare.1993.sv.sup", "PG");
+    put("Series/Garden/Season 1/Garden.S01E05.mp4", "e5");
+    put("Series/Garden/Season 1/Garden.S01E05.sv.idx", "idx");
+    put("Series/Garden/Season 1/Garden.S01E05.sv.sub", "pictures");
+    put("Series/Garden/Season 1/Garden.S01E05.de.sub", "{1}{2}MicroDVD");
+    setting_set("media.roots", g_root);
+    media_scan_sync();
+    const MediaFile *film = find("Movies/Nightmare 1993/Nightmare.1993.mkv"), *e5 = find("Series/Garden/Season 1/Garden.S01E05.mp4");
+    CHECK(film && e5);
+    if (!film || !e5) {
+        th_halt();
+        return;
+    }
+    uint64_t e5_id = e5->id;
+    CHECK(th_act(adam, "media.fix_title", form("id=%s&title=The%%20Nightmare&year=1993", film->id)).ok);
+    static const char *const moved[] = {"The Nightmare (1993).mkv", "The Nightmare (1993).en.idx", "The Nightmare (1993).en.sub",
+                                        "The Nightmare (1993).en.2.srt", "The Nightmare (1993).sv.sup"};
+    for (int i = 0; i < countof(moved); i++) {
+        char rel[200];
+        snprintf(rel, sizeof rel, "Movies/The Nightmare (1993)/%s", moved[i]);
+        if (!there(rel)) test_fail(__FILE__, __LINE__, "%s isn't there", rel);
+    }
+    CHECK(!there("Movies/Nightmare 1993"));
+    CHECK(th_act(adam, "media.fix_episode", form("id=%s&season=1&episode=6", e5_id)).ok);
+    CHECK(there("Series/Garden/Season 1/Garden S01E06.mp4"));
+    CHECK(there("Series/Garden/Season 1/Garden S01E06.sv.idx"));
+    CHECK(there("Series/Garden/Season 1/Garden S01E06.sv.sub"));
+    CHECK(!there("Series/Garden/Season 1/Garden.S01E05.sv.sub"));
+    CHECK(there("Series/Garden/Season 1/Garden.S01E05.de.sub")); /* (not the episode's) */
+    th_halt();
+}
+
 TEST(manage_shows_what_takes_room_biggest_first) {
     int adam, eva;
     boot(&adam, &eva);

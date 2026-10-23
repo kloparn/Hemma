@@ -24,7 +24,9 @@
  *
  * What counts as a finding: a sanitizer report (crash, overflow, undefined behaviour), a
  * leak, a hang, or the converter breaking its own promises - checked below: a success writes
- * a whole MP4 (top-level boxes back to back, exactly out_bytes long), a failure says why. */
+ * a whole MP4 (top-level boxes back to back, exactly out_bytes long), a failure says why, every
+ * subtitle track is a whole file of its kind within its bounds, and av_subtitles alone (which
+ * writes nothing) gives the very same subtitles as a conversion that got to hand them back. */
 #include "../modules/av/conv.h"
 
 #include <stdio.h>
@@ -34,6 +36,7 @@
 #define OUT_MAX (64u << 20)      /* the "disk": a bigger copy fails as a full one would */
 #define MAX_PIXELS (352 * 288)   /* MPEG-2 announcing more is skipped: right, just slow to encode under sanitizers */
 #define MAX_SAMPLES_EACH 256     /* per track (AvConvJob.max_samples): small inputs need no more, and it bounds the work */
+#define PIC_BYTES (64u << 10)    /* per picture subtitle track (AvConvJob.pic_bytes): small, so its bounds get reached */
 
 typedef struct {
     const uint8_t *p;
@@ -104,6 +107,62 @@ static bool whole_mp4(const Out *o) {
     return true;
 }
 
+/* A subtitle track is a whole file of its kind, within its bounds: SRT one NUL-terminated text; PGS a .sup
+   ("PG", PTS, DTS 0, a segment - back to back to its very end); VobSub a .sub of whole 2048-byte packs and
+   an .idx text that starts as players want it. */
+static const char *bad_sub(const AvConvSub *s) {
+    switch (s->kind) {
+    case AV_SUB_TEXT:
+        if (!s->srt || strlen(s->srt) != s->len || s->len > AV_CONV_SUB_BYTES || s->data || s->idx) return "not one NUL-terminated SRT text";
+        return NULL;
+    case AV_SUB_PGS:
+        if (!s->data || !s->size || s->size > PIC_BYTES || s->srt || s->idx) return "a PGS track without its .sup";
+        for (size_t at = 0; at < s->size;) {
+            if (s->size - at < 13 || s->data[at] != 'P' || s->data[at + 1] != 'G' || be32(s->data + at + 6)) return "not a whole .sup";
+            size_t len = 13 + ((size_t)s->data[at + 11] << 8 | s->data[at + 12]);
+            if (len > s->size - at) return "a .sup record past its end";
+            at += len;
+        }
+        return NULL;
+    case AV_SUB_VOBSUB:
+        if (!s->data || !s->size || s->size % 2048 || s->size > PIC_BYTES || s->srt) return "a VobSub track without whole packs";
+        for (size_t at = 0; at < s->size; at += 2048)
+            if (memcmp(s->data + at, "\0\0\1\xBA", 4) || memcmp(s->data + at + 14, "\0\0\1\xBD", 4)) return "a .sub pack that isn't one";
+        if (!s->idx || strlen(s->idx) != s->idx_len || strncmp(s->idx, "# VobSub index file, v7", 23) || !strstr(s->idx, "\nid: "))
+            return "an .idx that isn't one";
+        return NULL;
+    }
+    return "a kind there isn't";
+}
+
+static bool same_sub(const AvConvSub *a, const AvConvSub *b) {
+    return a->kind == b->kind && a->cues == b->cues && a->forced == b->forced && !strcmp(a->lang, b->lang) &&
+           !strcmp(a->name, b->name) && a->len == b->len && (!a->len || !memcmp(a->srt, b->srt, a->len)) &&
+           a->size == b->size && (!a->size || !memcmp(a->data, b->data, a->size)) && a->idx_len == b->idx_len &&
+           (!a->idx_len || !memcmp(a->idx, b->idx, a->idx_len));
+}
+
+static void check_subs(const AvConvJob *j, const char *what) {
+    size_t pics = 0;
+    if (j->nsubs < 0 || j->nsubs > AV_CONV_MAX_SUBS) {
+        fprintf(stderr, "convfuzz: %s: %d subtitle tracks\n", what, j->nsubs);
+        abort();
+    }
+    for (int k = 0; k < j->nsubs; k++) {
+        const char *why = bad_sub(&j->subs[k]);
+        if (!why && j->subs[k].cues <= 0) why = "an empty track handed back";
+        if (why) {
+            fprintf(stderr, "convfuzz: %s: subtitle track %d: %s\n", what, k, why);
+            abort();
+        }
+        if (j->subs[k].kind != AV_SUB_TEXT) pics += j->subs[k].size;
+    }
+    if (pics > (size_t)PIC_BYTES * (AV_CONV_PIC_TOTAL / AV_CONV_PIC_BYTES)) {
+        fprintf(stderr, "convfuzz: %s: picture tracks past their bound together (%zu bytes)\n", what, pics);
+        abort();
+    }
+}
+
 typedef struct {
     long runs, ok, refused, skipped;
 } Tally;
@@ -120,7 +179,8 @@ static int convert(const uint8_t *data, size_t size, Tally *t) {
     j.in = (MkvReader){&in, (int64_t)size, in_read};
     j.out = (Mp4Out){&out, out_write, out_write_at};
     j.max_samples = MAX_SAMPLES_EACH;
-    j.want_subs = true; /* text subtitle tracks too */
+    j.pic_bytes = PIC_BYTES;
+    j.want_subs = true; /* subtitle tracks too */
     bool ok = av_convert(&j);
     if (ok && (j.err[0] || j.permille != 1000 || j.out_bytes != (int64_t)out.len || !whole_mp4(&out))) {
         fprintf(stderr, "convfuzz: a success that didn't write a whole MP4 (%lld bytes reported, %zu written)\n",
@@ -131,11 +191,30 @@ static int convert(const uint8_t *data, size_t size, Tally *t) {
         fprintf(stderr, "convfuzz: failed without saying why\n");
         abort();
     }
-    for (int k = 0; k < j.nsubs; k++)
-        if (!j.subs[k].srt || strlen(j.subs[k].srt) != j.subs[k].len || j.subs[k].len > AV_CONV_SUB_BYTES) {
-            fprintf(stderr, "convfuzz: subtitle track %d isn't one NUL-terminated SRT text within its bound\n", k);
+    check_subs(&j, "av_convert");
+    /* the subtitles alone: nothing written, and - when the conversion handed its subtitles back (a success,
+       or refused for what the file holds) - the very same ones */
+    AvConvJob alone;
+    memset(&alone, 0, sizeof alone);
+    alone.in = j.in;
+    alone.out = (Mp4Out){&out, out_write, out_write_at};
+    alone.pic_bytes = PIC_BYTES;
+    size_t written = out.len;
+    bool read = av_subtitles(&alone);
+    if (out.len != written || (!read && !alone.err[0]) || (read && alone.permille != 1000)) {
+        fprintf(stderr, "convfuzz: av_subtitles wrote something, or failed without saying why\n");
+        abort();
+    }
+    check_subs(&alone, "av_subtitles");
+    if (ok || j.unsupported) {
+        bool same = alone.nsubs == j.nsubs;
+        for (int k = 0; same && k < j.nsubs; k++) same = same_sub(&alone.subs[k], &j.subs[k]);
+        if (!same) {
+            fprintf(stderr, "convfuzz: av_subtitles gave other subtitles than the conversion (%d vs %d tracks)\n", alone.nsubs, j.nsubs);
             abort();
         }
+    }
+    av_convert_free(&alone);
     av_convert_free(&j);
     if (t) {
         t->runs++;

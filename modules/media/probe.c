@@ -968,7 +968,7 @@ bool media_is_video_ext(const char *name) {
 }
 
 bool media_is_sub_ext(const char *name) {
-    static const char *const v[] = {"srt", "vtt", NULL};
+    static const char *const v[] = {"srt", "vtt", "sup", "idx", NULL}; /* (+ PGS and VobSub pictures) */
     return ext_in(name, v);
 }
 

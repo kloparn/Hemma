@@ -350,27 +350,93 @@ TEST(convert_never_writes_over_a_copy) {
 
 /* Subtitles taken out of a file go next to it, named so the library pairs them with the video and
    its copy - and never over a file that is there. */
+static AvConvSub text_sub(const char *lang, const char *name, bool forced, const char *srt) {
+    AvConvSub s = {.forced = forced, .kind = AV_SUB_TEXT, .srt = (char *)srt, .len = strlen(srt)};
+    str_copy(s.lang, sizeof s.lang, lang);
+    str_copy(s.name, sizeof s.name, name);
+    return s;
+}
+
+static bool file_is(const char *root, const char *name, const char *want) {
+    char path[800];
+    snprintf(path, sizeof path, "%s/%s", root, name);
+    Buf got = {0};
+    bool ok = file_read_all(path, &got, 1000) && got.len == strlen(want) && memcmp(got.p, want, got.len) == 0;
+    buf_free(&got);
+    return ok;
+}
+
 TEST(convert_saves_subtitles_next_to_the_original) {
-    char root[512], video[700], path[800];
+    char root[512], video[700];
     str_copy(root, sizeof root, test_tmpdir());
     snprintf(video, sizeof video, "%s/x.mkv", root);
-    CHECK(convert_save_sub(video, "eng", "English", false, "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n", 37));
-    snprintf(path, sizeof path, "%s/x.en.srt", root);
-    Buf got = {0};
-    CHECK(file_read_all(path, &got, 1000));
-    CHECK_INT((int)got.len, 37);
-    buf_free(&got);
-    CHECK(!convert_save_sub(video, "en-GB", "", false, "other", 5)); /* the same name: the first stays */
-    CHECK(file_read_all(path, &got, 1000) && got.len == 37);
-    buf_free(&got);
-    CHECK(convert_save_sub(video, "und", "English SDH", true, "x", 1));
-    snprintf(path, sizeof path, "%s/x.sdh.forced.srt", root);
-    CHECK(path_stat(path, NULL, NULL, NULL));
-    CHECK(!convert_save_sub(video, "swe", "", false, "", 0)); /* nothing to save */
+    AvConvSub s = text_sub("eng", "English", false, "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n");
+    CHECK(convert_save_sub(video, &s, NULL));
+    CHECK(file_is(root, "x.en.srt", s.srt));
+    s = text_sub("en-GB", "", false, "other");
+    CHECK(!convert_save_sub(video, &s, NULL)); /* the same name: the first stays */
+    CHECK(file_is(root, "x.en.srt", "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n"));
+    s = text_sub("und", "English SDH", true, "x");
+    CHECK(convert_save_sub(video, &s, NULL));
+    CHECK(there(root, "x.sdh.forced.srt"));
+    s = text_sub("swe", "", false, "");
+    CHECK(!convert_save_sub(video, &s, NULL)); /* nothing to save */
     char lang[16];
     CHECK(media_sub_for("x.mkv", "x.en.srt", lang, sizeof lang) && str_eq(lang, "en"));
     CHECK(media_sub_for("x.web.mp4", "x.en.srt", lang, sizeof lang) && str_eq(lang, "en"));
     CHECK(media_sub_for("x.mkv", "x.sdh.forced.srt", lang, sizeof lang) && str_eq(lang, ""));
+}
+
+/* Contract C1: text -> .srt, Blu-ray PGS -> .sup, DVD VobSub -> .idx + .sub (the pair or nothing); a
+   second track in one language and flags is ".2" - counted by the file's tracks, so a run again names
+   them alike - and nothing is ever written over. */
+TEST(convert_saves_every_kind_of_subtitle_and_numbers_the_second) {
+    char root[512], video[700];
+    str_copy(root, sizeof root, test_tmpdir());
+    snprintf(video, sizeof video, "%s/Film.web.mp4", root); /* (a copy: named for "Film") */
+    static uint8_t sup[] = {'P', 'G', 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0};
+    static uint8_t vob[] = {0, 0, 1, 0xBA, 0x44};
+    static char idx[] = "# VobSub index file, v7\nsize: 720x480\nid: en, index: 0\n";
+    AvConvSub subs[7] = {
+        text_sub("eng", "English", false, "one"),
+        text_sub("eng", "English (Commentary)", false, "two"), /* the same language and flags: .2 */
+        text_sub("eng", "English SDH", false, "sdh"),          /* SDH: a variant of its own */
+        {.lang = "eng", .kind = AV_SUB_PGS, .data = sup, .size = sizeof sup}, /* a third English: .3 */
+        {.lang = "swe", .kind = AV_SUB_VOBSUB, .data = vob, .size = sizeof vob, .idx = idx, .idx_len = strlen(idx)},
+        {.lang = "fre", .kind = AV_SUB_VOBSUB, .data = vob, .size = sizeof vob}, /* no .idx: nothing */
+        {.lang = "ger", .kind = AV_SUB_PGS},                                      /* no data: nothing */
+    };
+    CHECK_INT(convert_save_subs(video, subs, 7), 5);
+    CHECK(file_is(root, "Film.en.srt", "one"));
+    CHECK(file_is(root, "Film.en.2.srt", "two"));
+    CHECK(file_is(root, "Film.en.sdh.srt", "sdh"));
+    char path[800];
+    Buf got = {0};
+    snprintf(path, sizeof path, "%s/Film.en.3.sup", root);
+    CHECK(file_read_all(path, &got, 1000) && got.len == sizeof sup && memcmp(got.p, sup, sizeof sup) == 0);
+    buf_reset(&got);
+    snprintf(path, sizeof path, "%s/Film.sv.sub", root);
+    CHECK(file_read_all(path, &got, 1000) && got.len == sizeof vob && memcmp(got.p, vob, sizeof vob) == 0);
+    buf_free(&got);
+    CHECK(file_is(root, "Film.sv.idx", idx));
+    CHECK(!there(root, "Film.fr.idx") && !there(root, "Film.fr.sub") && !there(root, "Film.de.sup"));
+    /* every one of them goes to the video, as its own choice */
+    static const char *const names[] = {"Film.en.srt", "Film.en.2.srt", "Film.en.sdh.srt", "Film.en.3.sup", "Film.sv.idx",
+                                        "Film.sv.sub"};
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) CHECK(media_sub_for("Film.mkv", names[i], NULL, 0));
+    /* again (the copy made anew): each track finds its own name there - nothing written over, nothing new */
+    subs[0].srt = subs[1].srt = (char *)"changed";
+    subs[0].len = subs[1].len = 7;
+    CHECK_INT(convert_save_subs(video, subs, 7), 0);
+    CHECK(file_is(root, "Film.en.srt", "one"));
+    CHECK(file_is(root, "Film.en.2.srt", "two"));
+    CHECK(!there(root, "Film.en.4.srt"));
+    /* a VobSub pair: a .sub already there (MicroDVD text, the household's) keeps its .idx from being written */
+    snprintf(video, sizeof video, "%s/Other.mkv", root);
+    snprintf(path, sizeof path, "%s/Other.sv.sub", root);
+    CHECK(file_write_atomic(path, "{1}{2}text", 10));
+    CHECK(!convert_save_sub(video, &subs[4], NULL));
+    CHECK(!there(root, "Other.sv.idx") && file_is(root, "Other.sv.sub", "{1}{2}text"));
 }
 
 /* HEMMA_TEST_CONVERT=<an .mkv>: convert its first 30 s (HEMMA_TEST_CONVERT_S: another length) and check

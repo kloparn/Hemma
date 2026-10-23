@@ -341,6 +341,16 @@ TEST(media_upload_preview_speaks_swedish_and_spanish) {
     const char *series[] = {url};
     CHECK_HAS(th_page(adam_id, url), "Season 2");
     CHECK_INT(untranslated(adam_id, series, 1, allow), 0);
+    /* a DVD VobSub whose .sub can't go (another file has its name): its .idx stays behind too; a .sub alone */
+    put_file(root, "Series/Show/Season 1/Show.S01E05.en.sub", "other", 5);
+    buf_reset(&form);
+    buf_puts(&form, "sort=1&root=0&files=");
+    url_encode(&form, "[[\"Show.S01E05.mp4\",4],[\"Show.S01E05.en.idx\",5],[\"Show.S01E05.en.sub\",7],[\"lone.sub\",3]]", false);
+    upload_test_preview(adam_id, buf_cstr(&form));
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "goes with Show.S01E05.en.sub, which isn&#39;t sent");
+    static const char *const vob[] = {"Adam", "A", "Show", "Season 1", "Series", "Show · S01E05", "Show.S01E05.mp4",
+                                      "Show.S01E05.en.idx", "Show.S01E05.en.sub", "lone.sub", NULL};
+    CHECK_INT(untranslated(adam_id, pages, 1, vob), 0);
     upload_test_free_space(-1);
     upload_test_preview(adam_id, NULL);
     buf_free(&form);

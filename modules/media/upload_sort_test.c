@@ -142,6 +142,90 @@ TEST(upload_sorts_into_a_library_folder_named_like_its_own) {
     th_halt();
 }
 
+/* A DVD VobSub is an .idx and a .sub: the .sub is subtitles only with its .idx among the chosen files (alone
+   it's MicroDVD text), and goes wherever its .idx goes. */
+TEST(upload_sorts_a_vobsub_with_its_index) {
+    th_boot();
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    static const char *const rels[] = {
+        "Downloads/Arrival (2016)/Arrival.2016.1080p.mkv",    /* 0 */
+        "Downloads/Arrival (2016)/Arrival.2016.1080p.en.idx", /* 1: with its video */
+        "Downloads/Arrival (2016)/Arrival.2016.1080p.en.sub", /* 2: with its .idx */
+        "Downloads/Arrival (2016)/notes.sub",                 /* 3: alone - text */
+        "Show S01E01.mkv",                                    /* 4 */
+        "Show S01E01.sv.IDX",                                 /* 5: the extension in capitals */
+        "Show S01E01.sv.sub",                                 /* 6 */
+        "Odd/thing.idx",                                      /* 7: no video - as chosen */
+        "Odd/thing.sub",                                      /* 8: ... beside it */
+        "A/x.sub",                                            /* 9: its .idx is in another folder: text */
+        "B/x.idx",                                            /* 10 */
+    };
+    UpSorted *s = sort_these(root, rels, (int)countof(rels), 0, NULL, 0);
+    CHECK_STR(s[1].dest, "Movies/Arrival (2016)/Arrival.2016.1080p.en.idx");
+    CHECK_STR(s[2].dest, "Movies/Arrival (2016)/Arrival.2016.1080p.en.sub");
+    CHECK_INT(s[2].kind, UPK_SUB);
+    CHECK_STR(s[2].title, "Arrival");
+    CHECK_INT(s[2].year, 2016);
+    CHECK_INT(s[3].kind, UPK_JUNK);
+    CHECK_STR(s[5].dest, "Series/Show/Season 1/Show S01E01.sv.IDX");
+    CHECK_STR(s[6].dest, "Series/Show/Season 1/Show S01E01.sv.sub");
+    CHECK_INT(s[6].kind, UPK_SUB);
+    CHECK_INT(s[6].episode, 1);
+    CHECK_STR(s[8].dest, "Odd/thing.sub");
+    CHECK_INT(s[8].kind, UPK_SUB);
+    CHECK(s[8].kept);
+    CHECK_INT(s[9].kind, UPK_JUNK);
+    CHECK_INT(s[10].kind, UPK_SUB);
+    free(s);
+    th_halt();
+}
+
+/* A show the library keeps in several places (a household's real one, 2026-10-23): a copy at the library
+   folder's top level, its seasons in numbered folders under a "COMPLETE" release folder, a later season in
+   a folder of its own. New episodes go into a folder named after the show - never the library folder's top
+   level, where the first episode the library listed happened to sit (seasons 6 and 7 landed there). */
+TEST(upload_sorts_a_show_into_the_folder_named_after_it) {
+    th_boot();
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    put_file(root, "Solsidan S01E01.web.mp4");
+    put_file(root, "Season 6/Solsidan S06E01.mp4");
+    put_file(root, "Series/solsidan/s1/Solsidan COMPLETE S01-S05 720p x265 HEVC-Lund/2/Solsidan S02E01.web.mp4");
+    put_file(root, "Series/solsidan/s1/Solsidan COMPLETE S01-S05 720p x265 HEVC-Lund/2/Solsidan S02E02.web.mp4");
+    put_file(root, "Solsidan.S08.SWEDiSH.720p.WEBRip.AAC.2.0.AV1-WoKE/Solsidan.S08E01.SWEDiSH.720p.WEBRip.AAC.2.0.AV1-WoKE.mkv");
+    put_file(root, "Arthur/Season 1/Arthur - S01E01.web.mp4");
+    setting_set("media.roots", root);
+    media_scan_sync();
+    static const char *const rels[] = {
+        "7/Solsidan S07E02 2021 svensk text/Solsidan S07E02 2021 svensk text.mkv",
+        "Arthur - S02E01.mkv",
+    };
+    UpSorted *s = sort_these(root, rels, 2, 0, NULL, 0);
+    CHECK(s[0].known);
+    CHECK_STR(s[0].dest, "Series/solsidan/Season 7/Solsidan S07E02 2021 svensk text.mkv");
+    CHECK_STR(s[1].dest, "Arthur/Season 2/Arthur - S02E01.mkv");
+    free(s);
+    /* "Add episodes" on the series' page goes there too */
+    const MediaSeries *ms = media_series(upload_show_key("Solsidan"));
+    CHECK(ms != NULL);
+    s = sort_these(root, rels, 1, ms ? ms->id : 0, NULL, 0);
+    CHECK_STR(s[0].dest, "Series/solsidan/Season 7/Solsidan S07E02 2021 svensk text.mkv");
+    free(s);
+    /* only the copy at the top level (no folder names the show): a new folder of its own, not the top level */
+    char root2[512];
+    str_copy(root2, sizeof root2, test_tmpdir());
+    put_file(root2, "Solsidan S01E01.web.mp4");
+    put_file(root2, "Series/Arthur/Season 1/Arthur - S01E01.web.mp4");
+    setting_set("media.roots", root2);
+    media_scan_sync();
+    s = sort_these(root2, rels, 1, 0, NULL, 0);
+    CHECK(!s[0].known);
+    CHECK_STR(s[0].dest, "Series/Solsidan/Season 7/Solsidan S07E02 2021 svensk text.mkv");
+    free(s);
+    th_halt();
+}
+
 /* A whole long-running show with its subtitles (the plan's own limit is 5000 files): every one placed, and
    quick - the preview asks again whenever an option changes, on the event loop. */
 TEST(upload_sorts_a_big_folder_quickly) {

@@ -688,7 +688,10 @@
         try {
           const s = await ask(url, m.send ? `size=${m.size}` : `original=1&why=${encodeURIComponent(m.error || '')}`);
           if (!s.skip) await put(url, m.send ? m : files[t.f], s.at || 0);
-          for (const sub of m.subs || []) await subtitle(url, sub); // the file's own subtitles, as .srt next to it
+          // the file's own subtitles next to it - text as .srt, pictures as .sup / .idx + .sub - in the
+          // file's order (a second English track is ".2" as the server's converter would name it)
+          const tracks = (m.subs || []).concat(m.pics || []).sort((a, b) => (a.t || 0) - (b.t || 0));
+          for (const sub of tracks) await (sub.data ? subPictures(url, sub) : subtitle(url, sub));
         } finally {
           if (m.drop) m.drop(); // sent (or not needed): the browser lets go of the copy now
         }
@@ -753,7 +756,7 @@
       seen.delete(k);
       if (w && m.size !== undefined && !halted) { // made: it waits in its worker to be sent
         ready.set(k, w);
-        m = { size: m.size, subs: m.subs, send: sender(w), drop: () => drop(k) };
+        m = { size: m.size, subs: m.subs, pics: m.pics, send: sender(w), drop: () => drop(k) };
       } else if (w) {
         w.terminate();
       }
@@ -804,14 +807,31 @@
 
   // A subtitle track the converter took out of a file: the server saves it next to the copy. A few
   // tries; past them the video still counts as sent (subtitles are a bonus, not the upload).
+  const subQuery = (sub) => `lang=${encodeURIComponent(sub.lang)}&name=${encodeURIComponent(sub.name)}` +
+    `&forced=${sub.forced ? 1 : 0}${sub.t === undefined ? '' : `&t=${sub.t}`}`;
   async function subtitle(url, sub) {
-    const q = `sub=1&lang=${encodeURIComponent(sub.lang)}&name=${encodeURIComponent(sub.name)}&forced=${sub.forced ? 1 : 0}`;
     for (let tries = 0; tries < 3; tries++) {
-      const s = await fetch(`${url}?${q}`, { method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-        body: sub.text }).then(json).catch(() => ({}));
+      const s = await fetch(`${url}?sub=1&${subQuery(sub)}`, { method: 'POST',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: sub.text }).then(json).catch(() => ({}));
       if (s.stop) throw new Error(s.error);
       if (s.ok || s.skip) return;
       await pause(1000 * 2 ** tries);
+    }
+  }
+  // A picture subtitle track (Blu-ray PGS, DVD VobSub - up to 64 MB): one PUT, streamed to the server's disk
+  // like a file - a VobSub's .idx text first (idx= bytes of it), then its .sub. A turn's wait ("busy": a
+  // file or an earlier try of this one is being written) isn't a try, for a few minutes.
+  async function subPictures(url, sub) {
+    const idx = sub.kind === 'vobsub' ? new TextEncoder().encode(sub.idx || '') : null;
+    const q = `pic=${sub.kind}&${subQuery(sub)}${idx ? `&idx=${idx.length}` : ''}`;
+    const body = new Blob(idx ? [idx, sub.data] : [sub.data]);
+    for (let tries = 0, waits = 0; tries < 4 && waits < 90;) {
+      const s = await fetch(`${url}?${q}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body })
+        .then(json).catch(() => ({}));
+      if (s.stop) throw new Error(s.error);
+      if (s.ok || s.skip) return;
+      if (s.error === 'busy') { waits++; await pause(2000); continue; }
+      await pause(1000 * 2 ** tries++);
     }
   }
 
@@ -1336,6 +1356,8 @@
     m._nativeOk = false; /* (a new video: Hemma's player again - see "error") */
     clearTimeout(m._dog);
     if (m.autoplay || m.hasAttribute('data-onair')) watch(m); /* (others: once someone presses play) */
+    m._spLists = null; /* (a new video: its own picture subtitles - the pick, v._sub, goes on) */
+    if (m._sp) spShow(m, '', '');
     plWire(m);
     if (again) return;
     // its player shows how it's doing; "waiting" (the spinner) ends with anything that says the
@@ -1431,6 +1453,10 @@
     m.load();
     m.replaceWith(n);
     media(n); /* (plWire: the overlay keeps only its full-screen button - data-native) */
+    if (m._sub !== undefined) { /* the subtitles picked go on there too: a picture track is still Hemma's to draw */
+      n._sub = m._sub;
+      subHold(n);
+    }
     if (focused) n.focus();
     const p = n.play();
     if (p && p.catch) p.catch(() => {});
@@ -1484,8 +1510,9 @@
   // browser and for a TV's remote. Without this file the video keeps the browser's controls; wired,
   // those go and the overlay shows. Its state, for CSS: data-on (the bar shows: a move, a key, a
   // pause - 3 still seconds of playing put it away), data-paused, data-wait, data-muted. Parts
-  // ([data-p]): play back fwd seek at dur mute vol subs, and [data-sub="<srclang>"] in the subtitles
-  // menu ("" = off; the choice goes on to the next episode). Keys while the player has the focus (or
+  // ([data-p]): play back fwd seek at dur mute vol subs, and [data-sub="<key>"] in the subtitles
+  // menu ("" = off; the choice goes on to the next episode; with data-subpic="<cue list>" a picture
+  // track, which the player draws itself - see "picture subtitles"). Keys while the player has the focus (or
   // nothing has): Space/K play, Left/Right 10 s, M sound, F full screen; a remote's Up/Down on the
   // picture go to the bar, Up on the seek bar back to the picture.
   const plOf = (v) => (v && v.id ? document.querySelector(`[data-player="${CSS.escape(v.id)}"]`) : null);
@@ -1513,6 +1540,11 @@
     v.controls = false;
     pl._drag = false;
     flag(pl, 'data-err', false); /* (a new video: whatever the last one couldn't do) */
+    subWatch(v);
+    if (v._sub === undefined) { /* the viewer's language as a picture track: drawn from the start (a text one is <track default>) */
+      const on = pl.querySelector('[data-sub][data-subpic][aria-checked="true"]');
+      if (on) v._sub = on.dataset.sub;
+    }
     if (v._sub !== undefined) subPick(pl, v, v._sub);
     plSync(pl, v);
     plWake(pl);
@@ -1549,11 +1581,12 @@
   }
   let pointer = 'mouse'; // what pressed last: a tap on the picture shows the bar instead of pausing
   // The bar shows or goes; while it shows, subtitles move up above it (as a browser's own controls
-  // make them).
+  // make them) - picture ones too (spPlace).
   function plShow(pl, on) {
     if (on === pl.hasAttribute('data-on')) return;
     flag(pl, 'data-on', on);
     const v = plVideo(pl);
+    if (v) spPlace(v);
     for (let i = 0; v && i < v.textTracks.length; i++) {
       const t = v.textTracks[i];
       for (let j = 0; t.mode === 'showing' && t.cues && j < t.cues.length; j++) {
@@ -1596,24 +1629,205 @@
     if (!v.muted && v.volume === 0) v.volume = 1;
     if (!v.muted && v.paused && v.hasAttribute('data-onair')) v.play().catch(() => {});
   };
-  // Subtitles: the first track in that language shows, the rest don't; the menu ticks what shows.
-  function subPick(pl, v, lang) {
-    v._sub = lang;
-    let done = false;
-    for (let i = 0; i < v.textTracks.length; i++) {
-      const t = v.textTracks[i];
-      if (t.kind !== 'subtitles' && t.kind !== 'captions') continue;
-      const on = !!lang && !done && t.language === lang;
-      done = done || on;
-      t.mode = on ? 'showing' : 'disabled';
-    }
+  // Subtitles by key ([data-sub="<key>"] = the <track id="sub-<key>">: "en", "en.sdh", "en.2" - two
+  // tracks in one language are two choices; "" = off): that one shows, the rest don't; the menu ticks
+  // what shows. A picture track (Blu-ray, DVD: [data-subpic], no <track>) is drawn by the player itself
+  // (see "picture subtitles") - never beside a text one. The pick goes on to the next episode (v._sub):
+  // the same key, else the first choice in its language (the key's start; in the menu's order, text and
+  // pictures alike), else none.
+  function subPick(pl, v, key) {
+    v._sub = key;
+    subHold(v);
     subTicks(pl, v);
   }
+  function subHold(v) {
+    const key = v._sub, lang = key ? key.split('.')[0] : '', tracks = [], pl = plOf(v);
+    for (let i = 0; i < v.textTracks.length; i++) {
+      const t = v.textTracks[i];
+      if (t.kind === 'subtitles' || t.kind === 'captions') tracks.push(t);
+    }
+    const items = pl ? [...pl.querySelectorAll('[data-sub]')].filter((b) => b.dataset.sub) : [];
+    const item = !key ? null : items.find((b) => b.dataset.sub === key) || items.find((b) => b.dataset.sub.split('.')[0] === lang);
+    const pic = (item && item.getAttribute('data-subpic')) || '';
+    const on = pic || !key ? null : item ? tracks.find((t) => t.id === `sub-${item.dataset.sub}`) || null
+      : tracks.find((t) => t.id === `sub-${key}`) || tracks.find((t) => t.language === lang) || null;
+    for (const t of tracks) {
+      const mode = t === on ? 'showing' : 'disabled';
+      if (t.mode !== mode) t.mode = mode;
+    }
+    spShow(v, pic ? item.dataset.sub : '', pic);
+  }
+  // The pick holds: a browser may turn a track on by itself when tracks come and go (Chrome does - the
+  // first one, beside the one showing - when the next episode's <track>s take their places).
+  function subWatch(v) {
+    if (v._subWatch) return;
+    v._subWatch = true;
+    v.textTracks.addEventListener('change', () => {
+      const pl = plOf(v);
+      if (v._sub === undefined || !pl || v.hasAttribute('data-native')) return;
+      subHold(v);
+      subTicks(pl, v);
+    });
+  }
   function subTicks(pl, v) {
-    let now = '';
-    for (let i = 0; i < v.textTracks.length; i++) if (v.textTracks[i].mode === 'showing') { now = v.textTracks[i].language; break; }
+    let now = v._sp && v._sp.url ? v._sp.key : '';
+    for (let i = 0; !now && i < v.textTracks.length; i++) {
+      const t = v.textTracks[i];
+      if (t.mode === 'showing') now = t.id.replace(/^sub-/, '');
+    }
     for (const b of pl.querySelectorAll('[data-sub]')) b.setAttribute('aria-checked', b.dataset.sub === now ? 'true' : 'false');
   }
+
+  // ------------------------------------------------------ picture subtitles
+  // A Blu-ray (PGS) or DVD (VobSub) track is pictures, which no browser shows as a <track>. Its menu item
+  // carries data-subpic="<its cue list>": GET .../<id>.json?v=.. -> {"w":720,"h":480,"cues":[[start_ms,
+  // end_ms,x,y,w,h],...]} (places on a w x h frame, times on the video's clock), and cue n's picture is the
+  // PNG at the list's address with ".json" -> "/<n>.png" (its query kept). The player draws the cue showing
+  // now in a layer of its own in the player's box (.pl-subpic, [data-client]: morphs leave it), over the
+  // video's SHOWN picture - its element less the bars object-fit leaves - scaled from the frame, and lifted
+  // above the bar while that's up (where it would reach under it). The list is fetched once per video
+  // element, the next cue's picture ahead of time; it's looked at on timeupdate/seeked and, while playing,
+  // every frame (a lookup; the picture changes only with the cue). The layer is aria-hidden: pictures of
+  // words, which a screen reader can't read (a text track, where there is one, is the one for it).
+  function spLayer(v, make) {
+    const box = v.parentNode;
+    if (!box) return null;
+    for (const c of box.children) if (c.classList.contains('pl-subpic')) return c;
+    if (!make) return null;
+    const el = document.createElement('div'), img = document.createElement('img'), pl = plOf(v);
+    el.className = 'pl-subpic';
+    el.setAttribute('data-client', '');
+    el.setAttribute('aria-hidden', 'true');
+    el.hidden = true;
+    img.alt = '';
+    el.append(img);
+    box.insertBefore(el, pl && pl.parentNode === box ? pl : v.nextSibling); /* (under the player's bar) */
+    return el;
+  }
+  const spPng = (url, n) => {
+    const u = new URL(url, location.href);
+    u.pathname = u.pathname.replace(/\.json$/, `/${n}.png`);
+    return u.pathname + u.search;
+  };
+  // the cue showing at t ms (the last to start by then that hasn't ended; -1 none), and the next to come
+  function cueAt(cues, t) {
+    let lo = 0, hi = cues.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (cues[mid][0] <= t) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let i = lo - 1; i >= 0 && i >= lo - 4; i--) if (t < cues[i][1]) return { at: i, next: lo };
+    return { at: -1, next: lo };
+  }
+  // The track to draw (key, its list's address; '' = none): its list once fetched, the cue of now.
+  function spShow(v, key, url) {
+    const sp = v._sp || (v._sp = { key: '', url: '', data: null, at: -1 });
+    if (sp.url === url) return;
+    Object.assign(sp, { key, url, data: null, at: -1, pre: -1 });
+    spWire(v);
+    spDraw(v);
+    if (!url) return;
+    const lists = v._spLists || (v._spLists = new Map());
+    if (!lists.has(url)) {
+      lists.set(url, fetch(url, { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+        .then((d) => (d && Array.isArray(d.cues) && d.w > 0 && d.h > 0 ? d : null)));
+    }
+    lists.get(url).then((d) => {
+      if (sp.url !== url || !v.isConnected) return; /* (another pick, or another video, meanwhile) */
+      if (!d) { report(`subtitles ${url.split('?')[0]}: no pictures to draw`); return; } /* (no address key in the log) */
+      sp.data = d;
+      spDraw(v);
+      if (!v.paused) spLoop(v);
+    });
+  }
+  function spDraw(v) {
+    const sp = v._sp, el = v.isConnected && spLayer(v, !!(sp && sp.data));
+    if (!el) return;
+    if (!sp || !sp.data) {
+      el.hidden = true;
+      if (sp) sp.at = -1;
+      return;
+    }
+    const d = sp.data, { at, next } = cueAt(d.cues, (v.currentTime || 0) * 1000), img = el.firstChild;
+    if (next !== sp.pre && next < d.cues.length) { /* the next one's picture, fetched ahead */
+      sp.pre = next;
+      new Image().src = spPng(sp.url, next);
+    }
+    if (at === sp.at) return;
+    sp.at = at;
+    if (at < 0) { el.hidden = true; return; }
+    const c = d.cues[at];
+    img.style.visibility = 'hidden'; /* (until it's there: not the last cue's picture in this one's place) */
+    img.onload = () => { if (sp.at === at) img.style.visibility = ''; };
+    img.src = spPng(sp.url, at);
+    if (img.complete && img.naturalWidth) img.style.visibility = '';
+    img.style.left = `${100 * c[2] / d.w}%`;
+    img.style.top = `${100 * c[3] / d.h}%`;
+    img.style.width = `${100 * c[4] / d.w}%`;
+    img.style.height = `${100 * c[5] / d.h}%`;
+    el.hidden = false;
+    spPlace(v, true);
+  }
+  // The layer over the shown picture: object-fit (contain unless said otherwise) leaves bars when the
+  // element's shape isn't the video's - pillarbox, letterbox, a full screen of another shape. The cue
+  // list's frame (w x h) is mapped onto that, whatever its own shape: MakeMKV's .idx says 720x576 for an
+  // NTSC DVD's 720x480 too (spDraw places the picture in % of the frame, never by the video's size).
+  // jump: a new cue - in its place at once (only the bar coming and going slides it)
+  function spPlace(v, jump) {
+    const sp = v._sp, el = sp && sp.data && sp.at >= 0 && v.isConnected && spLayer(v, false);
+    if (!el || el.hidden) return;
+    const box = el.parentNode, vr = v.getBoundingClientRect(), br = box.getBoundingClientRect();
+    const W = v.clientWidth, H = v.clientHeight, nw = v.videoWidth || W, nh = v.videoHeight || H; /* (not known yet: the box) */
+    if (!W || !H) return;
+    const fit = getComputedStyle(v).objectFit;
+    let sx = W / nw, sy = H / nh;
+    if (fit !== 'fill') sx = sy = fit === 'cover' ? Math.max(sx, sy) : Math.min(sx, sy);
+    const w = nw * sx, h = nh * sy;
+    const left = vr.left - br.left - box.clientLeft + v.clientLeft + (W - w) / 2;
+    const top = vr.top - br.top - box.clientTop + v.clientTop + (H - h) / 2;
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+    el.style.width = `${w}px`;
+    el.style.height = `${h}px`;
+    // the bar up: a picture reaching under it goes up above it (a text track's lines move up too)
+    const pl = plOf(v), bar = pl && !pl.hidden && pl.hasAttribute('data-on') && !pl.hasAttribute('data-native') &&
+      pl.querySelector('.pl-bar'), edgeOf = bar && (bar.firstElementChild || bar);
+    const c = sp.data.cues[sp.at], ctop = c[3] / sp.data.h * h;
+    let lift = 0;
+    if (edgeOf && edgeOf.getClientRects().length) {
+      const edge = edgeOf.getBoundingClientRect().top - br.top - box.clientTop - 8;
+      lift = Math.max(0, Math.min(top + (c[3] + c[5]) / sp.data.h * h - edge, ctop));
+    }
+    const lifted = lift ? `translateY(${-Math.round(lift)}px)` : '';
+    const img = el.firstChild;
+    if (img.style.transform === lifted) return;
+    if (jump) img.style.transition = 'none';
+    img.style.transform = lifted;
+    if (jump) {
+      void img.offsetWidth; /* (that place taken first: no slide from the last cue's) */
+      img.style.transition = '';
+    }
+  }
+  function spLoop(v) {
+    if (v._spRaf || !v._sp || !v._sp.data) return;
+    const step = () => {
+      v._spRaf = 0;
+      if (!v.isConnected || v.paused || v.ended || !v._sp || !v._sp.data) return;
+      spDraw(v);
+      v._spRaf = requestAnimationFrame(step);
+    };
+    v._spRaf = requestAnimationFrame(step);
+  }
+  function spWire(v) {
+    if (v._spWired) return;
+    v._spWired = true;
+    for (const t of ['timeupdate', 'seeking', 'seeked', 'pause', 'emptied']) v.addEventListener(t, () => spDraw(v));
+    for (const t of ['play', 'playing']) v.addEventListener(t, () => spLoop(v));
+    for (const t of ['loadedmetadata', 'resize']) v.addEventListener(t, () => spPlace(v)); /* (the video's own size known) */
+    if (window.ResizeObserver) new ResizeObserver(() => spPlace(v)).observe(v); /* (full screen, a turned phone) */
+  }
+  addEventListener('resize', () => { for (const v of document.querySelectorAll('video')) spPlace(v); });
   // Close the open subtitle menus but `keep`; true when one was open. The focus, if it was in one,
   // goes back to its button.
   function menus(keep) {

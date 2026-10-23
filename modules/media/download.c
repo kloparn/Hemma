@@ -188,6 +188,18 @@ static void sub_suffix(const MediaFile *video, const MediaFile *sub, char *out, 
     buf_free(&s);
 }
 
+/* A DVD VobSub .idx's pictures: the .sub of the same name beside it (library.c indexes one only so) */
+static const MediaFile *vobsub_data(const MediaIndex *ix, const int *subs, int nsubs, const MediaFile *idx) {
+    size_t stem = strlen(idx->rel) - 4;
+    for (int j = 0; j < nsubs; j++) {
+        const MediaFile *s = &ix->files[subs[j]];
+        if (s->root == idx->root && media_is_vobsub_data(s->rel) && strlen(s->rel) == stem + 4 &&
+            strncmp(s->rel, idx->rel, stem) == 0)
+            return s;
+    }
+    return NULL;
+}
+
 MediaZipItem *media_zip_items(const MediaSeries *s, int season, int *n) {
     *n = 0;
     if (!s) return NULL;
@@ -218,11 +230,20 @@ MediaZipItem *media_zip_items(const MediaSeries *s, int season, int *n) {
         for (int j = 0; j < nsubs; j++) {
             const MediaFile *sub = &ix->files[subs[j]];
             if (sub->video != e->id && sub->video != pf->id) continue;
+            if (media_is_vobsub_data(sub->rel)) continue; /* (a VobSub's pictures go with its .idx, below) */
             char suffix[100];
             sub_suffix(e, sub, suffix, sizeof suffix);
             snprintf(name, sizeof name, "%s/%s%s", folder, unique, suffix);
             uint64_t key = name_key(name);
-            if (!taken(&l, key)) add_item(&l, sub, name, key); /* ("x.en.srt" and "x.EN.srt": one is enough) */
+            if (taken(&l, key)) continue; /* ("x.en.srt" and "x.EN.srt": one is enough) */
+            const MediaFile *pics = NULL;
+            if (str_iends(sub->rel, ".idx") && (!str_iends(name, ".idx") || !(pics = vobsub_data(ix, subs, nsubs, sub))))
+                continue; /* (an .idx is nothing without its pictures) */
+            add_item(&l, sub, name, key);
+            if (pics) { /* the pair, under one name: "<episode>.en.idx" + "<episode>.en.sub" */
+                memcpy(name + strlen(name) - 3, "sub", 3);
+                add_item(&l, pics, name, name_key(name));
+            }
         }
     }
     free(subs);

@@ -12,8 +12,21 @@
  *   POST /media/upload/<batch>/<i>?pm=<0..1000>      progress      -> {"ok":true} | {"stop":true,...}
  *   POST /media/upload/<batch>/<i>?size=<bytes>      the copy's size -> {"at":0}: then PUT it
  *   POST /media/upload/<batch>/<i>?original=1&why=.. it couldn't   -> {"at":n} (PUT the original) | {"skip":true}
- *   POST /media/upload/<batch>/<i>?sub=1&lang=&name=&forced=   (body: SRT) a text subtitle track of the
+ *   POST /media/upload/<batch>/<i>?sub=1&lang=&name=&forced=&t=   (body: SRT) a text subtitle track of the
  *        file, saved next to the copy as "<name>.<language>.srt" -> {"ok":true} | {"skip":true} (one is there)
+ *   PUT  /media/upload/<batch>/<i>?pic=pgs|vobsub&lang=&name=&forced=&t=[&idx=<bytes>]   a PICTURE subtitle
+ *        track of the file (Blu-ray PGS, DVD VobSub - up to AV_CONV_PIC_BYTES, so streamed like a file):
+ *        PGS: the body is the .sup, saved as "<name>.<language>.sup"; VobSub: the body is the .idx text
+ *        (its first idx= bytes) and then the .sub, saved as "<name>.<language>.sub" and then ".idx" - both
+ *        or neither. Written to "<file>.hemma-part" on a worker thread and renamed; never over a file
+ *        (-> {"skip":true}); a try that broke off is sent again whole.
+ *        t = the track's place among the file's subtitle tracks: the browser sends them in the file's
+ *        order, so a second track in one language and flags is ".2" as the server's converter names it
+ *        (text and pictures counted together, convert_save_sub), and a track sent again is known by it.
+ *
+ * Subtitle files the household drops in go as they are: .srt .vtt .sup .idx - and a VobSub's .sub, when
+ * its .idx is in the same upload (alone, a .sub is MicroDVD text: refused). The pair is sorted together
+ * and sent both or neither, the .sub first (the library takes a .sub only beside its .idx).
  *
  * web/wire.js drives it (form[data-upload]): one plan, then one PUT per file.
  * Files are written as "<name>.hemma-part" (MEDIA_PART_SUFFIX) and renamed when complete, so the library
@@ -56,6 +69,7 @@
 #define KEEP_DONE_S (60 * 60)      /* finished uploads stay on screen this long */
 #define FORGET_IDLE_S (24 * 3600)  /* an abandoned one is forgotten after a day */
 #define ART_MAX (25LL << 20)       /* a poster, not a photo archive */
+#define PIC_IDX_MAX (1 << 20)      /* a VobSub's .idx text (a line per subpicture: ~100 KB for a film) */
 #define PLAYALL_HEAD (1LL << 20)   /* of a play-all, just this much: its header, with the duration */
 
 enum { UP_QUEUED, UP_SKIPPED, UP_WRITING, UP_DONE, UP_FAILED };
@@ -339,6 +353,43 @@ static void skip_companions(Batch *b) {
             why_set(f, N_("goes with %s, which the library has"), name);
             f->state = UP_SKIPPED;
         }
+    }
+}
+
+/* A DVD VobSub is two files: "x.en.idx" (the index) and "x.en.sub" (the pictures). The other half of file
+   i's pair in the batch (the same name but its extension, in either case), or -1. */
+static int vobsub_mate(const Batch *b, int i) {
+    const char *rel = b->files[i].rel;
+    bool sub = media_is_vobsub_data(rel);
+    if (!sub && !str_iends(rel, ".idx")) return -1;
+    size_t n = strlen(rel);
+    for (int k = 0; k < b->nfiles; k++) {
+        const char *o = b->files[k].rel;
+        if (k != i && strlen(o) == n && strncmp(o, rel, n - 4) == 0 &&
+            (sub ? str_iends(o, ".idx") : media_is_vobsub_data(o)))
+            return k;
+    }
+    return -1;
+}
+
+/* Both or neither: one half of a pair that stays behind keeps the other back too - unless that one is on
+   the server already, the same size (then this one completes the pair; a different file of its name
+   wouldn't be its other half). (One pass is enough: a skip made here is of a file whose other half was
+   already staying behind.) */
+static void vobsub_pairs(Batch *b) {
+    for (int i = 0; i < b->nfiles; i++) {
+        UpFile *f = &b->files[i];
+        int k = f->state == UP_QUEUED ? vobsub_mate(b, i) : -1;
+        if (k < 0 || b->files[k].state == UP_QUEUED) continue;
+        char full[1024], name[100];
+        int64_t have = -1;
+        bool dir = false;
+        join(full, sizeof full, b->root, b->files[k].rel);
+        if (!b->files[k].out && path_stat(full, &have, NULL, &dir) && !dir && have == b->files[k].size) continue;
+        const char *n = strrchr(b->files[k].rel, '/');
+        str_copy(name, sizeof name, n ? n + 1 : b->files[k].rel); /* (cut at a whole character) */
+        why_set(f, N_("goes with %s, which isn't sent"), name);
+        f->state = UP_SKIPPED;
     }
 }
 
@@ -852,7 +903,9 @@ static Batch *plan_make(Ctx *c, const PlanIn *in, bool dry, char *err, size_t ca
             why_set(f, N_("a system file"));
             continue;
         }
-        if (!media_is_video_ext(f->rel) && !media_is_sub_ext(f->rel) && !media_is_image_ext(f->rel)) {
+        /* (a VobSub's .sub only with its .idx in this upload - upload_sort says so; alone it's MicroDVD text) */
+        bool vobsub = media_is_vobsub_data(f->rel) && srt[i].kind == UPK_SUB;
+        if (!media_is_video_ext(f->rel) && !media_is_sub_ext(f->rel) && !media_is_image_ext(f->rel) && !vobsub) {
             why_set(f, N_("not a video, subtitle or poster"));
             continue;
         }
@@ -893,6 +946,7 @@ static Batch *plan_make(Ctx *c, const PlanIn *in, bool dry, char *err, size_t ca
     for (int i = 0; i < n; i++) free(clean[i]);
     free(clean);
     skip_companions(b);
+    vobsub_pairs(b);
     play_alls(b, dry);
     if (!in->originals) skip_originals(b);
     if (in->conv) convert_here(b, in->originals, c->me->id);
@@ -900,6 +954,18 @@ static Batch *plan_make(Ctx *c, const PlanIn *in, bool dry, char *err, size_t ca
     if (sorted) *sorted = srt;
     else free(srt);
     return b;
+}
+
+/* File i in the plan's answer: [i, from] / [i, from, end] / {"i": i, "f": the browser's file to convert} */
+static void todo_entry(Buf *out, const Batch *b, int i, int *k) {
+    const UpFile *f = &b->files[i];
+    if (f->conv == CV_WAIT) { /* the browser converts its file f, then sends the copy as entry i */
+        buf_printf(out, "%s{\"i\":%d,\"f\":%d}", (*k)++ ? "," : "", i, f->src);
+        return;
+    }
+    buf_printf(out, "%s[%d,%lld", (*k)++ ? "," : "", i, (long long)f->saved);
+    if (f->head) buf_printf(out, ",%lld", (long long)f->size); /* the browser sends bytes [saved, size) */
+    buf_putc(out, ']');
 }
 
 static void plan(Ctx *c, Conn *conn, HttpReq *r) {
@@ -1021,17 +1087,18 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
     media_id_hex(b->id, hex);
     buf_printf(&out, "{\"batch\":\"%s\",\"todo\":[", hex);
     int k = 0;
+    bool *listed_yet = xcalloc((size_t)b->nfiles + 1, sizeof *listed_yet);
     for (int i = 0; i < b->nfiles; i++) {
-        const UpFile *f = &b->files[i];
-        if (f->state != UP_QUEUED) continue;
-        if (f->conv == CV_WAIT) { /* the browser converts its file f, then sends the copy as entry i */
-            buf_printf(&out, "%s{\"i\":%d,\"f\":%d}", k++ ? "," : "", i, f->src);
-            continue;
+        if (b->files[i].state != UP_QUEUED || listed_yet[i]) continue;
+        int m = vobsub_mate(b, i); /* a VobSub's .sub goes before its .idx (the library takes it only beside one) */
+        if (m >= 0 && !listed_yet[m] && b->files[m].state == UP_QUEUED && media_is_vobsub_data(b->files[m].rel)) {
+            todo_entry(&out, b, m, &k);
+            listed_yet[m] = true;
         }
-        buf_printf(&out, "%s[%d,%lld", k++ ? "," : "", i, (long long)f->saved);
-        if (f->head) buf_printf(&out, ",%lld", (long long)f->size); /* the browser sends bytes [saved, size) */
-        buf_putc(&out, ']');
+        todo_entry(&out, b, i, &k);
+        listed_yet[i] = true;
     }
+    free(listed_yet);
     buf_printf(&out, "],\"skipped\":%d,\"total\":%lld}", b->skipped, (long long)b->total);
     reply(conn, 200, &out);
     buf_free(&out);
@@ -1228,12 +1295,14 @@ static void worker(void *arg) {
 /* (every error below is shown by the browser: in the request's language. "busy" is a word wire.js
    knows - it waits and tries again - so it stays as it is.) */
 
-static void reply_ok(Conn *conn) {
-    Buf ok = {0};
-    buf_puts(&ok, "{\"ok\":true}");
-    reply(conn, 200, &ok);
-    buf_free(&ok);
+static void reply_str(Conn *conn, const char *json) {
+    Buf b = {0};
+    buf_puts(&b, json);
+    reply(conn, 200, &b);
+    buf_free(&b);
 }
+
+static void reply_ok(Conn *conn) { reply_str(conn, "{\"ok\":true}"); }
 
 static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     lock_take(&g_lock);
@@ -1376,34 +1445,359 @@ static void where(Ctx *c, Conn *conn, uint64_t id, int i) {
     buf_free(&out);
 }
 
+/* ------------------------------------------- subtitle tracks the browser's converter took out */
+
+/* A file's tracks come one request each, in the file's order: what came before for that file, so a
+   second track in one language and flags is named ".2" as the server's converter names it
+   (convert_save_sub - text and picture tracks counted together). A request sent again (its answer was
+   lost, its connection broke) is known by its words and its place in the file (t=) and gets the same
+   answer, uncounted - a picture track whose bytes broke off is written again, under the same name.
+   (g_lock: picture tracks are written on worker threads.) */
+#define SUB_FILES 16
+enum { TRACK_WRITING = 1, TRACK_SAVED, TRACK_SKIPPED, TRACK_BROKE };
+static struct {
+    uint64_t batch;
+    int i;
+    int64_t used;
+    ConvertSubs seen;
+    uint64_t sum[AV_CONV_MAX_SUBS];
+    char state[AV_CONV_MAX_SUBS]; /* TRACK_* */
+} g_subfiles[SUB_FILES];
+
+typedef struct {
+    int k;              /* its place among the file's tracks (-1: past AV_CONV_MAX_SUBS - counted, not kept) */
+    int state;          /* as it was: 0 = new, else TRACK_* */
+    ConvertSubs before; /* the file's tracks before it: what numbers it */
+} Track;
+
+/* Track `sum` of upload id's file i (lock held): one that came before, else a new one. Either way it's
+   TRACK_WRITING now - unless it was finished (saved or skipped) or is being written. */
+static Track track_of(uint64_t id, int i, uint64_t sum, const char *key) {
+    int e = 0; /* this file's place in g_subfiles: its own, else the one unused longest */
+    for (int k = 0; k < SUB_FILES; k++) {
+        if (g_subfiles[k].batch == id && g_subfiles[k].i == i) {
+            e = k;
+            break;
+        }
+        if (g_subfiles[k].used < g_subfiles[e].used) e = k;
+    }
+    if (g_subfiles[e].batch != id || g_subfiles[e].i != i) {
+        memset(&g_subfiles[e], 0, sizeof g_subfiles[e]);
+        g_subfiles[e].batch = id;
+        g_subfiles[e].i = i;
+    }
+    g_subfiles[e].used = now_ms();
+    ConvertSubs *seen = &g_subfiles[e].seen;
+    Track t = {.k = -1};
+    for (int k = 0; k < seen->n && t.k < 0; k++)
+        if (g_subfiles[e].sum[k] == sum) t.k = k, t.state = g_subfiles[e].state[k];
+    t.before.n = t.k >= 0 ? t.k : seen->n;
+    memcpy(t.before.keys, seen->keys, (size_t)t.before.n * sizeof seen->keys[0]);
+    if (t.k < 0 && seen->n < AV_CONV_MAX_SUBS) {
+        t.k = seen->n++;
+        str_copy(seen->keys[t.k], sizeof seen->keys[0], key);
+        g_subfiles[e].sum[t.k] = sum;
+    }
+    if (t.k >= 0 && (!t.state || t.state == TRACK_BROKE)) g_subfiles[e].state[t.k] = TRACK_WRITING;
+    return t;
+}
+
+/* How track k (sum) of upload id's file i was left: TRACK_SAVED / _SKIPPED / _BROKE (lock held) */
+static void track_left(uint64_t id, int i, int k, uint64_t sum, int state) {
+    for (int e = 0; e < SUB_FILES; e++)
+        if (g_subfiles[e].batch == id && g_subfiles[e].i == i && k >= 0 && k < g_subfiles[e].seen.n &&
+            g_subfiles[e].sum[k] == sum)
+            g_subfiles[e].state[k] = (char)state;
+}
+
+/* The copy file i of upload id became, when the browser made it (as root/rel in full); else the reason
+   (in the request's words), its status in *status and whether the upload stops. */
+static const char *copy_of(Ctx *c, uint64_t id, int i, char *full, size_t cap, Batch **out, int *status, bool *stop) {
+    lock_take(&g_lock);
+    Batch *b = find(id);
+    const UpFile *f = b && i >= 0 && i < b->nfiles ? &b->files[i] : NULL;
+    const char *err = NULL;
+    *status = 404;
+    *stop = false;
+    if (!b || b->person != c->me->id) err = T("That upload is over");
+    else if (b->stopped) err = T("The upload was stopped"), *status = 410, *stop = true;
+    else if (!f || f->conv == CV_NONE || f->conv == CV_ORIGINAL) err = T("That file has no copy made here");
+    else {
+        join(full, cap, b->root, f->rel);
+        b->last = b->busy = now_sec(); /* (a sign of work: the upload is running) */
+    }
+    *out = b;
+    lock_give(&g_lock);
+    return err;
+}
+
 /* A text subtitle track the browser's converter took out of a file it made a copy of (?sub=1&lang=
-   &name=&forced=, the SRT as the body): saved next to the copy, named by media_sub_sidecar - never
+   &name=&forced=&t=, the SRT as the body): saved next to the copy, named by media_sub_sidecar - never
    over a file that is there ({"skip":true} then). */
 static void save_sub(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i, const Fields *q) {
     char lang[24], name[128], full[1024];
     str_copy(lang, sizeof lang, fields_str(q, "lang"));
     str_copy(name, sizeof name, fields_str(q, "name"));
-    bool forced = str_eq(fields_str(q, "forced"), "1");
-    const char *err = NULL;
-    int status = 200;
-    lock_take(&g_lock);
-    const Batch *b = find(id);
-    const UpFile *f = b && i >= 0 && i < b->nfiles ? &b->files[i] : NULL;
-    if (!b || b->person != c->me->id) err = T("That upload is over"), status = 404;
-    else if (!f || f->conv == CV_NONE || f->conv == CV_ORIGINAL) err = T("That file has no copy made here"), status = 404;
-    else join(full, sizeof full, b->root, f->rel);
-    lock_give(&g_lock);
-    if (!err && (!r->body || !r->body_len)) err = T("No subtitles came"), status = 400;
+    bool forced = str_eq(fields_str(q, "forced"), "1"), stop;
+    int status;
+    Batch *b;
+    const char *err = copy_of(c, id, i, full, sizeof full, &b, &status, &stop);
+    if (!err && (!r->body || !r->body_len)) err = T("No subtitles came"), status = 400, stop = false;
     if (err) {
-        reply_err(conn, status, false, err);
+        reply_err(conn, status, stop, err);
         return;
     }
+    AvConvSub s = {.forced = forced, .kind = AV_SUB_TEXT, .srt = (char *)r->body, .len = r->body_len}; /* (only read) */
+    str_copy(s.lang, sizeof s.lang, lang);
+    str_copy(s.name, sizeof s.name, name);
+    MediaSubTags tags;
+    char key[40], said[300];
+    media_sub_track_tags(lang, name, forced, &tags);
+    media_sub_key(&tags, key, sizeof key);
+    snprintf(said, sizeof said, "text\n%s\n%s\n%d\n%s\n", lang, name, forced, fields_str(q, "t"));
+    uint64_t sum = hash64(r->body, r->body_len) ^ hash64_str(said);
+    lock_take(&g_lock);
+    Track t = track_of(id, i, sum, key);
+    lock_give(&g_lock);
+    bool saved = t.state == TRACK_SAVED; /* (written then - or not, and it isn't now either) */
+    if (!t.state || t.state == TRACK_BROKE) { /* (the event loop writes it: never "being written" here) */
+        saved = convert_save_sub(full, &s, &t.before);
+        lock_take(&g_lock);
+        track_left(id, i, t.k, sum, saved ? TRACK_SAVED : TRACK_SKIPPED);
+        g_files_saved += saved; /* (the library looks again once the upload settles) */
+        lock_give(&g_lock);
+    }
     Buf out = {0};
-    bool saved = convert_save_sub(full, lang, name, forced, r->body, r->body_len);
     buf_puts(&out, saved ? "{\"ok\":true}" : "{\"skip\":true}");
-    if (saved) app_changed_where("/media"); /* (the next scan lists it) */
+    if (saved) app_changed_where("/media");
     reply(conn, 200, &out);
     buf_free(&out);
+}
+
+/* A picture subtitle track (see the top): its body is written on a worker thread, as file PUTs are. */
+typedef struct {
+    sock_t s;
+    Buf head, body;             /* unsent output to flush first / body bytes already received */
+    int64_t len, idx_len;       /* the body's bytes; its first idx_len are a VobSub's .idx text */
+    char path[1100], idx[1100]; /* the .sup, or the VobSub's .sub and .idx ("" for PGS) */
+    uint64_t batch, sum;
+    int i, k;
+    Lang lang; /* the request's: the answer's words */
+} PicJob;
+
+/* Bytes of the body from `at` on: the .idx text first, the rest into the file */
+static bool pic_take(const PicJob *j, int64_t at, FILE *f, Buf *idx, const char *p, size_t n) {
+    if (at < j->idx_len) {
+        size_t k = (size_t)MIN((int64_t)n, j->idx_len - at);
+        buf_put(idx, p, k);
+        p += k;
+        n -= k;
+    }
+    return !n || fwrite(p, 1, n, f) == n;
+}
+
+/* A .sup starts with its first segment ("PG"), a VobSub's .sub with an MPEG-PS pack header */
+static bool pic_bytes(const char *path, bool vob) {
+    unsigned char h[4] = {0};
+    FILE *f = file_open(path, "rb");
+    if (!f) return false;
+    size_t n = fread(h, 1, sizeof h, f);
+    fclose(f);
+    return vob ? n == 4 && memcmp(h, "\0\0\1\xBA", 4) == 0 : n >= 2 && h[0] == 'P' && h[1] == 'G';
+}
+
+static void pic_worker(void *arg) {
+    PicJob *j = arg;
+    bool vob = j->idx[0] != '\0';
+    sock_nonblock(j->s, true);
+    if (j->head.len) worker_send(j->s, j->head.p, j->head.len); /* rare: answers to earlier pipelined requests */
+    char part[1120];
+    snprintf(part, sizeof part, "%s%s", j->path, MEDIA_PART_SUFFIX);
+    const char *fail = NULL; /* (English, marked N_: the answer says it in the request's words) */
+    int status = 200, left = TRACK_BROKE;
+    Buf idx = {0};
+    FILE *f = file_open(part, "wb"); /* (never resumed: a track is sent whole again) */
+    if (!f) fail = N_("Couldn't create the file on the server"), status = 500;
+    int64_t got = 0;
+    if (!fail && j->body.len) {
+        size_t n = (size_t)MIN((int64_t)j->body.len, j->len);
+        if (!pic_take(j, 0, f, &idx, j->body.p, n)) fail = N_("The server's disk is full"), status = 507;
+        else got = (int64_t)n;
+    }
+    char *buf = fail ? NULL : xmalloc(CHUNK);
+    for (int waited = 0; !fail && got < j->len;) {
+        if (atomic_load(&g_halt)) {
+            fail = N_("The upload was stopped"), status = 410;
+            break;
+        }
+        long k = sock_recv(j->s, buf, (size_t)MIN((int64_t)CHUNK, j->len - got));
+        if (k > 0) {
+            if (!pic_take(j, got, f, &idx, buf, (size_t)k)) {
+                fail = N_("The server's disk is full"), status = 507;
+                break;
+            }
+            got += k;
+            waited = 0;
+            continue;
+        }
+        if (k == 0 || !sock_again(sock_errno())) {
+            fail = N_("The connection dropped"), status = 0; /* the browser sends it again */
+            break;
+        }
+        pollfd_t pf = {.fd = j->s, .events = POLLIN};
+        int rc = plat_poll(&pf, 1, 1000);
+        if (rc < 0) fail = N_("The connection dropped"), status = 0;
+        else if (rc == 0 && (waited += 1000) >= STALL_MS) fail = N_("Nothing arrived for a minute"), status = 408;
+    }
+    free(buf);
+    if (f) {
+        if (!file_sync(f) && !fail) fail = N_("The server couldn't save the file"), status = 507;
+        fclose(f);
+    }
+    if (!fail) {
+        if (!pic_bytes(part, vob)) fail = N_("Those aren't subtitle pictures"), status = 415, left = TRACK_SKIPPED;
+        else if (path_stat(j->path, NULL, NULL, NULL) || (vob && path_stat(j->idx, NULL, NULL, NULL)))
+            left = TRACK_SKIPPED; /* one came meanwhile: it stays */
+        else if (!file_replace(part, j->path)) fail = N_("Couldn't finish the file"), status = 500;
+        else if (vob && !file_write_atomic(j->idx, idx.p ? idx.p : "", idx.len)) { /* both or neither */
+            file_remove(j->path);
+            fail = N_("Couldn't finish the file"), status = 500;
+        } else left = TRACK_SAVED;
+    }
+    if (left != TRACK_SAVED) file_remove(part);
+    buf_free(&idx);
+
+    lock_take(&g_lock);
+    g_workers--;
+    track_left(j->batch, j->i, j->k, j->sum, left);
+    g_files_saved += left == TRACK_SAVED; /* (the library looks again once the upload settles) */
+    lock_give(&g_lock);
+    if (status) {
+        Buf out = {0};
+        if (left == TRACK_SAVED) buf_puts(&out, "{\"ok\":true}");
+        else if (!fail) buf_puts(&out, "{\"skip\":true}");
+        else {
+            buf_puts(&out, "{\"error\":");
+            json_str(&out, T_in(j->lang, fail));
+            buf_printf(&out, ",\"stop\":%s}", status == 410 ? "true" : "false"); /* (subtitles never stop an upload) */
+        }
+        worker_reply(j->s, fail ? status : 200, buf_cstr(&out));
+        buf_free(&out);
+    }
+    sock_shutdown_write(j->s);
+    if (status && fail) drain(j->s, j->len - got);
+    sock_close(j->s);
+    if (left == TRACK_SAVED) log_info("upload: saved %s%s", j->path, vob ? " and its .idx" : "");
+    else if (fail) log_warn("upload: %s - %s", j->path, fail);
+    app_tick_soon();
+    buf_free(&j->head);
+    buf_free(&j->body);
+    free(j);
+}
+
+/* PUT ...?pic=pgs|vobsub: a picture subtitle track for the copy file i is (see the top) */
+static void pic_put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i, const Fields *q) {
+    const char *kind = fields_str(q, "pic");
+    bool vob = str_eq(kind, "vobsub"), forced = str_eq(fields_str(q, "forced"), "1"), stop;
+    char lang[24], name[128], full[1024], msg[400];
+    str_copy(lang, sizeof lang, fields_str(q, "lang"));
+    str_copy(name, sizeof name, fields_str(q, "name"));
+    long long idx_len = vob ? fields_int(q, "idx", -1) : 0, len = r->content_length;
+    int status;
+    Batch *b;
+    const char *err = copy_of(c, id, i, full, sizeof full, &b, &status, &stop);
+    if (!err && !vob && !str_eq(kind, "pgs")) err = "pic=pgs or pic=vobsub", status = 400; /* (only a broken page) */
+    else if (!err && (idx_len < 0 || (vob && !idx_len) || len <= idx_len)) err = T("No subtitles came"), status = 400;
+    else if (!err && (idx_len > PIC_IDX_MAX || len - idx_len > (long long)AV_CONV_PIC_BYTES))
+        err = T("Those subtitles are too big"), status = 413;
+    if (err) {
+        reply_err(conn, status, stop, err);
+        return;
+    }
+    char root[300];
+    lock_take(&g_lock);
+    str_copy(root, sizeof root, b->root); /* (copy_of found it: it's there until a tick, on this thread) */
+    lock_give(&g_lock);
+
+    MediaSubTags tags;
+    char key[40], said[400];
+    media_sub_track_tags(lang, name, forced, &tags);
+    media_sub_key(&tags, key, sizeof key);
+    snprintf(said, sizeof said, "%s\n%s\n%s\n%d\n%s\n%lld\n%lld\n", kind, lang, name, forced, fields_str(q, "t"), len,
+             idx_len);
+    uint64_t sum = hash64_str(said);
+    lock_take(&g_lock);
+    Track t = track_of(id, i, sum, key);
+    bool mine = false; /* a worker taken for it */
+    if (!t.state || t.state == TRACK_BROKE) {
+        if (g_workers < MAX_WORKERS) g_workers++, mine = true;
+        else track_left(id, i, t.k, sum, TRACK_BROKE); /* (not now: when it comes again) */
+    }
+    lock_give(&g_lock);
+    if (t.state == TRACK_SAVED || t.state == TRACK_SKIPPED) { /* sent again: the same answer */
+        reply_str(conn, t.state == TRACK_SAVED ? "{\"ok\":true}" : "{\"skip\":true}");
+        return;
+    }
+    if (!mine) { /* being written still (its connection ends soon), or the uploads are writing: wait a turn */
+        reply_err(conn, 503, false, "busy");
+        return;
+    }
+
+    /* its name: by its place among the file's tracks ("x.en.2.sup"); a VobSub's .sub beside its .idx */
+    char path[1100], idx[1100] = "";
+    int n = 1, left = 0;
+    for (int k = 0; k < t.before.n; k++) n += str_eq(t.before.keys[k], key);
+    bool named = media_sub_sidecar(full, lang, name, forced, vob ? "idx" : "sup", n, path, sizeof path);
+    if (named && vob) {
+        str_copy(idx, sizeof idx, path);
+        memcpy(path + strlen(path) - 3, "sub", 3);
+    }
+    if (!named || path_stat(path, NULL, NULL, NULL) || (vob && path_stat(idx, NULL, NULL, NULL))) {
+        left = TRACK_SKIPPED; /* (one there stays: the household's own, or this track's from before) */
+    } else {
+        int64_t held = 0, spare = spare_for(b, root, 0, &held);
+        if (len - idx_len > spare) {
+            no_room(msg, sizeof msg, ROOM_REST, len - idx_len, spare, held);
+            left = TRACK_BROKE;
+        }
+    }
+    if (left) {
+        lock_take(&g_lock);
+        g_workers--;
+        track_left(id, i, t.k, sum, left);
+        lock_give(&g_lock);
+        if (left == TRACK_SKIPPED) reply_str(conn, "{\"skip\":true}");
+        else reply_err(conn, 507, false, msg);
+        return;
+    }
+    PicJob *j = xcalloc(1, sizeof *j);
+    j->len = len;
+    j->idx_len = idx_len;
+    str_copy(j->path, sizeof j->path, path);
+    str_copy(j->idx, sizeof j->idx, idx);
+    j->batch = id;
+    j->sum = sum;
+    j->i = i;
+    j->k = t.k;
+    j->lang = i18n_lang();
+    Detached d;
+    if (!r->streaming && r->body_len) buf_put(&j->body, r->body, r->body_len); /* small: already here */
+    conn_detach(conn, r, &d);
+    j->s = d.fd;
+    buf_put(&j->body, d.body.p, d.body.len);
+    buf_free(&d.body);
+    j->head = d.unsent;
+    if (!thread_spawn(pic_worker, j)) {
+        lock_take(&g_lock);
+        g_workers--;
+        track_left(id, i, t.k, sum, TRACK_BROKE);
+        lock_give(&g_lock);
+        worker_reply(j->s, 503, "{\"error\":\"busy\",\"stop\":false}");
+        sock_close(j->s);
+        buf_free(&j->head);
+        buf_free(&j->body);
+        free(j);
+    }
 }
 
 /* The browser's side of a copy it makes (see the top): progress, the finished size, or "it
@@ -1537,8 +1931,13 @@ bool upload_http(Ctx *c, Conn *conn, HttpReq *r) {
         reply_err(conn, 404, true, T("No such upload"));
         return true;
     }
-    if (str_eq(r->method, "PUT")) put(c, conn, r, id, (int)i);
-    else if (str_eq(r->method, "GET")) where(c, conn, id, (int)i);
+    if (str_eq(r->method, "PUT")) {
+        Fields q = {0};
+        fields_parse(&q, r->query, strlen(r->query));
+        if (fields_get(&q, "pic")) pic_put(c, conn, r, id, (int)i, &q); /* a picture subtitle track */
+        else put(c, conn, r, id, (int)i);
+        fields_free(&q);
+    } else if (str_eq(r->method, "GET")) where(c, conn, id, (int)i);
     else if (str_eq(r->method, "POST")) converted(c, conn, r, id, (int)i);
     else reply_err(conn, 405, true, "PUT, GET or POST");
     return true;
@@ -2323,7 +2722,7 @@ void upload_page(Ctx *c, Buf *b) {
       "<div class=\"media-up-drop\" id=\"media-up-drop\" data-drop>%r<p class=\"media-up-drop-t\">%s</p>"
       "<p class=\"media-up-drop-tap\">%s</p><p class=\"muted media-small\">%s</p><div class=\"media-up-pick\">"
       "<label class=\"btn primary\">%s<input type=\"file\" name=\"files\" multiple class=\"sr-only\" "
-      "accept=\"video/*,.mkv,.avi,.m2ts,.ts,.srt,.vtt,.jpg,.jpeg,.png,.webp\"></label>"
+      "accept=\"video/*,.mkv,.avi,.m2ts,.ts,.srt,.vtt,.sup,.idx,.sub,.jpg,.jpeg,.png,.webp\"></label>"
       "<label class=\"btn media-up-folder\">%s<input type=\"file\" name=\"folder\" webkitdirectory multiple "
       "class=\"sr-only\"></label></div></div>",
       UPLOAD_ICON, T("Drop videos or a whole folder here"), T("Choose videos from this device"),

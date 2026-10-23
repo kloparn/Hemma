@@ -305,6 +305,22 @@ static void add_file(Scan *sc, int root, const char *rel, char type, int64_t siz
     sc->n++;
 }
 
+/* A ".sub" with an ".idx" of the same name in its folder is a DVD VobSub's pictures: indexed as a subtitle
+   of the .idx's video (remove, rename, download carry the pair; the player never offers the .sub). One
+   alone is MicroDVD text - nothing Hemma reads, so not indexed. */
+static bool vobsub_idx_beside(const char *dir, const char *name) {
+    size_t n = strlen(name);
+    if (n < 5) return false;
+    char idx[400], path[1024];
+    for (int up = 0; up < 2; up++) {
+        snprintf(idx, sizeof idx, "%.*s%s", (int)(n - 4), name, up ? ".IDX" : ".idx");
+        join_path(dir, idx, path, sizeof path);
+        bool is_dir = false;
+        if (path_stat(path, NULL, NULL, &is_dir) && !is_dir) return true;
+    }
+    return false;
+}
+
 static void walk(Scan *sc, int root, const char *abs, const char *rel_dir, int depth) {
     if (depth > 24 || atomic_load(&g_abort)) return;
     DirIter *it = dir_open(abs);
@@ -336,7 +352,8 @@ static void walk(Scan *sc, int root, const char *abs, const char *rel_dir, int d
         char type = media_is_video_ext(e.name) ? MF_VIDEO
                     : media_is_sub_ext(e.name) ? MF_SUB
                     : media_is_image_ext(e.name) ? MF_IMAGE
-                                                 : 0;
+                    : media_is_vobsub_data(e.name) && vobsub_idx_beside(abs, e.name) ? MF_SUB
+                                                                                     : 0;
         if (type) add_file(sc, root, rel, type, e.size, e.mtime);
     }
     dir_close(it);
@@ -1616,6 +1633,8 @@ static int lost_ids(uint64_t **out) {
     *out = ids;
     return u;
 }
+
+bool media_lib_away(void) { return g_away; }
 
 int media_history_lost(char labels[][100], int max, bool *away) {
     *away = g_away;

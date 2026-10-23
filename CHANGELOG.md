@@ -4,6 +4,43 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 1.2.0 (2026-10-23)
+
+Every video that has subtitles shows them.
+
+### New
+
+- **Subtitles from every MKV, even ones Hemma can't convert:** a video whose picture or sound the
+  converter doesn't handle yet (AV1, DTS, Vorbis) used to lose its subtitles along with it. They're
+  taken out now, whatever happens to the video.
+- **Subtitles already inside your library come out by themselves:** Hemma reads the MKVs it already
+  has, once, in the background - only while nobody is watching - and puts their subtitles beside
+  them, so nothing has to be uploaded again. **Watch → Library settings** shows how far it's got,
+  and has a switch to turn it off.
+- **DVD and Blu-ray subtitles** - the kind stored as pictures, not text (VobSub on DVD rips, PGS on
+  Blu-ray rips) - now show in Hemma's player, drawn over the picture where the disc puts them. They're
+  kept as standard .idx/.sub and .sup files next to the video, so VLC and other players use them too.
+- **WebVTT subtitle tracks** are taken as well, and a file with many languages keeps them all (up to
+  32 - one Simpsons episode had 13).
+
+### Changed
+
+- **Two subtitles in one language are both offered:** "English" and "English (for the hard of
+  hearing)", or "English (foreign speech only)", instead of two choices both called "English" of
+  which only the first worked. The menu lists them by language, and your language comes on first in
+  its plain version.
+- The subtitle menu scrolls when it's long, and its tick no longer covers the first letter on phones.
+
+### Fixed
+
+- **New episodes of a show you already had could land in the wrong folder** - even at the top of
+  the library - when the show's episodes were spread over several folders: Hemma went by wherever
+  the first one it knew of happened to be. It now uses the folder named after the show (the one most
+  of its episodes are in), and a new folder of the show's own when none is, never the top level.
+- **Uploads bring every subtitle:** the copy your computer makes while uploading sends the video's
+  DVD and Blu-ray subtitles along too, and .sup, .idx and .sub subtitle files dropped in with videos
+  are taken.
+
 ## 1.1.2 (2026-10-23)
 
 Dolby sound in TV rips converts too.

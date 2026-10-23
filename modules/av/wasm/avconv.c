@@ -18,9 +18,12 @@
  * and calls _initialize(), then conv_run(size, quality, audio_kbps):
  *   1 = done, 0 = failed, 2 = the file holds something we can't convert (send the original);
  *   conv_err() says why (UTF-8, NUL-terminated).
- * After a 1, the file's text subtitle tracks as SRT: conv_subs() of them, each with
- *   conv_sub_text(i) / conv_sub_len(i) (UTF-8), conv_sub_lang(i), conv_sub_name(i) (NUL-terminated)
- *   and conv_sub_forced(i) - the page sends them to the server, which saves them next to the copy. */
+ * After a 1, the file's subtitle tracks: conv_subs() of them, each with conv_sub_kind(i) (0 = text,
+ *   1 = PGS, 2 = VobSub), conv_sub_lang(i), conv_sub_name(i) (NUL-terminated) and conv_sub_forced(i);
+ *   text: conv_sub_text(i) / conv_sub_len(i) (SRT, UTF-8); pictures: conv_sub_data(i) / conv_sub_size(i)
+ *   (the .sup file, or VobSub's .sub) and, for VobSub, conv_sub_idx(i) / conv_sub_idx_len(i) (the .idx
+ *   text) - the page sends them to the server, which saves them next to the copy. After a 2 there are
+ *   none: the original goes to the server, which takes its subtitles out itself (skip_refused_subs). */
 #include <stdlib.h>
 #include <string.h>
 
@@ -146,6 +149,7 @@ EXPORT("conv_run") int conv_run(double size, int quality, int audio_kbps) {
     g_job.quality = quality;
     g_job.audio_kbps = audio_kbps;
     g_job.want_subs = true;
+    g_job.skip_refused_subs = true; /* (a refused file goes as it is: no second read of it here) */
     g_job.progress = on_progress;
     bool ok = av_convert(&g_job) && flush_out();
     if (ok) return 1;
@@ -163,3 +167,8 @@ EXPORT("conv_sub_len") int conv_sub_len(int i) { return sub(i) ? (int)sub(i)->le
 EXPORT("conv_sub_lang") const char *conv_sub_lang(int i) { return sub(i) ? sub(i)->lang : ""; }
 EXPORT("conv_sub_name") const char *conv_sub_name(int i) { return sub(i) ? sub(i)->name : ""; }
 EXPORT("conv_sub_forced") int conv_sub_forced(int i) { return sub(i) && sub(i)->forced; }
+EXPORT("conv_sub_kind") int conv_sub_kind(int i) { return sub(i) ? (int)sub(i)->kind : 0; }
+EXPORT("conv_sub_data") const uint8_t *conv_sub_data(int i) { return sub(i) ? sub(i)->data : NULL; }
+EXPORT("conv_sub_size") int conv_sub_size(int i) { return sub(i) ? (int)sub(i)->size : 0; }
+EXPORT("conv_sub_idx") const char *conv_sub_idx(int i) { return sub(i) && sub(i)->idx ? sub(i)->idx : ""; }
+EXPORT("conv_sub_idx_len") int conv_sub_idx_len(int i) { return sub(i) ? (int)sub(i)->idx_len : 0; }

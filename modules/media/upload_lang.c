@@ -222,6 +222,7 @@ static const Tr TR[] = {
     /* why a file was skipped, sent as it is, or failed (the list on the card) */
     {"goes with %s, which the library has", "hör till %s, som biblioteket redan har",
      "va con %s, que ya está en la biblioteca"},
+    {"goes with %s, which isn't sent", "hör till %s, som inte skickas", "va con %s, que no se envía"},
     {"looks like a \"play all\" copy of the %d episodes next to it",
      "ser ut som en \"spela alla\"-kopia av de %d avsnitten bredvid",
      "parece una copia \"reproducir todo\" de los %d episodios de al lado"},
@@ -355,6 +356,8 @@ static const Tr TR[] = {
     {"That upload is over", "Den uppladdningen är över", "Esa subida ha terminado"},
     {"That file has no copy made here", "Den filen har ingen kopia gjord här", "Ese archivo no tiene una copia hecha aquí"},
     {"No subtitles came", "Inga undertexter kom", "No llegaron subtítulos"},
+    {"Those subtitles are too big", "De undertexterna är för stora", "Esos subtítulos son demasiado grandes"},
+    {"Those aren't subtitle pictures", "Det där är inga undertextbilder", "Eso no son imágenes de subtítulos"},
     {"That file isn't waiting for a copy", "Den filen väntar inte på någon kopia", "Ese archivo no está esperando una copia"},
     {"That file is going as it is", "Den filen skickas som den är", "Ese archivo se envía tal cual"},
     {"The browser's copy came out empty", "Webbläsarens kopia blev tom", "La copia del navegador salió vacía"},

@@ -5,7 +5,8 @@
  *   a disc rip  -> <series folder>/<Show>/<its path below its own show folder>: the library numbers
  *                  those by their disc and title folders ("Season 1/Disc - 2/B3_t03.mkv"), so they stay
  *   a film      -> <movies folder>/<Title (Year)>/<its name>
- *   subtitles and pictures go with their video (the same name, in the same folder); whatever else sits
+ *   subtitles and pictures go with their video (the same name, in the same folder) - a DVD VobSub's .sub
+ *   (only with its .idx among the chosen files) wherever its .idx goes; whatever else sits
  *   in a show's or a film's own folder (a poster.jpg, Extras/, Subs/) goes along into that folder; the
  *   rest stays as it was chosen.
  *
@@ -16,6 +17,7 @@
  * a copy (x.web.mp4), its original and their subtitles keep finding each other. */
 #include <ctype.h>
 
+#include "remove.h" /* media_names_show */
 #include "upload.h"
 
 #define MAPS_MAX 256
@@ -274,7 +276,59 @@ static const DirMap *map_of(const Sorter *s, const char *rel) { /* the deepest f
     return best;
 }
 
-/* Where a show's episodes go: the library's folder for it (in this library folder), else
+/* The library's folder for a show (in this library folder): of each episode's folders, the shallowest
+   that names the show ("Series/Solsidan", not ".../Solsidan COMPLETE S01-S05/2" below it), the one
+   most episodes share (a tie: the shorter, then the first); none names it: the first episode's show
+   folder (show_dir_len) when that isn't the library folder itself or a "Series" folder of many. False:
+   nowhere fit - a new <series folder>/<Show>. (Until 1.2.0 the first episode's folder alone: one copy at
+   the library folder's top level sent every new season of that show to the top level too.) */
+static bool show_home(const Sorter *s, const MediaSeries *ms, char *out, size_t cap) {
+    enum { MAX_HOMES = 16 };
+    struct {
+        char dir[400];
+        int votes;
+    } c[MAX_HOMES];
+    int nc = 0;
+    char fallback[400] = "";
+    const char *root = s->ix->roots[s->root_ix];
+    for (int i = 0; i < ms->count; i++) {
+        const MediaFile *e = media_episode(ms, i);
+        if (!e || e->root != s->root_ix) continue;
+        size_t dl = show_dir_len(e->rel);
+        if (!fallback[0] && dl && dl < sizeof fallback) str_ncopy(fallback, sizeof fallback, e->rel, dl);
+        const char *slash = strrchr(e->rel, '/');
+        size_t full = slash ? (size_t)(slash - e->rel) : 0;
+        for (size_t end = 0; end < full;) {
+            while (end < full && e->rel[end] != '/') end++;
+            if (end < sizeof c[0].dir && media_names_show(root, e->rel, end, ms->title)) {
+                int k = 0;
+                while (k < nc && !(strlen(c[k].dir) == end && strncmp(c[k].dir, e->rel, end) == 0)) k++;
+                if (k == nc && nc < MAX_HOMES) {
+                    str_ncopy(c[nc].dir, sizeof c[nc].dir, e->rel, end);
+                    c[nc++].votes = 0;
+                }
+                if (k < nc) c[k].votes++;
+                break;
+            }
+            end++;
+        }
+    }
+    int best = -1;
+    for (int k = 0; k < nc; k++)
+        if (best < 0 || c[k].votes > c[best].votes ||
+            (c[k].votes == c[best].votes && strlen(c[k].dir) < strlen(c[best].dir)))
+            best = k;
+    if (best >= 0) {
+        str_copy(out, cap, c[best].dir);
+        return true;
+    }
+    const char *last = strrchr(fallback, '/');
+    if (!fallback[0] || rank_in(last ? last + 1 : fallback, SERIES_DIRS) >= 0) return false;
+    str_copy(out, cap, fallback);
+    return true;
+}
+
+/* Where a show's episodes go: the library's folder for it (in this library folder, show_home), else
    <series folder>/<its name>. shown: the name to show ("70's Show" as the library spells it). */
 static const Place *show_place(Sorter *s, const char *name) {
     static Place spare; /* (a full cache: worked out again each time) */
@@ -286,10 +340,7 @@ static const Place *show_place(Sorter *s, const char *name) {
     p->key = key;
     str_copy(p->title, sizeof p->title, name);
     const MediaSeries *ms = s->root_ix >= 0 ? media_series(key) : NULL;
-    for (int i = 0; ms && i < ms->count && !p->known; i++) {
-        const MediaFile *e = media_episode(ms, i);
-        if (!e || e->root != s->root_ix) continue;
-        str_ncopy(p->dest, sizeof p->dest, e->rel, show_dir_len(e->rel));
+    if (ms && show_home(s, ms, p->dest, sizeof p->dest)) {
         str_copy(p->title, sizeof p->title, ms->title);
         p->known = true;
     }
@@ -375,10 +426,7 @@ static const Place *film_place(Sorter *s, const char *title, int year) {
 /* ?series=<id>: that series' folder, when it's in this library folder */
 static void series_target(Sorter *s) {
     const MediaSeries *ms = media_series(s->o->series);
-    for (int i = 0; ms && s->root_ix >= 0 && i < ms->count && !s->series_ok; i++) {
-        const MediaFile *e = media_episode(ms, i);
-        if (!e || e->root != s->root_ix) continue;
-        str_ncopy(s->series_show, sizeof s->series_show, e->rel, show_dir_len(e->rel));
+    if (ms && s->root_ix >= 0 && show_home(s, ms, s->series_show, sizeof s->series_show)) {
         str_copy(s->series_title, sizeof s->series_title, ms->title);
         s->series_ok = true;
     }
@@ -467,6 +515,18 @@ static bool goes_with(const char *rel, const char *video) {
            (rel[sl] == '.' || rel[sl] == '-');
 }
 
+/* A DVD VobSub's "x.en.sub" (its pictures) has its "x.en.idx" (the index) among the chosen files: which
+   one, or -1. Alone, a .sub is MicroDVD text - not something Hemma reads. */
+static int vobsub_idx(const char *const *rels, int n, int i) {
+    const char *rel = rels[i];
+    if (!rel || !media_is_vobsub_data(rel)) return -1;
+    size_t len = strlen(rel);
+    for (int k = 0; k < n; k++)
+        if (k != i && rels[k] && strlen(rels[k]) == len && strncmp(rels[k], rel, len - 4) == 0 && str_iends(rels[k], ".idx"))
+            return k;
+    return -1;
+}
+
 void upload_sort(const UpSortOpts *o, const char *const *rels, int n, UpSorted *out) {
     Sorter *s = xcalloc(1, sizeof *s);
     s->o = o;
@@ -491,7 +551,7 @@ void upload_sort(const UpSortOpts *o, const char *const *rels, int n, UpSorted *
             continue;
         }
         str_copy(u->dest, sizeof u->dest, rel);
-        if (media_is_sub_ext(rel)) u->kind = UPK_SUB;
+        if (media_is_sub_ext(rel) || vobsub_idx(rels, n, i) >= 0) u->kind = UPK_SUB;
         else if (media_is_image_ext(rel)) u->kind = UPK_PIC;
         else if (!media_is_video_ext(rel)) u->kind = UPK_JUNK;
         if (u->kind) continue;
@@ -582,6 +642,27 @@ void upload_sort(const UpSortOpts *o, const char *const *rels, int n, UpSorted *
             str_copy(u->title, sizeof u->title, show->title);
             u->known = show->known;
         }
+    }
+
+    /* 4. a VobSub's .sub wherever its .idx went: the pair stays together (the library takes the .sub
+          only beside its .idx) */
+    for (int i = 0; i < n; i++) {
+        int k = out[i].kind == UPK_SUB ? vobsub_idx(rels, n, i) : -1;
+        if (k < 0) continue;
+        UpSorted *u = &out[i];
+        const UpSorted *x = &out[k];
+        char dir[400];
+        const char *slash = strrchr(x->dest, '/');
+        str_ncopy(dir, sizeof dir, x->dest, slash ? (size_t)(slash - x->dest) : 0);
+        place_in(u, dir, rels[i]);
+        u->kept = x->kept;
+        str_copy(u->title, sizeof u->title, x->title);
+        u->ep_title[0] = '\0';
+        u->year = x->year;
+        u->season = x->season;
+        u->episode = x->episode;
+        u->episode_end = x->episode_end;
+        u->known = x->known;
     }
     free(dirh);
     free(lead);

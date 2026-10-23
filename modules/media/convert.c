@@ -97,19 +97,58 @@ static void on_progress(void *ctx, int permille) {
     watch_stop(io);
 }
 
-bool convert_save_sub(const char *video, const char *lang, const char *name, bool forced, const char *srt, size_t len) {
-    char path[1100];
-    if (!srt || !len || !media_sub_sidecar(video, lang, name, forced, path, sizeof path)) return false;
-    if (path_stat(path, NULL, NULL, NULL)) return false; /* there already: that one stays */
-    if (!file_write_atomic(path, srt, len)) {
-        log_warn("convert: couldn't save the subtitles %s", path);
+static bool save_new(const char *path, const void *data, size_t n) {
+    if (file_write_atomic(path, data, n)) return true;
+    log_warn("convert: couldn't save the subtitles %s", path);
+    return false;
+}
+
+bool convert_save_sub(const char *video, const AvConvSub *s, ConvertSubs *seen) {
+    if (!video || !s) return false;
+    /* which of its language and flags it is in the file: the second gets ".2" (counted whether the
+       first was saved or not, so a run again names every track as the first run did) */
+    MediaSubTags t;
+    media_sub_track_tags(s->lang, s->name, s->forced, &t);
+    char key[40];
+    media_sub_key(&t, key, sizeof key);
+    int n = 1;
+    for (int i = 0; seen && i < seen->n; i++) n += str_eq(seen->keys[i], key);
+    if (seen && seen->n < AV_CONV_MAX_SUBS) str_copy(seen->keys[seen->n++], sizeof seen->keys[0], key);
+    char path[1100], pics[1100];
+    switch (s->kind) {
+    case AV_SUB_TEXT:
+        if (!s->srt || !s->len || !media_sub_sidecar(video, s->lang, s->name, s->forced, "srt", n, path, sizeof path))
+            return false;
+        return !path_stat(path, NULL, NULL, NULL) && save_new(path, s->srt, s->len); /* (one there stays) */
+    case AV_SUB_PGS:
+        if (!s->data || !s->size || !media_sub_sidecar(video, s->lang, s->name, s->forced, "sup", n, path, sizeof path))
+            return false;
+        return !path_stat(path, NULL, NULL, NULL) && save_new(path, s->data, s->size);
+    case AV_SUB_VOBSUB: /* the pair, or nothing: the .idx last (the library takes a .sub only beside its .idx) */
+        if (!s->data || !s->size || !s->idx || !s->idx_len ||
+            !media_sub_sidecar(video, s->lang, s->name, s->forced, "idx", n, path, sizeof path))
+            return false;
+        str_copy(pics, sizeof pics, path);
+        memcpy(pics + strlen(pics) - 3, "sub", 3);
+        if (path_stat(path, NULL, NULL, NULL) || path_stat(pics, NULL, NULL, NULL)) return false;
+        if (!save_new(pics, s->data, s->size)) return false;
+        if (save_new(path, s->idx, s->idx_len)) return true;
+        file_remove(pics);
         return false;
     }
-    return true;
+    return false;
+}
+
+int convert_save_subs(const char *video, const AvConvSub *subs, int n) {
+    ConvertSubs seen = {0};
+    int saved = 0;
+    for (int k = 0; subs && k < n; k++) saved += convert_save_sub(video, &subs[k], &seen);
+    return saved;
 }
 
 bool convert_file(ConvertJob *j) {
     j->err[0] = j->what[0] = '\0';
+    j->subs = 0;
     atomic_store(&j->permille, 0);
     atomic_store(&j->out_mb, 0);
     char part[1100];
@@ -141,9 +180,9 @@ bool convert_file(ConvertJob *j) {
                     .progress = on_progress,
                     .progress_ctx = &io};
     bool ok = av_convert(&av);
-    j->subs = 0;
-    for (int k = 0; ok && k < av.nsubs; k++) /* (next to the original: the library gives them to its copy too) */
-        j->subs += convert_save_sub(j->src, av.subs[k].lang, av.subs[k].name, av.subs[k].forced, av.subs[k].srt, av.subs[k].len);
+    /* next to the original (the library gives them to its copy too) - also when the file was refused for
+       what it holds: then the converter took out just its subtitles, and the original still has them */
+    j->subs = convert_save_subs(j->src, av.subs, av.nsubs);
     av_convert_free(&av);
     str_copy(j->what, sizeof j->what, av.what);
     if (!ok) str_copy(j->err, sizeof j->err, av.err);
@@ -411,8 +450,11 @@ static void worker(void *arg) {
         log_info("convert: %s", it->job.src);
         bool ok = convert_file(&it->job);
         if (ok)
-            log_info("convert: done %s (%s, %lld MB%s)", it->job.dst, it->job.what, (long long)(it->job.out_bytes >> 20),
-                     it->job.subs ? ", subtitles saved as .srt" : "");
+            log_info("convert: done %s (%s, %lld MB, %d subtitle track%s saved)", it->job.dst, it->job.what,
+                     (long long)(it->job.out_bytes >> 20), it->job.subs, it->job.subs == 1 ? "" : "s");
+        else if (it->job.subs) /* (refused for what it holds: its subtitles came out all the same) */
+            log_warn("convert: %s - %s (%d subtitle track%s saved)", it->job.src, it->job.err, it->job.subs,
+                     it->job.subs == 1 ? "" : "s");
         else log_warn("convert: %s - %s", it->job.src, it->job.err);
 
         lock_take(&g_cl);
@@ -428,6 +470,14 @@ bool convert_queued(uint64_t id) {
     for (int i = 0; i < g_nitems && !q; i++) q = g_items[i]->id == id && g_items[i]->state <= CQ_RUNNING;
     lock_give(&g_cl);
     return q;
+}
+
+bool convert_busy(void) {
+    lock_take(&g_cl);
+    bool busy = g_running > 0;
+    for (int i = 0; i < g_nitems && !busy; i++) busy = g_items[i]->state <= CQ_RUNNING;
+    lock_give(&g_cl);
+    return busy;
 }
 
 typedef enum { EQ_ADDED, EQ_NO, EQ_ON_ITS_WAY, EQ_THERE, EQ_UPLOAD, EQ_N } Enq;

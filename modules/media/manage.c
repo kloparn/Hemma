@@ -305,8 +305,14 @@ static void companions(Moves *mv, const char *root, const MediaFile *v, const ch
         str_ncopy(start, sizeof start, xb, ol);
         if (strlen(xb) < ol || !fold_eq(start, old)) {
             if (pic) continue; /* (a picture named otherwise isn't the video's alone) */
+            /* named for the new stem with what its name said: "x.en.sdh.2.srt"; a VobSub's .idx and
+               .sub alike, so the pair stays a pair */
             const char *dot = strrchr(xb, '.');
-            snprintf(name, sizeof name, "%s%s%s%s", new_stem, x->lang[0] ? "." : "", x->lang, dot ? dot : "");
+            MediaSubTags t;
+            char as[400];
+            if (!media_sub_tags(vb, xb, &t)) str_copy(t.lang, sizeof t.lang, x->lang);
+            snprintf(as, sizeof as, "%s.x", new_stem);
+            if (!dot || !media_sub_name(as, &t, dot + 1, name, sizeof name)) continue;
         } else {
             snprintf(name, sizeof name, "%s%s", new_stem, xb + ol);
         }

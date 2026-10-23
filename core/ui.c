@@ -247,9 +247,11 @@ void ui_player(Buf *b, const UiPlayer *p) {
         H(b, "<span class=\"pl-menu\" role=\"menu\" hidden><button type=\"button\" role=\"menuitemradio\" data-sub=\"\" "
              "aria-checked=\"%s\">%s</button>",
           any ? "false" : "true", T("Off"));
-        for (int i = 0; i < p->nsubs; i++)
-            H(b, "<button type=\"button\" role=\"menuitemradio\" data-sub=\"%s\" aria-checked=\"%s\">%s</button>", p->subs[i].lang,
-              p->subs[i].on ? "true" : "false", p->subs[i].label);
+        for (int i = 0; i < p->nsubs; i++) {
+            H(b, "<button type=\"button\" role=\"menuitemradio\" data-sub=\"%s\"", p->subs[i].key);
+            if (p->subs[i].pic) H(b, " data-subpic=\"%s\"", p->subs[i].pic);
+            H(b, " aria-checked=\"%s\">%s</button>", p->subs[i].on ? "true" : "false", p->subs[i].label);
+        }
         buf_puts(b, "</span></span>");
     }
     /* the sound: muted swaps the icon; on a live channel it also says so in words (a TV that won't

@@ -7,6 +7,7 @@
 #include "convert.h"
 #include "library.h"
 #include "media.h"
+#include "remove.h"
 #include "../../core/codec.h"
 
 static void put(const char *root, const char *rel, const char *text) {
@@ -541,6 +542,148 @@ TEST(media_player_addresses_carry_the_screens_key) {
     CHECK_HAS(th_page(adam, url("/media/watch/%s", f->id)), want);
     g_fake_now = 0;
     buf_free(&page);
+    th_halt();
+}
+
+/* Two subtitles in one language are two choices (C4): each <track> has its key as its id ("sub-en",
+   "sub-en.sdh", "sub-en.2"), the menu picks by key, in the same order - the plain one first, which the
+   viewer's language turns on. Picture subtitles (.sup, a VobSub's .idx) are in the same list by the same
+   rules (C5), with their cue list's address (data-subpic) instead of a <track>; a VobSub's .sub never. */
+TEST(media_player_offers_each_subtitle_by_its_key) {
+    int adam = boot_with_library();
+    static const char *const files[] = {"Night (1993).en.forced.srt", "Night (1993).en.sdh.srt", "Night (1993).English.srt",
+                                        "Night (1993).en.2.srt",      "Night (1993).sv.srt",     "Night (1993).en.srt",
+                                        "Night (1993).en.sup",        "Night (1993).en.3.idx",   "Night (1993).en.3.sub"};
+    put(g_root, "Movies/Night (1993)/Night (1993).mp4", "film");
+    for (int i = 0; i < countof(files); i++) {
+        char rel[200];
+        snprintf(rel, sizeof rel, "Movies/Night (1993)/%s", files[i]);
+        put(g_root, rel, "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
+    }
+    put(g_root, "Movies/Day (1994)/Day (1994).mp4", "film");
+    put(g_root, "Movies/Day (1994)/Day (1994).en.sup", "PG");
+    media_scan_sync();
+    const MediaFile *night = find("Night (1993).mp4");
+    CHECK(night);
+    if (!night) {
+        th_halt();
+        return;
+    }
+    char want[300], hex[17];
+    const char *html = th_page(adam, url("/media/watch/%s", night->id));
+    /* keyed - "English.srt" and "en.sup" would be more "en"s: the next numbers free (en.2 and en.3 are files') */
+    static const struct {
+        const char *file, *key, *lang, *label;
+    } t[] = {{"Night (1993).en.srt", "en", "en", "English"},
+             {"Night (1993).en.2.srt", "en.2", "en", "English 2"},
+             {"Night (1993).en.3.idx", "en.3", "en", "English 3"},
+             {"Night (1993).en.sup", "en.4", "en", "English 4"},
+             {"Night (1993).English.srt", "en.5", "en", "English 5"},
+             {"Night (1993).en.sdh.srt", "en.sdh", "en", "English (for the hard of hearing)"},
+             {"Night (1993).en.forced.srt", "en.forced", "en", "English (foreign speech only)"},
+             {"Night (1993).sv.srt", "sv", "sv", "Svenska"}};
+    const char *last_track = html, *last_item = html;
+    for (int i = 0; i < countof(t); i++) {
+        const MediaFile *s = find(t[i].file);
+        CHECK(s && s->type == MF_SUB && s->video == night->id);
+        if (!s) continue;
+        media_id_hex(s->id, hex);
+        bool pic = str_ends(t[i].file, ".sup") || str_ends(t[i].file, ".idx");
+        if (!pic) {
+            snprintf(want, sizeof want, "<track id=\"sub-%s\" kind=\"subtitles\" src=\"/media/sub/%s.vtt\" srclang=\"%s\" label=\"%s\">",
+                     t[i].key, hex, t[i].lang, t[i].label);
+            CHECK_HAS(html, want);
+            const char *at = strstr(html, want);
+            CHECK(at && at > last_track); /* (in this order) */
+            if (at) last_track = at;
+            snprintf(want, sizeof want, "data-sub=\"%s\" aria-checked=\"false\">%s</button>", t[i].key, t[i].label);
+        } else {
+            snprintf(want, sizeof want, "<track id=\"sub-%s\"", t[i].key);
+            CHECK(!strstr(html, want));
+            snprintf(want, sizeof want, "data-sub=\"%s\" data-subpic=\"/media/subpic/%s.json?v=%lld-%lld\" aria-checked=\"false\">%s</button>",
+                     t[i].key, hex, (long long)s->size, (long long)s->mtime, t[i].label);
+        }
+        CHECK_HAS(html, want);
+        const char *at = strstr(html, want);
+        CHECK(at && at > last_item); /* the menu: the same order, text and pictures together */
+        if (at) last_item = at;
+    }
+    int tracks = 0;
+    for (const char *p = html; (p = strstr(p, "<track ")) != NULL; p++) tracks++;
+    CHECK_INT(tracks, 6); /* (none for pictures) */
+    const MediaFile *vob = find("Night (1993).en.3.sub");
+    CHECK(vob && vob->type == MF_SUB && vob->video == night->id);
+    media_id_hex(vob ? vob->id : 0, hex);
+    CHECK(!strstr(html, hex)); /* (a VobSub's pictures: through its .idx) */
+    CHECK(!strstr(html, " default>"));
+    CHECK(!strstr(html, "aria-checked=\"true\">English"));
+    /* the viewer's language: the plain one first, in the track and in the menu */
+    CHECK(th_act(adam, "media.prefs", "sublang=en").ok);
+    html = th_page(adam, url("/media/watch/%s", night->id));
+    CHECK_HAS(html, "srclang=\"en\" label=\"English\" default>");
+    CHECK_HAS(html, "data-sub=\"en\" aria-checked=\"true\">English</button>");
+    CHECK_HAS(html, "data-sub=\"en.sdh\" aria-checked=\"false\">");
+    CHECK_HAS(html, "data-sub=\"\" aria-checked=\"false\">Off</button>");
+    const char *d = strstr(html, " default>");
+    CHECK(d && !strstr(d + 1, " default>")); /* (one) */
+    CHECK(!strstr(html, "aria-checked=\"true\">English ")); /* (the text one, not a picture one) */
+    /* a picture one comes on only where the language has no text one */
+    const MediaFile *day = find("Day (1994).mp4"), *daysup = find("Day (1994).en.sup");
+    CHECK(day && daysup);
+    if (day && daysup) {
+        media_id_hex(daysup->id, hex);
+        snprintf(want, sizeof want, "data-sub=\"en\" data-subpic=\"/media/subpic/%s.json?v=%lld-%lld\" aria-checked=\"true\">English</button>",
+                 hex, (long long)daysup->size, (long long)daysup->mtime);
+        CHECK_HAS(th_page(adam, url("/media/watch/%s", day->id)), want);
+    }
+    /* in the reader's words */
+    pref_set(adam, PREF_LANG, "sv");
+    html = th_page(adam, url("/media/watch/%s", night->id));
+    CHECK_HAS(html, "data-sub=\"en.sdh\" aria-checked=\"false\">English (för hörselskadade)</button>");
+    CHECK_HAS(html, "label=\"English (bara främmande språk)\"");
+    pref_set(adam, PREF_LANG, "es");
+    CHECK_HAS(th_page(adam, url("/media/watch/%s", night->id)), ">English (para personas sordas)</button>");
+    th_halt();
+}
+
+/* A DVD VobSub is two files (x.en.idx + x.en.sub): removing a film or an episode takes both, with
+   every other subtitle of it (.sup, numbered ones). */
+TEST(media_remove_takes_a_vobsub_pair_along) {
+    int adam = boot_with_library();
+    (void)adam;
+    static const char *const film[] = {"Movies/Night.1993.mkv", "Movies/Night.1993.en.idx", "Movies/Night.1993.en.sub",
+                                       "Movies/Night.1993.en.2.srt", "Movies/Night.1993.sv.sup"};
+    for (int i = 0; i < countof(film); i++) put(g_root, film[i], "x");
+    put(g_root, "Movies/Other (2000).mkv", "other"); /* (Movies isn't the film's own folder) */
+    put(g_root, "Series/Garden Show/Season 1/Garden.Show.S01E01.Seeds.en.idx", "idx");
+    put(g_root, "Series/Garden Show/Season 1/Garden.Show.S01E01.Seeds.en.sub", "pictures");
+    media_scan_sync();
+    const MediaFile *f = find("Night.1993.mkv");
+    CHECK(f);
+    if (!f) {
+        th_halt();
+        return;
+    }
+    RemovePlan p;
+    CHECK(media_remove_plan(f, &p));
+    CHECK_INT(p.files, countof(film));
+    for (int i = 0; i < countof(film); i++) {
+        bool in = false;
+        for (int k = 0; k < p.n; k++) in |= str_eq(p.items[k].rel, film[i]);
+        if (!in) test_fail(__FILE__, __LINE__, "%s isn't removed with the film", film[i]);
+    }
+    media_remove_free(&p);
+    const MediaFile *ep = find("S01E01.Seeds.mp4"), *idx = find("Seeds.en.idx"), *sub = find("Seeds.en.sub");
+    CHECK(ep && idx && sub && idx->video == ep->id && sub->video == ep->id);
+    MediaPurge mp = {0};
+    CHECK(ep && media_purge_episode(ep, &mp));
+    bool has_idx = false, has_sub = false;
+    for (int k = 0; k < mp.n; k++) {
+        has_idx |= idx && mp.ids[k] == idx->id;
+        has_sub |= sub && mp.ids[k] == sub->id;
+    }
+    CHECK(has_idx && has_sub);
+    media_purge_free(&mp);
     th_halt();
 }
 
