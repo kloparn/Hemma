@@ -541,8 +541,24 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  the library will ("Hemma would read that name as ..."); never over a file (rename_safe; a
                  case-only change goes through a temp name); every move or none. Watch history moves to the new id
                  at once (media_watch_move; the rescan's watch_follow fills the rest); "Not for children" marks of
-                 a renamed folder follow (kids_follow), an episode leaving a marked folder marks its new one. A
-                 whole series isn't renamed (its id is its title; tv channels and screen rows keep series ids).
+                 a renamed folder follow (kids_follow), an episode leaving a marked folder marks its new one.
+                 RENAMING A SERIES (1.3; owner, 2026-10-24: "make it so the admin can rename the series", Manage ->
+                 "The whole series" -> Rename, ?rename=1, action media.rename_series id/title/year): its SHOW FOLDERS
+                 are renamed (show_dirs: each folder above its videos' season/disc folders that media_names_show the
+                 series - every one of them, up to 16; refused when a video lies in none (named by its file, or in
+                 the library folder), another video of the library is in one, one is inside another), "<title>" or
+                 "<title> (<year>)", all or none (Moves). First the bare folder name is parsed (".../Season 1/S01E01.mkv":
+                 "Show S01-S03" or "Season 2" refused - "Hemma would read that name as"), then every video of it at
+                 its new place must parse to that title (a file not in a season folder keeps its own name's show:
+                 "use Fix number on it first"); another series of that title, a conversion of it, an upload into the
+                 folder (upload_claims_under) or a removal running = refused. THE ID STAYS: a series' id is its folded
+                 title hashed (library.c series_id), so table media_series_name {title folded, series} - written by
+                 media_series_keep(id, new title): its old row and any row of that title go, none when the title
+                 hashes to the id itself - gives the new title the old id; the scan reads a copy (Scan.names, a
+                 thread-local t_names around index_finish), the event loop the table. TV channels (Channel.shows),
+                 screen rows, media.sub.<series> picks and bookmarks keep working unchanged. Watch history moves per
+                 video (media_watch_move to media_make_id of the new path), "Not for children" marks follow
+                 (kids_follow), Latest "renamed %s to %s".
                  Numbering one ripped disc's title by hand makes library.c number the rest after the season's
                  highest (the fix dialog says so).
   media/convert.c "play everywhere": MKV -> <name>.web.mp4 next to the original (H.264 + AAC, faststart),
@@ -1515,6 +1531,9 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
   folder. Across a joiner word the next number must follow directly ("S01E04 - E10 Title" stays a
   title). Rows show "1–2" (.media-ep-nn) and series totals count every episode. Names are parsed
   again from the path at every start (never cached), so parser changes reach existing libraries.
+  A RANGE OF SEASONS is a tag (names.c is_season_tok, 1.3): "S01-S31", "S1-12" (one token: tokenize doesn't
+  split on '-'), "Season 1-2", "Seasons 1-9" (SEASONS_WORDS) - "The.Simpsons.S01-S31.1080p" names "The
+  Simpsons"; such a folder is never a season folder.
   Movies vs series: episode markers / season folders -> series; "Title (Year)" -> movie; folders named
   Series/Serier/TV Shows/Anime or Movies/Films/Filmer or Home videos/Family/DCIM lean the guess.
 - Streaming is direct play (bytes as stored, Range requests, worker thread per stream, `sendfile`
@@ -1603,7 +1622,8 @@ feat/faster-uploads; owner, 2026-10-23: "make the 12mbit/s limit ... be always a
 is ready (no waiting on the list's order), conv.js reads ahead, copies optionally kept in memory (a big checkbox; sent
 in pieces), and what stays behind still gives the subtitles the library lacks (subtitles-only entries; sidecars and
 lone subtitle files go next to the library's video); then (owner, 2026-10-24: "faster branch + extra file support") DTS
-sound (av/dts.c) and subtitles following the viewer through a series, C toggling them.
+sound (av/dts.c) and subtitles following the viewer through a series, C toggling them; admins renaming a series
+(its folders; it keeps its id), and a release folder's season range ("S01-S31") no part of a series' name.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling

@@ -39,6 +39,7 @@ bool convert_making(const char *path); /* a running conversion reads or writes t
    upload leaves it to the server. */
 bool convert_give_way(const char *path);
 bool upload_claims(const char *path); /* an upload writes this file now, or will soon (a live one) */
+bool upload_claims_under(const char *dir); /* ... any file in that folder (a series being renamed: manage.c) */
 /* The library scan found a "<copy>.conv.part": deleted unless a queued conversion is making it
    (a crash or power cut left it). Any thread. */
 void convert_drop_leftover(const char *path);

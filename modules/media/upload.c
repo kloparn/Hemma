@@ -596,6 +596,26 @@ bool upload_claims(const char *path) {
     return mine;
 }
 
+bool upload_claims_under(const char *dir) {
+    bool mine = false;
+    size_t dl = strlen(dir);
+    lock_take(&g_lock);
+    for (int s = 0; s < MAX_BATCHES && !mine; s++) {
+        const Batch *o = g_batch[s];
+        if (!o) continue;
+        bool coming = live(o);
+        for (int p = 0; p < o->nfiles && !mine; p++) {
+            const UpFile *x = &o->files[p];
+            if (x->state != UP_WRITING && !(x->state == UP_QUEUED && coming)) continue;
+            char path[1024];
+            join(path, sizeof path, o->root, x->rel);
+            mine = str_istarts(path, dir) && (path[dl] == '/' || path[dl] == '\0');
+        }
+    }
+    lock_give(&g_lock);
+    return mine;
+}
+
 static bool listed(const Batch *b, const char *rel) {
     for (int k = 0; k < b->nfiles; k++)
         if (str_eq(b->files[k].rel, rel)) return true;

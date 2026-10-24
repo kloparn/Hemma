@@ -2359,7 +2359,8 @@ static const Action actions[] = {
     {"media.drive_use", media_drives_act_use}, {"media.drive_format", media_drives_act_format},
     {"media.drive_forget", media_drives_act_forget}, {"media.drive_seen", media_drives_act_seen},
     {"media.manage_remove", media_manage_act_remove}, {"media.fix_title", media_manage_act_fix_title},
-    {"media.fix_episode", media_manage_act_fix_episode}, {"media.take_subs", subtake_act_switch},
+    {"media.fix_episode", media_manage_act_fix_episode}, {"media.rename_series", media_manage_act_rename_series},
+    {"media.take_subs", subtake_act_switch},
     {0},
 };
 
@@ -2369,6 +2370,8 @@ static void init(void) {
     T_media_watch.api_owner = "person"; /* /api: watch history is for its person (and admins) */
     T_media_watch.what = "watch history";
     store_register(&T_media_watch);
+    T_media_series_name.what = "names of renamed series";
+    store_register(&T_media_series_name);
     media_kids_init();
 }
 

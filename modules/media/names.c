@@ -70,6 +70,8 @@ static const char *const CH_PREFIX[] = {"ddp", "dd", "aac", "ac3", "eac3", "dts"
 
 static const char *const SEASON_WORDS[] = {"season", "säsong",    "series",   "saison", "staffel",
                                            "temporada", "stagione", "sæson", "sesong",   "kausi", NULL};
+/* ... and the words for several of them: "Seasons 1-7" (a range of seasons is a tag, never a title word) */
+static const char *const SEASONS_WORDS[] = {"seasons", "säsonger", "saisons", "staffeln", "temporadas", "stagioni", NULL};
 static const char *const EPISODE_WORDS[] = {"episode", "episod",   "ep",    "avsnitt",
                                             "afsnit",  "episodio", "folge", "jakso", NULL};
 
@@ -349,11 +351,26 @@ static bool match_nxn(const char *lo, int *season, int *ep, int *ep_end) {
     return true;
 }
 
+/* A range of seasons in one word - "s01-s31", "s1-12" - or, after a season word, "1-7": a release of a whole
+   show ("The.Simpsons.S01-S31.1080p"), never part of its title. */
+static bool season_range(const char *lo, bool s_first) {
+    const char *p = lo;
+    if (s_first && *p++ != 's') return false;
+    int a = digits_at(&p, 4);
+    if (a < 0 || *p++ != '-') return false;
+    if (s_first && *p == 's') p++;
+    int b = digits_at(&p, 4);
+    return b > a && !*p;
+}
+
 static bool is_season_tok(const Toks *T, int i) {
     int s, e, ee;
     const char *lo = T->t[i].lo;
-    if (match_s_only(lo, &s) || match_sxe(lo, &s, &e, &ee)) return true;
-    return in_list(lo, SEASON_WORDS) && i + 1 < T->n && is_num(T->t[i + 1].lo, 1, 4, &s);
+    if (match_s_only(lo, &s) || match_sxe(lo, &s, &e, &ee) || season_range(lo, true)) return true;
+    if (i + 1 >= T->n) return false;
+    const char *next = T->t[i + 1].lo;
+    if (in_list(lo, SEASON_WORDS) && (is_num(next, 1, 4, &s) || season_range(next, false))) return true;
+    return in_list(lo, SEASONS_WORDS) && (is_num(next, 1, 4, &s) || season_range(next, false));
 }
 
 static void set_match(EpMatch *m, int start, int end, int season, int ep, int ep_end) {

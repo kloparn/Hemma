@@ -6,7 +6,7 @@ commit it was built from). Downloads, from 0.14.0 on:
 
 ## 1.3.0 (2026-10-24)
 
-Uploads keep the connection busy, DTS sound converts, and subtitles follow you through a series.
+Uploads keep the connection busy, DTS sound converts, subtitles follow you through a series, and admins can rename a series.
 
 ### New
 
@@ -32,6 +32,12 @@ Uploads keep the connection busy, DTS sound converts, and subtitles follow you t
   dropped in on its own finds its episode or film by its name ("Friends S01E01.sv.srt"), keeping its
   language and "forced"/"SDH" tags. One the library has already is skipped ("... has these subtitles
   already").
+- **Rename a series:** **Manage** on a series page → **Rename** (admins). Hemma reads a series' name from
+  its folder, so its folder gets the new name - every folder of it, when its seasons sit in more than
+  one. It keeps everything that points at it: TV channels, screens, everyone's progress and subtitle
+  pick, "Not for children" marks. Before anything moves Hemma checks how it will read the new name, and
+  says so when an episode's own file name would keep the old one (**Fix number** on it first), when the
+  folder holds other videos too, or when another series has that name.
 - **Keep converted videos in memory until they're sent** - a big checkbox on the upload page: the
   copies your computer makes wait in its memory (RAM) instead of on its disk, so nothing piles up on
   the disk and it only reads the originals. They take up to the room set under **More options**. Off
@@ -39,6 +45,9 @@ Uploads keep the connection busy, DTS sound converts, and subtitles follow you t
 
 ### Changed
 
+- **A whole show's release names its series right:** a folder like "The.Simpsons.S01-S31.1080p..." or
+  "Seinfeld Seasons 1-9" made a series called "The Simpsons S01-S31"; a range of seasons is no part
+  of a show's name now, so it's "The Simpsons" - already uploaded ones too, without moving anything.
 - **Uploads don't stand still while something could go:** converted copies used to go in the list's
   order, so the connection waited whenever the next one in line was still being made - even with
   others finished. Now whatever is ready goes first: finished copies, then the files that go as they
@@ -60,6 +69,13 @@ Uploads keep the connection busy, DTS sound converts, and subtitles follow you t
   edition leaves out come from FFmpeg (`third_party/ffmpeg/`, LGPL 2.1 or later - the downloads carry
   `LICENSE-LGPL-2.1.txt`). A test frame writer (`dts_testenc.h`), a fuzz target (`dts`, nightly too),
   a converter seed (`h264-dts.mkv`) and a real-file check (`HEMMA_TEST_DTS`).
+- The README's pictures are new (the same made-up household, on 1.3), with two more: adding videos (the
+  upload's preview) and managing a series.
+- `media.rename_series` (id, title, year) renames a series' show folders (manage.c) after parsing every
+  video's new path as the library will; table `media_series_name` keeps a renamed series' id under its
+  new title (`media_series_keep`; the scan reads a copy of it), so nothing holding a series id breaks.
+  `upload_claims_under(dir)`: an upload writing into a folder. names.c: a season range ("S01-S31",
+  "Seasons 1-7") is a tag.
 - The live action `media.sub` keeps a viewer's subtitles pick per series (prefs `media.sub.<series>`,
   generation `media.sub.gen`); the subtitle menu marks what C turns on (`data-subpref`).
 

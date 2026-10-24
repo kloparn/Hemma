@@ -193,4 +193,18 @@ int media_history_lost(char labels[][100], int max, bool *away);
 int media_history_forget(void); /* drops it (nothing away): how many videos' history went */
 bool media_lib_away(void); /* the last scan found a library folder missing or empty (an unplugged disk) */
 
+/* ---- renamed series (1.3) ----
+   A series' id is its folded title hashed - so a series an admin renames (manage.c) would get another id,
+   and lose what keeps the old one: TV channels, screen rows, everyone's subtitle pick for it, bookmarks.
+   Instead its new title is remembered with its id (table media_series_name), and the library gives that
+   title this id. */
+typedef struct {
+    int id;
+    char title[160]; /* folded */
+    uint64_t series;
+} MediaSeriesName;
+extern Table T_media_series_name;
+uint64_t media_series_id(const char *title);             /* the id a series of that title has (event loop) */
+void media_series_keep(uint64_t series, const char *title); /* (in an action) from now on that title is this series */
+
 #endif

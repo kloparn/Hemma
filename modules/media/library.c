@@ -167,6 +167,7 @@ typedef struct {
     MediaLeft *left, *parts; /* (MEDIA_LEFT_MAX each, allocated when the first comes) */
     int nleft, nleft_all, nparts, nparts_all;
     int64_t parts_bytes, now;
+    struct SeriesNames *names; /* renamed series, copied for the scan's thread */
 } Scan;
 
 static void note_left(MediaLeft **list, int *n, int *all, int root, const char *rel, int64_t size, int64_t mtime,
@@ -449,11 +450,57 @@ static int series_cmp(const void *x, const void *y) {
     return title_cmp(((const MediaSeries *)x)->title, ((const MediaSeries *)y)->title);
 }
 
+/* Renamed series (library.h): the table, and the scan's copy of it - a scan thread never reads a table. */
+static const FieldDef series_name_fields[] = {
+    FIELD(MediaSeriesName, id, F_INT),
+    FIELD(MediaSeriesName, title, F_STR),
+    FIELD(MediaSeriesName, series, F_U64),
+};
+Table T_media_series_name = TABLE("media_series_name", MediaSeriesName, series_name_fields);
+
+typedef struct SeriesNames {
+    MediaSeriesName *e;
+    int n;
+} SeriesNames;
+static _Thread_local const SeriesNames *t_names; /* set while a scan builds its index; else the table (event loop) */
+
+static uint64_t title_hash(const char *folded) {
+    uint64_t h = hash64_str(folded);
+    return h ? h : 1;
+}
+
 static uint64_t series_id(const char *title) {
     char k[160];
     fold_copy(k, sizeof k, title);
-    uint64_t h = hash64_str(k);
-    return h ? h : 1;
+    int n = t_names ? t_names->n : tbl_count(&T_media_series_name);
+    for (int i = 0; i < n; i++) {
+        const MediaSeriesName *m = t_names ? &t_names->e[i] : tbl_at(&T_media_series_name, i);
+        if (str_eq(m->title, k)) return m->series;
+    }
+    return title_hash(k);
+}
+
+uint64_t media_series_id(const char *title) { return series_id(title); }
+
+void media_series_keep(uint64_t series, const char *title) {
+    char k[160];
+    fold_copy(k, sizeof k, title);
+    for (int i = tbl_count(&T_media_series_name) - 1; i >= 0; i--) { /* its old name, and whoever had this one */
+        const MediaSeriesName *m = tbl_at(&T_media_series_name, i);
+        if (m->series == series || str_eq(m->title, k)) tbl_del(&T_media_series_name, m->id);
+    }
+    if (title_hash(k) == series) return; /* (its own name again: nothing to remember) */
+    MediaSeriesName m = {.series = series};
+    str_copy(m.title, sizeof m.title, k);
+    tbl_put(&T_media_series_name, &m);
+}
+
+static SeriesNames *names_copy(void) {
+    SeriesNames *s = xcalloc(1, sizeof *s);
+    s->n = tbl_count(&T_media_series_name);
+    s->e = xmalloc((size_t)(s->n ? s->n : 1) * sizeof *s->e);
+    for (int i = 0; i < s->n; i++) s->e[i] = *(const MediaSeriesName *)tbl_at(&T_media_series_name, i);
+    return s;
 }
 
 /* "Show/x" for "Show/x.mkv", "Show/x.web.mp4" and "Show/x.playall.mkv": a file and its copy */
@@ -943,6 +990,12 @@ static void index_finish(MediaIndex *ix) {
     t_files = NULL;
 }
 
+static void names_free(SeriesNames *s) {
+    if (!s) return;
+    free(s->e);
+    free(s);
+}
+
 static MediaIndex *scan_run(Scan *sc) {
     sc->now = now_sec();
     for (int r = 0; r < sc->nroots && !atomic_load(&g_abort); r++) walk(sc, r, sc->roots[r], "", 0);
@@ -950,6 +1003,8 @@ static MediaIndex *scan_run(Scan *sc) {
         free(sc->files);
         free(sc->left);
         free(sc->parts);
+        names_free(sc->names);
+        sc->names = NULL;
         return NULL;
     }
     MediaIndex *ix = xcalloc(1, sizeof *ix);
@@ -961,7 +1016,11 @@ static MediaIndex *scan_run(Scan *sc) {
     ix->files = sc->files ? sc->files : xmalloc(sizeof(MediaFile));
     ix->nfiles = sc->n;
     ix->probed = sc->probed;
+    t_names = sc->names;
     index_finish(ix);
+    t_names = NULL;
+    names_free(sc->names);
+    sc->names = NULL;
     return ix;
 }
 
@@ -1167,6 +1226,7 @@ static Scan *scan_new(void) {
     adopt_pending(now_ms());
     Scan *sc = xcalloc(1, sizeof *sc);
     sc->nroots = media_roots(sc->roots, MEDIA_MAX_ROOTS);
+    sc->names = names_copy();
     sc->old = media_lib();
     atomic_store(&g_seen, 0);
     return sc;
@@ -1188,6 +1248,7 @@ void media_scan_start(void) {
     Scan *sc = scan_new();
     g_scan_t0 = now_ms();
     if (!thread_spawn(scan_thread, sc)) {
+        names_free(sc->names);
         free(sc);
         atomic_store(&g_scanning, false);
         log_error("media: cannot start the scanner thread");
