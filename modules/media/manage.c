@@ -14,8 +14,10 @@
  * Nothing is ever renamed over a file that's there; a name is cleaned for every disk, and checked the
  * way the library will read it (a fix that Hemma would misread too is refused). The watch history moves
  * to the video's new id at once (the scan fills in the rest, library.c watch_follow), and a "Not for
- * children" mark on a renamed folder goes with it (kids.c). Renaming a whole series isn't offered: its
- * id comes from its title, and TV channels and screen rows keep series ids. */
+ * children" mark on a renamed folder goes with it (kids.c). Renaming a whole series (1.3; owner, 2026-10-24:
+ * "something you want to be able to do in the GUI") renames its show folders - the library reads a series'
+ * name from its folder - and keeps its id under the new name (library.c media_series_keep): its id comes
+ * from its title, and TV channels, screen rows and subtitle picks keep series ids. */
 #include "manage.h"
 
 #include <ctype.h>
@@ -753,6 +755,274 @@ void media_manage_act_fix_title(Ctx *c, Fields *fl) {
     else media_scan_start();
 }
 
+/* ------------------------------------------------------- renaming a series */
+
+#define SHOW_DIRS 16
+
+typedef struct {
+    int root;
+    char rel[400]; /* the show's folder below the library folder: "Series/The Simpsons S01-S31" */
+    char to[400];  /* ... renamed: "Series/The Simpsons" */
+} ShowDir;
+
+/* The videos a series is: its episodes and its extras (a disc's play-all, bonus clips), not copies or headers. */
+static bool of_series(const MediaFile *f, uint64_t series) {
+    return f->type == MF_VIDEO && f->series == series && f->role != MF_WEBCOPY && !media_is_playall_head(f->rel);
+}
+
+/* Is rel in folder dir (below the same library folder)? */
+static bool under_dir(const char *rel, const char *dir) {
+    size_t n = strlen(dir);
+    return strncmp(rel, dir, n) == 0 && rel[n] == '/';
+}
+
+/* The folders a series' name comes from: each folder above its videos' season and disc folders, which the
+   library reads the show from ("Series/The Simpsons"; never "Series" or the library folder itself). 0 = it
+   can't be renamed by its folders - why, in *why: a video in no such folder (its name comes from its file),
+   another video in one of them, one folder inside another, or more than SHOW_DIRS of them. */
+static int show_dirs(const MediaSeries *s, ShowDir *dirs, const char **why) {
+    const MediaIndex *ix = media_lib();
+    int n = 0;
+    *why = NULL;
+    for (int i = 0; i < ix->nfiles; i++) {
+        const MediaFile *f = &ix->files[i];
+        if (!of_series(f, s->id)) continue;
+        size_t sd = f->root >= 0 && f->root < ix->nroots ? media_show_dir_len(f->rel) : 0;
+        if (!sd || sd >= sizeof dirs[0].rel || !media_names_show(ix->roots[f->root], f->rel, sd, s->title)) {
+            *why = N_("Some of its episodes aren't in a folder of the series' own, so Hemma can't rename it by its folder.");
+            return 0;
+        }
+        bool seen = false;
+        for (int k = 0; k < n && !seen; k++) seen = dirs[k].root == f->root && strlen(dirs[k].rel) == sd && !strncmp(dirs[k].rel, f->rel, sd);
+        if (seen) continue;
+        if (n == SHOW_DIRS) {
+            *why = N_("Its episodes are in too many folders to rename them all at once.");
+            return 0;
+        }
+        dirs[n].root = f->root;
+        str_ncopy(dirs[n].rel, sizeof dirs[n].rel, f->rel, sd);
+        dirs[n].to[0] = '\0';
+        n++;
+    }
+    for (int a = 0; a < n; a++)
+        for (int b = 0; b < n; b++)
+            if (a != b && dirs[a].root == dirs[b].root && under_dir(dirs[b].rel, dirs[a].rel)) {
+                *why = N_("One of its folders is inside another, so Hemma can't rename it by its folders.");
+                return 0;
+            }
+    for (int i = 0; i < ix->nfiles; i++) { /* nothing else of the library in them */
+        const MediaFile *f = &ix->files[i];
+        if (f->type != MF_VIDEO || f->role == MF_WEBCOPY || media_is_playall_head(f->rel) || f->series == s->id) continue;
+        for (int k = 0; k < n; k++)
+            if (dirs[k].root == f->root && under_dir(f->rel, dirs[k].rel)) {
+                *why = N_("Its folder holds other videos too, so Hemma can't rename it by its folder.");
+                return 0;
+            }
+    }
+    return n;
+}
+
+static const char *show_rel_now(const ShowDir *dirs, int n, const MediaFile *f, char *out, size_t cap) {
+    for (int k = 0; k < n; k++)
+        if (dirs[k].root == f->root && under_dir(f->rel, dirs[k].rel)) {
+            snprintf(out, cap, "%s%s", dirs[k].to, f->rel + strlen(dirs[k].rel));
+            return out;
+        }
+    str_copy(out, cap, f->rel);
+    return out;
+}
+
+void media_manage_act_rename_series(Ctx *c, Fields *fl) {
+    if (!is_admin(c)) {
+        ctx_fail(c, "%s", T("Only an admin can fix names in the library"));
+        return;
+    }
+    const MediaIndex *ix = media_lib();
+    uint64_t id = 0;
+    const MediaSeries *s = media_parse_id(fields_str(fl, "id"), &id) ? media_series(id) : NULL;
+    if (!s) {
+        ctx_fail(c, "%s", T("That isn't in the library any more"));
+        return;
+    }
+    if (g_removing) {
+        ctx_fail(c, T("Hemma is still removing %s - try again in a moment"), g_removing->what);
+        return;
+    }
+    char title[128];
+    if (!clean_part(fields_str(fl, "title"), title, sizeof title)) {
+        ctx_fail_at(c, "title", "%s", T("Type its name - in letters a disk can store"));
+        return;
+    }
+    long long year = 0;
+    if (!str_blank(fields_str(fl, "year")) && !int_field(fl, "year", 1880, 2100, &year)) {
+        ctx_fail_at(c, "year", "%s", T("A year like 1993 - or leave it empty"));
+        return;
+    }
+    char folder[160];
+    if (year) snprintf(folder, sizeof folder, "%s (%lld)", title, year);
+    else str_copy(folder, sizeof folder, title);
+    if (!name_ok(folder)) {
+        ctx_fail_at(c, "title", "%s", T("That name is too long, or one a disk can't store - try a shorter title"));
+        return;
+    }
+    ShowDir dirs[SHOW_DIRS];
+    const char *why = NULL;
+    int nd = show_dirs(s, dirs, &why);
+    if (!nd) {
+        ctx_fail(c, "%s", T(why));
+        return;
+    }
+    for (int k = 0; k < nd; k++) {
+        size_t pl = dir_len(dirs[k].rel);
+        char parent[400];
+        str_ncopy(parent, sizeof parent, dirs[k].rel, pl);
+        if (!in_dir(dirs[k].to, sizeof dirs[k].to, parent, folder)) {
+            ctx_fail_at(c, "title", "%s", T("That name is too long, or one a disk can't store - try a shorter title"));
+            return;
+        }
+    }
+    /* what the library will read: the folder's name first ("Season 2" or "Show S01-S03" don't name a show
+       as typed), then every video of it at its new place - each must be this series by that name */
+    char probe[600];
+    MediaName pn;
+    snprintf(probe, sizeof probe, "%s/Season 1/S01E01.mkv", dirs[0].to);
+    media_parse_name_in(media_root_name(ix->roots[dirs[0].root]), probe, &pn);
+    if (pn.kind != MEDIA_EPISODE || !same_words(pn.title, title) || pn.year != (int)year) {
+        char lbl[200];
+        if (pn.kind == MEDIA_EPISODE && pn.year) snprintf(lbl, sizeof lbl, "%s (%d)", pn.title, pn.year);
+        else str_copy(lbl, sizeof lbl, pn.kind == MEDIA_EPISODE ? pn.title : "?");
+        ctx_fail_at(c, "title", T("Hemma would read that name as \"%s\" - try other words"), lbl);
+        return;
+    }
+    char named[128] = "";
+    for (int i = 0; i < ix->nfiles; i++) {
+        const MediaFile *f = &ix->files[i];
+        if (!of_series(f, s->id)) continue;
+        if (converting(f)) {
+            ctx_fail(c, "%s", T("It's being converted right now - stop that first (Library settings)"));
+            return;
+        }
+        char rel[600];
+        MediaName n;
+        media_parse_name_in(media_root_name(ix->roots[f->root]), show_rel_now(dirs, nd, f, rel, sizeof rel), &n);
+        if (n.kind == MEDIA_EPISODE && same_words(n.title, title) && (!named[0] || fold_eq(n.title, named))) {
+            if (!named[0]) str_copy(named, sizeof named, n.title);
+            continue;
+        }
+        if (n.kind == MEDIA_EPISODE && !same_words(n.title, title) && f->name.kind == MEDIA_EPISODE) {
+            char ep[200];
+            item_label(f, s, ep, sizeof ep);
+            ctx_fail(c,
+                     T("Hemma would still read %s as \"%s\" by its own file name - use Fix number on it first (that puts it in "
+                       "a season folder), then rename the series"),
+                     ep, n.title);
+        } else {
+            char lbl[200];
+            media_label(&n, lbl, sizeof lbl);
+            ctx_fail(c, T("Hemma would read that name as \"%s\" - try other words"), lbl);
+        }
+        return;
+    }
+    if (!named[0]) {
+        ctx_fail(c, "%s", T("That isn't in the library any more"));
+        return;
+    }
+    uint64_t other = media_series_id(named);
+    if (other != s->id && media_series(other)) {
+        ctx_fail_at(c, "title", T("There's already a series called %s"), named);
+        return;
+    }
+    for (int k = 0; k < nd; k++) {
+        char abs[1024];
+        if (join(abs, sizeof abs, ix->roots[dirs[k].root], dirs[k].rel) && upload_claims_under(abs)) {
+            ctx_fail(c, "%s", T("Videos are being uploaded into its folder - rename it once that's done"));
+            return;
+        }
+    }
+    Moves *mv = xcalloc(1, sizeof *mv);
+    for (int k = 0; k < nd; k++) {
+        char from[1024], to[1024];
+        if (join(from, sizeof from, ix->roots[dirs[k].root], dirs[k].rel) && join(to, sizeof to, ix->roots[dirs[k].root], dirs[k].to))
+            mv_add(mv, from, to);
+    }
+    if (str_eq(named, s->title) && moves_refused(c, mv)) {
+        free(mv);
+        return;
+    }
+    const char *taken = mv_taken(mv);
+    if (taken) {
+        ctx_fail_at(c, "title", T("There's already a folder called %s there"), taken);
+        free(mv);
+        return;
+    }
+    char taken_now[300] = "";
+    bool ok = mv_run(mv, taken_now, sizeof taken_now);
+    free(mv);
+    if (!ok) {
+        fail_moves(c, taken_now);
+        return;
+    }
+    /* after: the series keeps its id under its new name; everyone's progress, "Not for children" marks */
+    uint64_t sid = s->id;
+    char was[128];
+    str_copy(was, sizeof was, s->title);
+    media_series_keep(sid, named);
+    for (int i = 0; i < ix->nfiles; i++) {
+        const MediaFile *f = &ix->files[i];
+        if (!of_series(f, sid)) continue;
+        char rel[600];
+        show_rel_now(dirs, nd, f, rel, sizeof rel);
+        if (!str_eq(rel, f->rel)) media_watch_move(f->id, media_make_id(ix->roots[f->root], rel));
+    }
+    for (int k = 0; k < nd; k++) {
+        if (!str_eq(dirs[k].rel, dirs[k].to)) kids_follow(ix->roots[dirs[k].root], dirs[k].rel, dirs[k].to);
+        log_info("media: %s renamed %s to %s", c->me->name, dirs[k].rel, dirs[k].to);
+    }
+    char link[64];
+    snprintf(link, sizeof link, "/media/series/%016llx", (unsigned long long)sid);
+    if (!str_eq(was, named)) activity_add(c->me->id, "✏️", link, N_("renamed %s to %s"), was, named);
+    ctx_ok(c, T("Renamed it %s"), named);
+    char back[96];
+    manage_url(back, sizeof back, sid, -1);
+    ctx_redirect(c, "%s", back);
+    if (app_testing()) media_scan_sync();
+    else media_scan_start();
+}
+
+/* The Manage view's "Rename" dialog (?manage=1&rename=1) */
+static void rename_dialog(Buf *b, const MediaSeries *s, const char *close) {
+    ShowDir dirs[SHOW_DIRS];
+    const char *why = NULL;
+    int nd = show_dirs(s, dirs, &why);
+    ui_modal(b, T("Rename the series"), close);
+    if (!nd) {
+        H(b, "<p>%s</p><div class=\"modal-f\"><a class=\"btn\" href=\"%s\">%s</a></div>", T(why), close, T("Close"));
+        ui_modal_end(b);
+        return;
+    }
+    buf_puts(b, "<p class=\"muted\">");
+    if (nd == 1)
+        H(b, T("Hemma reads a series' name from its folder, so its folder <code class=\"media-code\">%s</code> gets the new name. TV "
+               "channels, screens and everyone's progress stay with it."),
+          base_of(dirs[0].rel));
+    else
+        H(b, T("Hemma reads a series' name from its folders, so its %d folders get the new name. TV channels, screens and "
+               "everyone's progress stay with it."),
+          nd);
+    buf_puts(b, "</p>");
+    ui_form(b, "media.rename_series", "stack");
+    H(b, "<input type=\"hidden\" name=\"id\" value=\"%X\"><div class=\"field-row\"><label class=\"field\"><span>%s</span>"
+         "<input name=\"title\" maxlength=\"120\" required value=\"%s\"></label>",
+      s->id, T("Name"), s->title);
+    H(b, "<label class=\"field\"><span>%s</span><input type=\"number\" name=\"year\" min=\"1880\" max=\"2100\"", T("Year (optional)"));
+    if (s->year) H(b, " value=\"%d\"", s->year);
+    H(b, "></label></div><div class=\"modal-f\"><a class=\"btn\" href=\"%s\">%s</a><button class=\"btn primary\">%s</button>"
+         "</div>",
+      close, T("Cancel"), T("Rename"));
+    ui_form_end(b);
+    ui_modal_end(b);
+}
+
 /* ------------------------------------------------------------- the views */
 
 void media_manage_series_link(Ctx *c, Buf *b, const MediaSeries *s) {
@@ -768,7 +1038,8 @@ void media_manage_series_link(Ctx *c, Buf *b, const MediaSeries *s) {
         return;
     }
     manage_url(href, sizeof href, s->id, sq);
-    H(b, " <a class=\"btn\" href=\"%s\" title=\"%s\">", href, T("Fix episode numbers, or remove episodes, seasons or the whole series"));
+    H(b, " <a class=\"btn\" href=\"%s\" title=\"%s\">", href,
+      T("Rename the series, fix episode numbers, or remove episodes, seasons or the whole series"));
     ui_icon(b, "settings");
     H(b, "<span>%s</span></a>", T("Manage"));
 }
@@ -1015,13 +1286,15 @@ bool media_manage_series(Ctx *c, Buf *b, const MediaSeries *s) {
     media_size_text(all.bytes, size, sizeof size);
     ui_card(b, T("The whole series"), NULL, NULL);
     buf_puts(b, "<p class=\"muted\">");
-    if (s->nseasons > 1) {
-        H(b, T("%d seasons"), s->nseasons);
+    if (media_seasons(s) > 1) {
+        H(b, T("%d seasons"), media_seasons(s));
         buf_puts(b, " · ");
     }
     int n = media_episodes_in(s);
     H(b, TN(n, "%d episode", "%d episodes"), n);
-    H(b, " · %s</p><div class=\"ph-a\"><a class=\"btn danger\" href=\"%s&amp;rm=series\">", size, here);
+    H(b, " · %s</p><div class=\"ph-a\"><a class=\"btn\" href=\"%s&amp;rename=1\">", size, here);
+    ui_icon(b, "edit");
+    H(b, "<span>%s</span></a><a class=\"btn danger\" href=\"%s&amp;rm=series\">", T("Rename"), here);
     ui_icon(b, "trash");
     buf_puts(b, "<span>");
     H(b, T("Remove the series (%s)"), size);
@@ -1035,6 +1308,7 @@ bool media_manage_series(Ctx *c, Buf *b, const MediaSeries *s) {
     uint64_t xid = 0;
     const MediaFile *x;
     if (rm[0]) remove_dialog(b, s, rm, season, here);
+    else if (str_eq(ctx_q(c, "rename"), "1")) rename_dialog(b, s, here);
     else if (media_parse_id(fx, &xid) && (x = media_file(xid)) != NULL && x->series == s->id && fixable(x))
         fix_dialog(b, s, x, here);
     return true;

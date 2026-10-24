@@ -101,7 +101,7 @@ TEST(manage_removes_episodes_seasons_and_series) {
     put("Series/Garden/Season 2/notes.nfo", "notes");
     put("Series/Garden/poster.jpg", "poster");
     put("Series/Garden/Extras/Behind.mkv", "an extra: left out");
-    put("Series/Garden/Some Film (2001).mkv", "a film, not the show's");
+    put("Series/Garden/Some Film (2001)/Some Film (2001).mkv", "a film, not the show's");
     put("Series/Orbit/Season 1/Orbit.S01E01.mkv", "o1");
     put("Series/Orbit/Season 1/Orbit.S01E02.mkv", "o2");
     put("Series/Orbit/folder.jpg", "art");
@@ -173,7 +173,7 @@ TEST(manage_removes_episodes_seasons_and_series) {
     CHECK(!there("Series/Garden/Season 2"));
     CHECK(there("Series/Garden/Season 1/Garden.S01E02.Roots.mp4"));
 
-    /* a series: a film in its folder keeps the folder (and what's left in it); the episodes, their emptied
+    /* a series: a film in its folder (in a folder of its own: a loose one would be a special - 1.3) keeps the folder (and what's left in it); the episodes, their emptied
        folders and the series' picture go */
     snprintf(u, sizeof u, "/media/series/%016llx?manage=1&rm=series", (unsigned long long)garden_id);
     CHECK_HAS(th_page(adam, u), "Remove the series");
@@ -181,7 +181,7 @@ TEST(manage_removes_episodes_seasons_and_series) {
     CHECK(r.ok);
     CHECK(!there("Series/Garden/Season 1"));
     CHECK(!there("Series/Garden/poster.jpg"));
-    CHECK(there("Series/Garden/Some Film (2001).mkv"));
+    CHECK(there("Series/Garden/Some Film (2001)/Some Film (2001).mkv"));
     CHECK(there("Series/Garden/Extras/Behind.mkv"));
     CHECK(!series_named("Garden"));
     CHECK_STR(r.redirect, "/media/series");
@@ -535,6 +535,107 @@ static void put_mkv(const char *rel, double minutes) {
     put_data(rel, out, n);
 }
 
+/* 1.3 (owner, 2026-10-24: "make it so the admin can rename the series"): its folders get the new name, and it
+   keeps its id - what TV channels, screen rows and subtitle picks hold - through rescans */
+TEST(manage_renames_a_series) {
+    int adam, eva;
+    boot(&adam, &eva);
+    put("Series/Garden Show/Season 1/Garden.Show.S01E01.mkv", "e1");
+    put("Series/Garden Show/Season 1/Garden.Show.S01E02.mkv", "e2");
+    put("Series/Garden Show/Season 1/Garden.Show.S01E02.web.mp4", "e2 copy");
+    put("Series/Garden Show/Season 1/Garden.Show.S01E02.en.srt", SRT);
+    put("Series/Garden Show/poster.jpg", "jpeg");
+    put("Series/Garden Show/Season 2/Garden.Show.S02E01.mkv", "e3");
+    put("Kids/Garden Show/Season 3/Garden.Show.S03E01.mkv", "e4"); /* (a second folder of the same show) */
+    put("Series/Orbit/Season 1/Orbit.S01E01.mkv", "o1");
+    put("Series/Loose/Loose.S01E01.mkv", "l1");                       /* (no season folder: named by its file too) */
+    put("Series/Mixed/Season 1/Mixed.S01E01.mkv", "m1");
+    put("Series/Mixed/Some Film (2001)/Some Film (2001).mkv", "film");                 /* (another video in its folder) */
+    put("Solo.S01E01.mkv", "s1");                                     /* (no folder of its own) */
+    setting_set("media.roots", g_root);
+    media_scan_sync();
+    const MediaSeries *garden = series_named("Garden Show"), *loose = series_named("Loose"), *mixed = series_named("Mixed");
+    const MediaSeries *solo = series_named("Solo");
+    const MediaFile *e2 = find("Series/Garden Show/Season 1/Garden.Show.S01E02.mkv");
+    CHECK(garden && loose && mixed && solo && e2 && series_named("Orbit"));
+    if (!garden || !loose || !mixed || !solo || !e2) return;
+    uint64_t garden_id = garden->id, loose_id = loose->id, mixed_id = mixed->id, solo_id = solo->id, e2_id = e2->id;
+    CHECK_INT(garden->count, 4);
+    CHECK(th_act(adam, "media.kids", "p=0:Series/Garden%20Show/Season%202&on=1").ok);
+    media_watch_report(eva, e2_id, 300, 1200, false, now_ms());
+
+    /* the button and the dialog are the admins' */
+    const char *mg = th_page(adam, url("/media/series/%s?manage=1", garden_id));
+    CHECK_HAS(mg, "&amp;rename=1");
+    const char *dlg = th_page(adam, url("/media/series/%s?manage=1&rename=1", garden_id));
+    CHECK_HAS(dlg, "Rename the series");
+    CHECK_HAS(dlg, "its 2 folders get the new name");
+    CHECK_HAS(dlg, "data-a=\"media.rename_series\"");
+    CHECK_HAS(dlg, "value=\"Garden Show\"");
+    CHECK(!strstr(th_page(eva, url("/media/series/%s?manage=1&rename=1", garden_id)), "media.rename_series"));
+    CHECK(!th_act(eva, "media.rename_series", form("id=%s&title=Garden%%20Party", garden_id)).ok);
+    CHECK_HAS(th_page(adam, url("/media/series/%s?manage=1&rename=1", solo_id)), "Some of its episodes aren&#39;t in a folder");
+
+    /* names that aren't, or that Hemma would read otherwise, or another series has */
+    ThResult r = th_act(adam, "media.rename_series", form("id=%s&title=", garden_id));
+    CHECK_STR(r.field, "title");
+    r = th_act(adam, "media.rename_series", form("id=%s&title=A%%0AB", garden_id));
+    CHECK_STR(r.field, "title");
+    r = th_act(adam, "media.rename_series", form("id=%s&title=Garden&year=19x3", garden_id));
+    CHECK_STR(r.field, "year");
+    r = th_act(adam, "media.rename_series", form("id=%s&title=Garden%%20S01-S03", garden_id));
+    CHECK_HAS(r.toast, "Hemma would read that name as \"Garden\"");
+    r = th_act(adam, "media.rename_series", form("id=%s&title=orbit", garden_id));
+    CHECK_HAS(r.toast, "There's already a series called Orbit");
+    r = th_act(adam, "media.rename_series", form("id=%s&title=Tight", loose_id));
+    CHECK_HAS(r.toast, "Hemma would still read Loose S01E01 as \"Loose\" by its own file name");
+    r = th_act(adam, "media.rename_series", form("id=%s&title=Muddle", mixed_id));
+    CHECK_HAS(r.toast, "Its folder holds other videos too");
+    r = th_act(adam, "media.rename_series", form("id=%s&title=Duo", solo_id));
+    CHECK_HAS(r.toast, "Some of its episodes aren't in a folder");
+    CHECK(there("Series/Garden Show/Season 1/Garden.Show.S01E01.mkv") && there("Series/Loose/Loose.S01E01.mkv"));
+    r = th_act(adam, "media.rename_series", form("id=%s&title=Garden%%20Show", garden_id));
+    CHECK_HAS(r.toast, "That's its name already");
+
+    /* the rename: both folders, everything in them; the same id, its history, its marks */
+    r = th_act(adam, "media.rename_series", form("id=%s&title=Garden%%20Party&year=", garden_id));
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "Renamed it Garden Party");
+    CHECK_STR(r.redirect, url("/media/series/%s?manage=1", garden_id));
+    CHECK(there("Series/Garden Party/Season 1/Garden.Show.S01E02.web.mp4"));
+    CHECK(there("Series/Garden Party/Season 1/Garden.Show.S01E02.en.srt"));
+    CHECK(there("Series/Garden Party/poster.jpg"));
+    CHECK(there("Kids/Garden Party/Season 3/Garden.Show.S03E01.mkv"));
+    CHECK(!there("Series/Garden Show") && !there("Kids/Garden Show"));
+    for (int pass = 0; pass < 2; pass++) { /* (rescanned by the action; and once more, as after a restart) */
+        const MediaSeries *now = media_series(garden_id);
+        CHECK(now != NULL);
+        if (!now) return;
+        CHECK_STR(now->title, "Garden Party");
+        CHECK_INT(now->count, 4);
+        CHECK(now->poster != 0);
+        CHECK(series_named("Garden Show") == NULL);
+        media_scan_sync();
+    }
+    uint64_t e2_now = media_make_id(g_root, "Series/Garden Party/Season 1/Garden.Show.S01E02.mkv");
+    const MediaFile *moved = media_file(e2_now);
+    CHECK(moved && moved->series == garden_id && moved->web != 0);
+    const MediaWatch *w = media_watch_get(eva, e2_now);
+    CHECK(w && w->pos == 300);
+    CHECK(!media_watch_get(eva, e2_id));
+    CHECK(media_kids_marked(g_root, "Series/Garden Party/Season 2"));
+    CHECK(!media_kids_marked(g_root, "Series/Garden Show/Season 2"));
+    CHECK_HAS(last_activity(), "renamed Garden Show to Garden Party");
+    CHECK_INT(tbl_count(&T_media_series_name), 1);
+
+    /* and back: its own name again needs nothing remembered */
+    CHECK(th_act(adam, "media.rename_series", form("id=%s&title=Garden%%20Show", garden_id)).ok);
+    CHECK(there("Series/Garden Show/Season 1/Garden.Show.S01E01.mkv"));
+    CHECK(media_series(garden_id) && str_eq(media_series(garden_id)->title, "Garden Show"));
+    CHECK_INT(tbl_count(&T_media_series_name), 0);
+    th_halt();
+}
+
 TEST(manage_speaks_swedish_and_spanish) {
     int adam, eva;
     boot(&adam, &eva);
@@ -582,6 +683,7 @@ TEST(manage_speaks_swedish_and_spanish) {
     snprintf(urls[n++], 300, "/media/series/%016llx?manage=1&s=1&rm=season", (unsigned long long)g);
     snprintf(urls[n++], 300, "/media/series/%016llx?manage=1&s=0&rm=season", (unsigned long long)g);
     snprintf(urls[n++], 300, "/media/series/%016llx?manage=1&rm=series", (unsigned long long)g);
+    snprintf(urls[n++], 300, "/media/series/%016llx?manage=1&rename=1", (unsigned long long)g);
     snprintf(urls[n++], 300, "/media/series/%016llx?manage=1&s=1&fix=%016llx", (unsigned long long)g, (unsigned long long)hospital->id);
     snprintf(urls[n++], 300, "/media/series/%016llx?manage=1&s=1", (unsigned long long)rip->id);
     if (bonus) {

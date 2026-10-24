@@ -28,6 +28,16 @@ static const NameCase CASES[] = {
     EP("Show.Name.S01E01-E02.mkv", "Show Name", 0, 1, 1, 2, ""),
     EP("Show.Name.S01E01-02.mkv", "Show Name", 0, 1, 1, 2, ""),
     EP("Show.Name.S01E01.E02.mkv", "Show Name", 0, 1, 1, 2, ""),
+    /* --- a whole show in one release: its range of seasons is no part of the title (1.3) --- */
+    EP("Series/The Simpsons S01-S31/Season 31/The.Simpsons.S31E01.The.Winter.of.Our.Monetized.Content.1080p.WEB-DL.10bit."
+       "x265.HEVC-PHOCiS.mkv",
+       "The Simpsons", 0, 31, 1, 1, "The Winter of Our Monetized Content"),
+    EP("The.Simpsons.S01-S31.1080p.WEB-DL.BluRay.10bit.x265.HEVC-PHOCiS/Season 13/The.Simpsons.S13E01.Treehouse.of.Horror."
+       "XII.1080p.BluRay.10bit.x265.HEVC-PHOCiS.mkv",
+       "The Simpsons", 0, 13, 1, 1, "Treehouse of Horror XII"),
+    EP("Seinfeld Seasons 1-9/Season 2/02 - The Pony Remark.mkv", "Seinfeld", 0, 2, 2, 2, "The Pony Remark"),
+    EP("Frasier.S1-11.DVDRip/Season 3/Frasier.S03E04.mkv", "Frasier", 0, 3, 4, 4, ""),
+    EP("Spaced Season 1-2/Season 1/Spaced.S01E01.mkv", "Spaced", 0, 1, 1, 1, ""),
     EP("Show.Name.S01.E03.mkv", "Show Name", 0, 1, 3, 3, ""),
     EP("show.name.s1e2.mkv", "Show Name", 0, 1, 2, 2, ""),
     EP("Show - Season 1 Episode 3 - Title.mkv", "Show", 0, 1, 3, 3, "Title"),
@@ -193,6 +203,7 @@ TEST(media_names_folder_roles) {
         {"D1", -1, 1},                 {"Series & movies", -1, -1}, {"Season of the Witch (2011)", -1, -1},
         {"Discovery", -1, -1},         {"DVDRip", -1, -1},          {"Movies", -1, -1},
         {"S1m0ne (2002)", -1, -1},     {"Show.S01E02.720p", -1, -1}, {"Season 1 Disc 2", 1, -1},
+        {"The Simpsons S01-S31", -1, -1}, {"Seinfeld Seasons 1-9", -1, -1}, {"Spaced Season 1-2", -1, -1}, /* (a show's folder) */
     };
     for (int i = 0; i < countof(F); i++) {
         int s = media_season_folder(F[i].name), d = media_disc_folder(F[i].name);

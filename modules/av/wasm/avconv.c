@@ -23,7 +23,9 @@
  *   text: conv_sub_text(i) / conv_sub_len(i) (SRT, UTF-8); pictures: conv_sub_data(i) / conv_sub_size(i)
  *   (the .sup file, or VobSub's .sub) and, for VobSub, conv_sub_idx(i) / conv_sub_idx_len(i) (the .idx
  *   text) - the page sends them to the server, which saves them next to the copy. After a 2 there are
- *   none: the original goes to the server, which takes its subtitles out itself (skip_refused_subs). */
+ *   none: the original goes to the server, which takes its subtitles out itself (skip_refused_subs).
+ * conv_subs_only(size) instead reads only the subtitle tracks (1 = read, 0 = not), for a video that stays
+ * behind; the same conv_sub_* tell them. */
 #include <stdlib.h>
 #include <string.h>
 
@@ -156,6 +158,23 @@ EXPORT("conv_run") int conv_run(double size, int quality, int audio_kbps) {
     av_convert_free(&g_job);
     if (!g_job.err[0]) strcpy(g_job.err, "Couldn't hand the copy to the page");
     return g_job.unsupported ? 2 : 0;
+}
+
+/* Only the subtitles (1.3: a video the library has already gives the subtitles it lacks): 1 = read (conv_subs()
+   may be 0), 0 = not (conv_err() says why). Nothing is written. */
+EXPORT("conv_subs_only") int conv_subs_only(double size) {
+    static int64_t total;
+    total = (int64_t)size;
+    for (int i = 0; i < NBLOCKS; i++) g_blocks[i].at = -1, g_blocks[i].used = 0;
+    av_convert_free(&g_job);
+    memset(&g_job, 0, sizeof g_job);
+    g_job.in = (MkvReader){&total, total, src_read};
+    g_job.want_subs = true;
+    g_job.progress = on_progress;
+    if (av_subtitles(&g_job)) return 1;
+    av_convert_free(&g_job);
+    if (!g_job.err[0]) strcpy(g_job.err, "Couldn't read its subtitles");
+    return 0;
 }
 
 EXPORT("conv_err") const char *conv_err(void) { return g_job.err; }

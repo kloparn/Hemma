@@ -27,12 +27,23 @@ static const Tr TR[] = {
     {"Room on this device for copies waiting to be sent: <b id=\"media-room-n\">%d</b> GB",
      "Plats på den här enheten för kopior som väntar på att skickas: <b id=\"media-room-n\">%d</b> GB",
      "Espacio en este dispositivo para copias que esperan a enviarse: <b id=\"media-room-n\">%d</b> GB"},
-    {"More room lets more videos convert side by side - DVD rips take minutes each. A copy leaves this device's disk "
-     "as soon as it's sent.",
-     "Mer plats låter fler videor konverteras samtidigt - DVD-rippar tar några minuter var. En kopia försvinner från "
-     "enhetens disk så fort den är skickad.",
-     "Más espacio permite convertir más vídeos a la vez - los vídeos de DVD tardan minutos cada uno. Una copia sale "
-     "del disco de este dispositivo en cuanto se envía."},
+    {"More room lets more videos convert side by side - DVD rips take minutes each. A copy is let go as soon as "
+     "it's sent.",
+     "Mer plats låter fler videor konverteras samtidigt - DVD-rippar tar några minuter var. En kopia släpps så fort "
+     "den är skickad.",
+     "Más espacio permite convertir más vídeos a la vez - los vídeos de DVD tardan minutos cada uno. Una copia se "
+     "suelta en cuanto se envía."},
+    {"Keep converted videos in memory until they're sent", "Håll konverterade videor i minnet tills de är skickade",
+     "Guardar los vídeos convertidos en la memoria hasta enviarlos"},
+    {"The copies wait in this device's memory (RAM) instead of on its disk, so nothing piles up there and the disk "
+     "only reads the originals. They take up to the room set under More options - leave it off on a phone or a "
+     "computer with little memory.",
+     "Kopiorna väntar i enhetens minne (RAM) i stället för på dess disk, så inget hopar sig där och disken läser bara "
+     "originalen. De tar upp till den plats som är vald under Fler alternativ - låt bli på en telefon eller en dator "
+     "med lite minne.",
+     "Las copias esperan en la memoria (RAM) de este dispositivo en vez de en su disco, así nada se acumula allí y el "
+     "disco solo lee los originales. Ocupan hasta el espacio elegido en Más opciones: déjalo desactivado en un "
+     "teléfono o en un ordenador con poca memoria."},
     {"Also send the originals", "Skicka originalen också", "Enviar también los originales"},
     {"Also send episodes and films the library already has under another name",
      "Skicka även avsnitt och filmer som biblioteket redan har under ett annat namn",
@@ -387,9 +398,9 @@ static const Tr TR[] = {
     {"These only need a new container: quick, nothing is re-encoded.",
      "De här behöver bara en ny behållare: snabbt, inget kodas om.",
      "Estos solo necesitan un contenedor nuevo: rápido, no se recodifica nada."},
-    {"DVD video is re-encoded to H.264 and Dolby sound to AAC; copies are about a third of the size.",
-     "DVD-video kodas om till H.264 och Dolby-ljud till AAC; kopiorna blir ungefär en tredjedel så stora.",
-     "El vídeo de DVD se recodifica a H.264 y el sonido Dolby a AAC; las copias ocupan más o menos un tercio."},
+    {"DVD video is re-encoded to H.264, and Dolby and DTS sound to AAC; copies are about a third of the size.",
+     "DVD-video kodas om till H.264, och Dolby- och DTS-ljud till AAC; kopiorna blir ungefär en tredjedel så stora.",
+     "El vídeo de DVD se recodifica a H.264, y el sonido Dolby y DTS a AAC; las copias ocupan más o menos un tercio."},
     {"It runs in the background, %d at a time.", "Det sker i bakgrunden, %d åt gången.",
      "Se hace en segundo plano, %d a la vez."},
     {"%d converted", "%d har konverterats", "Convertidos: %d"},
@@ -591,5 +602,21 @@ static const Tr TR[] = {
     {"Hemma doesn't know that disk", "Hemma känner inte till den disken", "Hemma no conoce ese disco"},
     {"Forgetting \"%s\"…", "Glömmer \"%s\"…", "Olvidando \"%s\"…"},
     {"Noted", "Noterat", "Anotado"},
+    /* 1.3: subtitles only */
+    {"%s has these subtitles already", "%s har de här undertexterna redan", "%s ya tiene estos subtítulos"},
+    {"goes next to %s, which the library has", "hamnar bredvid %s, som biblioteket har",
+     "va junto a %s, que ya está en la biblioteca"},
+    {"the library has it (%s): only the subtitles inside it go, next to that one",
+     "biblioteket har den (%s): bara undertexterna i den skickas, och hamnar bredvid den",
+     "ya está en la biblioteca (%s): solo se envían los subtítulos que lleva, junto a ese"},
+    {"its copy goes instead, and the subtitles inside it go along",
+     "dess kopia skickas i stället, och undertexterna i den följer med",
+     "se envía su copia en su lugar, y los subtítulos que lleva van con ella"},
+    {"its copy is there already: only the subtitles inside the original go",
+     "kopian finns redan: bara undertexterna i originalet skickas", "su copia ya está: solo se envían los subtítulos del original"},
+    {"Only its subtitles", "Bara undertexterna", "Solo sus subtítulos"},
+    {"its subtitles", "dess undertexter", "sus subtítulos"},
+    {"only the subtitles of %d video", "bara undertexterna till %d video", "solo los subtítulos de %d vídeo"},
+    {"only the subtitles of %d videos", "bara undertexterna till %d videor", "solo los subtítulos de %d vídeos"},
 };
 TRANSLATIONS(media_upload, TR)

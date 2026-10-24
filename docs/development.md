@@ -1,7 +1,8 @@
 # Developing Hemma
 
 Hemma is a household hub written in C11. It has no dependencies besides the SQLite
-amalgamation in `third_party/sqlite/`. The server renders every page as HTML and pushes
+amalgamation in `third_party/sqlite/` (and, in `third_party/ffmpeg/`, two tables of numbers its DTS
+decoder takes from FFmpeg: the DTS specification leaves them out). The server renders every page as HTML and pushes
 changes to open screens over a WebSocket. The browser runs one small, generic script
 (`web/wire.js`) and no app logic. Uploads also use a worker (`web/conv.js`) that runs
 the C video converter compiled to WebAssembly. Features are self-contained modules under
@@ -25,7 +26,7 @@ because C suits that job better than anything else:
   Raspberry Pi, Linux, Windows and Mac. Installing Hemma means copying one file. Nothing to
   `npm install` or `pip install`, and no runtime update that can break it next year.
 - **Almost no outside code.** The only library Hemma doesn't write itself is SQLite, which is
-  also C. A big package tree (hundreds of packages from strangers) is one of the most common
+  also C (the one other borrowing is data: two DTS tables from FFmpeg). A big package tree (hundreds of packages from strangers) is one of the most common
   ways software gets broken or hacked. Hemma doesn't have one.
 - **Fast where it counts.** Hemma converts videos itself: DVD rips become MP4s that every
   phone and TV can play. Its video decoders and encoders are written in C for Hemma, and a
@@ -144,7 +145,9 @@ only read): `HEMMA_TEST_SHOW=<a show folder>` with the filter `media_real` print
 library reads that folder; `HEMMA_TEST_MKV=<file.mkv>`, `HEMMA_TEST_AC3=<file>` and
 `HEMMA_TEST_CONVERT=<file.mkv>` run the demuxer, the AC-3 / E-AC-3 decoder and the converter
 (its first 30 s; it saves the file's subtitles next to it, so point it at a copy) over a real
-file. `AAC_VERBOSE=1` / `AC3_VERBOSE=1` print codec details in the codec tests.
+file; `HEMMA_TEST_DTS=<file.mkv>` (filter `dts_real`) decodes a DTS track and checks every frame,
+and with `HEMMA_TEST_DTS_WAV=<file.wav>` writes every channel as floats, to compare with another
+decoder. `AAC_VERBOSE=1` / `AC3_VERBOSE=1` print codec details in the codec tests.
 `tools/ac3dump.c` (build line at its top) decodes AC-3 and E-AC-3 from an MKV or a raw stream:
 `stats` reports which coding tools a stream uses and whether every frame parsed, and `f32 ...
 --native` writes every channel as raw floats in WAV order - what `ffmpeg -f f32le` writes, for
@@ -173,12 +176,12 @@ its spec too; the rules are listed in CLAUDE.md ("the player's rules").
 ### Fuzzing
 
 The converter reads files nobody controls, in the process that serves the whole household, so it's
-fuzzed: libFuzzer feeds it damaged and strange inputs under AddressSanitizer + UBSan. Six targets
+fuzzed: libFuzzer feeds it damaged and strange inputs under AddressSanitizer + UBSan. Seven targets
 (`tools/ci/fuzz.sh TARGET [seconds] [processes]`): `conv` - a whole conversion
-(`tools/convfuzz.c`, slow per input, reaches everything) - and `mkv`, `ac3`, `mpeg2`, `pgs` and
+(`tools/convfuzz.c`, slow per input, reaches everything) - and `mkv`, `ac3`, `dts`, `mpeg2`, `pgs` and
 `vobsub` (Blu-ray and DVD picture subtitles), one part alone (`tools/avfuzz.c`, tens to hundreds of
 times as many inputs a minute). Every push runs `conv` for 90 s; every night
-`.github/workflows/fuzz.yml` runs all six side by side for about three
+`.github/workflows/fuzz.yml` runs all seven side by side for about three
 hours, each starting from what the earlier nights found. A finding fails that night's run, and the
 input that does it is kept with the run: `build/fuzz-<target> <file>` replays it.
 
@@ -281,6 +284,7 @@ tests/      test framework, runner, harness
 tools/      embed.c (bakes web/ into the binary), pisim.c (Pi-like CPU/memory limits on
             Windows), ci/ (CI's jobs locally, the release bundles), and dev tools for the codecs
 third_party/sqlite/   SQLite amalgamation (public domain)
+third_party/ffmpeg/   two DTS vector tables from FFmpeg (LGPL 2.1+; see its README)
 ```
 
 A module is a folder with a `MODULE(...)` declaration. Pages, actions, widgets, data

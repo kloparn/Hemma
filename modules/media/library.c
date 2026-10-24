@@ -5,8 +5,10 @@
 #include "../../core/db.h"
 #include "../../core/plat.h"
 #include "../../core/app.h"
+#include "remove.h"
 #include "room.h"
 
+#include <limits.h>
 #include <stdatomic.h>
 
 /* ================================================================= state */
@@ -72,9 +74,14 @@ const MediaFile *media_neighbour(const MediaFile *ep, int dir) {
     if (!ep || ep->type != MF_VIDEO || ep->name.kind != MEDIA_EPISODE) return NULL;
     const MediaSeries *s = media_series(ep->series);
     for (int i = 0; s && i < s->count; i++)
-        if (media_episode(s, i) == ep) return media_episode(s, i + dir);
+        if (media_episode(s, i) == ep) {
+            const MediaFile *n = media_episode(s, i + dir);
+            return n && (n->name.season == 0) == (ep->name.season == 0) ? n : NULL; /* (specials apart) */
+        }
     return NULL;
 }
+
+int media_seasons(const MediaSeries *s) { return s ? s->nseasons - (s->specials ? 1 : 0) : 0; }
 
 static void join_path(const char *root, const char *rel, char *out, size_t cap) {
     size_t n = strlen(root);
@@ -167,6 +174,7 @@ typedef struct {
     MediaLeft *left, *parts; /* (MEDIA_LEFT_MAX each, allocated when the first comes) */
     int nleft, nleft_all, nparts, nparts_all;
     int64_t parts_bytes, now;
+    struct SeriesNames *names; /* renamed series, copied for the scan's thread */
 } Scan;
 
 static void note_left(MediaLeft **list, int *n, int *all, int root, const char *rel, int64_t size, int64_t mtime,
@@ -435,12 +443,15 @@ static int recent_cmp(const void *x, const void *y) {
     return title_cmp(a->name.title, b->name.title);
 }
 
+/* Seasons in order, the specials (season 0) after them all (1.3: they were first - "Start watching S00E43") */
+static int season_order(int season) { return season ? season : INT_MAX; }
+
 static int episode_cmp(const void *x, const void *y) {
     const MediaFile *a = &t_files[*(const int *)x], *b = &t_files[*(const int *)y];
     int c = title_cmp(a->name.title, b->name.title);
     if (c) return c;
     if (a->series != b->series) return a->series < b->series ? -1 : 1;
-    if (a->name.season != b->name.season) return a->name.season - b->name.season;
+    if (a->name.season != b->name.season) return season_order(a->name.season) < season_order(b->name.season) ? -1 : 1;
     if (a->name.episode != b->name.episode) return a->name.episode - b->name.episode;
     return strcmp(a->rel, b->rel);
 }
@@ -449,11 +460,57 @@ static int series_cmp(const void *x, const void *y) {
     return title_cmp(((const MediaSeries *)x)->title, ((const MediaSeries *)y)->title);
 }
 
+/* Renamed series (library.h): the table, and the scan's copy of it - a scan thread never reads a table. */
+static const FieldDef series_name_fields[] = {
+    FIELD(MediaSeriesName, id, F_INT),
+    FIELD(MediaSeriesName, title, F_STR),
+    FIELD(MediaSeriesName, series, F_U64),
+};
+Table T_media_series_name = TABLE("media_series_name", MediaSeriesName, series_name_fields);
+
+typedef struct SeriesNames {
+    MediaSeriesName *e;
+    int n;
+} SeriesNames;
+static _Thread_local const SeriesNames *t_names; /* set while a scan builds its index; else the table (event loop) */
+
+static uint64_t title_hash(const char *folded) {
+    uint64_t h = hash64_str(folded);
+    return h ? h : 1;
+}
+
 static uint64_t series_id(const char *title) {
     char k[160];
     fold_copy(k, sizeof k, title);
-    uint64_t h = hash64_str(k);
-    return h ? h : 1;
+    int n = t_names ? t_names->n : tbl_count(&T_media_series_name);
+    for (int i = 0; i < n; i++) {
+        const MediaSeriesName *m = t_names ? &t_names->e[i] : tbl_at(&T_media_series_name, i);
+        if (str_eq(m->title, k)) return m->series;
+    }
+    return title_hash(k);
+}
+
+uint64_t media_series_id(const char *title) { return series_id(title); }
+
+void media_series_keep(uint64_t series, const char *title) {
+    char k[160];
+    fold_copy(k, sizeof k, title);
+    for (int i = tbl_count(&T_media_series_name) - 1; i >= 0; i--) { /* its old name, and whoever had this one */
+        const MediaSeriesName *m = tbl_at(&T_media_series_name, i);
+        if (m->series == series || str_eq(m->title, k)) tbl_del(&T_media_series_name, m->id);
+    }
+    if (title_hash(k) == series) return; /* (its own name again: nothing to remember) */
+    MediaSeriesName m = {.series = series};
+    str_copy(m.title, sizeof m.title, k);
+    tbl_put(&T_media_series_name, &m);
+}
+
+static SeriesNames *names_copy(void) {
+    SeriesNames *s = xcalloc(1, sizeof *s);
+    s->n = tbl_count(&T_media_series_name);
+    s->e = xmalloc((size_t)(s->n ? s->n : 1) * sizeof *s->e);
+    for (int i = 0; i < s->n; i++) s->e[i] = *(const MediaSeriesName *)tbl_at(&T_media_series_name, i);
+    return s;
 }
 
 /* "Show/x" for "Show/x.mkv", "Show/x.web.mp4" and "Show/x.playall.mkv": a file and its copy */
@@ -470,8 +527,14 @@ static bool same_item(const MediaIndex *ix, const MediaFile *f, const char *root
 }
 
 bool media_have(const char *root, const char *rel, char *have, size_t cap) {
+    return media_have_file(root, rel, have, cap, NULL, 0, NULL);
+}
+
+bool media_have_file(const char *root, const char *rel, char *have, size_t cap, char *full, size_t fcap, int *subs) {
     const MediaIndex *ix = media_lib();
     if (have && cap) have[0] = '\0';
+    if (full && fcap) full[0] = '\0';
+    if (subs) *subs = 0;
     if (media_is_playall_head(rel)) return false;
     MediaName n;
     parse_name(root_name(root), rel, &n, false);
@@ -504,6 +567,9 @@ bool media_have(const char *root, const char *rel, char *have, size_t cap) {
         if (!hit) return false;
     }
     if (have && cap) str_copy(have, cap, hit->rel);
+    if (full && fcap && !media_full_path(hit, full, fcap)) full[0] = '\0';
+    for (int i = 0; subs && i < ix->nfiles; i++) /* (its copy's count too: x.en.srt goes with whichever is there) */
+        *subs += ix->files[i].type == MF_SUB && ix->files[i].video && (ix->files[i].video == hit->id || ix->files[i].video == hit->web);
     return true;
 }
 
@@ -789,9 +855,71 @@ static void name_extra(MediaFile *f) {
 static int extra_cmp(const void *x, const void *y) {
     const MediaFile *a = &t_files[*(const int *)x], *b = &t_files[*(const int *)y];
     if (a->series != b->series) return a->series < b->series ? -1 : 1;
-    if (a->name.season != b->name.season) return a->name.season - b->name.season;
+    if (a->name.season != b->name.season) return season_order(a->name.season) < season_order(b->name.season) ? -1 : 1;
     if (a->role != b->role) return a->role == MF_PLAYALL ? -1 : b->role == MF_PLAYALL ? 1 : 0;
     return rip_order_cmp(x, y);
+}
+
+/* Loose videos in a series' own folder (1.3; owner, 2026-10-24: "everything that is not in a series increment ...
+   goes inside like a specials part of the series"): a video without a season or an episode of its own, lying right
+   in the folder a series is named from ("South Park/Bigger Longer Uncut.mkv" - a film or an "other video" by its
+   name), is one of that series' specials: season 0, unnumbered - season_pass numbers it after the specials it has -
+   with its own name as its title. Never in a category folder ("Series") or the library folder itself, and never an
+   extra by its name or a copy. */
+typedef struct {
+    int root, ep; /* ep: an episode of the series, for its title and year */
+    size_t len;   /* the show folder: F[ep].rel[0..len) */
+} ShowFolder;
+
+static void loose_specials(const MediaIndex *ix, MediaFile *F, int w) {
+    ShowFolder *sf = NULL;
+    int n = 0, cap = 0;
+    for (int i = 0; i < w; i++) {
+        const MediaFile *e = &F[i];
+        if (e->type != MF_VIDEO || e->role != MF_MAIN || e->name.kind != MEDIA_EPISODE || e->root < 0 || e->root >= ix->nroots)
+            continue;
+        size_t sd = show_dir_len(e->rel, dir_len(e->rel));
+        if (!sd) continue;
+        bool seen = false;
+        for (int k = n - 1; k >= 0 && !seen; k--)
+            seen = sf[k].root == e->root && sf[k].len == sd && !strncmp(F[sf[k].ep].rel, e->rel, sd);
+        if (seen || !media_names_show(ix->roots[e->root], e->rel, sd, e->name.title)) continue;
+        if (n == cap) sf = xrealloc(sf, (size_t)(cap = cap ? cap * 2 : 16) * sizeof *sf);
+        sf[n++] = (ShowFolder){e->root, i, sd};
+    }
+    for (int i = 0; i < w && n; i++) {
+        MediaFile *f = &F[i];
+        if (f->type != MF_VIDEO || f->role != MF_MAIN || f->name.extra ||
+            (f->name.kind != MEDIA_MOVIE && f->name.kind != MEDIA_OTHER))
+            continue;
+        size_t dl = dir_len(f->rel);
+        const ShowFolder *show = NULL;
+        for (int k = 0; k < n && !show; k++)
+            if (sf[k].root == f->root && sf[k].len == dl && !strncmp(F[sf[k].ep].rel, f->rel, dl)) show = &sf[k];
+        if (!show) continue;
+        /* its title: its file's own words (read alone - its folder would name the show: "Garden (2010)"), the
+           show's name in front left off ("Garden Christmas Special" -> "Christmas Special") */
+        MediaName own;
+        media_parse_name(base_of(f->rel), &own);
+        const char *show_t = F[show->ep].name.title, *t = own.title;
+        size_t sl = strlen(show_t);
+        if (str_istarts(t, show_t) && (t[sl] == ' ' || t[sl] == '-')) {
+            const char *rest = t + sl;
+            while (*rest == ' ' || *rest == '-') rest++;
+            if (*rest) t = rest;
+        }
+        MediaName *m = &f->name;
+        char ept[sizeof own.title + 16];
+        if (own.year) snprintf(ept, sizeof ept, "%s (%d)", t, own.year);
+        else str_copy(ept, sizeof ept, t);
+        str_copy(m->ep_title, sizeof m->ep_title, ept); /* (a cut at a whole letter) */
+        str_copy(m->title, sizeof m->title, show_t);
+        m->year = F[show->ep].name.year;
+        m->kind = MEDIA_EPISODE;
+        m->season = m->episode = m->episode_end = 0;
+        m->unnumbered = true;
+    }
+    free(sf);
 }
 
 /* Sort, de-duplicate, and derive everything the pages need: subtitle and
@@ -862,6 +990,8 @@ static void index_finish(MediaIndex *ix) {
         }
     }
 
+    loose_specials(ix, F, w);
+
     /* ripped discs: play-alls, bonus clips, then episode numbers */
     for (int g0 = 0; g0 < w; g0 = gend[g0]) find_playalls(F, ents, g0, gend[g0]);
     season_pass(F, w, false);
@@ -894,6 +1024,7 @@ static void index_finish(MediaIndex *ix) {
         while (k < nep && F[ix->episodes[k]].series == s->id) {
             MediaFile *e = &F[ix->episodes[k]];
             if (e->name.season != last_season) s->nseasons++, last_season = e->name.season;
+            if (!e->name.season) s->specials = true;
             if (!s->year && e->name.year) s->year = e->name.year;
             if (e->mtime > s->newest) s->newest = e->mtime;
             s->count++;
@@ -934,6 +1065,12 @@ static void index_finish(MediaIndex *ix) {
     t_files = NULL;
 }
 
+static void names_free(SeriesNames *s) {
+    if (!s) return;
+    free(s->e);
+    free(s);
+}
+
 static MediaIndex *scan_run(Scan *sc) {
     sc->now = now_sec();
     for (int r = 0; r < sc->nroots && !atomic_load(&g_abort); r++) walk(sc, r, sc->roots[r], "", 0);
@@ -941,6 +1078,8 @@ static MediaIndex *scan_run(Scan *sc) {
         free(sc->files);
         free(sc->left);
         free(sc->parts);
+        names_free(sc->names);
+        sc->names = NULL;
         return NULL;
     }
     MediaIndex *ix = xcalloc(1, sizeof *ix);
@@ -952,7 +1091,11 @@ static MediaIndex *scan_run(Scan *sc) {
     ix->files = sc->files ? sc->files : xmalloc(sizeof(MediaFile));
     ix->nfiles = sc->n;
     ix->probed = sc->probed;
+    t_names = sc->names;
     index_finish(ix);
+    t_names = NULL;
+    names_free(sc->names);
+    sc->names = NULL;
     return ix;
 }
 
@@ -1158,6 +1301,7 @@ static Scan *scan_new(void) {
     adopt_pending(now_ms());
     Scan *sc = xcalloc(1, sizeof *sc);
     sc->nroots = media_roots(sc->roots, MEDIA_MAX_ROOTS);
+    sc->names = names_copy();
     sc->old = media_lib();
     atomic_store(&g_seen, 0);
     return sc;
@@ -1179,6 +1323,7 @@ void media_scan_start(void) {
     Scan *sc = scan_new();
     g_scan_t0 = now_ms();
     if (!thread_spawn(scan_thread, sc)) {
+        names_free(sc->names);
         free(sc);
         atomic_store(&g_scanning, false);
         log_error("media: cannot start the scanner thread");

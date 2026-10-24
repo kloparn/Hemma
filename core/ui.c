@@ -243,13 +243,14 @@ void ui_player(Buf *b, const UiPlayer *p) {
         bool any = false;
         for (int i = 0; i < p->nsubs; i++) any |= p->subs[i].on;
         buf_puts(b, "<span class=\"pl-subs\">");
-        pl_button(b, "subs", T("Subtitles"), "cc", NULL);
+        pl_button(b, "subs", T("Subtitles (C)"), "cc", NULL);
         H(b, "<span class=\"pl-menu\" role=\"menu\" hidden><button type=\"button\" role=\"menuitemradio\" data-sub=\"\" "
              "aria-checked=\"%s\">%s</button>",
           any ? "false" : "true", T("Off"));
         for (int i = 0; i < p->nsubs; i++) {
             H(b, "<button type=\"button\" role=\"menuitemradio\" data-sub=\"%s\"", p->subs[i].key);
             if (p->subs[i].pic) H(b, " data-subpic=\"%s\"", p->subs[i].pic);
+            if (p->subs[i].pref) buf_puts(b, " data-subpref");
             H(b, " aria-checked=\"%s\">%s</button>", p->subs[i].on ? "true" : "false", p->subs[i].label);
         }
         buf_puts(b, "</span></span>");

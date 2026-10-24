@@ -5,7 +5,7 @@
 # (Blu-ray PGS, DVD VobSub) Hemma reads out of the same files.
 #
 # Six targets side by side, each on its own runner with four processes (tools/ci/fuzz.sh): the whole
-# conversion (conv) and five parts alone, far faster per input (mkv, ac3, mpeg2, pgs, vobsub). What each
+# conversion (conv) and six parts alone, far faster per input (mkv, ac3, dts, mpeg2, pgs, vobsub). What each
 # found so far is kept between nights (a cache), so every night starts where the last one stopped. A
 # finding fails the job - GitHub mails whoever last edited this schedule - and the files that do it are
 # kept with the run: replay one with build/fuzz-<target> <file> (or, on Windows, tools/convfuzz.c's
@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [conv, mkv, ac3, mpeg2, pgs, vobsub]
+        target: [conv, mkv, ac3, dts, mpeg2, pgs, vobsub]
     runs-on: ubuntu-latest
     timeout-minutes: 200
     env:

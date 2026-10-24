@@ -219,6 +219,7 @@ TEST(media_upload_pages_speak_swedish_and_spanish) {
     plan_for(adam, plan, &r, batch);
     CHECK_INT(strlen(batch), 16);
     CHECK_HAS(body_of(&r), "[18,0,1048576]"); /* (the play-all: its header) */
+    CHECK_HAS(body_of(&r), "[13,0]"); /* (1.3: the subtitles of the episode the library has go next to it) */
     post(adam, batch, "0?pm=420", &r);
     CHECK_HAS(body_of(&r), "\"ok\":true");
     post(adam, batch, "1?original=1&why=Can%27t+convert+V_MPEGH%2FISO%2FHEVC+video+yet", &r);
@@ -234,7 +235,6 @@ TEST(media_upload_pages_speak_swedish_and_spanish) {
     const char *page = th_page(adam_id, "/media/upload");
     CHECK_HAS(page, "1 video couldn't be converted on this device");
     CHECK_HAS(page, "the library has it: Season 1/Show.S01E01.mp4");
-    CHECK_HAS(page, "goes with Show 1x01.mp4, which the library has");
     CHECK_HAS(page, "1 play-all header");
     pref_set(adam_id, PREF_LANG, "sv");
     page = th_page(adam_id, "/media/upload");

@@ -4,6 +4,8 @@
  *        -> {"batch":"<id>","todo":[[i,offset],[i,offset,end],...],"skipped":n,"total":bytes}  or  {"error":"...","stop":true}
  *        (with an end, only the bytes before it are wanted: a play-all's header)
  *   PUT  /media/upload/<batch>/<i>?at=<offset>   file i's bytes from offset, streamed to disk
+ *   PUT  /media/upload/<batch>/<i>?at=<offset>&end=<e>   only the piece up to e -> {"ok":true,"at":e} (1.3: a copy
+ *        kept in the browser's memory goes piece by piece; the last piece's answer is a whole file's)
  *   GET  /media/upload/<batch>/<i>               {"at":<bytes saved>}: where to resume
  *
  * With "conv":"1" (the browser can run the converter, and the box is ticked) a video
@@ -23,6 +25,9 @@
  *        t = the track's place among the file's subtitle tracks: the browser sends them in the file's
  *        order, so a second track in one language and flags is ".2" as the server's converter names it
  *        (text and pictures counted together, convert_save_sub), and a track sent again is known by it.
+ * A video that stays behind (the library has it, or its copy) but whose subtitles the library lacks is
+ * {"i":<entry>,"f":<file>,"subs":1} (1.3): the browser reads only its subtitle tracks, sends them as above -
+ * they go next to the library's video - with progress (?pm=), and ?pm=1000 once it's done with it.
  *
  * Subtitle files the household drops in go as they are: .srt .vtt .sup .idx - and a VobSub's .sub, when
  * its .idx is in the same upload (alone, a .sub is MicroDVD text: refused). The pair is sorted together
@@ -58,6 +63,9 @@
    remembered per person; wire.js's converter keeps to it). More lets more slow conversions - DVD rips -
    run side by side. */
 #define PREF_UPLOAD_ROOM "media.upload_room"
+/* ... and whether they wait in its memory instead (1.3; owner, 2026-10-23: "the option of storing converted videos
+   in RAM or on a drive ... as a big checkbox. If other people use it, the old style is nice"): off by default */
+#define PREF_UPLOAD_RAM "media.upload_ram"
 #define ROOM_DEFAULT 8
 #define ROOM_MIN 2
 #define ROOM_MAX 32
@@ -90,6 +98,13 @@ typedef struct {
     bool out;     /* skipped before it had a place: not a video, subtitle or picture, a bad name ... (the preview) */
     int64_t orig; /* the original's size (copies) */
     char ext[8];  /* the original's extension, to fall back to its name */
+    /* SUBTITLES ONLY (1.3): a video that stays behind - the library has it (dupe), or its copy goes instead -
+       still gives its subtitles: the browser reads them out of the original (file src) and sends them as
+       entry i, saved next to `target`. A dupe's own subtitle files in the batch go next to the library's
+       video instead (rehome), and then nothing is read (sidecars). */
+    bool subs, sidecars;
+    int lib_subs;      /* a dupe: subtitle files the library's video has already (any = nothing read) */
+    char target[720];  /* the video its subtitles go next to, root/rel in full (a dupe: the library's) */
 } UpFile;
 
 typedef struct {
@@ -250,10 +265,12 @@ static void batch_free(Batch *b) {
     free(b);
 }
 
+static bool subs_due(const UpFile *f) { return f->subs && f->pm < 1000; } /* (the browser says 1000 when it's done) */
+
 static bool batch_open(const Batch *b) {
     if (b->stopped) return false;
     for (int i = 0; i < b->nfiles; i++)
-        if (b->files[i].state == UP_QUEUED || b->files[i].state == UP_WRITING) return true;
+        if (b->files[i].state == UP_QUEUED || b->files[i].state == UP_WRITING || subs_due(&b->files[i])) return true;
     return false;
 }
 
@@ -334,17 +351,49 @@ static bool goes_with(const char *rel, const char *video) {
     return same_dir(rel, video) && strncmp(rel, video, sl) == 0 && (rel[sl] == '.' || rel[sl] == '-');
 }
 
-static void skip_companions(Batch *b) {
+static bool sub_file(const char *rel) { return media_is_sub_ext(rel) || media_is_vobsub_data(rel); }
+
+/* A subtitle file that goes with `video_rel` (as named in the batch) goes next to the library's video `lib`
+   (root/rel in full) instead, named after it: "x.sv.srt" of x.mkv -> "<that video's name>.sv.srt" (1.3).
+   False when it can't (in another library folder, a name too long); true and skipped when one of that
+   name is there already. */
+static bool rehome(Batch *b, UpFile *f, const char *video_rel, const char *lib, bool dry) {
+    size_t rl = strlen(b->root);
+    if (!lib[0] || strncmp(lib, b->root, rl) != 0 || lib[rl] != '/') return false;
+    const char *lrel = lib + rl + 1, *name = strrchr(lrel, '/');
+    char to[440], full[1024];
+    int n = snprintf(to, sizeof to, "%.*s%s", (int)media_stem_len(lrel), lrel, f->rel + media_stem_len(video_rel));
+    if (n < 0 || n > 380) return false;
+    join(full, sizeof full, b->root, to);
+    char shown[100]; /* (cut at a whole character) */
+    str_copy(shown, sizeof shown, name ? name + 1 : lrel);
+    if (path_stat(full, NULL, NULL, NULL)) {
+        f->state = UP_SKIPPED;
+        why_set(f, N_("%s has these subtitles already"), shown);
+        return true;
+    }
+    str_copy(f->rel, sizeof f->rel, to);
+    f->saved = resume_from(b, f, dry);
+    why_set(f, N_("goes next to %s, which the library has"), shown);
+    return true;
+}
+
+static void skip_companions(Batch *b, bool dry) {
     for (int i = 0; i < b->nfiles; i++) {
         UpFile *f = &b->files[i];
         if (f->state != UP_QUEUED || media_is_video_ext(f->rel)) continue;
-        const UpFile *with = NULL;
+        UpFile *with = NULL;
         bool kept = false;
         for (int k = 0; k < b->nfiles && !kept; k++) {
-            const UpFile *v = &b->files[k];
+            UpFile *v = &b->files[k];
             if (k == i || !media_is_video_ext(v->rel) || !goes_with(f->rel, v->rel)) continue;
             if (v->state == UP_QUEUED) kept = true;
             else if (v->dupe && !with) with = v;
+        }
+        /* its subtitles the library's video lacks go next to that one (1.3: they stayed behind too) */
+        if (with && !kept && sub_file(f->rel) && rehome(b, f, with->rel, with->target, dry)) {
+            with->sidecars = true;
+            continue;
         }
         if (with && !kept) {
             char name[100]; /* (cut at a whole character) */
@@ -547,6 +596,26 @@ bool upload_claims(const char *path) {
     return mine;
 }
 
+bool upload_claims_under(const char *dir) {
+    bool mine = false;
+    size_t dl = strlen(dir);
+    lock_take(&g_lock);
+    for (int s = 0; s < MAX_BATCHES && !mine; s++) {
+        const Batch *o = g_batch[s];
+        if (!o) continue;
+        bool coming = live(o);
+        for (int p = 0; p < o->nfiles && !mine; p++) {
+            const UpFile *x = &o->files[p];
+            if (x->state != UP_WRITING && !(x->state == UP_QUEUED && coming)) continue;
+            char path[1024];
+            join(path, sizeof path, o->root, x->rel);
+            mine = str_istarts(path, dir) && (path[dl] == '/' || path[dl] == '\0');
+        }
+    }
+    lock_give(&g_lock);
+    return mine;
+}
+
 static bool listed(const Batch *b, const char *rel) {
     for (int k = 0; k < b->nfiles; k++)
         if (str_eq(b->files[k].rel, rel)) return true;
@@ -554,7 +623,8 @@ static bool listed(const Batch *b, const char *rel) {
 }
 
 /* A folder converted by Hemma holds "x.mkv" next to "x.web.mp4": the copy is what plays,
-   at about a third of the size, so unless asked for the originals only the copy goes. */
+   at about a third of the size, so unless asked for the originals only the copy goes - and the
+   original's subtitles with it (subtitles_only), unless subtitle files of its own come along. */
 static void skip_originals(Batch *b) {
     for (int i = 0; i < b->nfiles; i++) {
         UpFile *f = &b->files[i];
@@ -564,7 +634,56 @@ static void skip_originals(Batch *b) {
         if (listed(b, copy)) {
             f->state = UP_SKIPPED;
             why_set(f, N_("its play-everywhere copy (.web.mp4) goes instead"));
+            join(f->target, sizeof f->target, b->root, copy);
+            for (int k = 0; k < b->nfiles && !f->sidecars; k++)
+                f->sidecars = k != i && b->files[k].state == UP_QUEUED && sub_file(b->files[k].rel) && goes_with(b->files[k].rel, f->rel);
         }
+    }
+}
+
+/* A subtitle file with no video of the batch to go with: the video it's named for, if the library has it
+   ("Friends S01E01.sv.srt" -> Friends S01E01, whatever its file is called) - it goes next to that one
+   (1.3). Tried from the shortest name up ("Show.S01E01.720p.en.srt": "Show.S01E01.720p", then "...720p.en" -
+   media_sub_for takes only names whose rest is tags, so the first that fits keeps every tag). */
+static void lone_subtitles(Batch *b, bool dry) {
+    for (int i = 0; i < b->nfiles; i++) {
+        UpFile *f = &b->files[i];
+        if (f->state != UP_QUEUED || !sub_file(f->rel)) continue;
+        bool with = false;
+        for (int k = 0; k < b->nfiles && !with; k++)
+            with = k != i && media_is_video_ext(b->files[k].rel) && goes_with(f->rel, b->files[k].rel);
+        if (with) continue;
+        char video[420], as[420], lib[720];
+        str_copy(as, sizeof as, f->rel);
+        if (media_is_vobsub_data(as)) memcpy(as + strlen(as) - 4, ".idx", 4); /* (a .sub is read as its .idx) */
+        const char *name = strrchr(f->rel, '/'), *ext = strrchr(f->rel, '.');
+        bool done = false;
+        for (const char *dot = strchr(name ? name + 1 : f->rel, '.'); !done && dot && dot <= ext; dot = strchr(dot + 1, '.')) {
+            snprintf(video, sizeof video, "%.*s.mkv", (int)(dot - f->rel), f->rel);
+            if (media_sub_for(video, as, NULL, 0) && media_have_file(b->root, video, NULL, 0, lib, sizeof lib, NULL))
+                done = rehome(b, f, video, lib, dry);
+        }
+    }
+}
+
+/* The originals that stay behind and give their subtitles (1.3: subtitles only): MKV/WebM ones - what the
+   browser's converter reads - when the browser can run it, the video they go with lacks subtitles of its
+   own (a dupe whose library video has some is left alone: no reading a whole file for nothing), and no
+   subtitle files of the batch go along instead. */
+static void subtitles_only(Batch *b, bool conv) {
+    for (int i = 0; conv && i < b->nfiles; i++) {
+        UpFile *f = &b->files[i];
+        if (f->state != UP_SKIPPED || !f->target[0] || f->sidecars || f->lib_subs) continue;
+        bool mkv = str_iends(f->rel, ".mkv") || str_iends(f->rel, ".webm") ||
+                   (media_is_web_copy(f->rel) && (str_ieq(f->ext, "mkv") || str_ieq(f->ext, "webm"))); /* (convert_here's) */
+        if (!mkv) continue;
+        const char *name = strrchr(f->target, '/');
+        char shown[100]; /* (cut at a whole character) */
+        str_copy(shown, sizeof shown, name ? name + 1 : f->target);
+        f->subs = true;
+        if (f->dupe) why_set(f, N_("the library has it (%s): only the subtitles inside it go, next to that one"), shown);
+        else if (media_is_web_copy(f->rel)) why_set(f, N_("its copy is there already: only the subtitles inside the original go"));
+        else why_set(f, N_("its copy goes instead, and the subtitles inside it go along"));
     }
 }
 
@@ -579,6 +698,20 @@ static bool convertible(const Batch *b, const UpFile *f, char *copy, size_t cap)
     if (!str_iends(f->rel, ".mkv") && !str_iends(f->rel, ".webm")) return false; /* the demuxer we have */
     convert_web_path(f->rel, copy, cap);
     return strlen(copy) <= 380 && !listed(b, copy); /* a copy among the chosen files goes as it is */
+}
+
+/* Subtitle files next to a video on the disk (root/rel in full), named for it ("x.en.srt" of x.web.mp4) */
+static int subs_beside(const char *full) {
+    const char *slash = strrchr(full, '/');
+    if (!slash) return 0;
+    char dir[1024];
+    str_ncopy(dir, sizeof dir, full, (size_t)(slash - full));
+    DirIter *it = dir_open(dir);
+    DirEntry e;
+    int n = 0;
+    while (it && dir_next(it, &e)) n += !e.is_dir && media_sub_for(slash + 1, e.name, NULL, 0);
+    if (it) dir_close(it);
+    return n;
 }
 
 static void convert_here(Batch *b, bool keep_originals, int me) {
@@ -607,6 +740,10 @@ static void convert_here(Batch *b, bool keep_originals, int me) {
             why_set(f, there    ? N_("its play-everywhere copy is already there")
                        : server ? N_("Hemma is making its play-everywhere copy on the server right now")
                                 : N_("another upload is sending its copy right now"));
+            if (there && f == o) { /* (the copy there may lack the original's subtitles: subtitles_only) */
+                str_copy(f->target, sizeof f->target, full);
+                f->lib_subs = subs_beside(full);
+            }
             continue;
         }
         f->state = UP_QUEUED;
@@ -708,6 +845,7 @@ typedef struct {
     bool conv, originals, dupes, force;
     uint64_t series; /* /media/upload?series=: everything into that series' folder */
     int room;        /* the slider (GB), -1 = not said */
+    bool ram;        /* copies wait in the browser's memory, not on its disk (only remembered here) */
     UpName names[NAMES_MAX]; /* series renamed on the preview ("to.<16 hex>" fields) */
     int nnames;
     int n;           /* files chosen (over MAX_FILES: refused, and none are kept) */
@@ -771,6 +909,7 @@ static void plan_in(const Ask *a, PlanIn *in) {
     in->dupes = ask_on(a, "dupes");
     in->force = ask_on(a, "force");
     in->room = ask_str(a, "room", tmp, sizeof tmp) ? (int)CLAMP(str_int_or(tmp, ROOM_DEFAULT), ROOM_MIN, ROOM_MAX) : -1;
+    in->ram = ask_on(a, "ram");
     if (!ask_str(a, "series", tmp, sizeof tmp) || !media_parse_id(tmp, &in->series)) in->series = 0;
     if (a->f) {
         for (int i = 0; i < a->f->n; i++) ask_name(in, a->f->k[i], a->f->v[i]);
@@ -934,7 +1073,8 @@ static Batch *plan_make(Ctx *c, const PlanIn *in, bool dry, char *err, size_t ca
             continue;
         }
         char found[400], have_it[120];
-        if (!in->dupes && media_is_video_ext(f->rel) && media_have(b->root, f->rel, found, sizeof found)) {
+        if (!in->dupes && media_is_video_ext(f->rel) &&
+            media_have_file(b->root, f->rel, found, sizeof found, f->target, sizeof f->target, &f->lib_subs)) {
             str_copy(have_it, sizeof have_it, tail2(found)); /* (cut at a whole character) */
             why_set(f, N_("the library has it: %s"), have_it);
             f->dupe = true;
@@ -945,20 +1085,27 @@ static Batch *plan_make(Ctx *c, const PlanIn *in, bool dry, char *err, size_t ca
     }
     for (int i = 0; i < n; i++) free(clean[i]);
     free(clean);
-    skip_companions(b);
+    skip_companions(b, dry);
+    lone_subtitles(b, dry);
     vobsub_pairs(b);
     play_alls(b, dry);
     if (!in->originals) skip_originals(b);
     if (in->conv) convert_here(b, in->originals, c->me->id);
+    subtitles_only(b, in->conv);
     batch_count(b);
     if (sorted) *sorted = srt;
     else free(srt);
     return b;
 }
 
-/* File i in the plan's answer: [i, from] / [i, from, end] / {"i": i, "f": the browser's file to convert} */
+/* File i in the plan's answer: [i, from] / [i, from, end] / {"i": i, "f": the browser's file to convert} /
+   {"i": i, "f": its file, "subs": 1}: only the subtitles inside it (subtitles_only) */
 static void todo_entry(Buf *out, const Batch *b, int i, int *k) {
     const UpFile *f = &b->files[i];
+    if (f->subs) {
+        buf_printf(out, "%s{\"i\":%d,\"f\":%d,\"subs\":1}", (*k)++ ? "," : "", i, f->src);
+        return;
+    }
     if (f->conv == CV_WAIT) { /* the browser converts its file f, then sends the copy as entry i */
         buf_printf(out, "%s{\"i\":%d,\"f\":%d}", (*k)++ ? "," : "", i, f->src);
         return;
@@ -996,6 +1143,7 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
             snprintf(v, sizeof v, "%d", in.room);
             pref_set(c->me->id, PREF_UPLOAD_ROOM, v);
         }
+        if (in.conv) pref_set(c->me->id, PREF_UPLOAD_RAM, in.ram ? "1" : "0"); /* (the box too, when converting) */
     }
     if (!room_for(b, c->me->id, err, sizeof err)) goto out;
 
@@ -1089,7 +1237,7 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
     int k = 0;
     bool *listed_yet = xcalloc((size_t)b->nfiles + 1, sizeof *listed_yet);
     for (int i = 0; i < b->nfiles; i++) {
-        if (b->files[i].state != UP_QUEUED || listed_yet[i]) continue;
+        if ((b->files[i].state != UP_QUEUED && !b->files[i].subs) || listed_yet[i]) continue;
         int m = vobsub_mate(b, i); /* a VobSub's .sub goes before its .idx (the library takes it only beside one) */
         if (m >= 0 && !listed_yet[m] && b->files[m].state == UP_QUEUED && media_is_vobsub_data(b->files[m].rel)) {
             todo_entry(&out, b, m, &k);
@@ -1129,6 +1277,7 @@ typedef struct {
     sock_t s;
     Buf head, body; /* unsent output to flush first / body bytes already received */
     int64_t at, len;
+    bool piece; /* ends before the file does (?end=): the rest comes in the next PUT */
     char full[1024], part[1040];
     Lang lang; /* the request's: the answer's words (the thread itself starts in English) */
 } Job;
@@ -1221,7 +1370,8 @@ static void worker(void *arg) {
         if (!file_sync(f) && !fail) fail = N_("The server couldn't save the file"), status = 507, stop = true;
         fclose(f);
     }
-    bool complete = !fail && got == j->len;
+    bool complete = !fail && got == j->len, piece = complete && j->piece; /* (a piece: saved, the file goes on) */
+    complete &= !piece;
     if (complete && b->art && !picture_bytes(j->part)) {
         fail = N_("That file isn't a JPEG, PNG or WebP picture"), status = 415, stop = true;
         file_remove(j->part);
@@ -1271,19 +1421,20 @@ static void worker(void *arg) {
     if (status) {
         Buf out = {0};
         if (complete) buf_puts(&out, "{\"ok\":true}");
+        else if (piece) buf_printf(&out, "{\"ok\":true,\"at\":%lld}", (long long)(j->at + got));
         else {
             buf_puts(&out, "{\"error\":");
             json_str(&out, T_in(j->lang, fail)); /* (in the request's language: the browser shows it) */
             buf_printf(&out, ",\"stop\":%s}", stop ? "true" : "false");
         }
-        worker_reply(j->s, complete ? 200 : status, buf_cstr(&out));
+        worker_reply(j->s, complete || piece ? 200 : status, buf_cstr(&out));
         buf_free(&out);
     }
     sock_shutdown_write(j->s);
-    if (status && !complete) drain(j->s, j->len - got);
+    if (status && !complete && !piece) drain(j->s, j->len - got);
     sock_close(j->s);
     if (complete) log_info("upload: saved %s", j->full);
-    else log_warn("upload: %s - %s", j->full, fail);
+    else if (!piece) log_warn("upload: %s - %s", j->full, fail);
     app_tick_soon(); /* the tick shows it now (a new picture: at once), not at the next idle tick */
     buf_free(&j->head);
     buf_free(&j->body);
@@ -1339,7 +1490,7 @@ static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     }
     Fields q = {0};
     fields_parse(&q, r->query, strlen(r->query));
-    int64_t at = fields_int(&q, "at", -1);
+    int64_t at = fields_int(&q, "at", -1), end = fields_int(&q, "end", f->size); /* (a piece ends before the file) */
     fields_free(&q);
     int64_t disk = resume_point(b, f);
     if (at != disk || at > f->size) { /* tell the browser where we really are */
@@ -1354,7 +1505,7 @@ static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
         buf_free(&out);
         return;
     }
-    if (r->content_length != f->size - at) {
+    if (end <= at || end > f->size || r->content_length != end - at) {
         lock_give(&g_lock);
         reply_err(conn, 400, true,
                   f->head ? T("Hemma was updated meanwhile - reload the page and start the upload again")
@@ -1384,7 +1535,8 @@ static void put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     j->b = b;
     j->i = i;
     j->at = at;
-    j->len = f->size - at;
+    j->len = end - at;
+    j->piece = end < f->size;
     j->lang = i18n_lang();
     join(j->full, sizeof j->full, b->root, f->rel);
     snprintf(j->part, sizeof j->part, "%s%s", j->full, MEDIA_PART_SUFFIX);
@@ -1521,7 +1673,10 @@ static const char *copy_of(Ctx *c, uint64_t id, int i, char *full, size_t cap, B
     *stop = false;
     if (!b || b->person != c->me->id) err = T("That upload is over");
     else if (b->stopped) err = T("The upload was stopped"), *status = 410, *stop = true;
-    else if (!f || f->conv == CV_NONE || f->conv == CV_ORIGINAL) err = T("That file has no copy made here");
+    else if (f && f->subs) { /* only its subtitles: next to the video they go with */
+        str_copy(full, cap, f->target);
+        b->last = b->busy = now_sec();
+    } else if (!f || f->conv == CV_NONE || f->conv == CV_ORIGINAL) err = T("That file has no copy made here");
     else {
         join(full, cap, b->root, f->rel);
         b->last = b->busy = now_sec(); /* (a sign of work: the upload is running) */
@@ -1836,6 +1991,7 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     else if (b->stopped) err = T("The upload was stopped"), status = 410;
     else if (pm >= 0 && size < 0 && !original) { /* progress - also a late one, after the copy went: fine */
         if (f && f->conv == CV_WAIT && f->state == UP_QUEUED) f->pm = (int)CLAMP(pm, 0, 999);
+        else if (f && f->subs) f->pm = (int)CLAMP(pm, 0, 1000); /* (only its subtitles: 1000 = all sent) */
         b->last = b->busy = now_sec();
         buf_puts(&out, "{\"ok\":true}");
     } else if (!f || !f->conv || f->state != UP_QUEUED) err = T("That file isn't waiting for a copy"), status = 404;
@@ -1956,7 +2112,7 @@ bool upload_http(Ctx *c, Conn *conn, HttpReq *r) {
 #define PV_NAMES 16
 #define PV_LIVE "media.up"
 
-enum { FATE_SEND = 1, FATE_CONVERT, FATE_RESUME, FATE_HEAD, FATE_SKIP, FATE_COPY };
+enum { FATE_SEND = 1, FATE_CONVERT, FATE_RESUME, FATE_HEAD, FATE_SKIP, FATE_COPY, FATE_SUBS };
 
 typedef struct {
     char name[200]; /* the file as chosen (a copy made here: the copy's name) */
@@ -1989,7 +2145,7 @@ typedef struct {
     char root[300];
     bool sorted;
     int chosen, all;  /* files sent to the preview / chosen in the browser (a long list comes cut) */
-    int files, skipped, conv;
+    int files, skipped, conv, subs; /* (subs: videos that stay behind while their subtitles go) */
     int64_t bytes;
     char err[400];    /* the plan's refusal (packed) */
     bool no_room;
@@ -2081,7 +2237,10 @@ static void pv_row(Preview *p, PvGroup *g, const PlanIn *in, const UpSorted *s, 
     r->episode_end = s->episode_end;
     r->disc = s->disc;
     r->kept = p->sorted && s->kept && !in->series;
-    if (f->state == UP_SKIPPED) {
+    if (f->subs) { /* stays behind, its subtitles go (subtitles_only) */
+        r->fate = FATE_SUBS;
+        str_copy(r->why, sizeof r->why, f->why);
+    } else if (f->state == UP_SKIPPED) {
         r->fate = FATE_SKIP;
         str_copy(r->why, sizeof r->why, f->why);
     } else if (f->extra) {
@@ -2096,6 +2255,7 @@ static void pv_row(Preview *p, PvGroup *g, const PlanIn *in, const UpSorted *s, 
         r->pct = (int)MIN(f->saved * 100 / f->size, 99);
     } else {
         r->fate = FATE_SEND;
+        str_copy(r->why, sizeof r->why, f->why); /* (a subtitle file going next to the library's video: rehome) */
     }
 }
 
@@ -2163,10 +2323,11 @@ static Preview *pv_build(Ctx *c, const PlanIn *in, int all) {
             str_copy(last, sizeof last, dir);
             last_out = f->out;
         }
-        bool skip = f->state == UP_SKIPPED;
+        bool skip = f->state == UP_SKIPPED && !f->subs;
         int64_t size = f->conv == CV_WAIT ? f->orig : f->size;
         g->files++;
         if (skip) g->skipped++, p->skipped++;
+        else if (f->subs) p->subs++;
         else g->bytes += size, p->bytes += size, p->files++;
         p->conv += !skip && f->conv == CV_WAIT && !f->extra;
         if (!f->extra) {
@@ -2300,6 +2461,7 @@ static void pv_fate(Buf *b, const PvRow *r) {
     case FATE_HEAD: H(b, "<span class=\"badge\">%s</span>", T("Just its first MB")); break;
     case FATE_SKIP: H(b, "<span class=\"badge warn\">%s</span>", T("Skipped")); break;
     case FATE_COPY: H(b, "<span class=\"badge ok\">%s</span>", T("Made here")); break;
+    case FATE_SUBS: H(b, "<span class=\"badge ok\">%s</span>", T("Only its subtitles")); break;
     default: H(b, "<span class=\"badge\">%s</span>", T("Sent as it is")); break;
     }
 }
@@ -2340,6 +2502,10 @@ static void pv_draw(Ctx *c, Buf *b, const Preview *p) {
     if (p->conv) {
         buf_puts(b, " · ");
         H(b, T("%d to convert here first"), p->conv);
+    }
+    if (p->subs) {
+        buf_puts(b, " · ");
+        H(b, TN(p->subs, "only the subtitles of %d video", "only the subtitles of %d videos"), p->subs);
     }
     if (p->skipped) {
         buf_puts(b, " · ");
@@ -2417,7 +2583,7 @@ static void pv_draw(Ctx *c, Buf *b, const Preview *p) {
             Buf w = {0}; /* what it is, and why it stays behind */
             pv_what(&w, r);
             const char *sep = w.len ? " · " : "";
-            if (r->fate == FATE_SKIP) {
+            if (r->fate == FATE_SKIP || r->fate == FATE_SUBS || (r->fate == FATE_SEND && r->why[0])) {
                 i18n_unpack_to(why, sizeof why, r->why);
                 H(&w, "%r%s", sep, why);
             } else if (r->fate == FATE_COPY) {
@@ -2510,24 +2676,27 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
     char moved[24], total[24], speed[24];
     media_size_text(u->moved, moved, sizeof moved);
     media_size_text(u->total, total, sizeof total);
-    int todo = u->nfiles - u->skipped, copies = 0, pending = 0, as_is = 0, heads = 0;
+    int todo = u->nfiles - u->skipped, copies = 0, pending = 0, as_is = 0, heads = 0, done = u->done, reading = 0;
     for (int i = 0; i < u->nfiles; i++) {
         const UpFile *f = &u->files[i];
         copies += f->conv != CV_NONE;
         pending += f->conv == CV_WAIT && f->state == UP_QUEUED;
         as_is += f->conv == CV_ORIGINAL;
         heads += f->head && f->state != UP_SKIPPED;
+        todo += f->subs; /* (only its subtitles: a file of the upload too, done once they're sent) */
+        done += f->subs && !subs_due(f);
+        reading += subs_due(f) && f->pm > 0;
     }
     bool open = batch_open(u);
     bool waiting = open && !u->workers && c->now - u->last > 20;
     char why[300];
     H(b, "<section class=\"media-up\" id=\"media-up-%X\"><h3>", u->id);
-    if (u->stopped) H(b, TN(todo, "Stopped · %d of %d file sent", "Stopped · %d of %d files sent"), u->done, todo);
-    else if (!open) H(b, TN(u->done, "Finished · %d file sent", "Finished · %d files sent"), u->done);
+    if (u->stopped) H(b, TN(todo, "Stopped · %d of %d file sent", "Stopped · %d of %d files sent"), done, todo);
+    else if (!open) H(b, TN(done, "Finished · %d file sent", "Finished · %d files sent"), done);
     else if (waiting)
         H(b, TN(todo, "Waiting for the browser · %d of %d file sent", "Waiting for the browser · %d of %d files sent"),
-          u->done, todo);
-    else H(b, TN(todo, "Uploading · %d of %d file", "Uploading · %d of %d files"), u->done, todo);
+          done, todo);
+    else H(b, TN(todo, "Uploading · %d of %d file", "Uploading · %d of %d files"), done, todo);
     buf_puts(b, "</h3>");
     int per_mille = copies ? batch_permille(u) : u->total ? (int)(u->moved * 1000 / u->total) : 1000;
     H(b, "<progress class=\"media-up-bar\" max=\"1000\" value=\"%d\"></progress><p class=\"media-up-nums\">",
@@ -2566,23 +2735,28 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
         H(b, T("Now: <code class=\"media-code\">%s</code> · %d%%"), f->rel, pct);
         buf_puts(b, "</p>");
     }
-    if (open && copies) {
-        buf_puts(b, "<p class=\"muted media-up-now\">");
-        H(b,
-          TN(copies, "Made on the sending device: %d of %d play-everywhere copy ready",
-             "Made on the sending device: %d of %d play-everywhere copies ready"),
-          copies - pending, copies);
-        buf_puts(b, "</p>");
+    if (open && (copies || reading)) {
+        if (copies) {
+            buf_puts(b, "<p class=\"muted media-up-now\">");
+            H(b,
+              TN(copies, "Made on the sending device: %d of %d play-everywhere copy ready",
+                 "Made on the sending device: %d of %d play-everywhere copies ready"),
+              copies - pending, copies);
+            buf_puts(b, "</p>");
+        }
         int shown = 0;
         for (int i = 0; i < u->nfiles && shown < 12; i++) {
             const UpFile *f = &u->files[i];
-            if (f->conv != CV_WAIT || f->state != UP_QUEUED || f->pm <= 0) continue;
+            bool subs = subs_due(f) && f->pm > 0; /* (being read for its subtitles) */
+            if (!subs && (f->conv != CV_WAIT || f->state != UP_QUEUED || f->pm <= 0)) continue;
             char orig[300]; /* (by the name it has on the sending device: "x.mkv", not the copy's "x.web.mp4") */
             const char *name = base_name(f->rel);
-            snprintf(orig, sizeof orig, "%.*s.%s", (int)(media_stem_len(name)), name, f->ext);
-            H(b, "%r<li class=\"row\"><span class=\"grow media-up-name\">%s</span>"
-                 "<progress class=\"media-up-bar\" max=\"1000\" value=\"%d\"></progress></li>",
-              shown++ ? "" : "<ul class=\"rows media-conv\">", orig, f->pm);
+            if (media_is_web_copy(name) && f->ext[0]) snprintf(orig, sizeof orig, "%.*s.%s", (int)(media_stem_len(name)), name, f->ext);
+            else str_copy(orig, sizeof orig, name);
+            H(b, "%r<li class=\"row\"><span class=\"grow media-up-name\">%s", shown++ ? "" : "<ul class=\"rows media-conv\">",
+              orig);
+            if (subs) H(b, " <span class=\"muted\">· %s</span>", T("its subtitles"));
+            H(b, "</span><progress class=\"media-up-bar\" max=\"1000\" value=\"%d\"></progress></li>", f->pm);
         }
         if (shown) buf_puts(b, "</ul>");
     }
@@ -2736,7 +2910,18 @@ void upload_page(Ctx *c, Buf *b) {
     if (pv) pv_draw(c, b, pv);
     buf_puts(b, "</div>");
 
-    /* 3. the rest, folded away */
+    /* 3. where the copies made here wait to be sent: memory or this device's disk - in sight, not folded */
+    if (here)
+        H(b,
+          "<label class=\"media-up-ram\" id=\"media-up-ram\"><input type=\"checkbox\" name=\"ram\" value=\"1\"%r>"
+          "<span><b>%s</b><small class=\"muted\">%s</small></span></label>",
+          str_eq(pref(c->me->id, PREF_UPLOAD_RAM, ""), "1") ? " checked" : "",
+          T("Keep converted videos in memory until they're sent"),
+          T("The copies wait in this device's memory (RAM) instead of on its disk, so nothing piles up there and the "
+            "disk only reads the originals. They take up to the room set under More options - leave it off on a phone "
+            "or a computer with little memory."));
+
+    /* 4. the rest, folded away */
     H(b, "<details class=\"media-up-more\" id=\"media-up-more\"><summary>%s</summary><div class=\"stack\">",
       T("More options"));
     if (!ser) {
@@ -2765,8 +2950,8 @@ void upload_page(Ctx *c, Buf *b) {
           "data-show=\"media-room-n\" aria-describedby=\"media-room-h\"><small class=\"muted\" "
           "id=\"media-room-h\">%r</small></label>",
           ROOM_MIN, ROOM_MAX, room,
-          T("More room lets more videos convert side by side - DVD rips take minutes each. A copy leaves this "
-            "device's disk as soon as it's sent."));
+          T("More room lets more videos convert side by side - DVD rips take minutes each. A copy is let go as soon "
+            "as it's sent."));
     }
     H(b,
       "<label class=\"check\"><input type=\"checkbox\" name=\"originals\" value=\"1\"> %s</label>"

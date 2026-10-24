@@ -36,13 +36,23 @@ booking (and whether the car is free) before you press Enter.</em></p>
 the household's cards.</em></p>
 
 <p align="center">
-  <img src="docs/img/child-home.webp" alt="A child's Home page on a phone: only the sauna to book, his own chore for today, the shopping list and his note on the board" width="270">
+  <img src="docs/img/child-home.webp" alt="A child's Home page on a phone: only the sauna to book, his own to-dos for today, movie night and the shopping list" width="270">
   &nbsp;
   <img src="docs/img/child-movies.webp" alt="A child's Movies: five films, without the two in folders marked Not for children" width="270">
 </p>
 <p align="center"><em>Leo's phone. A child books what's open to children, sees their own to-dos and the
 shared lists, and watches without the folders marked "Not for children" - Live TV and the TV
 too, while they're the one watching. A guest gets a sign-in that ends on their last day.</em></p>
+
+<p align="center">
+  <img src="docs/img/upload.webp" alt="Adding videos on a phone: before anything is sent, Hemma lists where each file goes - two films into Movies, one converted on this phone first and one sent as it is, and for a Caminandes episode the library already has, only its subtitles" width="270">
+  &nbsp;
+  <img src="docs/img/manage.webp" alt="Managing a series: Caminandes with each episode's file, Plays in browsers, and buttons to fix its number or remove it" width="270">
+</p>
+<p align="center"><em>Adding videos and looking after them (admins). Before anything is sent Hemma shows where each
+file goes and what happens to it: converted on this device first, sent as it is, or - for an episode the
+library already has - only its subtitles. Manage a series to fix an episode's number, remove what you
+don't want, or rename the series.</em></p>
 
 <sub>The household is made up, and the films are the Blender Foundation's open movies (CC BY):
 see [the credits](docs/img/CREDITS.md).</sub>
@@ -54,7 +64,7 @@ see [the credits](docs/img/CREDITS.md).</sub>
 | **Home** | A greeting, who's home, a card from every section and the latest news |
 | **Book** | Shared things like the car, laundry, guest room or sauna. It has a week view, warns about clashes and understands quick text like *"car fri 14-17 ikea"*, *"bastu ikväll 19"* or *"coche mañana de 14 a 17"* (English, Swedish or Spanish, and any other names you give a thing). Repeating bookings too: *"laundry every tuesday 18-21"*. Whoever's booking someone else cancels or moves is told |
 | **Plan** | Chores with repeats and people (*"vacuum @sam fri every week"*), and chores that take turns (*"vacuum every week @sam,@alex"*: it shows whose turn is next, and a turn can be swapped), a shared shopping list that remembers what you often buy, and a calendar that also shows bookings, with repeating events (*"football practice every wednesday 17:30-19"*). Your bookings, to-dos and the household's events can go into your phone's own calendar too, with its reminders ([how](docs/accounts.md#your-calendar-on-your-phone)) |
-| **Watch** | Your movie and series drive as a little cinema. It sorts series into seasons, has search and subtitles - the ones inside your video files too, even DVD and Blu-ray subtitles that are pictures, not text - and remembers where you stopped. It can convert videos a browser can't play (like DVD rips, or Dolby sound that Chrome plays silently) into a copy that plays everywhere, keeping the file's subtitles as .srt files, and moves HEVC films into a file Safari on iPhone, iPad and Mac can play. Admins drop videos or whole folders on the page, and before anything is sent Hemma shows where each will go - episodes into their series and season, films into Movies. The uploading computer makes those copies itself, so only the small copy travels and the Pi does no heavy lifting. An upload picks up where it stopped if the connection drops, and skips episodes and films you already have. Admins can remove an episode, a season, a series or a film for good, fix a title or an episode's number (Hemma renames the files), see what takes the most room, and mark folders *Not for children*. Grown-ups can download a video, or a whole season as one .zip, to watch away from home; downloads slow down while someone is watching. **Live TV** ("90s TV") is a tab here: channels that play your shows non-stop on a shared clock, with a TV guide |
+| **Watch** | Your movie and series drive as a little cinema. It sorts series into seasons and specials, has search and subtitles - the ones inside your video files too, even DVD and Blu-ray subtitles that are pictures, not text - and remembers where you stopped. It can convert videos a browser can't play (like DVD rips, Dolby sound that Chrome plays silently, or DTS sound no browser plays) into a copy that plays everywhere, keeping the file's subtitles as .srt files, and moves HEVC films into a file Safari on iPhone, iPad and Mac can play. Admins drop videos or whole folders on the page, and before anything is sent Hemma shows where each will go - episodes into their series and season, films into Movies. The uploading computer makes those copies itself, so only the small copy travels and the Pi does no heavy lifting. An upload picks up where it stopped if the connection drops, never idles while something is ready to go, and skips episodes and films you already have - sending just the subtitles they carry when the library's copy has none. Admins can remove an episode, a season, a series or a film for good, rename a series, fix a title or an episode's number (Hemma renames the files), see what takes the most room, and mark folders *Not for children*. Grown-ups can download a video, or a whole season as one .zip, to watch away from home; downloads slow down while someone is watching. **Live TV** ("90s TV") is a tab here: channels that play your shows non-stop on a shared clock, with a TV guide |
 | **Board** | The fridge door: notes with pins, colours and a photo (the school letter, the parking permit) that disappear when they're out of date |
 | **Network** | The devices on your network, who owns which, a good guess at who's home (from phones on the Wi-Fi) and Wake-on-LAN |
 | **Screens** | Hemma on the TV: a streaming-app view with big rows you move through with the remote (Continue watching, On TV, Recently added, Series, Movies), arranged by an admin. The TV asks *Who's watching?*: pick yourself (no password) and your progress follows you; on the TV you can only watch |
@@ -306,7 +316,8 @@ from command-line flags (`hemma --help`). [.env.example](.env.example) lists the
 
 ## For developers
 
-Hemma is plain C11 with no dependencies beyond the bundled SQLite. It's built with `zig cc`
+Hemma is plain C11 with no dependencies beyond the bundled SQLite (and two tables of numbers from
+FFmpeg that its DTS sound decoder needs). It's built with `zig cc`
 (Windows, cross-compiling) or any `cc` with `make` (Linux, macOS). Each feature is a
 self-contained module under `modules/`, and the pages are drawn on the server. The browser
 runs one script (`web/wire.js`): it keeps pages live, and holds the video player and the upload
@@ -324,6 +335,8 @@ in C? See [Why C?](docs/development.md#why-c).
 ## License
 
 Hemma is licensed under the [Apache License 2.0](LICENSE). SQLite, bundled in
-`third_party/sqlite`, is in the public domain. The films and posters in the screenshots
+`third_party/sqlite`, is in the public domain. `third_party/ffmpeg/dts_vq.h` - two tables the DTS
+specification leaves out, taken from FFmpeg - is under the GNU LGPL 2.1 or later
+([its notes](third_party/ffmpeg/README.md)). The films and posters in the screenshots
 are the Blender Foundation's open movies under Creative Commons licenses:
 [credits](docs/img/CREDITS.md).

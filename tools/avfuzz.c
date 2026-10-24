@@ -1,24 +1,25 @@
-/* tools/avfuzz.c — five fuzz targets that each reach one part of modules/av directly, many times
+/* tools/avfuzz.c — six fuzz targets that each reach one part of modules/av directly, many times
  * faster than tools/convfuzz.c's whole conversion (which encodes every picture it decodes), so the
  * nightly run (.github/workflows/fuzz.yml) goes deeper into each (issue #50). Pick one when building:
  *
  *   -DAVFUZZ_MKV     the Matroska reader: headers, tracks, every frame, a seek, a rewind
  *   -DAVFUZZ_AC3     the Dolby decoder: raw AC-3 / E-AC-3 frames, with the CRC check off
+ *   -DAVFUZZ_DTS     the DTS decoder (modules/av/dts.c): raw core frames
  *   -DAVFUZZ_MPEG2   the MPEG-2 decoder: a raw video stream, fed in chunks of any size
  *   -DAVFUZZ_PGS     Blu-ray picture subtitles (modules/av/subpic.c): a .sup opened, every cue drawn and
  *                    made a PNG (png.c)
  *   -DAVFUZZ_VOBSUB  DVD picture subtitles: the input's bytes up to its first NUL are the .idx text, the rest
  *                    the .sub; opened, every cue drawn and made a PNG
  *
- * For mkv, ac3 and mpeg2 the first byte of an input chooses the target's options (a layout, a chunk size,
+ * For mkv, ac3, dts and mpeg2 the first byte of an input chooses the target's options (a layout, a chunk size,
  * a reset part-way), so the fuzzer explores those too. Seeds: `HEMMA_FUZZ_SEEDS=build/fuzz-seeds
  * HEMMA_FUZZ_RAW=build/fuzz-raw build/test conv_fuzz_seeds` - the MKVs for mkv (as for convfuzz),
- * build/fuzz-raw/ac3 and .../mpeg2; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test subpic_fuzz_seeds` -
+ * build/fuzz-raw/ac3, .../dts and .../mpeg2; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test subpic_fuzz_seeds` -
  * build/fuzz-raw/pgs and .../vobsub.
  *
  *   clang -g -O1 -std=gnu11 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
  *         -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION -DAVFUZZ_AC3 tools/avfuzz.c modules/av/ac3.c -lm -o build/fuzz-ac3
- *   (mkv: modules/av/mkv.c; mpeg2: modules/av/mpeg2.c; pgs, vobsub: modules/av/subpic.c modules/av/png.c)
+ *   (mkv: modules/av/mkv.c; dts: modules/av/dts.c; mpeg2: modules/av/mpeg2.c; pgs, vobsub: modules/av/subpic.c modules/av/png.c)
  *   build/fuzz-ac3 -max_total_time=60 build/fuzz-corpus-ac3 build/fuzz-raw/ac3
  *
  * A finding is a sanitizer report (out of bounds, use after free, undefined behaviour, a leak) or a
@@ -30,8 +31,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(AVFUZZ_MKV) + defined(AVFUZZ_AC3) + defined(AVFUZZ_MPEG2) + defined(AVFUZZ_PGS) + defined(AVFUZZ_VOBSUB) != 1
-#error "build with exactly one of -DAVFUZZ_MKV, -DAVFUZZ_AC3, -DAVFUZZ_MPEG2, -DAVFUZZ_PGS, -DAVFUZZ_VOBSUB"
+#if defined(AVFUZZ_MKV) + defined(AVFUZZ_AC3) + defined(AVFUZZ_DTS) + defined(AVFUZZ_MPEG2) + defined(AVFUZZ_PGS) +         defined(AVFUZZ_VOBSUB) != 1
+#error "build with exactly one of -DAVFUZZ_MKV, -DAVFUZZ_AC3, -DAVFUZZ_DTS, -DAVFUZZ_MPEG2, -DAVFUZZ_PGS, -DAVFUZZ_VOBSUB"
 #endif
 
 static volatile uint32_t g_sink; /* what was read: kept, so no read is optimised away */
@@ -120,6 +121,45 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) {
         p += size, left -= (size_t)size;
     }
     ac3_close(dec);
+    return 0;
+}
+#endif
+
+#ifdef AVFUZZ_DTS
+#include "../modules/av/dts.h"
+
+int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) {
+    if (n < 2) return 0;
+    DtsDec *dec = dts_open();
+    if (!dec) return 0;
+    uint8_t opt = d[0];
+    dts_set_layout(dec, (DtsLayout)(opt % 3));
+    dts_set_drc(dec, opt & 4 ? 1.0f : 0.0f);
+    static float out[DTS_SAMPLES * DTS_MAX_CHANNELS];
+    const uint8_t *p = d + 1;
+    size_t left = n - 1;
+    /* (32 frames: a 100-byte frame may say 4096 samples on 6 channels - more frames only slow the fuzzer) */
+    for (int k = 0; k < 32 && left >= DTS_HEADER_BYTES; k++) {
+        long at = dts_find_frame(p, left, true);
+        if (at < 0) break;
+        p += at, left -= (size_t)at;
+        int size = dts_frame_size(p, left);
+        if (size <= 0 || (size_t)size > left) { /* (a header find_frame took: skip a byte) */
+            p++, left--;
+            continue;
+        }
+        /* sometimes a frame cut short: the decoder must notice, not read on */
+        size_t give = opt & 8 && k == 1 ? (size_t)size / 2 : (size_t)size;
+        int ch = 0;
+        DtsInfo info;
+        int rc = dts_decode(dec, p, give, out, &ch, &info);
+        if ((rc == DTS_OK || rc == DTS_ERR_BITSTREAM) && ch > 0 && ch <= DTS_MAX_CHANNELS &&
+            info.samples > 0 && info.samples <= DTS_SAMPLES)
+            touch((const uint8_t *)out, (size_t)info.samples * (size_t)ch * sizeof out[0]);
+        if (opt & 16 && k == 3) dts_reset(dec); /* (a seek) */
+        p += size, left -= (size_t)size;
+    }
+    dts_close(dec);
     return 0;
 }
 #endif

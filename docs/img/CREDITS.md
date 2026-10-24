@@ -19,5 +19,8 @@ Commons licenses. Their posters and pictures come from
 | Caminandes: Gran Dillama, episode picture | Blender Foundation | CC BY 3.0 | [File:Blender Foundation - Caminandes - Episode 2 - Gran Dillama - Cover thumbnail.png](https://commons.wikimedia.org/wiki/File:Blender_Foundation_-_Caminandes_-_Episode_2_-_Gran_Dillama_-_Cover_thumbnail.png) |
 | Caminandes: Llamigos, episode picture | Blender Foundation | CC BY 4.0 | [File:Blender Foundation - Caminandes - Episode 3 - Llamigos - Cover thumbnail.png](https://commons.wikimedia.org/wiki/File:Blender_Foundation_-_Caminandes_-_Episode_3_-_Llamigos_-_Cover_thumbnail.png) |
 
+The upload picture (`upload.webp`) also names two more of Blender Studio's open films, *Charge* (2022)
+and *Coffee Run* (2020), as files someone might add - their names only, no pictures.
+
 The screenshots themselves are part of Hemma's documentation, under the project's
 [license](../../LICENSE); the posters inside them keep the licenses above.

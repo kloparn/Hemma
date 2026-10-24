@@ -4,6 +4,92 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 1.3.0 (2026-10-24)
+
+Uploads keep the connection busy, DTS sound converts, subtitles follow you through a series, and admins can rename a series.
+
+### New
+
+- **DTS sound converts:** the 5.1 sound of many Blu-ray rips (DTS, ~1.5 Mbit/s) played silently in every
+  browser, and such videos went up unconverted. Hemma's converter now decodes DTS and makes AAC of it,
+  like Dolby sound - on the server (**Convert**) and in the uploading browser. DTS-HD files convert
+  too (from the DTS core they all carry). Checked against real episodes: the same sound as FFmpeg's
+  decoder gives, to within rounding.
+- **Subtitles follow you through a series:** turn subtitles on - or off - in an episode, and the next
+  episode of that series starts the same way however you open it, on any device (the TV's viewer
+  too): the same subtitles, else the same language, else none. Setting **Subtitles on by default**
+  in Library settings starts every series from that language again.
+- **C turns subtitles on and off** in the player, as M does the sound. Back on, it's the ones you
+  had, else your language, else the first.
+- **Subtitles for what the library already has:** an episode or film the library has (under any
+  name) still stays behind - but when the library's video has no subtitles and yours carries some,
+  your computer reads just the subtitles out of it and sends those, and they land next to the
+  library's video. The same when only the converted copy goes, or the copy is on the server already:
+  the original's subtitles go along. The preview says **Only its subtitles**, and the upload's card
+  shows each one being read.
+- **Subtitle files find their video:** a .srt (or .sup, .idx and .sub) next to a video the library
+  has under another name is renamed to sit beside the library's video, instead of staying behind; one
+  dropped in on its own finds its episode or film by its name ("Friends S01E01.sv.srt"), keeping its
+  language and "forced"/"SDH" tags. One the library has already is skipped ("... has these subtitles
+  already").
+- **Specials, last and apart:** a series' season 0 - S00 episodes, a "Specials" folder, and now also a video
+  lying loose in the series' own folder without a number of its own (a Christmas special, the show's film) - is
+  its **Specials**, after the last season. Specials used to come first, so a series could start at one ("Start
+  watching S00E43"); now it starts at S01E01, **Next episode** never runs from the last season into the specials
+  (or back), Live TV channels air them after the seasons, and "26 seasons" counts only the seasons. A loose video
+  is numbered after the specials the series has, its own name its title ("Garden Christmas Special" in the Garden
+  folder: "Christmas Special"). Extras folders stay left out, and a ripped disc's bonus clips stay under Extras.
+- **Rename a series:** **Manage** on a series page → **Rename** (admins). Hemma reads a series' name from
+  its folder, so its folder gets the new name - every folder of it, when its seasons sit in more than
+  one. It keeps everything that points at it: TV channels, screens, everyone's progress and subtitle
+  pick, "Not for children" marks. Before anything moves Hemma checks how it will read the new name, and
+  says so when an episode's own file name would keep the old one (**Fix number** on it first), when the
+  folder holds other videos too, or when another series has that name.
+- **Keep converted videos in memory until they're sent** - a big checkbox on the upload page: the
+  copies your computer makes wait in its memory (RAM) instead of on its disk, so nothing piles up on
+  the disk and it only reads the originals. They take up to the room set under **More options**. Off
+  by default (the old way, better for a phone or a computer with little memory); remembered for you.
+
+### Changed
+
+- **A whole show's release names its series right:** a folder like "The.Simpsons.S01-S31.1080p..." or
+  "Seinfeld Seasons 1-9" made a series called "The Simpsons S01-S31"; a range of seasons is no part
+  of a show's name now, so it's "The Simpsons" - already uploaded ones too, without moving anything.
+- **Uploads don't stand still while something could go:** converted copies used to go in the list's
+  order, so the connection waited whenever the next one in line was still being made - even with
+  others finished. Now whatever is ready goes first: finished copies, then the files that go as they
+  are, and it only waits when nothing at all is ready.
+- **The converter reads originals in bigger steps:** reading on through a file it asks for twice as
+  much each time, up to 32 MB (8 MB on a phone), instead of 1 MB at a time - so several conversions
+  on one hard disk take turns in long reads instead of jumping between files every megabyte.
+
+### For developers
+
+- `PUT /media/upload/<batch>/<i>?at=A&end=E` takes a file in pieces (answered `{"ok":true,"at":E}`);
+  a plan's todo has `{"i","f","subs":1}` entries (read only the subtitles: av.wasm's `conv_subs_only`,
+  `?pm=1000` when done); the upload loop in `web/wire.js` sends whatever is ready.
+- The browser tests now convert in Chrome (an MKV from the converter's fuzz seeds): copies with their
+  subtitles, a copy kept in memory going in pieces, subtitles only, copies and plain files in one
+  upload, DTS sound. CI's browser job builds av.wasm for them (zig).
+- `modules/av/dts.c`: the DTS Coherent Acoustics core decoder (ETSI TS 102 114). Its tables come from
+  the specification (`dts_tables.h`, made by a script and checked); the two vector tables every
+  edition leaves out come from FFmpeg (`third_party/ffmpeg/`, LGPL 2.1 or later - the downloads carry
+  `LICENSE-LGPL-2.1.txt`). A test frame writer (`dts_testenc.h`), a fuzz target (`dts`, nightly too),
+  a converter seed (`h264-dts.mkv`) and a real-file check (`HEMMA_TEST_DTS`).
+- The README's pictures are new (the same made-up household, on 1.3), with two more: adding videos (the
+  upload's preview) and managing a series.
+- Specials: library.c `season_order()` sorts season 0 last (episodes, extras), `loose_specials()` makes a
+  movie/other video right in a series' show folder (`media_names_show`) an unnumbered season-0 episode before
+  `season_pass` numbers it; `MediaSeries.specials` + `media_seasons()`; `media_neighbour` and `media_next_up`
+  keep the specials apart. The Specials tab said "Specials 0".
+- `media.rename_series` (id, title, year) renames a series' show folders (manage.c) after parsing every
+  video's new path as the library will; table `media_series_name` keeps a renamed series' id under its
+  new title (`media_series_keep`; the scan reads a copy of it), so nothing holding a series id breaks.
+  `upload_claims_under(dir)`: an upload writing into a folder. names.c: a season range ("S01-S31",
+  "Seasons 1-7") is a tag.
+- The live action `media.sub` keeps a viewer's subtitles pick per series (prefs `media.sub.<series>`,
+  generation `media.sub.gen`); the subtitle menu marks what C turns on (`data-subpref`).
+
 ## 1.2.0 (2026-10-23)
 
 Every video that has subtitles shows them.

@@ -138,9 +138,9 @@ static void series_tile(Buf *b, const MediaSeries *s, int kind, const char *back
     else {
         int eps = media_episodes_in(s);
         H(b, TN(eps, "%d episode", "%d episodes"), eps);
-        if (s->nseasons > 1) {
+        if (media_seasons(s) > 1) {
             buf_puts(b, " · ");
-            H(b, T("%d seasons"), s->nseasons);
+            H(b, T("%d seasons"), media_seasons(s));
         }
     }
     buf_puts(b, wall ? "</span></div>" : "</span></a>");
@@ -420,8 +420,8 @@ void media_series_tv(Ctx *c, Buf *b, const MediaSeries *s) {
     buf_puts(b, "<header class=\"media-tv-head\"><div class=\"media-tv-poster\">");
     media_tile_art(b, s->title, T("Series"), NULL, s->poster, 0);
     H(b, "</div><div class=\"media-tv-head-t\"><h1>%s</h1><p class=\"media-tv-sub\">", s->title);
-    if (s->nseasons > 1) {
-        H(b, T("%d seasons"), s->nseasons);
+    if (media_seasons(s) > 1) {
+        H(b, T("%d seasons"), media_seasons(s));
         buf_puts(b, " · ");
     }
     int eps = media_episodes_in(s);
@@ -451,7 +451,8 @@ void media_series_tv(Ctx *c, Buf *b, const MediaSeries *s) {
         int season = media_episode(s, i)->name.season;
         if (s->nseasons > 1) {
             buf_puts(b, "<h2 class=\"media-tv-h\">");
-            H(b, season == 0 ? T("Specials %d") : T("Season %d"), season);
+            if (season) H(b, T("Season %d"), season);
+            else H(b, "%s", T("Specials"));
             buf_puts(b, "</h2>");
         }
         if (up && up->name.season == season) /* opens at the next episode (wire.js data-start) */

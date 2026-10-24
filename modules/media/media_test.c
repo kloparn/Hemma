@@ -206,7 +206,7 @@ TEST(media_player_page_has_tracks_next_and_badges) {
     CHECK(th_act(adam, "media.prefs", "sublang=sv").ok);
     html = th_page(adam, url("/media/watch/%s", flower->id));
     CHECK_HAS(html, "label=\"Svenska\" default>");
-    CHECK_HAS(html, "data-sub=\"sv\" aria-checked=\"true\">Svenska</button>"); /* the menu ticks it too */
+    CHECK_HAS(html, "data-sub=\"sv\" data-subpref aria-checked=\"true\">Svenska</button>"); /* the menu ticks it too */
     CHECK_HAS(html, "data-sub=\"\" aria-checked=\"false\">Off</button>");
     /* episodes chain to the next one and autoplay it */
     const MediaFile *ep1 = find("S01E01.Seeds.mp4"), *ep2 = find("S01E02.Roots.mp4");
@@ -621,7 +621,7 @@ TEST(media_player_offers_each_subtitle_by_its_key) {
     CHECK(th_act(adam, "media.prefs", "sublang=en").ok);
     html = th_page(adam, url("/media/watch/%s", night->id));
     CHECK_HAS(html, "srclang=\"en\" label=\"English\" default>");
-    CHECK_HAS(html, "data-sub=\"en\" aria-checked=\"true\">English</button>");
+    CHECK_HAS(html, "data-sub=\"en\" data-subpref aria-checked=\"true\">English</button>"); /* (also what C turns on) */
     CHECK_HAS(html, "data-sub=\"en.sdh\" aria-checked=\"false\">");
     CHECK_HAS(html, "data-sub=\"\" aria-checked=\"false\">Off</button>");
     const char *d = strstr(html, " default>");
@@ -632,7 +632,7 @@ TEST(media_player_offers_each_subtitle_by_its_key) {
     CHECK(day && daysup);
     if (day && daysup) {
         media_id_hex(daysup->id, hex);
-        snprintf(want, sizeof want, "data-sub=\"en\" data-subpic=\"/media/subpic/%s.json?v=%lld-%lld\" aria-checked=\"true\">English</button>",
+        snprintf(want, sizeof want, "data-sub=\"en\" data-subpic=\"/media/subpic/%s.json?v=%lld-%lld\" data-subpref aria-checked=\"true\">English</button>",
                  hex, (long long)daysup->size, (long long)daysup->mtime);
         CHECK_HAS(th_page(adam, url("/media/watch/%s", day->id)), want);
     }
@@ -643,6 +643,73 @@ TEST(media_player_offers_each_subtitle_by_its_key) {
     CHECK_HAS(html, "label=\"English (bara främmande språk)\"");
     pref_set(adam, PREF_LANG, "es");
     CHECK_HAS(th_page(adam, url("/media/watch/%s", night->id)), ">English (para personas sordas)</button>");
+    th_halt();
+}
+
+/* 1.3 (owner: "if enabled on an episode, carry on to the next episode with the same language if it exists"):
+   the viewer's pick in the player (media.sub) is kept for the series - its other episodes, opened anywhere,
+   start with the same key, else the first of that language, else none; turned off stays off. It's the
+   viewer's, it wins over their language until they set a new one, and a film keeps nothing. data-subpref
+   marks what C turns on. */
+TEST(media_subtitles_follow_the_viewer_through_a_series) {
+    int adam = boot_with_library();
+    int eva = th_person("Eva");
+    static const char *const files[] = {"Show S01E01.mp4", "Show S01E01.en.srt", "Show S01E01.sv.srt",
+                                        "Show S01E02.mp4", "Show S01E02.sv.srt", "Show S01E02.en.sdh.srt",
+                                        "Show S01E03.mp4", "Show S01E03.fr.srt"};
+    for (int i = 0; i < countof(files); i++) {
+        char rel[200];
+        snprintf(rel, sizeof rel, "Series/Show/Season 1/%s", files[i]);
+        put(g_root, rel, "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
+    }
+    put(g_root, "Movies/Night (1993)/Night (1993).mp4", "film");
+    put(g_root, "Movies/Night (1993)/Night (1993).sv.srt", "1\n00:00:01,000 --> 00:00:02,000\nHej\n");
+    media_scan_sync();
+    const MediaFile *e1 = find("Show S01E01.mp4"), *e2 = find("Show S01E02.mp4"), *e3 = find("Show S01E03.mp4"),
+                    *night = find("Night (1993).mp4");
+    CHECK(e1 && e2 && e3 && night);
+    if (!e1 || !e2 || !e3 || !night) {
+        th_halt();
+        return;
+    }
+    char hex1[17], hexn[17], form[80];
+    media_id_hex(e1->id, hex1);
+    media_id_hex(night->id, hexn);
+    uint64_t i2 = e2->id, i3 = e3->id;
+    const char *html = th_page(adam, url("/media/watch/%s", i2));
+    CHECK(!strstr(html, " default>") && !strstr(html, "data-subpref")); /* nothing picked, no language */
+    /* Swedish on episode 1: episode 2 starts in Swedish */
+    snprintf(form, sizeof form, "id=%s&key=sv", hex1);
+    th_act(adam, "media.sub", form);
+    html = th_page(adam, url("/media/watch/%s", i2));
+    CHECK_HAS(html, "srclang=\"sv\" label=\"Svenska\" default>");
+    CHECK_HAS(html, "data-sub=\"sv\" data-subpref aria-checked=\"true\">Svenska</button>");
+    CHECK(!strstr(th_page(eva, url("/media/watch/%s", i2)), " default>")); /* (Adam's, not Eva's) */
+    /* English: episode 2 has only English for the hard of hearing - its language, so that */
+    snprintf(form, sizeof form, "id=%s&key=en", hex1);
+    th_act(adam, "media.sub", form);
+    html = th_page(adam, url("/media/watch/%s", i2));
+    CHECK_HAS(html, "data-sub=\"en.sdh\" data-subpref aria-checked=\"true\">");
+    CHECK_HAS(html, "data-sub=\"sv\" aria-checked=\"false\">");
+    html = th_page(adam, url("/media/watch/%s", i3)); /* no English at all: none */
+    CHECK(!strstr(html, " default>") && !strstr(html, "aria-checked=\"true\">Fran"));
+    /* a new "Subtitles on by default" starts every series from it again */
+    CHECK(th_act(adam, "media.prefs", "sublang=sv").ok);
+    CHECK_HAS(th_page(adam, url("/media/watch/%s", i2)), "data-sub=\"sv\" data-subpref aria-checked=\"true\">");
+    /* turned off: off, though their language is Swedish - which C would turn on */
+    snprintf(form, sizeof form, "id=%s&key=", hex1);
+    th_act(adam, "media.sub", form);
+    html = th_page(adam, url("/media/watch/%s", i2));
+    CHECK(!strstr(html, " default>"));
+    CHECK_HAS(html, "data-sub=\"sv\" data-subpref aria-checked=\"false\">");
+    CHECK_HAS(html, "data-sub=\"\" aria-checked=\"true\">");
+    /* a film keeps nothing (the language does it); keys that aren't keys are ignored */
+    snprintf(form, sizeof form, "id=%s&key=", hexn);
+    th_act(adam, "media.sub", form);
+    CHECK_HAS(th_page(adam, url("/media/watch/%s", night->id)), "srclang=\"sv\" label=\"Svenska\" default>");
+    snprintf(form, sizeof form, "id=%s&key=sv%%22x", hex1);
+    th_act(adam, "media.sub", form);
+    CHECK(!strstr(th_page(adam, url("/media/watch/%s", i2)), " default>")); /* (still off) */
     th_halt();
 }
 
@@ -722,6 +789,72 @@ TEST(media_double_episodes_show_their_range) {
     CHECK_HAS(html, "<span class=\"media-ep-n media-ep-nn\">3–4</span>");
     CHECK_HAS(html, "<span class=\"media-ep-n\">5</span>");
     CHECK_HAS(html, "Arthur&#39;s Baby + D.W.&#39;s Baby");
+    th_halt();
+}
+
+/* 1.3 (owner, 2026-10-24: "everything that is not in a series increment ... goes inside like a specials part of the
+   series"): season 0 - S00, a Specials folder, and loose videos in the series' own folder - is its Specials: last,
+   apart from the seasons, never where it starts. */
+TEST(media_specials_sit_last_and_apart) {
+    th_boot();
+    int adam = th_person("Adam");
+    str_copy(g_root, sizeof g_root, test_tmpdir());
+    put(g_root, "Series/Garden (2010)/Season 1/Garden.S01E01.mkv", "e1");
+    put(g_root, "Series/Garden (2010)/Season 1/Garden.S01E02.mkv", "e2");
+    put(g_root, "Series/Garden (2010)/Season 2/Garden.S02E01.mkv", "e3");
+    put(g_root, "Series/Garden (2010)/Specials/Garden.S00E03.Holiday.mkv", "s3");
+    put(g_root, "Series/Garden (2010)/Garden Christmas Special.mkv", "loose");          /* (no number of its own) */
+    put(g_root, "Series/Garden (2010)/Garden - The Movie (2015).mkv", "loose film");
+    put(g_root, "Series/Garden (2010)/Extras/Behind the Scenes.mkv", "left out");      /* (an extras folder: as before) */
+    put(g_root, "Series/Lonely Film (2001).mkv", "not a special");                      /* (a category folder) */
+    setting_set("media.roots", g_root);
+    media_scan_sync();
+    const MediaIndex *ix = media_lib();
+    CHECK_INT(ix->nseries, 1);
+    if (ix->nseries != 1) return;
+    const MediaSeries *s = &ix->series[0];
+    CHECK_STR(s->title, "Garden");
+    CHECK_INT(s->count, 6);
+    CHECK(s->specials);
+    CHECK_INT(s->nseasons, 3);
+    CHECK_INT(media_seasons(s), 2);
+    /* the seasons first, the specials last: S00E03 (its own number), then the loose two after it, by name */
+    static const struct {
+        int season, ep;
+        const char *ep_title;
+    } want[] = {{1, 1, ""}, {1, 2, ""}, {2, 1, ""}, {0, 3, "Holiday"}, {0, 4, "The Movie (2015)"}, {0, 5, "Christmas Special"}};
+    for (int i = 0; i < countof(want) && i < s->count; i++) {
+        const MediaFile *e = media_episode(s, i);
+        if (e->name.season != want[i].season || e->name.episode != want[i].ep || !str_eq(e->name.ep_title, want[i].ep_title))
+            test_fail(__FILE__, __LINE__, "episode %d: S%02dE%02d \"%s\", expected S%02dE%02d \"%s\"", i, e->name.season,
+                      e->name.episode, e->name.ep_title, want[i].season, want[i].ep, want[i].ep_title);
+    }
+    CHECK(find("Lonely Film (2001).mkv") && find("Lonely Film (2001).mkv")->name.kind == MEDIA_MOVIE);
+    CHECK(!find("Behind the Scenes.mkv")); /* (still left out) */
+
+    /* apart: no "next episode" from the last season into the specials, or back; between specials, yes */
+    const MediaFile *s2e1 = media_episode(s, 2), *sp3 = media_episode(s, 3), *sp4 = media_episode(s, 4);
+    CHECK(media_neighbour(s2e1, +1) == NULL);
+    CHECK(media_neighbour(sp3, -1) == NULL);
+    CHECK(media_neighbour(sp3, +1) == sp4);
+    uint64_t sid = s->id, e1 = media_episode(s, 0)->id, e2 = media_episode(s, 1)->id, sp3_id = sp3->id;
+
+    /* the page: "2 seasons", tabs Season 1 · Season 2 · Specials, and it starts at S01E01 */
+    const char *html = th_page(adam, url("/media/series/%s", sid));
+    CHECK_HAS(html, "2 seasons");
+    const char *t1 = strstr(html, ">Season 1</a>"), *t2 = strstr(html, ">Season 2</a>"), *ts = strstr(html, ">Specials</a>");
+    CHECK(t1 && t2 && ts && t1 < t2 && t2 < ts);
+    CHECK_HAS(html, "Start watching S01E01");
+    /* a special watched first doesn't move next-up into them... */
+    media_watch_set_done(adam, sp3_id, true, now_ms());
+    CHECK_HAS(th_page(adam, url("/media/series/%s", sid)), "S01E01</span></a>");
+    /* ... the seasons go on in order ... */
+    media_watch_set_done(adam, e1, true, now_ms());
+    media_watch_set_done(adam, e2, true, now_ms());
+    CHECK_HAS(th_page(adam, url("/media/series/%s", sid)), "Next up S02E01");
+    /* ... and after the last season it starts over, not into the specials */
+    media_watch_set_done(adam, media_episode(media_series(sid), 2)->id, true, now_ms());
+    CHECK_HAS(th_page(adam, url("/media/series/%s", sid)), "S01E01</span></a>");
     th_halt();
 }
 
