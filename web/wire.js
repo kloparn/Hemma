@@ -12,7 +12,8 @@
 //               a[data-native] full page load · form[data-keep] don't reset · form[data-confirm]
 //               form[data-upload] send the chosen files (see upload() below); with
 //               data-convert/data-wasm the server's converter (C, as WebAssembly) can make
-//               play-everywhere copies first, in Workers (web/conv.js). A [data-drop] area in it:
+//               play-everywhere copies first, in Workers (web/conv.js) - kept in memory instead of on
+//               this device's disk when its "ram" box is ticked. A [data-drop] area in it:
 //               files and folders dropped (anywhere on the page) or picked are kept on the form,
 //               each choice adding to them ([data-drop-clear] empties the list), and with
 //               data-preview="<live action>" the server is told them to draw what Start will do
@@ -662,7 +663,8 @@
     if (!files.length) { toast(2, f.dataset.empty || T('Choose a folder or some files first')); return; }
     const base = f.dataset.upload, body = {};
     for (const [k, v] of pairs(new FormData(f))) body[k] = v;
-    const use = { worker: f.dataset.convert, wasm: f.dataset.wasm }; // the page says where (if it has them)
+    // the page says where (if it has them); data-part: the pieces a copy in memory goes in (tests: small ones)
+    const use = { worker: f.dataset.convert, wasm: f.dataset.wasm, part: Number(f.dataset.part) || 0 };
     if (!canConvert || !use.worker || !use.wasm) delete body.conv;
     body.files = picked.map((x) => [x.path, x.file.size]);
     uploading = true;
@@ -677,24 +679,26 @@
       // Start again after a failure carries on)
       if (f.dataset.preview) send({ t: 'live', a: f.dataset.preview, url: here(), f: [['files', '']] });
       // [i, at] = file i from byte `at`; [i, at, end] = only up to `end` (the server needs no more);
-      // {i, f} = convert file f here first, then send the copy as entry i (the server says how)
-      const copies = plan.todo.filter((t) => !Array.isArray(t));
+      // {i, f} = convert file f here first, then send the copy as entry i (the server says how);
+      // {i, f, subs: 1} = only read file f's subtitles, and send those (it stays behind)
+      const copies = plan.todo.filter((t) => !Array.isArray(t)), plain = plan.todo.filter((t) => Array.isArray(t));
       const room = Math.min(32, Math.max(2, Number(body.room) || 8)) * 2 ** 30; // the form's "room" (GB)
-      made = converter(base, plan.batch, files, copies, use, room);
-      for (const t of plan.todo) {
-        if (Array.isArray(t)) { await put(`${base}/${plan.batch}/${t[0]}`, files[t[0]], t[1], t[2]); continue; }
-        const url = `${base}/${plan.batch}/${t.i}`, m = await made.take(copies.indexOf(t));
-        if (m.stop) throw new Error(m.stop);
-        try {
-          const s = await ask(url, m.send ? `size=${m.size}` : `original=1&why=${encodeURIComponent(m.error || '')}`);
-          if (!s.skip) await put(url, m.send ? m : files[t.f], s.at || 0);
-          // the file's own subtitles next to it - text as .srt, pictures as .sup / .idx + .sub - in the
-          // file's order (a second English track is ".2" as the server's converter would name it)
-          const tracks = (m.subs || []).concat(m.pics || []).sort((a, b) => (a.t || 0) - (b.t || 0));
-          for (const sub of tracks) await (sub.data ? subPictures(url, sub) : subtitle(url, sub));
-        } finally {
-          if (m.drop) m.drop(); // sent (or not needed): the browser lets go of the copy now
+      made = converter(base, plan.batch, files, copies, { ...use, ram: body.ram === '1' }, room);
+      // One file at a time, never idle while something can go (1.3; owner: "be always at that limit"): what
+      // the converters finished first, then the files that go as they are (in the plan's order: a VobSub's
+      // .sub before its .idx), else wait for the next copy. Copies used to go in the list's order, and the
+      // line stood still while the next one in it was still being made.
+      for (let p = 0; ;) {
+        let got = made.take();
+        if (!got && p < plain.length) {
+          const t = plain[p++];
+          await put(`${base}/${plan.batch}/${t[0]}`, files[t[0]], t[1], t[2]);
+          continue;
         }
+        if (!got && !made.left()) break;
+        if (!got) got = await made.next();
+        if (got.stop) throw new Error(got.stop);
+        await sendMade(`${base}/${plan.batch}/${copies[got.k].i}`, copies[got.k], got.m, files);
       }
       sent = true;
     } catch (err) {
@@ -710,23 +714,50 @@
     }
   }
 
-  // Copies made here, a few at a time (half the cores, at most 8; a phone one) and only a few
-  // ahead of the one being sent: what's being made and what waits to be sent come from originals
-  // of `room` bytes at most (the form's choice; one always may) - copies are no bigger, so that's
-  // what this device's disk may hold of them. A finished copy stays in its worker, which sends it
-  // (take(k).send) and is ended once it's sent (.drop): the browser lets go of it right then - a copy
-  // handed to the page stayed until the page's memory was next tidied, and a long upload filled the
-  // browser's disk with them. Progress goes to the server (?pm=), which renders it like everything
-  // else; when it says stop, everything stops.
+  // What a converter finished: a copy (m.send: its worker sends it; m.drop once it's gone), "it couldn't"
+  // (m.error: the original goes), or a file's subtitles alone (job.subs). The file's own subtitles go next to
+  // the video - text as .srt, pictures as .sup / .idx + .sub - in the file's order (a second English track is
+  // ".2" as the server's converter would name it); for a subtitles-only job, ?pm=1000 says it's done.
+  async function sendMade(url, job, m, files) {
+    try {
+      if (!job.subs) {
+        const s = await ask(url, m.send ? `size=${m.size}` : `original=1&why=${encodeURIComponent(m.error || '')}`);
+        if (!s.skip) await put(url, m.send ? m : files[job.f], s.at || 0);
+      }
+      const tracks = (m.subs || []).concat(m.pics || []).sort((a, b) => (a.t || 0) - (b.t || 0));
+      for (const sub of tracks) await (sub.data ? subPictures(url, sub) : subtitle(url, sub));
+      if (job.subs) {
+        for (let tries = 0; tries < 3; tries++) {
+          const s = await fetch(`${url}?pm=1000`, { method: 'POST' }).then(json).catch(() => ({}));
+          if (s.stop) throw new Error(s.error);
+          if (s.ok) break;
+          await pause(1000 * 2 ** tries);
+        }
+      }
+    } finally {
+      if (m.drop) m.drop(); // sent (or not needed): the browser lets go of the copy now
+    }
+  }
+
+  // Copies made here, a few at a time (half the cores, at most 8; a phone one): what's being made and
+  // what waits to be sent come from originals of `room` bytes at most (the form's choice; one always
+  // may) - copies are no bigger, so that's what this device may hold of them: on its disk, or with
+  // use.ram in its memory (conv.js). A finished copy stays in its worker, which sends it (m.send) and
+  // is ended once it's sent (m.drop): the browser lets go of it right then - a copy handed to the page
+  // stayed until the page's memory was next tidied, and a long upload filled the browser's disk with
+  // them. take() hands over whatever finished first ({k, m}), next() waits for it, left() = jobs not
+  // handed over yet. Progress goes to the server (?pm=), which renders it like everything else; when it
+  // says stop, everything stops ({stop}).
   function converter(base, batch, files, jobs, use, room) {
     const phone = /Mobi|Android|iPhone|iPad/.test(navigator.userAgent);
     const width = phone ? 1 : Math.max(1, Math.min(8, Math.floor((navigator.hardwareConcurrency || 2) / 2)));
-    const results = new Map(), done = new Map(), workers = new Map(); // a result is let go once it's taken
+    const workers = new Map(), finished = []; // finished: {k, m}, in the order they came
     const ready = new Map(); // job -> the worker holding its finished copy, until it's sent
     const seen = new Map(); // job -> [progress, when the server last heard it]
-    let next = 0, sending = 0, halted = '';
-    const source = (k) => files[jobs[k].f].size;
+    let next = 0, taken = 0, halted = '', waiting = null;
+    const source = (k) => (jobs[k].subs ? 0 : files[jobs[k].f].size); // (reading subtitles keeps nothing)
     const ahead = () => [...workers.keys(), ...ready.keys()].reduce((n, k) => n + source(k), 0);
+    const wake = () => { if (waiting) { const w = waiting; waiting = null; w(); } };
     // the worker sends from its copy; one PUT at a time (put() waits for each)
     const sender = (w) => (url, at) => new Promise((ok) => {
       w.onmessage = (e) => ok(e.data);
@@ -740,7 +771,8 @@
     };
     const tell = (k, pm) => {
       seen.set(k, [pm, Date.now()]);
-      fetch(`${base}/${batch}/${jobs[k].i}?pm=${pm}`, { method: 'POST' }).then(json)
+      // (999 at most: a subtitles-only job's 1000 is sendMade's, once its subtitles are there)
+      fetch(`${base}/${batch}/${jobs[k].i}?pm=${Math.min(pm, 999)}`, { method: 'POST' }).then(json)
         .then((s) => { if (s.stop) halt(s.error); }, () => {});
     };
     // a heartbeat: a long stretch without progress (a big file's first look) isn't "the browser left"
@@ -760,12 +792,12 @@
       } else if (w) {
         w.terminate();
       }
-      if (done.has(k)) { done.get(k)(m); done.delete(k); }
+      if (!halted) finished.push({ k, m });
+      wake();
       pump();
     };
     function start(k) {
       const job = jobs[k];
-      results.set(k, new Promise((ok) => done.set(k, ok)));
       const w = new Worker(use.worker);
       workers.set(k, w);
       w.onmessage = (e) => {
@@ -776,10 +808,10 @@
         else seen.set(k, [m.pm, at]);
       };
       w.onerror = (e) => { e.preventDefault(); finish(k, { error: T('The converter stopped') }); };
-      w.postMessage({ file: files[job.f], wasm: use.wasm });
+      w.postMessage({ file: files[job.f], wasm: use.wasm, ram: !!use.ram, part: use.part, subs: !!job.subs });
     }
     function pump() {
-      while (!halted && workers.size < width && next < jobs.length && next <= sending + width + 1 &&
+      while (!halted && workers.size < width && next < jobs.length &&
              ((!workers.size && !ready.size) || ahead() + source(next) <= room)) start(next++);
     }
     function halt(why) {
@@ -789,18 +821,19 @@
       workers.clear();
       for (const w of ready.values()) w.terminate();
       ready.clear();
-      for (const ok of done.values()) ok({ stop: halted });
-      done.clear();
+      finished.length = 0;
+      wake();
     }
     pump();
     return {
-      take(k) {
-        sending = k;
-        pump();
-        const r = results.get(k) || Promise.resolve({ stop: halted || T('The upload was stopped') });
-        results.delete(k);
-        return r;
+      take() {
+        if (halted) return { stop: halted };
+        const got = finished.shift();
+        if (got) taken++;
+        return got || null;
       },
+      next() { return new Promise((ok) => { waiting = ok; }).then(() => this.take() || this.next()); },
+      left() { return halted ? 1 : jobs.length - taken; },
       stop() { if (!halted) halt(''); },
     };
   }

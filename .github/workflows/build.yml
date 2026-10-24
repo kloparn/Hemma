@@ -94,6 +94,9 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: tests/browser/package-lock.json
+      - uses: mlugg/setup-zig@v2 # (the Makefile builds av.wasm with it: uploads convert in the browser)
+        with:
+          version: 0.17.0
       - name: Build Hemma and the suite (the suite makes the test videos)
         run: make -j"$(getconf _NPROCESSORS_ONLN)" all build/test
       - name: Node tools

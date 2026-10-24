@@ -109,6 +109,9 @@ bool media_is_playall_head(const char *rel);
    Extras, disc-rip titles numbered only by order, and the file's own original or copy (x.mkv /
    x.web.mp4 in the same folder) never count. `have` gets the match's path below its root. */
 bool media_have(const char *root, const char *rel, char *have, size_t cap);
+/* The same, and of the library's own file: its full path (full, "" when it can't be said) and how many
+   subtitle files it has (subs, its copy's counted too). Any of have/full/subs may be NULL. */
+bool media_have_file(const char *root, const char *rel, char *have, size_t cap, char *full, size_t fcap, int *subs);
 size_t media_stem_len(const char *rel); /* "Show/x" of "Show/x.mkv", "Show/x.web.mp4", "Show/x.playall.mkv" */
 bool media_full_path(const MediaFile *f, char *out, size_t cap);
 int media_hue(const char *title); /* stable colour for CSS posters */

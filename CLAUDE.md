@@ -456,6 +456,31 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  too. Subtitles never stop an upload. Dropped sidecars: .sup and .idx, and a .sub only with its .idx
                  in the same upload (upload_sort step 4: wherever its .idx goes; vobsub_pairs both or neither; the
                  .sub first in the todo); the picker's accept= lists .sup .idx .sub.
+                 SUBTITLES ONLY (1.3; owner, 2026-10-23: "still keep the logic of being able to extract it from the
+                 video"): an MKV/WebM that stays behind - a dupe (media_have_file: the library's video in full in
+                 UpFile.target + how many subtitle files it has, lib_subs), an original whose copy goes instead
+                 (skip_originals) or whose copy is on the server (convert_here: subs_beside counts its sidecars) -
+                 becomes todo {"i","f","subs":1} (subtitles_only, needs conv) when the library's video has none
+                 and no subtitle file of the batch goes along (UpFile.sidecars): the browser reads only its tracks
+                 (av.wasm conv_subs_only = av_subtitles), posts ?sub= / PUTs ?pic= as for a copy (copy_of -> the
+                 target) with ?pm= progress (shown on the card, "its subtitles"), then ?pm=1000 = done (subs_due:
+                 the batch stays open until then; counted as a file of the upload). Preview fate FATE_SUBS "Only its
+                 subtitles". SIDECARS FIND THEIR VIDEO: rehome() renames a subtitle file of a dupe (skip_companions)
+                 to "<the library video's stem><its own tags>" in the library video's folder ("goes next to X, which
+                 the library has"; one there already = skipped "X has these subtitles already"); lone_subtitles: a
+                 subtitle file with no video in the batch tries its name's stems SHORTEST first (media_sub_for takes
+                 only a rest of tags, so every tag stays) as "<stem>.mkv" with media_have_file.
+                 SENDING ORDER (1.3; owner: "be always at that limit"): wire.js sends ONE file at a time and never
+                 waits while something can go - what the converters finished first (converter().take(), in the
+                 order they finished), then the plain entries in the plan's order, else converter().next(). No more
+                 "a few ahead of the one being sent": the room slider alone bounds what waits. IN MEMORY (1.3;
+                 owner: "the option of storing converted videos in RAM or on a drive ... as a big checkbox. If
+                 other people use it, the old style is nice"): the form's "ram" box (in sight under the preview,
+                 pref PREF_UPLOAD_RAM media.upload_ram, saved with a converting plan, off by default) -> conv.js
+                 keeps the copy in 16 MB parts of plain memory (else a Blob, which the browser keeps on its disk
+                 past its own limit; out of memory mid-copy -> the rest goes on in a Blob) and PUTs it a part at a
+                 time: PUT ?at=A&end=E (Job.piece: saved, no rename, answered {"ok":true,"at":E}; the last piece's
+                 answer is a whole file's). form[data-part] (the browser tests only) = smaller parts.
                  THE PAGE (1.1; owner, 2026-10-21: "easy enough to understand"; "Add videos" in Watch's header,
                  "Add episodes" on a series page): form[data-upload][data-preview] with a [data-drop] area (wire.js
                  keeps dropped/picked files and folders on the form, each choice adding; [data-drop-clear] empties),
@@ -714,7 +739,8 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  frees them. Used by media/convert.c
                  and by wasm/avconv.c (conv_subs/conv_sub_text/_len/_lang/_name/_forced/_kind/_data/_size/_idx/
                  _idx_len exports; web/conv.js posts {size, subs, pics} - pics = [{kind 'pgs'|'vobsub', lang, name,
-                 forced, data: ArrayBuffer (transferred), idx}]), which
+                 forced, data: ArrayBuffer (transferred), idx}]; conv_subs_only(size) = av_subtitles alone, posted
+                 as {subsOnly, subs, pics} - 1.3, a video that stays behind), which
                  build.ps1/Makefile compile to $B/av.wasm (zig cc -target
                  wasm32-wasi -mexec-model=reactor -msimd128; ~370 KB, imports only 4 hemma.* functions,
                  embedded as /static/av.wasm). Measured on a DVD episode: wasm ~75% of native speed (374 s
@@ -742,7 +768,9 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  runs (distance 1). Checked against ffmpeg: a Simpsons PGS track (within 1 = colour rounding), a
                  70's Show VobSub track (identical). Not in av.wasm (the browser doesn't draw them; the server does).
 web/             app.css (core styles + shared vocabulary), wire.js, conv.js (the upload converter's Worker:
-                 feeds av.wasm a File, gathers the copy), icon.svg, manifest
+                 feeds av.wasm a File - reading ahead: reading on from where it stopped, each read twice the last,
+                 up to 32 MB (8 MB on a phone), so workers sharing a hard disk read in long runs (1.3) - and
+                 gathers the copy, in memory or a Blob; or only a file's subtitles), icon.svg, manifest
 third_party/sqlite/  SQLite 3.54.1 amalgamation + its recovery extension (ext/recover: dbdata.c, sqlite3recover.c/.h;
                  recover.c includes both as one object; sqlite3.c needs SQLITE_ENABLE_DBPAGE_VTAB) - see its
                  README for provenance + hashes
@@ -816,10 +844,15 @@ tests/browser/   CI-ONLY Node (owner, 2026-10-21: "The CI can use node"; nothing
                  Chrome (the bundled Chromium can't play H.264/AAC) against a real Hemma - server.mjs makes a fresh
                  folder under the OS temp (hemma-browser-tests), test clips by `build/test av_test_clips` with
                  HEMMA_TEST_CLIPS (modules/av/clips_test.c: H.264 + AAC MP4s from our own encoders, 64x48 - two
-                 100 s episodes, a 40 s film, an upload clip), an admin from the settings file, then build/hemma on
-                 127.0.0.1:18093; setup.mjs signs in, adds the library, waits for the scan. Specs: player (progress
+                 100 s episodes, a 40 s film, an upload clip) and MKVs by `build/test conv_fuzz_seeds` with
+                 HEMMA_FUZZ_SEEDS=<work>/mkv (1.3: the converter's seeds), an admin from the settings file, then
+                 build/hemma on 127.0.0.1:18093; setup.mjs signs in, adds the library, waits for the scan. Specs:
+                 player (progress
                  reported + resume, resume without wire.js via #t=, nothing in the last 5 s, the next episode in
-                 the SAME element), live (now, no pause/wind/speed, #t= without wire.js), upload (byte for byte),
+                 the SAME element), live (now, no pause/wind/speed, #t= without wire.js), upload (byte for byte;
+                 1.3: the converter in Chrome on h264-webvtt-pgs-vobsub.mkv - the copy + its subtitles, a copy in
+                 memory in 1000-byte pieces arriving identical, subtitles only, copies and plain files in one
+                 upload; skipped where the page has no data-wasm - CI's browser job sets up zig for av.wasm),
                  signin (Accept-Language, the language links), subtitles (two in one language, the pick by key into
                  the next episode), subpictures (a picture track at its cue's time and place over the shown picture,
                  lifted over the bar, never beside a text track, on from the viewer's language, phone, full screen -
@@ -1344,7 +1377,10 @@ keeps full screen into the next episode/programme/channel: stable ids media-vide
 any submit, socket or not) · `form[data-upload="/base"]` (files: POST base/plan, then one PUT per file
 to base/<batch>/<i>?at=<offset>, resuming from GET base/<batch>/<i>; a todo entry `[i, at, end]` sends
 only the bytes before `end`; `{i, f}` = convert file f here first (web/conv.js Workers, half the cores,
-max 8, a few ahead of the upload), POST ?size= / ?original=1, then PUT the result as entry i; a `conv`
+max 8, as far ahead as the room slider allows), POST ?size= / ?original=1, then PUT the result as entry i;
+`{i, f, subs: 1}` = only read f's subtitles and send those (1.3); ONE file at a time, whatever is ready first
+(finished copies, then plain entries in order - 1.3); the `ram` box keeps copies in memory, sent in pieces
+(?at=&end=; form[data-part] = the piece size, tests only); a `conv`
 form field is dropped when the browser can't run WebAssembly; the server renders progress; with a
 `[data-drop]` area inside, the form keeps its chosen files itself - dropped anywhere on the page, folders
 walked with their paths, each choice adding, the area `[data-over]` while dragging, `[data-drop-clear]`
@@ -1528,7 +1564,11 @@ season or series; fix a film's title or an episode's number on disk; what takes 
 predicts from itself; Dolby at 44.1/32 kHz). 1.2.0 (branch fix/subtitles-addition; owner, 2026-10-23: "all the shows
 that have subs to be able to give subs") = subtitles from every MKV (refused ones too, WebVTT, 32 tracks), DVD/Blu-ray
 picture subtitles (.idx/.sub, .sup) drawn by the player, the server taking subtitles out of the library by itself
-(media/subtake.c), same-language tracks kept apart (keys, labels), uploads carrying them all.
+(media/subtake.c), same-language tracks kept apart (keys, labels), uploads carrying them all. 1.3.0 (branch
+feat/faster-uploads; owner, 2026-10-23: "make the 12mbit/s limit ... be always at that limit") = uploads send whatever
+is ready (no waiting on the list's order), conv.js reads ahead, copies optionally kept in memory (a big checkbox; sent
+in pieces), and what stays behind still gives the subtitles the library lacks (subtitles-only entries; sidecars and
+lone subtitle files go next to the library's video).
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling

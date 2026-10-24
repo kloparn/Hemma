@@ -541,8 +541,17 @@ TEST(upload_takes_copies_the_browser_makes) {
     plan_for(adam, "{\"root\":\"0\",\"into\":\"Up3\",\"conv\":\"1\",\"room\":\"99\",\"files\":[[\"S/x.mkv\",3000]]}", &r, other);
     CHECK_STR(pref(adam_id, "media.upload_room", ""), "32");
     const char *form = th_page(adam_id, "/media/upload");
-    if (strstr(form, "data-wasm")) /* (when the converter is built in: the slider comes with it) */
+    if (strstr(form, "data-wasm")) { /* (when the converter is built in: the slider comes with it) */
         CHECK_HAS(form, "name=\"room\" min=\"2\" max=\"32\" step=\"1\" value=\"32\" data-show=\"media-room-n\"");
+        CHECK_HAS(form, "<input type=\"checkbox\" name=\"ram\" value=\"1\"><span>"); /* (1.3: off at first) */
+    }
+    /* ... and the memory box's (1.3), when converting */
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up3\",\"conv\":\"1\",\"ram\":\"1\",\"files\":[[\"S/x.mkv\",3000]]}", &r, other);
+    CHECK_STR(pref(adam_id, "media.upload_ram", ""), "1");
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up3\",\"files\":[[\"S/x.mkv\",3000]]}", &r, other);
+    CHECK_STR(pref(adam_id, "media.upload_ram", ""), "1"); /* (not converting: kept as it was) */
+    form = th_page(adam_id, "/media/upload");
+    if (strstr(form, "data-wasm")) CHECK_HAS(form, "name=\"ram\" value=\"1\" checked>");
     plan_for(adam, plan, &r, batch); /* (that replaced the first plan: plan again) */
 
     /* nothing to send before the copy exists */
@@ -574,9 +583,18 @@ TEST(upload_takes_copies_the_browser_makes) {
     CHECK(!exists(root, "Up/S/x.web.mp4.hemma-part"));
     call("POST", url, adam, NULL, "", 0, 0, &r); /* asked again (a lost answer): same */
     CHECK_HAS(body_of(&r), "\"at\":0");
-    snprintf(url, sizeof url, "/media/upload/%s/0?at=0", batch);
-    call("PUT", url, adam, NULL, "copy-bytes", 10, 10, &r);
-    CHECK_HAS(body_of(&r), "\"ok\":true");
+    /* (1.3: a copy kept in the browser's memory goes in pieces - each answered with where the file is) */
+    snprintf(url, sizeof url, "/media/upload/%s/0?at=0&end=4", batch);
+    call("PUT", url, adam, NULL, "copy", 4, 4, &r);
+    CHECK_HAS(body_of(&r), "{\"ok\":true,\"at\":4}");
+    CHECK(exists(root, "Up/S/x.web.mp4.hemma-part"));
+    CHECK(!exists(root, "Up/S/x.web.mp4"));
+    snprintf(url, sizeof url, "/media/upload/%s/0?at=4&end=11", batch); /* (past the file: refused) */
+    call("PUT", url, adam, NULL, "-bytes!", 7, 7, &r);
+    CHECK_HAS(buf_cstr(&r), "400");
+    snprintf(url, sizeof url, "/media/upload/%s/0?at=4&end=10", batch);
+    call("PUT", url, adam, NULL, "-bytes", 6, 6, &r);
+    CHECK_HAS(body_of(&r), "{\"ok\":true}");
     char path[1024];
     snprintf(path, sizeof path, "%s/Up/S/x.web.mp4", root);
     CHECK(same_file(path, "copy-bytes", 10));
@@ -1131,13 +1149,25 @@ TEST(upload_skips_what_the_library_has_under_other_names) {
                       "[\"Arthur/Season 1/Arthur S01E01 720p.en.srt\",5],"         /* 6: goes with 0 */
                       "[\"Arthur/Season 2/Arthur S02E01.sv.srt\",5]]}";            /* 7: goes with 3 */
     plan_for(adam, eps, &r, batch);
-    CHECK_HAS(body_of(&r), "\"todo\":[{\"i\":1,\"f\":1},{\"i\":3,\"f\":3},[7,0]],\"skipped\":5");
+    /* (1.3: what stays behind still gives its subtitles - 2, 4 and 5 are read for those inside them, 0's own
+       subtitle file goes next to the library's episode instead, so 0 isn't read) */
+    CHECK_HAS(body_of(&r), "\"todo\":[{\"i\":1,\"f\":1},{\"i\":2,\"f\":2,\"subs\":1},{\"i\":3,\"f\":3},{\"i\":4,\"f\":4,"
+                           "\"subs\":1},{\"i\":5,\"f\":5,\"subs\":1},[6,0],[7,0]],\"skipped\":4");
     const char *page = th_page(adam_id, "/media/upload");
     CHECK_HAS(page, "the library has it: Season 1/Arthur - S01E01 - Arthur&#39;s Eyes.mkv");
-    CHECK_HAS(page, "the library has it: Season 4/Arthur S04E05-E06.mkv");
-    CHECK_HAS(page, "its play-everywhere copy is already there");
-    CHECK_HAS(page, "goes with Arthur S01E01 720p.mkv, which the library has");
+    CHECK_HAS(page, "the library has it (Arthur S04E05-E06.mkv): only the subtitles inside it go, next to that one");
+    CHECK_HAS(page, "its copy is there already: only the subtitles inside the original go");
     CHECK_HAS(page, "name=\"dupes\"");
+    /* (what's sent shows no reason once under way: the preview says where 0's subtitle file goes) */
+    Buf form = {0};
+    buf_puts(&form, "root=0&into=Series&conv=1&files=");
+    url_encode(&form, "[[\"Arthur/Season 1/Arthur S01E01 720p.mkv\",10],[\"Arthur/Season 1/Arthur S01E01 720p.en.srt\",5],"
+                      "[\"Arthur/Season 4/Arthur S04E06.mkv\",10]]", false);
+    upload_test_preview(adam_id, buf_cstr(&form));
+    page = th_page(adam_id, "/media/upload");
+    CHECK_HAS(page, "goes next to Arthur - S01E01 - Arthur&#39;s Eyes.mkv, which the library has");
+    CHECK_HAS(page, "Only its subtitles");
+    buf_free(&form);
 
     /* films: the same title, year and part */
     const char *films = "{\"root\":\"0\",\"into\":\"Movies\",\"files\":["
@@ -1155,6 +1185,94 @@ TEST(upload_skips_what_the_library_has_under_other_names) {
                          "[\"Kill.Bill.2003.CD1.1080p.mkv\",10],[\"Hocus.Pocus.1993.1080p.BluRay.mkv\",10]]}";
     plan_for(adam, anyway, &r, batch);
     CHECK_HAS(body_of(&r), "\"todo\":[[0,0],[1,0]],\"skipped\":0");
+
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    th_halt();
+}
+
+/* 1.3: what stays behind still gives its subtitles - the browser reads them out of the original
+   ({i, f, subs:1}) and they go next to the video the library has; a subtitle file goes there too */
+TEST(upload_sends_the_subtitles_of_what_stays_behind) {
+    th_boot();
+    auth_configure("upload-salt", 1000);
+    int adam_id = make_user("Adam", "adam", "pw-adam-123", ROLE_ADMIN);
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    put_file(root, "Series/Arthur/Season 4/Arthur S04E05-E06.mkv", "d", 1);
+    put_file(root, "Series/Arthur/Season 1/Arthur S01E03.web.mp4", "c", 1); /* only the copy */
+    put_file(root, "Series/Arthur/Season 3/Arthur S03E01.mkv", "a", 1);
+    put_file(root, "Series/Arthur/Season 3/Arthur S03E01.en.srt", "1\n", 2); /* has subtitles of its own */
+    setting_set("media.roots", root);
+    media_scan_sync();
+    CHECK(server_listen("127.0.0.1", 0));
+    g_port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], batch[17], url[200], path[1024];
+    sign_in("adam", "pw-adam-123", adam, sizeof adam);
+    Buf r = {0};
+
+    const char *eps = "{\"root\":\"0\",\"into\":\"Series\",\"conv\":\"1\",\"files\":["
+                      "[\"Arthur/Season 4/Arthur S04E06.mkv\",10],"       /* 0: the library has it, without subtitles */
+                      "[\"Arthur/Season 1/Arthur S01E03.mkv\",10],"       /* 1: its copy is there */
+                      "[\"Arthur/Season 3/Arthur S03E01 720p.mkv\",10]]}"; /* 2: the library's has subtitles: not read */
+    plan_for(adam, eps, &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[{\"i\":0,\"f\":0,\"subs\":1},{\"i\":1,\"f\":1,\"subs\":1}],\"skipped\":3");
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "Uploading · 0 of 2 files");
+
+    /* the browser reads 0: its progress shows, then its tracks go next to the library's E05-E06 */
+    snprintf(url, sizeof url, "/media/upload/%s/0?pm=400", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    const char *page = th_page(adam_id, "/media/upload");
+    CHECK_HAS(page, "Arthur S04E06.mkv <span class=\"muted\">· its subtitles</span>");
+    const char *srt = "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n";
+    snprintf(url, sizeof url, "/media/upload/%s/0?sub=1&lang=eng&name=&forced=0&t=0", batch);
+    call("POST", url, adam, "Content-Type: text/plain; charset=utf-8\r\n", srt, strlen(srt), strlen(srt), &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    snprintf(path, sizeof path, "%s/Series/Arthur/Season 4/Arthur S04E05-E06.en.srt", root);
+    CHECK(same_file(path, srt, strlen(srt)));
+    static const char sup[] = "PG\0\0\0\0\0\0\0\0\x80\0\0 pretend the rest is a Blu-ray track";
+    snprintf(url, sizeof url, "/media/upload/%s/0?pic=pgs&lang=swe&name=&forced=0&t=1", batch);
+    put_pic(adam, url, sup, sizeof sup - 1, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    snprintf(path, sizeof path, "%s/Series/Arthur/Season 4/Arthur S04E05-E06.sv.sup", root);
+    CHECK(same_file(path, sup, sizeof sup - 1));
+    /* 1's go next to its copy; 2 gives none */
+    snprintf(url, sizeof url, "/media/upload/%s/1?sub=1&lang=swe&name=&forced=0&t=0", batch);
+    call("POST", url, adam, "Content-Type: text/plain; charset=utf-8\r\n", srt, strlen(srt), strlen(srt), &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    snprintf(path, sizeof path, "%s/Series/Arthur/Season 1/Arthur S01E03.sv.srt", root);
+    CHECK(same_file(path, srt, strlen(srt)));
+    snprintf(url, sizeof url, "/media/upload/%s/2?sub=1&lang=swe&name=&forced=0&t=0", batch);
+    call("POST", url, adam, "Content-Type: text/plain; charset=utf-8\r\n", srt, strlen(srt), strlen(srt), &r);
+    CHECK(!strstr(body_of(&r), "\"ok\":true"));
+    CHECK(!exists(root, "Series/Arthur/Season 3/Arthur S03E01.sv.srt"));
+    /* done once the browser says so (1000) for each */
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "Uploading · 0 of 2 files");
+    for (int i = 0; i < 2; i++) {
+        snprintf(url, sizeof url, "/media/upload/%s/%d?pm=1000", batch, i);
+        call("POST", url, adam, NULL, "", 0, 0, &r);
+    }
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "Finished · 2 files sent");
+
+    /* a subtitle file alone: named for an episode the library has, it goes next to it - every tag kept */
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Series\",\"files\":[[\"Arthur/Season 4/Arthur.S04E05-E06.720p.sv.forced.srt\",5]]}",
+             &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[[0,0]]");
+    snprintf(url, sizeof url, "/media/upload/%s/0?at=0", batch);
+    call("PUT", url, adam, NULL, "1\nHi\n", 5, 5, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    CHECK(exists(root, "Series/Arthur/Season 4/Arthur S04E05-E06.sv.forced.srt"));
+    /* ... once: there now, the same again stays behind */
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Series\",\"files\":[[\"Arthur/Season 4/Arthur.S04E05-E06.720p.sv.forced.srt\",5]]}",
+             &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[],\"skipped\":1");
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "Arthur S04E05-E06.mkv has these subtitles already");
 
     server_stop();
     for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);

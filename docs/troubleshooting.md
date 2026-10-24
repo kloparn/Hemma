@@ -138,11 +138,15 @@ from a browser make that copy before sending (the box *Make videos play everywhe
 device first*). If an upload couldn't, its card says which videos went up unconverted, and why.
 
 **Subtitles inside an MKV don't show.**
-Browsers can't read subtitles inside a video file, only separate ones. When Hemma converts an
-MKV (on the server or while uploading), it saves its text subtitles (SRT, ASS) as `.srt` files
-next to it - "Movie.en.srt" - and the player offers them. Subtitles that are pictures (PGS from
-Blu-rays, VobSub from DVDs) can't be turned into text yet; an `.srt` you put next to the video
-yourself works too.
+Browsers can't read subtitles inside a video file, only separate ones. Hemma takes them out and
+saves them next to the video - text ones as `.srt` ("Movie.en.srt"), DVD and Blu-ray ones (which
+are pictures) as `.idx`/`.sub` and `.sup`, which Hemma's player draws. It does that when it converts
+an MKV (on the server or while uploading), and by itself for the MKVs already in the library, a few
+at a time while nobody is watching (**Watch → Library settings → Subtitles inside videos** shows how
+far it's got). A video whose MKV isn't on the server - only its converted copy is - gets them when
+you upload the MKV again: the upload sees the library has the video and sends only its subtitles.
+An `.srt` you put next to the video yourself works too, and one you upload on its own finds its
+episode or film by its name ("Show S01E02.en.srt").
 
 **"Database rescued" on the System page.**
 At the start, Hemma found its database damaged and rescued what it could still read; the

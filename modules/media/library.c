@@ -470,8 +470,14 @@ static bool same_item(const MediaIndex *ix, const MediaFile *f, const char *root
 }
 
 bool media_have(const char *root, const char *rel, char *have, size_t cap) {
+    return media_have_file(root, rel, have, cap, NULL, 0, NULL);
+}
+
+bool media_have_file(const char *root, const char *rel, char *have, size_t cap, char *full, size_t fcap, int *subs) {
     const MediaIndex *ix = media_lib();
     if (have && cap) have[0] = '\0';
+    if (full && fcap) full[0] = '\0';
+    if (subs) *subs = 0;
     if (media_is_playall_head(rel)) return false;
     MediaName n;
     parse_name(root_name(root), rel, &n, false);
@@ -504,6 +510,9 @@ bool media_have(const char *root, const char *rel, char *have, size_t cap) {
         if (!hit) return false;
     }
     if (have && cap) str_copy(have, cap, hit->rel);
+    if (full && fcap && !media_full_path(hit, full, fcap)) full[0] = '\0';
+    for (int i = 0; subs && i < ix->nfiles; i++) /* (its copy's count too: x.en.srt goes with whichever is there) */
+        *subs += ix->files[i].type == MF_SUB && ix->files[i].video && (ix->files[i].video == hit->id || ix->files[i].video == hit->web);
     return true;
 }
 

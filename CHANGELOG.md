@@ -4,6 +4,47 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 1.3.0 (2026-10-23)
+
+Uploads keep the connection busy, and bring the subtitles the library lacks.
+
+### New
+
+- **Subtitles for what the library already has:** an episode or film the library has (under any
+  name) still stays behind - but when the library's video has no subtitles and yours carries some,
+  your computer reads just the subtitles out of it and sends those, and they land next to the
+  library's video. The same when only the converted copy goes, or the copy is on the server already:
+  the original's subtitles go along. The preview says **Only its subtitles**, and the upload's card
+  shows each one being read.
+- **Subtitle files find their video:** a .srt (or .sup, .idx and .sub) next to a video the library
+  has under another name is renamed to sit beside the library's video, instead of staying behind; one
+  dropped in on its own finds its episode or film by its name ("Friends S01E01.sv.srt"), keeping its
+  language and "forced"/"SDH" tags. One the library has already is skipped ("... has these subtitles
+  already").
+- **Keep converted videos in memory until they're sent** - a big checkbox on the upload page: the
+  copies your computer makes wait in its memory (RAM) instead of on its disk, so nothing piles up on
+  the disk and it only reads the originals. They take up to the room set under **More options**. Off
+  by default (the old way, better for a phone or a computer with little memory); remembered for you.
+
+### Changed
+
+- **Uploads don't stand still while something could go:** converted copies used to go in the list's
+  order, so the connection waited whenever the next one in line was still being made - even with
+  others finished. Now whatever is ready goes first: finished copies, then the files that go as they
+  are, and it only waits when nothing at all is ready.
+- **The converter reads originals in bigger steps:** reading on through a file it asks for twice as
+  much each time, up to 32 MB (8 MB on a phone), instead of 1 MB at a time - so several conversions
+  on one hard disk take turns in long reads instead of jumping between files every megabyte.
+
+### For developers
+
+- `PUT /media/upload/<batch>/<i>?at=A&end=E` takes a file in pieces (answered `{"ok":true,"at":E}`);
+  a plan's todo has `{"i","f","subs":1}` entries (read only the subtitles: av.wasm's `conv_subs_only`,
+  `?pm=1000` when done); the upload loop in `web/wire.js` sends whatever is ready.
+- The browser tests now convert in Chrome (an MKV from the converter's fuzz seeds): copies with their
+  subtitles, a copy kept in memory going in pieces, subtitles only, copies and plain files in one
+  upload. CI's browser job builds av.wasm for them (zig).
+
 ## 1.2.0 (2026-10-23)
 
 Every video that has subtitles shows them.
