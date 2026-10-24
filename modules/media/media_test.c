@@ -206,7 +206,7 @@ TEST(media_player_page_has_tracks_next_and_badges) {
     CHECK(th_act(adam, "media.prefs", "sublang=sv").ok);
     html = th_page(adam, url("/media/watch/%s", flower->id));
     CHECK_HAS(html, "label=\"Svenska\" default>");
-    CHECK_HAS(html, "data-sub=\"sv\" aria-checked=\"true\">Svenska</button>"); /* the menu ticks it too */
+    CHECK_HAS(html, "data-sub=\"sv\" data-subpref aria-checked=\"true\">Svenska</button>"); /* the menu ticks it too */
     CHECK_HAS(html, "data-sub=\"\" aria-checked=\"false\">Off</button>");
     /* episodes chain to the next one and autoplay it */
     const MediaFile *ep1 = find("S01E01.Seeds.mp4"), *ep2 = find("S01E02.Roots.mp4");
@@ -621,7 +621,7 @@ TEST(media_player_offers_each_subtitle_by_its_key) {
     CHECK(th_act(adam, "media.prefs", "sublang=en").ok);
     html = th_page(adam, url("/media/watch/%s", night->id));
     CHECK_HAS(html, "srclang=\"en\" label=\"English\" default>");
-    CHECK_HAS(html, "data-sub=\"en\" aria-checked=\"true\">English</button>");
+    CHECK_HAS(html, "data-sub=\"en\" data-subpref aria-checked=\"true\">English</button>"); /* (also what C turns on) */
     CHECK_HAS(html, "data-sub=\"en.sdh\" aria-checked=\"false\">");
     CHECK_HAS(html, "data-sub=\"\" aria-checked=\"false\">Off</button>");
     const char *d = strstr(html, " default>");
@@ -632,7 +632,7 @@ TEST(media_player_offers_each_subtitle_by_its_key) {
     CHECK(day && daysup);
     if (day && daysup) {
         media_id_hex(daysup->id, hex);
-        snprintf(want, sizeof want, "data-sub=\"en\" data-subpic=\"/media/subpic/%s.json?v=%lld-%lld\" aria-checked=\"true\">English</button>",
+        snprintf(want, sizeof want, "data-sub=\"en\" data-subpic=\"/media/subpic/%s.json?v=%lld-%lld\" data-subpref aria-checked=\"true\">English</button>",
                  hex, (long long)daysup->size, (long long)daysup->mtime);
         CHECK_HAS(th_page(adam, url("/media/watch/%s", day->id)), want);
     }
@@ -643,6 +643,73 @@ TEST(media_player_offers_each_subtitle_by_its_key) {
     CHECK_HAS(html, "label=\"English (bara främmande språk)\"");
     pref_set(adam, PREF_LANG, "es");
     CHECK_HAS(th_page(adam, url("/media/watch/%s", night->id)), ">English (para personas sordas)</button>");
+    th_halt();
+}
+
+/* 1.3 (owner: "if enabled on an episode, carry on to the next episode with the same language if it exists"):
+   the viewer's pick in the player (media.sub) is kept for the series - its other episodes, opened anywhere,
+   start with the same key, else the first of that language, else none; turned off stays off. It's the
+   viewer's, it wins over their language until they set a new one, and a film keeps nothing. data-subpref
+   marks what C turns on. */
+TEST(media_subtitles_follow_the_viewer_through_a_series) {
+    int adam = boot_with_library();
+    int eva = th_person("Eva");
+    static const char *const files[] = {"Show S01E01.mp4", "Show S01E01.en.srt", "Show S01E01.sv.srt",
+                                        "Show S01E02.mp4", "Show S01E02.sv.srt", "Show S01E02.en.sdh.srt",
+                                        "Show S01E03.mp4", "Show S01E03.fr.srt"};
+    for (int i = 0; i < countof(files); i++) {
+        char rel[200];
+        snprintf(rel, sizeof rel, "Series/Show/Season 1/%s", files[i]);
+        put(g_root, rel, "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
+    }
+    put(g_root, "Movies/Night (1993)/Night (1993).mp4", "film");
+    put(g_root, "Movies/Night (1993)/Night (1993).sv.srt", "1\n00:00:01,000 --> 00:00:02,000\nHej\n");
+    media_scan_sync();
+    const MediaFile *e1 = find("Show S01E01.mp4"), *e2 = find("Show S01E02.mp4"), *e3 = find("Show S01E03.mp4"),
+                    *night = find("Night (1993).mp4");
+    CHECK(e1 && e2 && e3 && night);
+    if (!e1 || !e2 || !e3 || !night) {
+        th_halt();
+        return;
+    }
+    char hex1[17], hexn[17], form[80];
+    media_id_hex(e1->id, hex1);
+    media_id_hex(night->id, hexn);
+    uint64_t i2 = e2->id, i3 = e3->id;
+    const char *html = th_page(adam, url("/media/watch/%s", i2));
+    CHECK(!strstr(html, " default>") && !strstr(html, "data-subpref")); /* nothing picked, no language */
+    /* Swedish on episode 1: episode 2 starts in Swedish */
+    snprintf(form, sizeof form, "id=%s&key=sv", hex1);
+    th_act(adam, "media.sub", form);
+    html = th_page(adam, url("/media/watch/%s", i2));
+    CHECK_HAS(html, "srclang=\"sv\" label=\"Svenska\" default>");
+    CHECK_HAS(html, "data-sub=\"sv\" data-subpref aria-checked=\"true\">Svenska</button>");
+    CHECK(!strstr(th_page(eva, url("/media/watch/%s", i2)), " default>")); /* (Adam's, not Eva's) */
+    /* English: episode 2 has only English for the hard of hearing - its language, so that */
+    snprintf(form, sizeof form, "id=%s&key=en", hex1);
+    th_act(adam, "media.sub", form);
+    html = th_page(adam, url("/media/watch/%s", i2));
+    CHECK_HAS(html, "data-sub=\"en.sdh\" data-subpref aria-checked=\"true\">");
+    CHECK_HAS(html, "data-sub=\"sv\" aria-checked=\"false\">");
+    html = th_page(adam, url("/media/watch/%s", i3)); /* no English at all: none */
+    CHECK(!strstr(html, " default>") && !strstr(html, "aria-checked=\"true\">Fran"));
+    /* a new "Subtitles on by default" starts every series from it again */
+    CHECK(th_act(adam, "media.prefs", "sublang=sv").ok);
+    CHECK_HAS(th_page(adam, url("/media/watch/%s", i2)), "data-sub=\"sv\" data-subpref aria-checked=\"true\">");
+    /* turned off: off, though their language is Swedish - which C would turn on */
+    snprintf(form, sizeof form, "id=%s&key=", hex1);
+    th_act(adam, "media.sub", form);
+    html = th_page(adam, url("/media/watch/%s", i2));
+    CHECK(!strstr(html, " default>"));
+    CHECK_HAS(html, "data-sub=\"sv\" data-subpref aria-checked=\"false\">");
+    CHECK_HAS(html, "data-sub=\"\" aria-checked=\"true\">");
+    /* a film keeps nothing (the language does it); keys that aren't keys are ignored */
+    snprintf(form, sizeof form, "id=%s&key=", hexn);
+    th_act(adam, "media.sub", form);
+    CHECK_HAS(th_page(adam, url("/media/watch/%s", night->id)), "srclang=\"sv\" label=\"Svenska\" default>");
+    snprintf(form, sizeof form, "id=%s&key=sv%%22x", hex1);
+    th_act(adam, "media.sub", form);
+    CHECK(!strstr(th_page(adam, url("/media/watch/%s", i2)), " default>")); /* (still off) */
     th_halt();
 }
 

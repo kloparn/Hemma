@@ -5,7 +5,7 @@
     ./build.ps1 run [args]      debug build + run on http://127.0.0.1:8080 (web/ + module CSS served live)
     ./build.ps1 test [filter]   build + run tests    (one process per core; a filter = substring of a test
                                 or file name, run in one process)
-    ./build.ps1 ci [job]        CI's Linux jobs in WSL (tools/ci/local.sh): test | asan | fuzz [seconds] [conv|mkv|ac3|mpeg2]
+    ./build.ps1 ci [job]        CI's Linux jobs in WSL (tools/ci/local.sh): test | asan | fuzz [seconds] [conv|mkv|ac3|dts|mpeg2|pgs|vobsub]
     ./build.ps1 release         optimised build      -> build/hemma.exe
     ./build.ps1 pi              Raspberry Pi 64-bit  -> build/hemma-pi64   (static, aarch64)
     ./build.ps1 pi32            Raspberry Pi 32-bit  -> build/hemma-pi32   (static, armv6: every Pi)
@@ -144,7 +144,7 @@ function Build-Assets {
 
 # The converter for browsers (modules/av/wasm/avconv.c + the av sources it uses) -> $B/av.wasm,
 # served as /static/av.wasm: uploads convert on the sending device (see media/upload.c).
-$WasmSources = @("modules/av/wasm/avconv.c") + @("conv", "mkv", "mpeg2", "deint", "h264enc", "ac3", "aac", "mp4" |
+$WasmSources = @("modules/av/wasm/avconv.c") + @("conv", "mkv", "mpeg2", "deint", "h264enc", "ac3", "dts", "aac", "mp4" |
         ForEach-Object { "modules/av/$_.c" })
 function Build-Wasm {
     $out = "$B/av.wasm"

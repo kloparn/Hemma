@@ -4,12 +4,23 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
-## 1.3.0 (2026-10-23)
+## 1.3.0 (2026-10-24)
 
-Uploads keep the connection busy, and bring the subtitles the library lacks.
+Uploads keep the connection busy, DTS sound converts, and subtitles follow you through a series.
 
 ### New
 
+- **DTS sound converts:** the 5.1 sound of many Blu-ray rips (DTS, ~1.5 Mbit/s) played silently in every
+  browser, and such videos went up unconverted. Hemma's converter now decodes DTS and makes AAC of it,
+  like Dolby sound - on the server (**Convert**) and in the uploading browser. DTS-HD files convert
+  too (from the DTS core they all carry). Checked against real episodes: the same sound as FFmpeg's
+  decoder gives, to within rounding.
+- **Subtitles follow you through a series:** turn subtitles on - or off - in an episode, and the next
+  episode of that series starts the same way however you open it, on any device (the TV's viewer
+  too): the same subtitles, else the same language, else none. Setting **Subtitles on by default**
+  in Library settings starts every series from that language again.
+- **C turns subtitles on and off** in the player, as M does the sound. Back on, it's the ones you
+  had, else your language, else the first.
 - **Subtitles for what the library already has:** an episode or film the library has (under any
   name) still stays behind - but when the library's video has no subtitles and yours carries some,
   your computer reads just the subtitles out of it and sends those, and they land next to the
@@ -43,7 +54,14 @@ Uploads keep the connection busy, and bring the subtitles the library lacks.
   `?pm=1000` when done); the upload loop in `web/wire.js` sends whatever is ready.
 - The browser tests now convert in Chrome (an MKV from the converter's fuzz seeds): copies with their
   subtitles, a copy kept in memory going in pieces, subtitles only, copies and plain files in one
-  upload. CI's browser job builds av.wasm for them (zig).
+  upload, DTS sound. CI's browser job builds av.wasm for them (zig).
+- `modules/av/dts.c`: the DTS Coherent Acoustics core decoder (ETSI TS 102 114). Its tables come from
+  the specification (`dts_tables.h`, made by a script and checked); the two vector tables every
+  edition leaves out come from FFmpeg (`third_party/ffmpeg/`, LGPL 2.1 or later - the downloads carry
+  `LICENSE-LGPL-2.1.txt`). A test frame writer (`dts_testenc.h`), a fuzz target (`dts`, nightly too),
+  a converter seed (`h264-dts.mkv`) and a real-file check (`HEMMA_TEST_DTS`).
+- The live action `media.sub` keeps a viewer's subtitles pick per series (prefs `media.sub.<series>`,
+  generation `media.sub.gen`); the subtitle menu marks what C turns on (`data-subpref`).
 
 ## 1.2.0 (2026-10-23)
 

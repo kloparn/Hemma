@@ -69,6 +69,7 @@
       if (h) delete root.dataset.h;
       send(h ? { t: 'hello', url: here(), v: VERSION, h } : { t: 'hello', url: here(), v: VERSION });
       while (later.length) send({ t: 'log', url: here(), m: later.shift(), ua: navigator.userAgent });
+      if (subLater) { send(subLater); subLater = null; } // (a subtitles pick made while the socket was down)
       // a new socket is a new screen to the server: an upload page's preview is asked for again
       for (const f of document.querySelectorAll('form[data-preview]')) if (f._files && f._files.length && !uploading) preview(f, true);
     };
@@ -93,6 +94,7 @@
   // lines per person an hour and logs the user agent (ua) once per browser; lines from before the
   // socket opened wait for it (10 at most).
   const later = [];
+  let subLater = null;
   const report = (what) => {
     const m = String(what).slice(0, 400);
     if (!send({ t: 'log', url: here(), m, ua: navigator.userAgent }) && later.length < 10) later.push(m);
@@ -1673,6 +1675,26 @@
     subHold(v);
     subTicks(pl, v);
   }
+  // The viewer's own pick (the menu, or C) goes to the server too (media.sub, 1.3): the series' next episode
+  // starts with it however it's opened - the same key, else its language, else off.
+  const subNow = (pl) => { const c = pl.querySelector('[data-sub][aria-checked="true"]'); return c ? c.dataset.sub : ''; };
+  function subChoose(pl, v, key) {
+    const was = subNow(pl);
+    if (was && !key) v._subPrev = was;
+    subPick(pl, v, key);
+    const msg = { t: 'live', a: 'media.sub', url: here(), f: [['id', v.dataset.id || ''], ['key', key]] };
+    if (v.dataset.id && !send(msg)) subLater = msg; /* (sent when the socket's back) */
+  }
+  // C: subtitles off - or on again: the last shown in this player, else the viewer's ([data-subpref]: their last
+  // pick in the series, else their language), else the first
+  function subToggle(pl, v) {
+    const items = [...pl.querySelectorAll('[data-sub]')].filter((b) => b.dataset.sub);
+    if (!items.length) return;
+    subTicks(pl, v);
+    if (subNow(pl)) { subChoose(pl, v, ''); return; }
+    const pick = (v._subPrev && items.find((b) => b.dataset.sub === v._subPrev)) || pl.querySelector('[data-sub][data-subpref]') || items[0];
+    subChoose(pl, v, pick.dataset.sub);
+  }
   function subHold(v) {
     const key = v._sub, lang = key ? key.split('.')[0] : '', tracks = [], pl = plOf(v);
     for (let i = 0; i < v.textTracks.length; i++) {
@@ -1900,7 +1922,7 @@
     }
     if (part.tagName === 'INPUT') return;
     e.preventDefault();
-    if (part.hasAttribute('data-sub')) { subPick(pl, v, part.dataset.sub); menus(null); return; }
+    if (part.hasAttribute('data-sub')) { subChoose(pl, v, part.dataset.sub); menus(null); return; }
     const what = part.dataset.p, menu = pl.querySelector('[role="menu"]');
     menus(what === 'subs' ? menu : null);
     if (what === 'play') play(v);
@@ -1947,7 +1969,7 @@
     for (const pl of players()) if (pl.parentNode.contains(e.target)) plWake(pl);
   }, true);
   const KEY_CODES = {
-    13: 'Enter', 32: ' ', 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown', 70: 'f', 75: 'k', 77: 'm',
+    13: 'Enter', 32: ' ', 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown', 67: 'c', 70: 'f', 75: 'k', 77: 'm',
     415: 'MediaPlay', 19: 'MediaPause', 10252: 'MediaPlayPause', 412: 'MediaRewind', 417: 'MediaFastForward',
   };
   // (registered before [data-arrows]: on a player the arrows are its keys first)
@@ -1993,6 +2015,7 @@
       act = () => toBack(none ? v : t); /* (live can't be wound: Left on the picture reaches Back - issue #98) */
     else if (!live && (bare || onSeek) && (k === 'ArrowRight' || k === 'Right')) act = () => seekBy(v, 10);
     else if (k === 'm' || k === 'M') act = () => mute(v);
+    else if ((k === 'c' || k === 'C') && pl.querySelector('[data-sub]')) act = () => subToggle(pl, v);
     else if (k === 'f' || k === 'F') {
       const b = pl.querySelector('[data-fullscreen]');
       if (b && !b.hidden) act = () => b.click();

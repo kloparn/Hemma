@@ -45,6 +45,8 @@ typedef struct {
     const char *label; /* the words in the menu, in the reader's language ("English (SDH)") */
     const char *pic;   /* a picture track's cue list address (wire.js draws it); NULL = a text track */
     bool on;           /* shown now (the <track> is default) */
+    bool pref;         /* the one the C key turns on when none shows (1.3: the viewer's last pick in the series,
+                          else their language): data-subpref */
 } UiSub;
 typedef struct {
     const char *box, *video; /* ids */

@@ -68,6 +68,7 @@ static const Tr TR[] = {
     {"Back 10 seconds (Left)", "10 sekunder bakåt (vänsterpil)", "10 segundos atrás (flecha izquierda)"},
     {"Forward 10 seconds (Right)", "10 sekunder framåt (högerpil)", "10 segundos adelante (flecha derecha)"},
     {"Subtitles", "Undertexter", "Subtítulos"},
+    {"Subtitles (C)", "Undertexter (C)", "Subtítulos (C)"},
     {"Off", "Av", "Desactivado"},
     {"Mute (M)", "Stäng av ljudet (M)", "Silenciar (M)"},
     {"Sound (M)", "Ljud (M)", "Sonido (M)"},

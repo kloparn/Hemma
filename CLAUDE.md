@@ -26,7 +26,9 @@ Runs on a Raspberry Pi in production; developed on Windows 11 with `zig cc`.
 - **Server-driven UI**: C renders HTML; changes are pushed as DOM morphs over
   WebSocket to every open screen. Pages also work without JS (links + POST forms).
 - **Fast and light**: single-threaded event loop, small static binary for the Pi.
-  The only third-party code is SQLite (vendored, public domain).
+  The only third-party code is SQLite (vendored, public domain) - and, as data, FFmpeg's two DTS vector
+  tables in third_party/ffmpeg/dts_vq.h (LGPL 2.1+, its README; owner, 2026-10-24: "FFmpeg's, own file" -
+  the DTS specification leaves them out of every edition).
 - **Modular**: features are self-contained modules so several workers can build
   in parallel without touching each other's files.
 - **Tests**: co-located `*_test.c`, auto-registered. Cover parsers, protocol code,
@@ -549,7 +551,7 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  (hvcC arrays marked complete - what Safari needs; no HEVC decoder here, so it plays on Apple
                  devices and browsers with HEVC hardware, not everywhere; Convert says "play in Safari too", the watch page
                  badge "Plays on newer devices");
-                 AC-3 / E-AC-3 (Dolby Digital Plus) -> AAC at the track's own rate (48, 44.1 or 32 kHz - TV rips are 44.1; 1.1.2; E-AC-3 half rates refused; a frame at another rate than the file says = unsupported); AAC copied; the file's subtitles next to the ORIGINAL - also
+                 AC-3 / E-AC-3 (Dolby Digital Plus) and DTS (1.3: the core, 5.1 -> Lo/Ro) -> AAC at the track's own rate (48, 44.1 or 32 kHz - TV rips are 44.1; 1.1.2; E-AC-3 half rates refused; a frame at another rate than the file says = unsupported); AAC copied; the file's subtitles next to the ORIGINAL - also
                  after an `unsupported` refusal (1.2) - by convert_save_subs/convert_save_sub(video, AvConvSub,
                  ConvertSubs*): text .srt, PGS .sup, VobSub .sub + .idx (the pair or nothing, .idx last), media/subs.c
                  names ("x.en.srt", "x.sv.forced.srt", "x.en.sdh.srt", "x.en.2.sup"); a second track of the same
@@ -597,6 +599,14 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  Hemma-named file keeps its key, the other of two alike gets the next free number); labels = the
                  language in itself + "(for the hard of hearing)" / "(foreign speech only)" / "English 2";
                  media.sublang turns on the first in that language (the plain one; else its first picture track).
+                 FOLLOWING THE VIEWER (1.3; owner, 2026-10-24: "if enabled on a episode, to carry on to the next
+                 episode with the same language if it exists"): the player reports the viewer's pick (the menu, or
+                 C) with the live action media.sub (id, key; "" = off; .display - the TV's viewer -, ACT_ALL) ->
+                 pref "media.sub.<series hex>" = "<generation> <key|->" (episodes only; films keep nothing).
+                 sub_choices: that pick wins over media.sublang - the same key, else the first of its language
+                 (menu order, as wire.js picks), else none; "-" = off. media.prefs (a new "Subtitles on by
+                 default") bumps "media.sub.gen": every series starts from the language again. UiSub.pref ->
+                 data-subpref marks what C turns on (that pick, else the language's).
   media/subtake.c TAKING SUBTITLES OUT BY THEMSELVES (1.2): a thread (one, background priority, tick-started, never
                  under tests) reads each library MKV/WebM once (not play-alls, not .web.mp4), newest first: mkv_open
                  first - no track AV_CONV_CODECS takes, or every sidecar already there = done after the headers;
@@ -712,7 +722,25 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  only, the rest AC3_SKIP; enhanced coupling / half rates AC3_ERR_UNSUPPORTED): native/WAV-order/
                  Lo-Ro stereo float output. ac3_test.c's encoder writes E-AC-3 with every tool and the decoder
                  must rebuild exactly what it sent; Dolby's E-AC-3 encoders leave unused bits non-zero, so
-                 tail_zero is an AC-3 check). Feed mpeg2 the track's CodecPrivate first, then
+                 tail_zero is an AC-3 check). dts.* (1.3; owner, 2026-10-24: "let's fix this" - 108 Simpsons
+                 episodes had DTS): the DTS Coherent Acoustics CORE (ETSI TS 102 114 clause 5 + Annex C/D) -
+                 16-bit big-endian frames (sync 7F FE 80 01; DTS-HD's substream 64 58 20 25 after the core is
+                 left alone; 14-bit/LE packing and AMODE 10-15 DTS_ERR_UNSUPPORTED; core extensions XCh/X96/XBR
+                 skipped), every Huffman book, block codes, ADPCM prediction, high-frequency vectors, joint
+                 intensity, transients, sum/difference, dynamic range (off by default), LFE 64x/128x, both
+                 filter banks; native/WAV/Lo-Ro float output (the Lo/Ro normalised like ac3's). The spec says
+                 never to test its CRC words: skipped. Tables: dts_tables.h, MADE BY A SCRIPT from the
+                 specification's own pages and checked (each Huffman book a complete prefix code; two misprints
+                 mended there - see its comment; the perfect-reconstruction bank is V1.2.1's, which decoders
+                 use; V1.6.1 prints other numbers); the two vector tables NO edition prints are FFmpeg's
+                 (third_party/ffmpeg/dts_vq.h, LGPL 2.1+, its README: source, hashes; owner: "FFmpeg's, own
+                 file"). The synthesis's output gain (the spec's undefined rScale) = 128 sqrt 2 (QMF_GAIN),
+                 measured. CHECKED against FFmpeg on real tracks: 5 Simpsons episodes, 615k frames, no frame
+                 refused; every channel equal to rounding (largest difference ~6e-6). dts_testenc.h = a test
+                 frame writer (every tool, random; or tones: a steady value in subband k comes out at its EDGE,
+                 so tones use odd bands: (ch + 1) x 1500 Hz). HEMMA_TEST_DTS=<file.mkv> [HEMMA_TEST_DTS_S,
+                 HEMMA_TEST_DTS_WAV] ./build/test dts_real decodes a real track (native float WAV to compare).
+                 Feed mpeg2 the track's CodecPrivate first, then
                  each block with its pts; mpeg2_reset()/ac3_reset() after mkv_seek(). h264enc.* (Constrained
                  Baseline encoder, bit-exact vs Chrome; annexb=false + h264enc_avcc() for MP4; ~180 fps SD
                  per PC core, ~7.6 fps per Pi 3 core). mp4.* (faststart via reserved moov, or fragmented), flac.*, deint.* (IVTC / yadif / bob /
@@ -793,19 +821,22 @@ tools/convfuzz.c libFuzzer target over av_convert (MKV in memory -> MP4 in memor
                  replay/mutate driver that builds with zig on Windows (build lines at the top). Seeds:
                  `HEMMA_FUZZ_SEEDS=<dir> HEMMA_FUZZ_RAW=<dir2> ./build/test conv_fuzz_seeds` (generated, never
                  committed: the MKVs in <dir>, raw Dolby frames and MPEG-2 streams in <dir2>/ac3, /mpeg2)
-tools/avfuzz.c   five faster targets, one part alone each (issue #50): -DAVFUZZ_MKV the Matroska reader,
-                 -DAVFUZZ_AC3 the Dolby decoder (raw frames, CRC off), -DAVFUZZ_MPEG2 the MPEG-2 decoder (a raw
+tools/avfuzz.c   six faster targets, one part alone each (issue #50): -DAVFUZZ_MKV the Matroska reader,
+                 -DAVFUZZ_AC3 the Dolby decoder (raw frames, CRC off), -DAVFUZZ_DTS the DTS decoder (raw core
+                 frames; 1.3), -DAVFUZZ_MPEG2 the MPEG-2 decoder (a raw
                  stream in chunks of any size); an input's first byte picks options (layout, chunking, a reset).
                  -DAVFUZZ_PGS (a .sup) and -DAVFUZZ_VOBSUB (the .idx text, a NUL, the .sub) (1.2): opened, every cue
                  checked against subpic.h's promises (abort), drawn (2M pixels an input) and made a PNG.
                  Measured in WSL: ~1.3M inputs a minute (mkv), 210k (ac3), 310k (mpeg2), ~200k (pgs), ~90k
-                 (vobsub) vs 5.7k for convfuzz. convfuzz also checks every subtitle track is a whole file of its
+                 (vobsub), ~8k (dts: a 100-byte frame may say 4096 samples on 6 channels, so it takes 32 frames
+                 and 32 KB an input; its coverage levels off within a minute) vs 5.7k for convfuzz. The DTS
+                 decoder itself: ~220x real time on one PC core (5.1, 1.5 Mbit/s, -O2). convfuzz also checks every subtitle track is a whole file of its
                  kind within its bounds and that av_subtitles alone gives the very same subtitles
-tools/ci/fuzz.sh TARGET [S] [JOBS]: builds + runs conv | mkv | ac3 | mpeg2 | pgs | vobsub under ASan + UBSan from the
+tools/ci/fuzz.sh TARGET [S] [JOBS]: builds + runs conv | mkv | ac3 | dts | mpeg2 | pgs | vobsub under ASan + UBSan from the
                  tree's top after `make build/test` (seeds made when missing; pgs/vobsub's from `HEMMA_FUZZ_RAW=
                  build/fuzz-raw build/test subpic_fuzz_seeds`), corpus in build/fuzz-corpus-T, findings in
                  build/fuzz-found-T (exit 1); JOBS > 1 = libFuzzer -fork, carrying on after a finding. Used by
-                 build.yml's fuzz job (conv, 90 s), fuzz.yml (NIGHTLY 01:17 UTC: the six side by side on their own
+                 build.yml's fuzz job (conv, 90 s), fuzz.yml (NIGHTLY 01:17 UTC: the seven side by side on their own
                  runners, 170 min each with every core, the corpus cached night to night - owner, 2026-10-21:
                  "about 3 hours"; a finding fails the job and keeps the files as an artifact) and local.sh
 tests/           test.h (framework), runner.c, harness.* (boot the core without a server; th_boot_in(dir) for a
@@ -854,14 +885,15 @@ tests/browser/   CI-ONLY Node (owner, 2026-10-21: "The CI can use node"; nothing
                  memory in 1000-byte pieces arriving identical, subtitles only, copies and plain files in one
                  upload; skipped where the page has no data-wasm - CI's browser job sets up zig for av.wasm),
                  signin (Accept-Language, the language links), subtitles (two in one language, the pick by key into
-                 the next episode), subpictures (a picture track at its cue's time and place over the shown picture,
+                 the next episode; 1.3: C on and off, the pick following the series into a new page),
+                 upload (1.3: a DTS MKV converted in Chrome too), subpictures (a picture track at its cue's time and place over the shown picture,
                  lifted over the bar, never beside a text track, on from the viewer's language, phone, full screen -
                  clips_test.c writes <clips>/sidecars/pictures.sup 640x480 and pictures-576.sup 720x576, two cues
                  each), download. eslint.config.mjs (recommended rules) over
                  web/*.js, run from the repo top (`npm run lint`). Locally: build (./build.ps1 build + test, or
                  make), then `cd tests/browser && npm ci && npx playwright test`. Test-only modules' words etc.:
                  see Tests. CI jobs: build.yml `browser` and `lint`
-tools/ci/local.sh  CI's Linux jobs locally: test | asan | fuzz [S] [conv|mkv|ac3|mpeg2], on a fresh copy of the tree (stdin tar,
+tools/ci/local.sh  CI's Linux jobs locally: test | asan | fuzz [S] [conv|mkv|ac3|dts|mpeg2|pgs|vobsub], on a fresh copy of the tree (stdin tar,
                  --tar FILE, or this checkout) in /dev/shm, each job's build/ kept for the next run (only
                  what changed compiles); never deletes. Windows: ./build.ps1 ci [job] (WSL; $env:HEMMA_WSL)
 deploy/          hemma-disks (issue #74; sh, root, -> /usr/local/sbin): `sudo hemma-disks` [use UUID | format sdX | forget
@@ -1324,8 +1356,10 @@ it (MakeMKV's 720x576 on NTSC too); lifted above the bar while it's up (a new cu
 looked up on timeupdate/seeked and every frame while playing, the next PNG fetched ahead (spShow/spDraw/spPlace/
 spLoop). Never beside a text track (subHold: the same key, else the first of its language in the menu's order); an
 item arriving aria-checked is drawn from load (plWire); the pick goes on to the next episode and into the browser's
-own player (nativePlayer copies _sub). Keys (registered BEFORE [data-arrows]): Space/K, Left/
-Right ±10 s, M, F; on a computer they stay the video's even on a focused bar button; UiPlayer.tv puts
+own player (nativePlayer copies _sub). A pick made by the viewer (the menu, or C - subChoose) goes to the server
+too (live media.sub; kept while the socket is down: subLater) - see "FOLLOWING THE VIEWER" under media/subs.c.
+C (1.3) = subToggle: off, or back on - the last shown in this player (v._subPrev), else [data-subpref], else the
+first. Keys (registered BEFORE [data-arrows]): Space/K, Left/Right ±10 s, M, F, C; on a computer they stay the video's even on a focused bar button; UiPlayer.tv puts
 data-arrows on the bar (a remote moves along it; Down/Up on the picture go to the bar, Up on the seek bar
 back). Keys come by e.key, else by keyCode (KEY_CODES: a TV's browser may say "Unidentified"), the
 remote's MediaPlay/Pause/PlayPause/Rewind/FastForward included; Enter with nothing focused plays (live: the
@@ -1485,7 +1519,7 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
   Series/Serier/TV Shows/Anime or Movies/Films/Filmer or Home videos/Family/DCIM lean the guess.
 - Streaming is direct play (bytes as stored, Range requests, worker thread per stream, `sendfile`
   zero-copy on Linux). Browsers can't decode MPEG-2 (the owner's DVD seasons) and Chrome/Firefox
-  not AC-3 or E-AC-3 (they play the picture silently): that's what modules/av is for (owner wants it
+  not AC-3, E-AC-3 or DTS (they play the picture silently; DTS nothing plays): that's what modules/av is for (owner wants it
   built in C, not ffmpeg - ffmpeg is at most a comparison on a developer's machine, never shipped).
   E-AC-3 seen in real files: "DDP5.1" x265 releases (5.1, 640 kbit/s, 6 blocks, the exponent strategy
   table, no AHT/SPX; ~420x real time per PC core) and Dolby's own streaming encoders (SPX + AHT at
@@ -1568,7 +1602,8 @@ picture subtitles (.idx/.sub, .sup) drawn by the player, the server taking subti
 feat/faster-uploads; owner, 2026-10-23: "make the 12mbit/s limit ... be always at that limit") = uploads send whatever
 is ready (no waiting on the list's order), conv.js reads ahead, copies optionally kept in memory (a big checkbox; sent
 in pieces), and what stays behind still gives the subtitles the library lacks (subtitles-only entries; sidecars and
-lone subtitle files go next to the library's video).
+lone subtitle files go next to the library's video); then (owner, 2026-10-24: "faster branch + extra file support") DTS
+sound (av/dts.c) and subtitles following the viewer through a series, C toggling them.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
@@ -1591,4 +1626,4 @@ on the wall (ticking the shopping list - needs .display actions), more wall bloc
 MKV→MP4 remux on the fly for Safari/iPhone (planned as 1.2, owner 2026-10-21: a "virtual MP4" over the MKV,
 Dolby passed through for Apple devices; live AC-3 -> AAC after), "Open in VLC" links, router integration, DLNA, API tokens for
 scripts, "tune in" on the TV's browser via a QR code, more video formats as files need them (HEVC decoding,
-DTS - each with its fuzz seed: docs/decisions/0006).
+Xvid/MP3, TrueHD - each with its fuzz seed: docs/decisions/0006).

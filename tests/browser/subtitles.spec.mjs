@@ -37,6 +37,10 @@ async function rescan(wanted) {
 test.beforeAll(async () => {
   for (const [name, text] of Object.entries(SUBS)) fs.writeFileSync(path.join(SEASON, name), text);
   await rescan(true);
+  /* no subtitles by default - which also forgets the picks other specs left for the series (1.3) */
+  const api = await request.newContext({ baseURL: BASE, storageState: SIGNED_IN, extraHTTPHeaders: { Origin: BASE, Referer: `${BASE}/` } });
+  expect((await api.post('/a/media.prefs', { form: { sublang: '' } })).ok()).toBe(true);
+  await api.dispose();
 });
 
 test.afterAll(async () => {
@@ -117,4 +121,37 @@ test('... else to the first in its language, else none', async ({ page }) => {
   v = await nextEpisode(page, 'de'); /* (the next has no German) */
   await expect.poll(() => showing(v)).toBe('');
   await expect(page.locator('[data-sub=""]')).toHaveAttribute('aria-checked', 'true');
+});
+
+// 1.3 (owner: "if enabled on an episode, carry on to the next episode with the same language if it exists", and
+// "c" for subtitles): C turns them off and on again; the pick is the viewer's for the series, so the next
+// episode opened afresh - a new page, not the same player - starts with it, and one turned off starts off.
+test('C turns subtitles on and off, and the pick follows the series into a new page', async ({ page }) => {
+  const [e1, e2] = await inOrder(page);
+  await page.goto(e1);
+  let v = page.locator('#media-video');
+  await ready(v);
+  await expect(page.locator('html')).toHaveAttribute('data-ws', 'on');
+  await pick(page, '');
+  await expect.poll(() => showing(v)).toBe('');
+  await page.keyboard.press('c'); /* on again: none shown here before, so the first - German */
+  await expect.poll(() => showing(v)).toBe('de: eins');
+  await page.keyboard.press('c');
+  await expect.poll(() => showing(v)).toBe('');
+  await pick(page, 'en.sdh');
+  await expect.poll(() => showing(v)).toBe('en.sdh: one, for the hard of hearing');
+  await page.goto(e2); /* a new page: the series' pick */
+  v = page.locator('#media-video');
+  await ready(v);
+  await expect.poll(() => showing(v)).toBe('en.sdh: two, for the hard of hearing');
+  await expect(page.locator('[data-sub="en.sdh"]')).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('html')).toHaveAttribute('data-ws', 'on');
+  await page.keyboard.press('c'); /* off - and the series stays off */
+  await expect.poll(() => showing(v)).toBe('');
+  await page.goto(e1);
+  v = page.locator('#media-video');
+  await ready(v);
+  await expect.poll(() => showing(v)).toBe('');
+  await expect(page.locator('[data-sub=""]')).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('[data-player] [data-p="subs"]')).toHaveAttribute('aria-label', 'Subtitles (C)');
 });

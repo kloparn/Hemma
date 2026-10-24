@@ -125,13 +125,14 @@ on its disk. On a Pi, run the installer again with every media folder after the 
 file, so Hemma may write there ([raspberry-pi.md](raspberry-pi.md#7-a-usb-disk-for-movies)).
 
 **A video won't play on some devices.**
-DVD rips, MKV files and Dolby sound don't play everywhere. **Watch → Library settings**
+DVD rips, MKV files and Dolby or DTS sound don't play everywhere. **Watch → Library settings**
 makes a copy of each that does.
 
 **A video plays, but without sound.**
 Its sound is most likely Dolby (Dolby Digital or Digital Plus - "DD5.1", "DDP5.1" in a file
-name): Chrome and Firefox play the picture and stay silent, Safari and Edge play it. The
-video's page says so under the player. Press **Fix the sound** there (or **Convert** on
+name): Chrome and Firefox play the picture and stay silent, Safari and Edge play it. Or DTS
+("DTS", "DTS-HD MA" in a file name), which no browser plays. The video's page says so under the
+player. Press **Fix the sound** there (or **Convert** on
 **Watch → Library settings** for every such video at once): Hemma makes a copy next to it with
 AAC sound, which every browser plays - the picture is copied as it is, so it's quick. Uploads
 from a browser make that copy before sending (the box *Make videos play everywhere on this

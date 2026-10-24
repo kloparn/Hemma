@@ -156,3 +156,20 @@ test('copies made here and files sent as they are go in one upload', async ({ pa
   await expect(page.locator('.media-up h3')).toContainText('Finished · 4 files sent');
   expect(same(path.join(dir, 'Mixshow S01E02.mp4'), CLIP)).toBe(true);
 });
+
+// 1.3: DTS sound (Blu-ray rips) is converted in the browser too - the copy goes, not the original.
+test('an MKV with DTS sound is converted here as well', async ({ page }) => {
+  const from = path.join(WORK, 'mkv-up', 'Dtsshow S01E01.mkv');
+  fs.mkdirSync(path.dirname(from), { recursive: true });
+  fs.copyFileSync(path.join(WORK, 'mkv', 'h264-dts.mkv'), from);
+  await page.goto('/media/upload');
+  test.skip(!(await page.locator('form[data-wasm]').count()), 'this Hemma has no converter for browsers (av.wasm)');
+  await page.locator('input[name=files]').setInputFiles(from);
+  await expect(page.locator('.media-up-group', { hasText: 'Dtsshow' })).toContainText('Dtsshow · S01E01');
+  await page.locator('#media-up-start').click();
+  const dir = path.join(LIBRARY, 'Series', 'Dtsshow', 'Season 1');
+  await expect.poll(() => fs.existsSync(path.join(dir, 'Dtsshow S01E01.web.mp4')), { message: 'the copy arrives', timeout: 30_000 }).toBe(true);
+  await expect(page.locator('.media-up h3')).toContainText('Finished · 1 file sent');
+  await expect(page.locator('.media-up')).not.toContainText('sent as it is');
+  expect(fs.existsSync(path.join(dir, 'Dtsshow S01E01.mkv'))).toBe(false);
+});

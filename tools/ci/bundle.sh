@@ -45,11 +45,13 @@ pack() {
     cp "$in/$prog" "$d/$prog"
     for f in "$@"; do cp "$f" "$d/"; done
     cp LICENSE "$d/"
+    cp third_party/ffmpeg/COPYING.LGPLv2.1 "$d/LICENSE-LGPL-2.1.txt" # (FFmpeg's two DTS tables are under it)
     echo "$ver" > "$d/VERSION" # (signed with the rest: hemma-upgrade reads the version here)
     chmod 644 "$d"/* # (whatever the checkout says - a Windows drive calls everything executable)
     chmod 755 "$d/$prog"
     for x in install-pi.sh hemma-upgrade hemma-disks; do if [ -f "$d/$x" ]; then chmod 755 "$d/$x"; fi; done
-    printf 'Hemma %s - %s\n\n%s\n\nGuides: %s/tree/v%s/docs\n' "$ver" "$name" "$how" "$repo" "$ver" > "$d/README.txt"
+    printf 'Hemma %s - %s\n\n%s\n\nGuides: %s/tree/v%s/docs\n\nLicence: Apache 2.0 (LICENSE). Two tables in the program, from FFmpeg, are under the\nGNU LGPL 2.1 or later (LICENSE-LGPL-2.1.txt). The source of all of it: %s/tree/v%s\n' \
+        "$ver" "$name" "$how" "$repo" "$ver" "$repo" "$ver" > "$d/README.txt"
     (cd "$d" && sha256sum -- * > SHA256SUMS)
     sign "$d"
     tar -C "$work" -czf "$out/$name.tar.gz" "$name"

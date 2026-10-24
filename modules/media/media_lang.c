@@ -210,6 +210,14 @@ static const Tr TR[] = {
     {"Being made playable everywhere - see the library settings.",
      "Görs spelbar överallt - se biblioteksinställningarna.",
      "Se está haciendo reproducible en todas partes - mira los ajustes de la biblioteca."},
+    {"Its DTS sound plays in no browser, and Safari can't open MKV files: a copy with AAC sound fixes both - quick, the "
+     "picture isn't re-encoded. HEVC still needs a device that can decode it (most from the last few years).",
+     "DTS-ljudet spelas inte i någon webbläsare, och Safari kan inte öppna MKV-filer: en kopia med AAC-ljud fixar båda "
+     "- snabbt, bilden kodas inte om. HEVC behöver fortfarande en enhet som kan avkoda det (de flesta från de senaste "
+     "åren).",
+     "Su sonido DTS no se oye en ningún navegador, y Safari no puede abrir archivos MKV: una copia con sonido AAC "
+     "arregla las dos cosas - rápido, la imagen no se recodifica. HEVC sigue necesitando un dispositivo que pueda "
+     "decodificarlo (la mayoría de los últimos años)."},
     {"Its Dolby sound plays silently in Chrome and Firefox, and Safari can't open MKV files: a copy with AAC sound "
      "fixes both - quick, the picture isn't re-encoded. HEVC still needs a device that can decode it (most from the "
      "last few years).",
@@ -411,13 +419,11 @@ static const Tr TR[] = {
      "película HEVC convertida aquí (<i>Se reproduce en dispositivos más nuevos</i>) se reproduce en Safari y en la "
      "mayoría de dispositivos de los últimos años."},
     {"<b>Needs conversion:</b> MPEG-2 (DVD rips), AVI/XviD, DTS sound. Hemma converts MKV files with MPEG-2, H.264 or "
-     "HEVC video and Dolby or AAC sound itself, and keeps their text subtitles as .srt files next to them.",
+     "HEVC video and Dolby, DTS or AAC sound itself, and keeps their subtitles next to them.",
      "<b>Behöver konverteras:</b> MPEG-2 (DVD-rippar), AVI/XviD, DTS-ljud. Hemma konverterar själv MKV-filer med "
-     "MPEG-2-, H.264- eller HEVC-video och Dolby- eller AAC-ljud, och sparar deras textundertexter som .srt-filer "
-     "bredvid dem.",
+     "MPEG-2-, H.264- eller HEVC-video och Dolby-, DTS- eller AAC-ljud, och sparar deras undertexter bredvid dem.",
      "<b>Necesita conversión:</b> MPEG-2 (ripeos de DVD), AVI/XviD, sonido DTS. Hemma convierte por sí mismo archivos "
-     "MKV con vídeo MPEG-2, H.264 o HEVC y sonido Dolby o AAC, y guarda sus subtítulos de texto como archivos .srt a su "
-     "lado."},
+     "MKV con vídeo MPEG-2, H.264 o HEVC y sonido Dolby, DTS o AAC, y guarda sus subtítulos a su lado."},
     {"Nothing here", "Här finns inget", "Aquí no hay nada"},
     {"That page doesn't exist.", "Den sidan finns inte.", "Esa página no existe."},
 

@@ -8,6 +8,7 @@
 #include "aac.h"
 #include "ac3.h"
 #include "deint.h"
+#include "dts.h"
 #include "h264enc.h"
 #include "mpeg2.h"
 
@@ -69,15 +70,16 @@ typedef struct {
     int64_t *vpts; /* every video pts in file order (decode order) */
     int nvpts, vi;
     int64_t *dts, vshift; /* sorted pts = decode times; shift keeps composition offsets >= 0 */
-    /* audio */
+    /* audio: Dolby (ac3) or DTS (dtsd) decoded and made AAC */
     Ac3Dec *ac3;
+    DtsDec *dtsd;
     AacEnc *aac;
-    float *fifo;
+    float *fifo, *pcm;
     int nfifo;
-    int a_good, a_bad; /* Dolby frames decoded / not */
-    int a_frame;       /* samples in the last Dolby frame (1536; E-AC-3 may send 256, 512 or 768) */
-    int arate;         /* the Dolby track's rate - 48000, 44100 or 32000 - and so the AAC's */
-    int64_t a_next, skip; /* expected pts of the next Dolby frame (ns); samples to drop at the start */
+    int a_good, a_bad; /* frames decoded / not */
+    int a_frame;       /* samples in the last frame (Dolby 1536 - E-AC-3 may send 256, 512 or 768 -; DTS 512 mostly) */
+    int arate;         /* the track's rate - 48000, 44100 or 32000 - and so the AAC's */
+    int64_t a_next, skip; /* expected pts of the next frame (ns); samples to drop at the start */
     uint8_t au[AAC_MAX_AU];
     /* subtitles (j->want_subs, av_subtitles): text gathered as SRT, pictures as the files players read */
     struct ConvSub {
@@ -118,6 +120,7 @@ const AvCodec AV_CONV_CODECS[] = {
     {"A_AAC", MKV_AUDIO, AV_COPY, true},
     {"A_AC3", MKV_AUDIO, AV_DECODE, false},
     {"A_EAC3", MKV_AUDIO, AV_DECODE, false},
+    {"A_DTS", MKV_AUDIO, AV_DECODE, false}, /* (the core: DTS-HD's extra substream is left alone) */
     {"S_TEXT/UTF8", MKV_SUBTITLE, AV_TEXT, false},
     {"S_TEXT/ASS", MKV_SUBTITLE, AV_TEXT, false},
     {"S_TEXT/SSA", MKV_SUBTITLE, AV_TEXT, false},
@@ -134,10 +137,12 @@ const AvCodec *av_conv_codec(const char *id) {
 }
 
 static bool dolby(const char *codec) { return !strcmp(codec, "A_AC3") || !strcmp(codec, "A_EAC3"); }
+static bool is_dts(const char *codec) { return !strcmp(codec, "A_DTS"); }
+#define MAX_AFRAME DTS_SAMPLES /* the most samples one decoded frame brings (DTS; Dolby's is 1536) */
 
-/* The rate of a Dolby track we can make AAC of at that same rate: AC-3's three (48 kHz on DVDs and
-   films; 44.1 kHz in TV rips - an AAC of that rate plays everywhere), 48000 when the file doesn't say.
-   0 for E-AC-3's half rates and the rest. */
+/* The rate of a Dolby or DTS track we can make AAC of at that same rate: the three both use (48 kHz on
+   DVDs, Blu-rays and films; 44.1 kHz in TV rips and DTS CDs - an AAC of that rate plays everywhere),
+   48000 when the file doesn't say. 0 for E-AC-3's half rates, DTS's low ones and the rest. */
 static int dolby_rate(const MkvTrack *t) {
     if (t->rate <= 0) return 48000;
     static const int RATES[] = {48000, 44100, 32000};
@@ -146,7 +151,7 @@ static int dolby_rate(const MkvTrack *t) {
     return 0;
 }
 
-/* Sound we can make AAC of: AAC itself, or Dolby AC-3 / E-AC-3 at one of its rates (dolby_rate). */
+/* Sound we can make AAC of: AAC itself, or Dolby AC-3 / E-AC-3 or DTS at one of those rates (dolby_rate). */
 static bool audio_ok(const MkvTrack *t) {
     const AvCodec *k = av_conv_codec(t->codec);
     if (t->compressed || !k || k->type != MKV_AUDIO) return false;
@@ -297,9 +302,26 @@ static bool push_pcm(Conv *c, const float *pcm, int frames) {
     return true;
 }
 
+/* One DTS core frame of a block (a DTS-HD stream's extension substream follows it: left alone). The
+   frame's samples, 0 = no frame here (the rest of the block isn't one), -1 = refused (c->failed). */
+static int code_dts(Conv *c, const uint8_t *p, size_t left, int *size) {
+    static const float silence[MAX_AFRAME * 2];
+    *size = left >= DTS_HEADER_BYTES ? dts_frame_size(p, left) : 0;
+    if (*size <= 0 || (size_t)*size > left) return 0;
+    int ch = 0;
+    DtsInfo in = {.samples = c->a_frame};
+    int rc = dts_decode(c->dtsd, p, (size_t)*size, c->pcm, &ch, &in);
+    if (rc == DTS_ERR_UNSUPPORTED) return unsupported(c, "Its sound is %s coded in a way the converter can't decode yet", "DTS"), -1;
+    if (rc == DTS_OK && in.sample_rate != c->arate) return unsupported(c, "Its %s sound isn't at the rate the file says", "DTS"), -1;
+    int n = in.samples > 0 && in.samples <= MAX_AFRAME ? in.samples : c->a_frame;
+    c->a_frame = n;
+    if (rc == DTS_OK && ch == 2) push_pcm(c, c->pcm, n), c->a_good++;
+    else push_pcm(c, silence, n), c->a_bad++; /* damaged: silence keeps the timing */
+    return n;
+}
+
 static bool code_audio(Conv *c, const MkvFrame *fr) {
-    static const float silence[AC3_SAMPLES * 2];
-    float pcm[AC3_SAMPLES * AC3_MAX_CHANNELS];
+    static const float silence[MAX_AFRAME * 2];
     const int64_t frame_ns = (int64_t)c->a_frame * NS / c->arate;
     if (fr->pts != MKV_NOPTS && c->a_next != MKV_NOPTS && fr->pts > c->a_next + frame_ns / 2) {
         /* a hole in the sound (damaged disc): fill it with silence so the picture stays in sync */
@@ -309,12 +331,17 @@ static bool code_audio(Conv *c, const MkvFrame *fr) {
     const uint8_t *p = fr->data;
     size_t left = fr->size;
     int64_t samples = 0; /* the sound this block held (an E-AC-3 block may hold extra-channel frames: no time) */
-    while (left >= AC3_HEADER_BYTES && !c->failed) {
+    while (c->dtsd && !c->failed) {
+        int size = 0, n = code_dts(c, p, left, &size);
+        if (n <= 0) break;
+        p += size, left -= (size_t)size, samples += n;
+    }
+    while (c->ac3 && left >= AC3_HEADER_BYTES && !c->failed) {
         int size = ac3_frame_size(p, left);
         if (size <= 0 || (size_t)size > left) break;
         int ch = 0;
         Ac3Info in = {.samples = c->a_frame};
-        int rc = ac3_decode(c->ac3, p, (size_t)size, pcm, &ch, &in);
+        int rc = ac3_decode(c->ac3, p, (size_t)size, c->pcm, &ch, &in);
         p += size, left -= (size_t)size;
         if (rc == AC3_SKIP) continue;
         if (rc == AC3_ERR_UNSUPPORTED)
@@ -323,7 +350,7 @@ static bool code_audio(Conv *c, const MkvFrame *fr) {
             return unsupported(c, "Its %s sound isn't at the rate the file says", in.eac3 ? "Dolby Digital Plus" : "Dolby");
         int n = in.samples > 0 && in.samples <= AC3_SAMPLES ? in.samples : AC3_SAMPLES;
         c->a_frame = n;
-        if (rc == AC3_OK && ch == 2) push_pcm(c, pcm, n), c->a_good++;
+        if (rc == AC3_OK && ch == 2) push_pcm(c, c->pcm, n), c->a_good++;
         else push_pcm(c, silence, n), c->a_bad++; /* damaged: silence keeps the timing */
         samples += n;
     }
@@ -942,25 +969,29 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         if (c->acode) {
             AacConfig ac = {c->arate, 2, (c->j->audio_kbps ? c->j->audio_kbps : 160) * 1000, 0, 0};
             char err[120] = "";
-            c->ac3 = ac3_open();
+            bool dts = is_dts(c->at->codec);
+            if (dts) c->dtsd = dts_open();
+            else c->ac3 = ac3_open();
             c->aac = aac_open(&ac, err, sizeof err);
-            if (!c->ac3 || !c->aac) return fail(c, "Can't set up the sound encoder: %s", err);
-            ac3_set_layout(c->ac3, AC3_LAYOUT_STEREO);
+            if ((!c->ac3 && !c->dtsd) || !c->aac) return fail(c, "Can't set up the sound encoder: %s", err);
+            if (c->ac3) ac3_set_layout(c->ac3, AC3_LAYOUT_STEREO);
+            if (c->dtsd) dts_set_layout(c->dtsd, DTS_LAYOUT_STEREO);
 #ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
-            ac3_set_crc_check(c->ac3, false); /* fuzzers: mutated frames reach the decoder (crafted files can carry good CRCs anyway) */
+            if (c->ac3) ac3_set_crc_check(c->ac3, false); /* fuzzers: mutated frames reach the decoder (crafted files can carry good CRCs anyway) */
 #endif
             aac_specific_config(c->aac, asc);
             at.config = asc;
             at.config_len = 2;
             at.avg_bitrate = at.max_bitrate = (uint32_t)ac.bitrate;
             at.start = AAC_PRIMING; /* the encoder's first 1024 samples are priming */
-            c->fifo = malloc((AAC_FRAME + AC3_SAMPLES) * 2 * sizeof *c->fifo);
-            if (!c->fifo) return fail(c, "Out of memory", NULL);
+            c->fifo = malloc((AAC_FRAME + MAX_AFRAME) * 2 * sizeof *c->fifo);
+            c->pcm = malloc((size_t)MAX_AFRAME * DTS_MAX_CHANNELS * sizeof *c->pcm); /* (a frame, every channel: off the stack) */
+            if (!c->fifo || !c->pcm) return fail(c, "Out of memory", NULL);
             c->a_next = MKV_NOPTS;
-            c->a_frame = AC3_SAMPLES;
+            c->a_frame = dts ? 512 : AC3_SAMPLES;
             if (lead < 0) c->skip = ticks(-lead, c->arate);
             append(c->j->what, sizeof c->j->what,
-                   strcmp(c->at->codec, "A_EAC3") ? " · Dolby Digital → AAC" : " · Dolby Digital Plus → AAC");
+                   dts ? " · DTS → AAC" : strcmp(c->at->codec, "A_EAC3") ? " · Dolby Digital → AAC" : " · Dolby Digital Plus → AAC");
         } else {
             at.config = c->at->priv;
             at.config_len = c->at->priv_len;
@@ -1015,7 +1046,7 @@ static bool main_pass(Conv *c) {
             return false;
     }
     if (c->acode && c->a_bad > 50 && c->a_bad > c->a_good) /* not a silent copy that claims success */
-        return unsupported(c, "Most of its Dolby sound couldn't be decoded (damaged?)", NULL);
+        return unsupported(c, "Most of its %s sound couldn't be decoded (damaged?)", c->dtsd ? "DTS" : "Dolby");
     if (c->acode) { /* the rest of the sound, padded to a whole block, then the encoder's tail */
         static const float zero[AAC_FRAME * 2];
         if (c->nfifo) push_pcm(c, zero, AAC_FRAME - c->nfifo);
@@ -1067,8 +1098,8 @@ bool av_convert(AvConvJob *j) {
     c->vmax = cap_for(c, VIDEO_PER_S);
     c->amax = cap_for(c, AUDIO_PER_S);
     c->vt = mkv_find_track(c->mkv, MKV_VIDEO);
-    /* The sound: the first track we can convert, a default one first - a DTS track ahead of
-       the Dolby one shouldn't sink the whole file. */
+    /* The sound: the first track we can convert, a default one first - a TrueHD track ahead
+       of the Dolby one shouldn't sink the whole file. */
     const MkvTrack *first_audio = NULL;
     for (int pass = 0; pass < 2 && !c->at; pass++)
         for (int i = 0; i < mkv_track_count(c->mkv) && !c->at; i++) {
@@ -1087,11 +1118,12 @@ bool av_convert(AvConvJob *j) {
     else c->hevc = !strcmp(vk->id, "V_MPEGH/ISO/HEVC"); /* copied: Safari plays it in MP4, never in MKV */
     if (!c->failed && first_audio && !c->at) { /* sound, but none we can convert: say why for the first */
         if (first_audio->compressed) unsupported(c, "The sound is compressed or encrypted inside the file", NULL);
-        else if (dolby(first_audio->codec)) unsupported(c, "Can't convert Dolby sound that isn't at 48, 44.1 or 32 kHz yet", NULL);
+        else if (dolby(first_audio->codec) || is_dts(first_audio->codec))
+            unsupported(c, "Can't convert %s sound that isn't at 48, 44.1 or 32 kHz yet", dolby(first_audio->codec) ? "Dolby" : "DTS");
         else unsupported(c, "Its sound is %s, which the converter can't change yet (browsers play it silently)",
                          codec_words(first_audio->codec));
     }
-    if (c->at) c->acode = dolby(c->at->codec);
+    if (c->at) c->acode = dolby(c->at->codec) || is_dts(c->at->codec);
     c->arate = c->acode ? dolby_rate(c->at) : 48000;
     if (j->want_subs) choose_subs(c);
 
@@ -1123,11 +1155,13 @@ bool av_convert(AvConvJob *j) {
     if (c->di) deint_free(c->di);
     if (c->enc) h264enc_free(c->enc);
     if (c->ac3) ac3_close(c->ac3);
+    if (c->dtsd) dts_close(c->dtsd);
     if (c->aac) aac_close(c->aac);
     free(c->pend);
     free(c->vpts);
     free(c->dts);
     free(c->fifo);
+    free(c->pcm);
     if (!c->failed) set_progress(c, 1000);
     return !c->failed;
 }
