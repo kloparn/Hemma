@@ -792,6 +792,72 @@ TEST(media_double_episodes_show_their_range) {
     th_halt();
 }
 
+/* 1.3 (owner, 2026-10-24: "everything that is not in a series increment ... goes inside like a specials part of the
+   series"): season 0 - S00, a Specials folder, and loose videos in the series' own folder - is its Specials: last,
+   apart from the seasons, never where it starts. */
+TEST(media_specials_sit_last_and_apart) {
+    th_boot();
+    int adam = th_person("Adam");
+    str_copy(g_root, sizeof g_root, test_tmpdir());
+    put(g_root, "Series/Garden (2010)/Season 1/Garden.S01E01.mkv", "e1");
+    put(g_root, "Series/Garden (2010)/Season 1/Garden.S01E02.mkv", "e2");
+    put(g_root, "Series/Garden (2010)/Season 2/Garden.S02E01.mkv", "e3");
+    put(g_root, "Series/Garden (2010)/Specials/Garden.S00E03.Holiday.mkv", "s3");
+    put(g_root, "Series/Garden (2010)/Garden Christmas Special.mkv", "loose");          /* (no number of its own) */
+    put(g_root, "Series/Garden (2010)/Garden - The Movie (2015).mkv", "loose film");
+    put(g_root, "Series/Garden (2010)/Extras/Behind the Scenes.mkv", "left out");      /* (an extras folder: as before) */
+    put(g_root, "Series/Lonely Film (2001).mkv", "not a special");                      /* (a category folder) */
+    setting_set("media.roots", g_root);
+    media_scan_sync();
+    const MediaIndex *ix = media_lib();
+    CHECK_INT(ix->nseries, 1);
+    if (ix->nseries != 1) return;
+    const MediaSeries *s = &ix->series[0];
+    CHECK_STR(s->title, "Garden");
+    CHECK_INT(s->count, 6);
+    CHECK(s->specials);
+    CHECK_INT(s->nseasons, 3);
+    CHECK_INT(media_seasons(s), 2);
+    /* the seasons first, the specials last: S00E03 (its own number), then the loose two after it, by name */
+    static const struct {
+        int season, ep;
+        const char *ep_title;
+    } want[] = {{1, 1, ""}, {1, 2, ""}, {2, 1, ""}, {0, 3, "Holiday"}, {0, 4, "The Movie (2015)"}, {0, 5, "Christmas Special"}};
+    for (int i = 0; i < countof(want) && i < s->count; i++) {
+        const MediaFile *e = media_episode(s, i);
+        if (e->name.season != want[i].season || e->name.episode != want[i].ep || !str_eq(e->name.ep_title, want[i].ep_title))
+            test_fail(__FILE__, __LINE__, "episode %d: S%02dE%02d \"%s\", expected S%02dE%02d \"%s\"", i, e->name.season,
+                      e->name.episode, e->name.ep_title, want[i].season, want[i].ep, want[i].ep_title);
+    }
+    CHECK(find("Lonely Film (2001).mkv") && find("Lonely Film (2001).mkv")->name.kind == MEDIA_MOVIE);
+    CHECK(!find("Behind the Scenes.mkv")); /* (still left out) */
+
+    /* apart: no "next episode" from the last season into the specials, or back; between specials, yes */
+    const MediaFile *s2e1 = media_episode(s, 2), *sp3 = media_episode(s, 3), *sp4 = media_episode(s, 4);
+    CHECK(media_neighbour(s2e1, +1) == NULL);
+    CHECK(media_neighbour(sp3, -1) == NULL);
+    CHECK(media_neighbour(sp3, +1) == sp4);
+    uint64_t sid = s->id, e1 = media_episode(s, 0)->id, e2 = media_episode(s, 1)->id, sp3_id = sp3->id;
+
+    /* the page: "2 seasons", tabs Season 1 · Season 2 · Specials, and it starts at S01E01 */
+    const char *html = th_page(adam, url("/media/series/%s", sid));
+    CHECK_HAS(html, "2 seasons");
+    const char *t1 = strstr(html, ">Season 1</a>"), *t2 = strstr(html, ">Season 2</a>"), *ts = strstr(html, ">Specials</a>");
+    CHECK(t1 && t2 && ts && t1 < t2 && t2 < ts);
+    CHECK_HAS(html, "Start watching S01E01");
+    /* a special watched first doesn't move next-up into them... */
+    media_watch_set_done(adam, sp3_id, true, now_ms());
+    CHECK_HAS(th_page(adam, url("/media/series/%s", sid)), "S01E01</span></a>");
+    /* ... the seasons go on in order ... */
+    media_watch_set_done(adam, e1, true, now_ms());
+    media_watch_set_done(adam, e2, true, now_ms());
+    CHECK_HAS(th_page(adam, url("/media/series/%s", sid)), "Next up S02E01");
+    /* ... and after the last season it starts over, not into the specials */
+    media_watch_set_done(adam, media_episode(media_series(sid), 2)->id, true, now_ms());
+    CHECK_HAS(th_page(adam, url("/media/series/%s", sid)), "S01E01</span></a>");
+    th_halt();
+}
+
 /* Admins see how full the library's disk is, at the foot of the sidebar (and on More). */
 TEST(media_sidebar_shows_the_library_disk_to_admins) {
     int adam = boot_with_library();

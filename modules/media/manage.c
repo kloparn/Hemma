@@ -1286,8 +1286,8 @@ bool media_manage_series(Ctx *c, Buf *b, const MediaSeries *s) {
     media_size_text(all.bytes, size, sizeof size);
     ui_card(b, T("The whole series"), NULL, NULL);
     buf_puts(b, "<p class=\"muted\">");
-    if (s->nseasons > 1) {
-        H(b, T("%d seasons"), s->nseasons);
+    if (media_seasons(s) > 1) {
+        H(b, T("%d seasons"), media_seasons(s));
         buf_puts(b, " · ");
     }
     int n = media_episodes_in(s);

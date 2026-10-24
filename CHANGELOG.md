@@ -32,6 +32,13 @@ Uploads keep the connection busy, DTS sound converts, subtitles follow you throu
   dropped in on its own finds its episode or film by its name ("Friends S01E01.sv.srt"), keeping its
   language and "forced"/"SDH" tags. One the library has already is skipped ("... has these subtitles
   already").
+- **Specials, last and apart:** a series' season 0 - S00 episodes, a "Specials" folder, and now also a video
+  lying loose in the series' own folder without a number of its own (a Christmas special, the show's film) - is
+  its **Specials**, after the last season. Specials used to come first, so a series could start at one ("Start
+  watching S00E43"); now it starts at S01E01, **Next episode** never runs from the last season into the specials
+  (or back), Live TV channels air them after the seasons, and "26 seasons" counts only the seasons. A loose video
+  is numbered after the specials the series has, its own name its title ("Garden Christmas Special" in the Garden
+  folder: "Christmas Special"). Extras folders stay left out, and a ripped disc's bonus clips stay under Extras.
 - **Rename a series:** **Manage** on a series page → **Rename** (admins). Hemma reads a series' name from
   its folder, so its folder gets the new name - every folder of it, when its seasons sit in more than
   one. It keeps everything that points at it: TV channels, screens, everyone's progress and subtitle
@@ -71,6 +78,10 @@ Uploads keep the connection busy, DTS sound converts, subtitles follow you throu
   a converter seed (`h264-dts.mkv`) and a real-file check (`HEMMA_TEST_DTS`).
 - The README's pictures are new (the same made-up household, on 1.3), with two more: adding videos (the
   upload's preview) and managing a series.
+- Specials: library.c `season_order()` sorts season 0 last (episodes, extras), `loose_specials()` makes a
+  movie/other video right in a series' show folder (`media_names_show`) an unnumbered season-0 episode before
+  `season_pass` numbers it; `MediaSeries.specials` + `media_seasons()`; `media_neighbour` and `media_next_up`
+  keep the specials apart. The Specials tab said "Specials 0".
 - `media.rename_series` (id, title, year) renames a series' show folders (manage.c) after parsing every
   video's new path as the library will; table `media_series_name` keeps a renamed series' id under its
   new title (`media_series_keep`; the scan reads a copy of it), so nothing holding a series id breaks.

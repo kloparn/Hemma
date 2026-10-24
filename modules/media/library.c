@@ -5,8 +5,10 @@
 #include "../../core/db.h"
 #include "../../core/plat.h"
 #include "../../core/app.h"
+#include "remove.h"
 #include "room.h"
 
+#include <limits.h>
 #include <stdatomic.h>
 
 /* ================================================================= state */
@@ -72,9 +74,14 @@ const MediaFile *media_neighbour(const MediaFile *ep, int dir) {
     if (!ep || ep->type != MF_VIDEO || ep->name.kind != MEDIA_EPISODE) return NULL;
     const MediaSeries *s = media_series(ep->series);
     for (int i = 0; s && i < s->count; i++)
-        if (media_episode(s, i) == ep) return media_episode(s, i + dir);
+        if (media_episode(s, i) == ep) {
+            const MediaFile *n = media_episode(s, i + dir);
+            return n && (n->name.season == 0) == (ep->name.season == 0) ? n : NULL; /* (specials apart) */
+        }
     return NULL;
 }
+
+int media_seasons(const MediaSeries *s) { return s ? s->nseasons - (s->specials ? 1 : 0) : 0; }
 
 static void join_path(const char *root, const char *rel, char *out, size_t cap) {
     size_t n = strlen(root);
@@ -436,12 +443,15 @@ static int recent_cmp(const void *x, const void *y) {
     return title_cmp(a->name.title, b->name.title);
 }
 
+/* Seasons in order, the specials (season 0) after them all (1.3: they were first - "Start watching S00E43") */
+static int season_order(int season) { return season ? season : INT_MAX; }
+
 static int episode_cmp(const void *x, const void *y) {
     const MediaFile *a = &t_files[*(const int *)x], *b = &t_files[*(const int *)y];
     int c = title_cmp(a->name.title, b->name.title);
     if (c) return c;
     if (a->series != b->series) return a->series < b->series ? -1 : 1;
-    if (a->name.season != b->name.season) return a->name.season - b->name.season;
+    if (a->name.season != b->name.season) return season_order(a->name.season) < season_order(b->name.season) ? -1 : 1;
     if (a->name.episode != b->name.episode) return a->name.episode - b->name.episode;
     return strcmp(a->rel, b->rel);
 }
@@ -845,9 +855,71 @@ static void name_extra(MediaFile *f) {
 static int extra_cmp(const void *x, const void *y) {
     const MediaFile *a = &t_files[*(const int *)x], *b = &t_files[*(const int *)y];
     if (a->series != b->series) return a->series < b->series ? -1 : 1;
-    if (a->name.season != b->name.season) return a->name.season - b->name.season;
+    if (a->name.season != b->name.season) return season_order(a->name.season) < season_order(b->name.season) ? -1 : 1;
     if (a->role != b->role) return a->role == MF_PLAYALL ? -1 : b->role == MF_PLAYALL ? 1 : 0;
     return rip_order_cmp(x, y);
+}
+
+/* Loose videos in a series' own folder (1.3; owner, 2026-10-24: "everything that is not in a series increment ...
+   goes inside like a specials part of the series"): a video without a season or an episode of its own, lying right
+   in the folder a series is named from ("South Park/Bigger Longer Uncut.mkv" - a film or an "other video" by its
+   name), is one of that series' specials: season 0, unnumbered - season_pass numbers it after the specials it has -
+   with its own name as its title. Never in a category folder ("Series") or the library folder itself, and never an
+   extra by its name or a copy. */
+typedef struct {
+    int root, ep; /* ep: an episode of the series, for its title and year */
+    size_t len;   /* the show folder: F[ep].rel[0..len) */
+} ShowFolder;
+
+static void loose_specials(const MediaIndex *ix, MediaFile *F, int w) {
+    ShowFolder *sf = NULL;
+    int n = 0, cap = 0;
+    for (int i = 0; i < w; i++) {
+        const MediaFile *e = &F[i];
+        if (e->type != MF_VIDEO || e->role != MF_MAIN || e->name.kind != MEDIA_EPISODE || e->root < 0 || e->root >= ix->nroots)
+            continue;
+        size_t sd = show_dir_len(e->rel, dir_len(e->rel));
+        if (!sd) continue;
+        bool seen = false;
+        for (int k = n - 1; k >= 0 && !seen; k--)
+            seen = sf[k].root == e->root && sf[k].len == sd && !strncmp(F[sf[k].ep].rel, e->rel, sd);
+        if (seen || !media_names_show(ix->roots[e->root], e->rel, sd, e->name.title)) continue;
+        if (n == cap) sf = xrealloc(sf, (size_t)(cap = cap ? cap * 2 : 16) * sizeof *sf);
+        sf[n++] = (ShowFolder){e->root, i, sd};
+    }
+    for (int i = 0; i < w && n; i++) {
+        MediaFile *f = &F[i];
+        if (f->type != MF_VIDEO || f->role != MF_MAIN || f->name.extra ||
+            (f->name.kind != MEDIA_MOVIE && f->name.kind != MEDIA_OTHER))
+            continue;
+        size_t dl = dir_len(f->rel);
+        const ShowFolder *show = NULL;
+        for (int k = 0; k < n && !show; k++)
+            if (sf[k].root == f->root && sf[k].len == dl && !strncmp(F[sf[k].ep].rel, f->rel, dl)) show = &sf[k];
+        if (!show) continue;
+        /* its title: its file's own words (read alone - its folder would name the show: "Garden (2010)"), the
+           show's name in front left off ("Garden Christmas Special" -> "Christmas Special") */
+        MediaName own;
+        media_parse_name(base_of(f->rel), &own);
+        const char *show_t = F[show->ep].name.title, *t = own.title;
+        size_t sl = strlen(show_t);
+        if (str_istarts(t, show_t) && (t[sl] == ' ' || t[sl] == '-')) {
+            const char *rest = t + sl;
+            while (*rest == ' ' || *rest == '-') rest++;
+            if (*rest) t = rest;
+        }
+        MediaName *m = &f->name;
+        char ept[sizeof own.title + 16];
+        if (own.year) snprintf(ept, sizeof ept, "%s (%d)", t, own.year);
+        else str_copy(ept, sizeof ept, t);
+        str_copy(m->ep_title, sizeof m->ep_title, ept); /* (a cut at a whole letter) */
+        str_copy(m->title, sizeof m->title, show_t);
+        m->year = F[show->ep].name.year;
+        m->kind = MEDIA_EPISODE;
+        m->season = m->episode = m->episode_end = 0;
+        m->unnumbered = true;
+    }
+    free(sf);
 }
 
 /* Sort, de-duplicate, and derive everything the pages need: subtitle and
@@ -918,6 +990,8 @@ static void index_finish(MediaIndex *ix) {
         }
     }
 
+    loose_specials(ix, F, w);
+
     /* ripped discs: play-alls, bonus clips, then episode numbers */
     for (int g0 = 0; g0 < w; g0 = gend[g0]) find_playalls(F, ents, g0, gend[g0]);
     season_pass(F, w, false);
@@ -950,6 +1024,7 @@ static void index_finish(MediaIndex *ix) {
         while (k < nep && F[ix->episodes[k]].series == s->id) {
             MediaFile *e = &F[ix->episodes[k]];
             if (e->name.season != last_season) s->nseasons++, last_season = e->name.season;
+            if (!e->name.season) s->specials = true;
             if (!s->year && e->name.year) s->year = e->name.year;
             if (e->mtime > s->newest) s->newest = e->mtime;
             s->count++;

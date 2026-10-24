@@ -1531,6 +1531,17 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
   folder. Across a joiner word the next number must follow directly ("S01E04 - E10 Title" stays a
   title). Rows show "1–2" (.media-ep-nn) and series totals count every episode. Names are parsed
   again from the path at every start (never cached), so parser changes reach existing libraries.
+  SPECIALS (1.3; owner, 2026-10-24: "everything that is not in a series increment ... goes inside like a specials
+  part of the series", "last, apart"): season 0 = Specials - S00Exx, a Specials/Season 0 folder, and (library.c
+  loose_specials, at index time) a MOVIE/OTHER video lying right in a series' own show folder (media_names_show;
+  never a category folder or the library folder; never an extra by name or a copy): an unnumbered season-0
+  episode, numbered by season_pass after the series' highest S00, ep_title = its file's own name parsed alone
+  minus the show's name in front. Extras folders stay left out, disc bonus clips stay MF_BONUS extras. ORDER:
+  season_order() puts season 0 after every season (episode_cmp, extra_cmp) - tabs, TV rows, Live TV channels,
+  zips follow; "Start watching" = S01E01. APART: media_neighbour never crosses between season 0 and the seasons
+  (no "Next episode" card from the last season into them); media_next_up goes by the seasons' episodes only
+  (after the last season: back to the first; a series of only specials walks them). MediaSeries.specials;
+  "%d seasons" = media_seasons(s) (without Specials); nseasons still counts the tabs. The tab says "Specials".
   A RANGE OF SEASONS is a tag (names.c is_season_tok, 1.3): "S01-S31", "S1-12" (one token: tokenize doesn't
   split on '-'), "Season 1-2", "Seasons 1-9" (SEASONS_WORDS) - "The.Simpsons.S01-S31.1080p" names "The
   Simpsons"; such a folder is never a season folder.

@@ -126,7 +126,6 @@ static const Tr TR[] = {
     {"Resume", "Fortsätt", "Continuar"},
     {"Next up", "Härnäst", "Siguiente"},
     {"Start watching", "Börja titta", "Empezar a ver"},
-    {"Specials %d", "Specialavsnitt %d", "Especiales %d"},
     {"Season %d", "Säsong %d", "Temporada %d"},
     {"disc %d", "skiva %d", "disco %d"},
     {"needs conversion", "behöver konverteras", "necesita conversión"},

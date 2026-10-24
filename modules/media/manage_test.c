@@ -101,7 +101,7 @@ TEST(manage_removes_episodes_seasons_and_series) {
     put("Series/Garden/Season 2/notes.nfo", "notes");
     put("Series/Garden/poster.jpg", "poster");
     put("Series/Garden/Extras/Behind.mkv", "an extra: left out");
-    put("Series/Garden/Some Film (2001).mkv", "a film, not the show's");
+    put("Series/Garden/Some Film (2001)/Some Film (2001).mkv", "a film, not the show's");
     put("Series/Orbit/Season 1/Orbit.S01E01.mkv", "o1");
     put("Series/Orbit/Season 1/Orbit.S01E02.mkv", "o2");
     put("Series/Orbit/folder.jpg", "art");
@@ -173,7 +173,7 @@ TEST(manage_removes_episodes_seasons_and_series) {
     CHECK(!there("Series/Garden/Season 2"));
     CHECK(there("Series/Garden/Season 1/Garden.S01E02.Roots.mp4"));
 
-    /* a series: a film in its folder keeps the folder (and what's left in it); the episodes, their emptied
+    /* a series: a film in its folder (in a folder of its own: a loose one would be a special - 1.3) keeps the folder (and what's left in it); the episodes, their emptied
        folders and the series' picture go */
     snprintf(u, sizeof u, "/media/series/%016llx?manage=1&rm=series", (unsigned long long)garden_id);
     CHECK_HAS(th_page(adam, u), "Remove the series");
@@ -181,7 +181,7 @@ TEST(manage_removes_episodes_seasons_and_series) {
     CHECK(r.ok);
     CHECK(!there("Series/Garden/Season 1"));
     CHECK(!there("Series/Garden/poster.jpg"));
-    CHECK(there("Series/Garden/Some Film (2001).mkv"));
+    CHECK(there("Series/Garden/Some Film (2001)/Some Film (2001).mkv"));
     CHECK(there("Series/Garden/Extras/Behind.mkv"));
     CHECK(!series_named("Garden"));
     CHECK_STR(r.redirect, "/media/series");
@@ -550,7 +550,7 @@ TEST(manage_renames_a_series) {
     put("Series/Orbit/Season 1/Orbit.S01E01.mkv", "o1");
     put("Series/Loose/Loose.S01E01.mkv", "l1");                       /* (no season folder: named by its file too) */
     put("Series/Mixed/Season 1/Mixed.S01E01.mkv", "m1");
-    put("Series/Mixed/Some Film (2001).mkv", "film");                 /* (another video in its folder) */
+    put("Series/Mixed/Some Film (2001)/Some Film (2001).mkv", "film");                 /* (another video in its folder) */
     put("Solo.S01E01.mkv", "s1");                                     /* (no folder of its own) */
     setting_set("media.roots", g_root);
     media_scan_sync();

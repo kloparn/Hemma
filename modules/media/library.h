@@ -47,10 +47,14 @@ typedef struct {
     char title[128];
     int year;
     uint64_t poster;
-    int first, count; /* range in MediaIndex.episodes (season/episode order) */
-    int nseasons;
-    int64_t newest; /* mtime of the newest episode */
+    int first, count; /* range in MediaIndex.episodes (season/episode order; season 0 = Specials LAST) */
+    int nseasons;     /* tabs: the seasons, and Specials when it has any */
+    bool specials;    /* it has season 0 (S00, a Specials folder, loose videos in its folder: 1.3) */
+    int64_t newest;   /* mtime of the newest episode */
 } MediaSeries;
+/* "%d seasons": its seasons without the specials (1.3). Specials sit last and apart: next-up and
+   "Next episode" never cross from a season into them (or back) - media_next_up, media_neighbour. */
+int media_seasons(const MediaSeries *s);
 
 /* A video the scan left out (issue #28: they used to vanish without a word), or an upload's
    unfinished MEDIA_PART_SUFFIX file not touched for MEDIA_PART_DAYS (issue #40: they stayed for

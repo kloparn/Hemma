@@ -498,9 +498,9 @@ static void series_card(Ctx *c, Buf *b, const MediaSeries *s) {
     int eps = media_episodes_in(s);
     H(b, "<span class=\"media-cap\">%s<small>", s->title);
     H(b, TN(eps, "%d episode", "%d episodes"), eps);
-    if (s->nseasons > 1) {
+    if (media_seasons(s) > 1) {
         buf_puts(b, " · ");
-        H(b, T("%d seasons"), s->nseasons);
+        H(b, T("%d seasons"), media_seasons(s));
     }
     buf_puts(b, "</small></span></a>");
 }
@@ -529,16 +529,19 @@ int media_in_progress(const Ctx *c, const MediaFile **out, int max) {
     return n;
 }
 
-/* What to play next in a series for the viewer: the first unfinished episode
- * after the last one they finished (or the one they're in the middle of). */
+/* What to play next in a series for the viewer: the one they're in the middle of, else the episode after the
+ * last one they finished. The specials (last, 1.3) are apart: a special watched doesn't move it into them, and
+ * after the last season it starts over - unless the series is nothing but specials. */
 const MediaFile *media_next_up(const Ctx *c, const MediaSeries *s) {
-    int last_done = -1, v = ctx_viewer(c);
+    int regular = s->count, last_done = -1, v = ctx_viewer(c); /* episodes [0, regular) are the seasons' */
+    while (regular > 0 && media_episode(s, regular - 1)->name.season == 0) regular--;
+    int upto = regular ? regular : s->count;
     for (int i = 0; v && i < s->count; i++) {
         MediaWatch *w = media_watch_get(v, media_episode(s, i)->id);
-        if (w && w->done) last_done = i;
+        if (w && w->done) last_done = i < upto ? i : last_done;
         else if (w && w->pos > 0) return media_episode(s, i);
     }
-    return media_episode(s, last_done + 1 < s->count ? last_done + 1 : 0);
+    return media_episode(s, last_done + 1 < upto ? last_done + 1 : 0);
 }
 
 /* ------------------------------------------------------------------ chrome */
@@ -969,8 +972,8 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
         H(b, "<span>%s</span></a>", T("Picture"));
     }
     H(b, "</div><div class=\"media-sdetail-t\"><h1>%s</h1><p class=\"sub\">", s->title);
-    if (s->nseasons > 1) {
-        H(b, T("%d seasons"), s->nseasons);
+    if (media_seasons(s) > 1) {
+        H(b, T("%d seasons"), media_seasons(s));
         buf_puts(b, " · ");
     }
     int eps = media_episodes_in(s);
@@ -1010,7 +1013,8 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
             if (e->name.season == last) continue;
             last = e->name.season;
             H(b, "<a href=\"/media/series/%X?s=%d\"%r>", s->id, last, last == season ? " class=\"on\"" : "");
-            H(b, last == 0 ? T("Specials %d") : T("Season %d"), last);
+            if (last) H(b, T("Season %d"), last);
+            else H(b, "%s", T("Specials"));
             buf_puts(b, "</a>");
         }
         buf_puts(b, "</nav>");
