@@ -2918,8 +2918,8 @@ void upload_page(Ctx *c, Buf *b) {
           str_eq(pref(c->me->id, PREF_UPLOAD_RAM, ""), "1") ? " checked" : "",
           T("Keep converted videos in memory until they're sent"),
           T("The copies wait in this device's memory (RAM) instead of on its disk, so nothing piles up there and the "
-            "disk only reads the originals. They take up to the room set under More options - leave it off on a phone "
-            "or a computer with little memory."));
+            "disk only reads the originals - up to 8 GB of them, the rest on the disk. Leave it off on a phone or a "
+            "computer with little memory."));
 
     /* 4. the rest, folded away */
     H(b, "<details class=\"media-up-more\" id=\"media-up-more\"><summary>%s</summary><div class=\"stack\">",

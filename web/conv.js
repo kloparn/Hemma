@@ -106,10 +106,20 @@ self.onmessage = async (e) => {
     postMessage(await send(e.data.put, e.data.at));
     return;
   }
-  const { file, wasm, ram, part, subs: subsOnly } = e.data;
+  const { file, wasm, ram, part, subs: subsOnly, flaky } = e.data;
   if (part > 0) PART = part;
+  // Reading the original can fail for a while - a browser short of memory for the read (copies held in
+  // memory; 1.3: ten Simpsons and three South Park episodes went up unconverted, "readAsArrayBuffer ...
+  // could not be read") - though the file is fine: the read tries once more, small, and a job that still
+  // fails says so ({again}): it goes back in line, not up as the original. flaky (tests: data-flaky) = that
+  // many reads fail.
+  let readFailed = false, fail = flaky | 0;
   try {
     const reader = new FileReaderSync();
+    const slice = (a, b) => {
+      if (fail > 0 && fail--) throw new DOMException('The requested file could not be read (test)', 'NotReadableError');
+      return new Uint8Array(reader.readAsArrayBuffer(file.slice(a, b)));
+    };
     // The copy: in memory when asked (and while there's memory: else what's made goes into a Blob and the
     // rest follows it there), else a Blob that grows in 64 MB steps, so memory holds at most that much of it -
     // never the whole copy, let alone twice. The browser may keep a big Blob on its disk.
@@ -128,7 +138,18 @@ self.onmessage = async (e) => {
       read(off, dst, n) {
         if (!win || off < winAt || off + n > winAt + win.length) {
           grow = win && off === winAt + win.length ? Math.min(AHEAD, grow * 2) : 1 << 20; // (reading on: more)
-          win = new Uint8Array(reader.readAsArrayBuffer(file.slice(off, Math.min(file.size, off + Math.max(n, grow)))));
+          try {
+            win = slice(off, Math.min(file.size, off + Math.max(n, grow)));
+          } catch (_) { // once more, no bigger than it must be
+            win = null;
+            grow = 1 << 20;
+            try {
+              win = slice(off, Math.min(file.size, off + Math.max(n, grow)));
+            } catch (err) {
+              readFailed = true;
+              throw err;
+            }
+          }
           winAt = off;
         }
         if (off + n > winAt + win.length) return 0;
@@ -195,7 +216,9 @@ self.onmessage = async (e) => {
     made = mem || new Blob([copy], { type: 'video/mp4' });
     postMessage({ size: made.size, subs, pics }, pics.map((p) => p.data));
   } catch (err) {
-    // no WebAssembly / blocked / out of memory: the original goes instead
-    postMessage({ error: 'This browser couldn\'t convert it (' + ((err && err.message) || err) + ')' });
+    // no WebAssembly / blocked: the original goes instead - but a read that failed, or memory that ran out,
+    // is worth another try later ({again})
+    const why = (err && err.message) || String(err);
+    postMessage({ error: 'This browser couldn\'t convert it (' + why + ')', again: readFailed || /memory|allocat/i.test(why) });
   }
 };

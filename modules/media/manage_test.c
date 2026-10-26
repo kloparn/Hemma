@@ -567,6 +567,11 @@ TEST(manage_renames_a_series) {
     /* the button and the dialog are the admins' */
     const char *mg = th_page(adam, url("/media/series/%s?manage=1", garden_id));
     CHECK_HAS(mg, "&amp;rename=1");
+    /* (owner, 2026-10-25: no scrolling past a season to rename or remove) the whole series first, then the season
+       tabs, the season's Remove, and only then its episodes */
+    const char *whole = strstr(mg, "The whole series"), *tabs = strstr(mg, "media-seasons"), *rm_season = strstr(mg, "rm=season"),
+               *first_ep = strstr(mg, "<li class=\"media-ep\"");
+    CHECK(whole && tabs && rm_season && first_ep && whole < tabs && tabs < rm_season && rm_season < first_ep);
     const char *dlg = th_page(adam, url("/media/series/%s?manage=1&rename=1", garden_id));
     CHECK_HAS(dlg, "Rename the series");
     CHECK_HAS(dlg, "its 2 folders get the new name");

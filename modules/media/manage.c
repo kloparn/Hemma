@@ -1233,56 +1233,12 @@ bool media_manage_series(Ctx *c, Buf *b, const MediaSeries *s) {
         H(b, T("Removing %s…"), g_removing->what);
         buf_puts(b, "</p>");
     }
-    if (s->nseasons > 1) {
-        buf_puts(b, "<nav class=\"seg media-seasons\">");
-        int last = -1;
-        for (int i = 0; i < s->count; i++) {
-            const MediaFile *e = media_episode(s, i);
-            if (e->name.season == last) continue;
-            last = e->name.season;
-            char href[96];
-            manage_url(href, sizeof href, s->id, last);
-            season_name(t, sizeof t, last);
-            H(b, "<a href=\"%s\"%r>%s</a>", href, last == season ? " class=\"on\"" : "", t);
-        }
-        buf_puts(b, "</nav>");
-    }
 
-    /* the season: every episode, its files and size */
+    /* the whole series first, then the season - nothing to scroll past to rename or remove (owner, 2026-10-25) */
     MediaPurge sp, all;
     media_purge_season(s, season, &sp);
     media_purge_series(s, &all);
     char size[24];
-    media_size_text(sp.bytes, size, sizeof size);
-    season_name(t, sizeof t, season);
-    ui_card(b, t, NULL, NULL);
-    int eps = 0;
-    for (int i = 0; i < s->count; i++) eps += media_episode(s, i)->name.season == season;
-    buf_puts(b, "<p class=\"muted\">");
-    H(b, TN(eps, "%d episode", "%d episodes"), eps);
-    H(b, " · %s</p><div class=\"media-left\"><ol class=\"media-eps media-eps-compact\">", size);
-    for (int i = 0; i < s->count; i++) {
-        const MediaFile *e = media_episode(s, i);
-        if (e->name.season == season) episode_row(b, s, e, here);
-    }
-    buf_puts(b, "</ol>");
-    int nx = 0;
-    for (int i = 0; i < ix->nextras; i++) { /* a ripped disc's play-all and bonus clips */
-        const MediaFile *x = &ix->files[ix->extras[i]];
-        if (x->series != s->id || x->name.season != season) continue;
-        if (!nx++) H(b, "<h3 class=\"mt\">%s</h3><ol class=\"media-eps media-eps-compact\">", T("Extras"));
-        episode_row(b, s, x, here);
-    }
-    if (nx) buf_puts(b, "</ol>");
-    H(b, "</div><div class=\"ph-a\"><a class=\"btn danger\" href=\"%s&amp;rm=season\">", here);
-    ui_icon(b, "trash");
-    buf_puts(b, "<span>");
-    if (season) H(b, T("Remove season %d (%s)"), season, size);
-    else H(b, T("Remove the specials (%s)"), size);
-    buf_puts(b, "</span></a></div>");
-    ui_card_end(b);
-
-    /* the whole series */
     media_size_text(all.bytes, size, sizeof size);
     ui_card(b, T("The whole series"), NULL, NULL);
     buf_puts(b, "<p class=\"muted\">");
@@ -1299,6 +1255,51 @@ bool media_manage_series(Ctx *c, Buf *b, const MediaSeries *s) {
     buf_puts(b, "<span>");
     H(b, T("Remove the series (%s)"), size);
     buf_puts(b, "</span></a></div>");
+    ui_card_end(b);
+
+    if (s->nseasons > 1) {
+        buf_puts(b, "<nav class=\"seg media-seasons\">");
+        int last = -1;
+        for (int i = 0; i < s->count; i++) {
+            const MediaFile *e = media_episode(s, i);
+            if (e->name.season == last) continue;
+            last = e->name.season;
+            char href[96];
+            manage_url(href, sizeof href, s->id, last);
+            season_name(t, sizeof t, last);
+            H(b, "<a href=\"%s\"%r>%s</a>", href, last == season ? " class=\"on\"" : "", t);
+        }
+        buf_puts(b, "</nav>");
+    }
+
+    /* the season: its size and Remove at the top, then every episode with its files */
+    media_size_text(sp.bytes, size, sizeof size);
+    season_name(t, sizeof t, season);
+    ui_card(b, t, NULL, NULL);
+    int eps = 0;
+    for (int i = 0; i < s->count; i++) eps += media_episode(s, i)->name.season == season;
+    buf_puts(b, "<p class=\"muted\">");
+    H(b, TN(eps, "%d episode", "%d episodes"), eps);
+    H(b, " · %s</p><div class=\"ph-a\"><a class=\"btn danger\" href=\"%s&amp;rm=season\">", size, here);
+    ui_icon(b, "trash");
+    buf_puts(b, "<span>");
+    if (season) H(b, T("Remove season %d (%s)"), season, size);
+    else H(b, T("Remove the specials (%s)"), size);
+    buf_puts(b, "</span></a></div><div class=\"media-left\"><ol class=\"media-eps media-eps-compact\">");
+    for (int i = 0; i < s->count; i++) {
+        const MediaFile *e = media_episode(s, i);
+        if (e->name.season == season) episode_row(b, s, e, here);
+    }
+    buf_puts(b, "</ol>");
+    int nx = 0;
+    for (int i = 0; i < ix->nextras; i++) { /* a ripped disc's play-all and bonus clips */
+        const MediaFile *x = &ix->files[ix->extras[i]];
+        if (x->series != s->id || x->name.season != season) continue;
+        if (!nx++) H(b, "<h3 class=\"mt\">%s</h3><ol class=\"media-eps media-eps-compact\">", T("Extras"));
+        episode_row(b, s, x, here);
+    }
+    if (nx) buf_puts(b, "</ol>");
+    buf_puts(b, "</div>");
     ui_card_end(b);
     media_purge_free(&sp);
     media_purge_free(&all);

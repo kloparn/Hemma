@@ -666,7 +666,9 @@
     const base = f.dataset.upload, body = {};
     for (const [k, v] of pairs(new FormData(f))) body[k] = v;
     // the page says where (if it has them); data-part: the pieces a copy in memory goes in (tests: small ones)
-    const use = { worker: f.dataset.convert, wasm: f.dataset.wasm, part: Number(f.dataset.part) || 0 };
+    // data-flaky (tests only): each job's first try fails that many reads, as a browser short of memory did
+    const use = { worker: f.dataset.convert, wasm: f.dataset.wasm, part: Number(f.dataset.part) || 0,
+      flaky: Number(f.dataset.flaky) || 0 };
     if (!canConvert || !use.worker || !use.wasm) delete body.conv;
     body.files = picked.map((x) => [x.path, x.file.size]);
     uploading = true;
@@ -750,15 +752,22 @@
   // them. take() hands over whatever finished first ({k, m}), next() waits for it, left() = jobs not
   // handed over yet. Progress goes to the server (?pm=), which renders it like everything else; when it
   // says stop, everything stops ({stop}).
+  // 1.3: copies in memory stay under RAM_MAX however much room is set (all of a tab's workers share one
+  // process, and past ~16 GB its reads failed: episodes went up unconverted) - beyond it a copy waits on the
+  // device's disk, the old way. A job whose read failed ({again}) goes back in line, AGAIN times at most.
+  const RAM_MAX = 8 * 2 ** 30, AGAIN = 2;
   function converter(base, batch, files, jobs, use, room) {
     const phone = /Mobi|Android|iPhone|iPad/.test(navigator.userAgent);
     const width = phone ? 1 : Math.max(1, Math.min(8, Math.floor((navigator.hardwareConcurrency || 2) / 2)));
     const workers = new Map(), finished = []; // finished: {k, m}, in the order they came
     const ready = new Map(); // job -> the worker holding its finished copy, until it's sent
     const seen = new Map(); // job -> [progress, when the server last heard it]
+    const inRam = new Map(); // job -> what its copy keeps in memory (its original's size)
+    const tries = new Map(), again = []; // job -> tries so far; jobs back in line
     let next = 0, taken = 0, halted = '', waiting = null;
     const source = (k) => (jobs[k].subs ? 0 : files[jobs[k].f].size); // (reading subtitles keeps nothing)
     const ahead = () => [...workers.keys(), ...ready.keys()].reduce((n, k) => n + source(k), 0);
+    const held = () => [...inRam.values()].reduce((n, b) => n + b, 0);
     const wake = () => { if (waiting) { const w = waiting; waiting = null; w(); } };
     // the worker sends from its copy; one PUT at a time (put() waits for each)
     const sender = (w) => (url, at) => new Promise((ok) => {
@@ -769,6 +778,7 @@
     const drop = (k) => {
       const w = ready.get(k);
       if (w) { w.terminate(); ready.delete(k); }
+      inRam.delete(k);
       pump();
     };
     const tell = (k, pm) => {
@@ -788,6 +798,15 @@
       const w = workers.get(k);
       workers.delete(k);
       seen.delete(k);
+      if (w && m.error && m.again && !halted && (tries.get(k) || 0) < AGAIN) { // back in line, not up as it is
+        tries.set(k, (tries.get(k) || 0) + 1);
+        inRam.delete(k);
+        w.terminate();
+        again.push(k);
+        pump();
+        return;
+      }
+      if (m.size === undefined) inRam.delete(k);
       if (w && m.size !== undefined && !halted) { // made: it waits in its worker to be sent
         ready.set(k, w);
         m = { size: m.size, subs: m.subs, pics: m.pics, send: sender(w), drop: () => drop(k) };
@@ -810,11 +829,19 @@
         else seen.set(k, [m.pm, at]);
       };
       w.onerror = (e) => { e.preventDefault(); finish(k, { error: T('The converter stopped') }); };
-      w.postMessage({ file: files[job.f], wasm: use.wasm, ram: !!use.ram, part: use.part, subs: !!job.subs });
+      const ram = !!use.ram && !job.subs && held() + source(k) <= RAM_MAX;
+      if (ram) inRam.set(k, source(k));
+      w.postMessage({ file: files[job.f], wasm: use.wasm, ram, part: use.part, subs: !!job.subs,
+        flaky: tries.has(k) ? 0 : use.flaky });
     }
     function pump() {
-      while (!halted && workers.size < width && next < jobs.length &&
-             ((!workers.size && !ready.size) || ahead() + source(next) <= room)) start(next++);
+      for (;;) { // the jobs back in line first, then the next new one - while there's room
+        const k = again.length ? again[0] : next < jobs.length ? next : -1;
+        if (halted || k < 0 || workers.size >= width || !((!workers.size && !ready.size) || ahead() + source(k) <= room)) return;
+        if (again.length) again.shift();
+        else next++;
+        start(k);
+      }
     }
     function halt(why) {
       halted = why || T('The upload was stopped');

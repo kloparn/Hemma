@@ -119,6 +119,21 @@ test('a copy kept in memory goes in pieces and arrives whole', async ({ page }) 
   await page.locator('input[name=ram]').uncheck();
 });
 
+// 1.3: a read of the original that fails (a browser short of memory: "readAsArrayBuffer ... could not be read" sent
+// 13 episodes up unconverted) puts the job back in line - the copy still goes, not the original.
+test('a conversion whose reads failed is tried again, and its copy goes', async ({ page }) => {
+  const dir = path.join(LIBRARY, 'Series', 'Flakyshow', 'Season 1');
+  await pickMkv(page, 'Flakyshow S01E01.mkv');
+  await expect(page.locator('.media-up-group', { hasText: 'Flakyshow' })).toContainText('Flakyshow · S01E01');
+  await page.locator('#media-up-form').evaluate((f) => { f.dataset.flaky = '2'; }); /* (its first try loses both reads) */
+  await page.locator('#media-up-start').click();
+  await expect.poll(() => there(dir, ['Flakyshow S01E01.web.mp4', 'Flakyshow S01E01.en.srt']),
+    { message: 'the copy arrives', timeout: 30_000 }).toBe(2);
+  expect(fs.existsSync(path.join(dir, 'Flakyshow S01E01.mkv'))).toBe(false); /* (not the original) */
+  await expect(page.locator('.media-up h3')).toContainText('Finished · 1 file sent');
+  await expect(page.locator('.media-up-asis')).toHaveCount(0);
+});
+
 // 1.3: an episode the library has stays behind - but the subtitles it carries and the library's lacks go, read
 // out of it here, and land next to the library's own video.
 test('a video the library has gives only the subtitles it lacks', async ({ page }) => {

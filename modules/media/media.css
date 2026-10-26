@@ -82,6 +82,7 @@
   .media-sdetail-t .btn.big { padding: 10px 14px; font-size: 15px; }
 }
 .media-seasons { margin-bottom: 14px; }
+.card + .media-seasons { margin-top: 16px; } /* (Manage: the season tabs below the whole series card) */
 
 /* ---- pictures: the link under a series' art, and the dialog (admins) ---- */
 .media-pic-edit {

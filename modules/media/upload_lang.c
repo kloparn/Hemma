@@ -36,14 +36,13 @@ static const Tr TR[] = {
     {"Keep converted videos in memory until they're sent", "Håll konverterade videor i minnet tills de är skickade",
      "Guardar los vídeos convertidos en la memoria hasta enviarlos"},
     {"The copies wait in this device's memory (RAM) instead of on its disk, so nothing piles up there and the disk "
-     "only reads the originals. They take up to the room set under More options - leave it off on a phone or a "
-     "computer with little memory.",
+     "only reads the originals - up to 8 GB of them, the rest on the disk. Leave it off on a phone or a computer with "
+     "little memory.",
      "Kopiorna väntar i enhetens minne (RAM) i stället för på dess disk, så inget hopar sig där och disken läser bara "
-     "originalen. De tar upp till den plats som är vald under Fler alternativ - låt bli på en telefon eller en dator "
-     "med lite minne.",
+     "originalen - upp till 8 GB av dem, resten på disken. Låt bli på en telefon eller en dator med lite minne.",
      "Las copias esperan en la memoria (RAM) de este dispositivo en vez de en su disco, así nada se acumula allí y el "
-     "disco solo lee los originales. Ocupan hasta el espacio elegido en Más opciones: déjalo desactivado en un "
-     "teléfono o en un ordenador con poca memoria."},
+     "disco solo lee los originales: hasta 8 GB de ellas, el resto en el disco. Déjalo desactivado en un teléfono o en "
+     "un ordenador con poca memoria."},
     {"Also send the originals", "Skicka originalen också", "Enviar también los originales"},
     {"Also send episodes and films the library already has under another name",
      "Skicka även avsnitt och filmer som biblioteket redan har under ett annat namn",

@@ -480,9 +480,17 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  other people use it, the old style is nice"): the form's "ram" box (in sight under the preview,
                  pref PREF_UPLOAD_RAM media.upload_ram, saved with a converting plan, off by default) -> conv.js
                  keeps the copy in 16 MB parts of plain memory (else a Blob, which the browser keeps on its disk
-                 past its own limit; out of memory mid-copy -> the rest goes on in a Blob) and PUTs it a part at a
+                 past its own limit; out of memory mid-copy -> the rest goes on in a Blob) - at most RAM_MAX (8 GB)
+                 of copies in memory per tab (wire.js held()/inRam: past it a job's copy is a Blob; all a tab's
+                 workers share ONE process, and at ~12-16 GB its reads failed) - and PUTs it a part at a
                  time: PUT ?at=A&end=E (Job.piece: saved, no rename, answered {"ok":true,"at":E}; the last piece's
                  answer is a whole file's). form[data-part] (the browser tests only) = smaller parts.
+                 READS THAT FAIL (1.3; 13 episodes went up unconverted: "Failed to execute 'readAsArrayBuffer' on
+                 'FileReaderSync'" while the tab held ~12-16 GB, though the files read fine for the PUT): conv.js reads
+                 once more in a 1 MB piece, then posts {error, again} (a failed read, or "memory"/"allocat" in the
+                 message); wire.js converter() puts such a job back in line (again[], first in pump(), AGAIN = 2 times
+                 at most) instead of sending the original. form[data-flaky="N"] (tests only): each job's first try
+                 fails N reads (upload.spec.mjs "tried again").
                  THE PAGE (1.1; owner, 2026-10-21: "easy enough to understand"; "Add videos" in Watch's header,
                  "Add episodes" on a series page): form[data-upload][data-preview] with a [data-drop] area (wire.js
                  keeps dropped/picked files and folders on the form, each choice adding; [data-drop-clear] empties),
@@ -521,7 +529,9 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  Tests: media_zip_test_busy, media_download_test_pace; download_test.c holds a little unzip (end
                  records, central directory, local headers, descriptors, CRCs).
   media/manage.c LOOKING AFTER THE LIBRARY (1.1; owner, 2026-10-21: "easier and better control of the stuff
-                 inside"), admins only: the series page's Manage (/media/series/<id>?manage=1[&s=N]: per season
+                 inside"), admins only: the series page's Manage (/media/series/<id>?manage=1[&s=N]; top to bottom - owner,
+                 2026-10-25: nothing to scroll past - "The whole series" card (Rename, Remove the series), the season
+                 tabs, the season's card with its Remove first; per season
                  each episode/extra with its files (Original / Converted copy badges) and size, "Fix number"
                  (&fix=<id>), Remove (&rm=<id>); Remove season (&rm=season), Remove series (&rm=series)); the watch
                  page's "Fix title" (?fix=1; films and other videos - a film without a year shows up as one);

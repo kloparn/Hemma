@@ -44,11 +44,13 @@ Uploads keep the connection busy, DTS sound converts, subtitles follow you throu
   one. It keeps everything that points at it: TV channels, screens, everyone's progress and subtitle
   pick, "Not for children" marks. Before anything moves Hemma checks how it will read the new name, and
   says so when an episode's own file name would keep the old one (**Fix number** on it first), when the
-  folder holds other videos too, or when another series has that name.
+  folder holds other videos too, or when another series has that name. **Manage** now opens with the whole
+  series (Rename, Remove the series), then the season tabs, and a season's **Remove** sits above its episodes -
+  no scrolling past a season of 22 episodes to get to them.
 - **Keep converted videos in memory until they're sent** - a big checkbox on the upload page: the
   copies your computer makes wait in its memory (RAM) instead of on its disk, so nothing piles up on
-  the disk and it only reads the originals. They take up to the room set under **More options**. Off
-  by default (the old way, better for a phone or a computer with little memory); remembered for you.
+  the disk and it only reads the originals - up to 8 GB of them, the rest on the disk. Off by default (the old
+  way, better for a phone or a computer with little memory); remembered for you.
 
 ### Changed
 
@@ -59,6 +61,10 @@ Uploads keep the connection busy, DTS sound converts, subtitles follow you throu
   order, so the connection waited whenever the next one in line was still being made - even with
   others finished. Now whatever is ready goes first: finished copies, then the files that go as they
   are, and it only waits when nothing at all is ready.
+- **A conversion that can't read its original for a moment is tried again** instead of sending the original:
+  with many copies held in memory the browser ran short and 13 episodes (Simpsons, South Park) went up
+  unconverted ("readAsArrayBuffer ... could not be read") though the files were fine. The read tries once more
+  in a small piece, then the episode goes back in line (twice at most); and copies in memory stop at 8 GB.
 - **The converter reads originals in bigger steps:** reading on through a file it asks for twice as
   much each time, up to 32 MB (8 MB on a phone), instead of 1 MB at a time - so several conversions
   on one hard disk take turns in long reads instead of jumping between files every megabyte.
