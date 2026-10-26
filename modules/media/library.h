@@ -47,10 +47,14 @@ typedef struct {
     char title[128];
     int year;
     uint64_t poster;
-    int first, count; /* range in MediaIndex.episodes (season/episode order) */
-    int nseasons;
-    int64_t newest; /* mtime of the newest episode */
+    int first, count; /* range in MediaIndex.episodes (season/episode order; season 0 = Specials LAST) */
+    int nseasons;     /* tabs: the seasons, and Specials when it has any */
+    bool specials;    /* it has season 0 (S00, a Specials folder, loose videos in its folder: 1.3) */
+    int64_t newest;   /* mtime of the newest episode */
 } MediaSeries;
+/* "%d seasons": its seasons without the specials (1.3). Specials sit last and apart: next-up and
+   "Next episode" never cross from a season into them (or back) - media_next_up, media_neighbour. */
+int media_seasons(const MediaSeries *s);
 
 /* A video the scan left out (issue #28: they used to vanish without a word), or an upload's
    unfinished MEDIA_PART_SUFFIX file not touched for MEDIA_PART_DAYS (issue #40: they stayed for
@@ -109,6 +113,9 @@ bool media_is_playall_head(const char *rel);
    Extras, disc-rip titles numbered only by order, and the file's own original or copy (x.mkv /
    x.web.mp4 in the same folder) never count. `have` gets the match's path below its root. */
 bool media_have(const char *root, const char *rel, char *have, size_t cap);
+/* The same, and of the library's own file: its full path (full, "" when it can't be said) and how many
+   subtitle files it has (subs, its copy's counted too). Any of have/full/subs may be NULL. */
+bool media_have_file(const char *root, const char *rel, char *have, size_t cap, char *full, size_t fcap, int *subs);
 size_t media_stem_len(const char *rel); /* "Show/x" of "Show/x.mkv", "Show/x.web.mp4", "Show/x.playall.mkv" */
 bool media_full_path(const MediaFile *f, char *out, size_t cap);
 int media_hue(const char *title); /* stable colour for CSS posters */
@@ -189,5 +196,19 @@ void media_label(const MediaName *n, char *out, size_t cap);
 int media_history_lost(char labels[][100], int max, bool *away);
 int media_history_forget(void); /* drops it (nothing away): how many videos' history went */
 bool media_lib_away(void); /* the last scan found a library folder missing or empty (an unplugged disk) */
+
+/* ---- renamed series (1.3) ----
+   A series' id is its folded title hashed - so a series an admin renames (manage.c) would get another id,
+   and lose what keeps the old one: TV channels, screen rows, everyone's subtitle pick for it, bookmarks.
+   Instead its new title is remembered with its id (table media_series_name), and the library gives that
+   title this id. */
+typedef struct {
+    int id;
+    char title[160]; /* folded */
+    uint64_t series;
+} MediaSeriesName;
+extern Table T_media_series_name;
+uint64_t media_series_id(const char *title);             /* the id a series of that title has (event loop) */
+void media_series_keep(uint64_t series, const char *title); /* (in an action) from now on that title is this series */
 
 #endif

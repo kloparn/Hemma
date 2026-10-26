@@ -34,7 +34,8 @@ ConvertNeed convert_need(const MediaFile *f) {
     if (!f || f->type != MF_VIDEO || f->web || f->role == MF_WEBCOPY) return CONV_NONE;
     const MediaProbe *p = &f->probe;
     if (!container_is(p, "mkv", "webm")) return CONV_NONE; /* the demuxer we have */
-    bool aac = !p->acodec[0] || str_eq(p->acodec, "aac"), ac3 = str_eq(p->acodec, "ac3") || str_eq(p->acodec, "eac3");
+    bool aac = !p->acodec[0] || str_eq(p->acodec, "aac"), ac3 = str_eq(p->acodec, "ac3") || str_eq(p->acodec, "eac3") ||
+                                                             str_eq(p->acodec, "dts"); /* (sound decoded and made AAC) */
     if (str_eq(p->vcodec, "mpeg2") && (aac || ac3)) return CONV_TRANSCODE;
     if (str_eq(p->vcodec, "h264") && ac3) return CONV_TRANSCODE; /* picture copied, sound re-encoded */
     if (str_eq(p->vcodec, "h264") && aac) return CONV_REMUX;
@@ -837,8 +838,8 @@ void convert_card(Ctx *c, Buf *b) {
           T("Hemma can make a copy of each that plays everywhere - once, next to the original (<code "
             "class=\"media-code\">name.web.mp4</code>)."),
           remux == need ? T("These only need a new container: quick, nothing is re-encoded.")
-                        : T("DVD video is re-encoded to H.264 and Dolby sound to AAC; copies are about a third of the "
-                            "size."));
+                        : T("DVD video is re-encoded to H.264, and Dolby and DTS sound to AAC; copies are about a third "
+                            "of the size."));
         H(b, T("It runs in the background, %d at a time."), workers_wanted());
         buf_puts(b, "</p>");
     }

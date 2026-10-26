@@ -13,6 +13,10 @@ fs.mkdirSync(WORK, { recursive: true });
 execFileSync(path.join(ROOT, 'build', `test${exe}`), ['av_test_clips'], {
   cwd: ROOT, stdio: 'inherit', env: { ...process.env, HEMMA_TEST_CLIPS: WORK },
 });
+/* MKVs for the browser's converter (the fuzzer's seeds: e.g. H.264 with text, PGS and VobSub subtitles) */
+execFileSync(path.join(ROOT, 'build', `test${exe}`), ['conv_fuzz_seeds'], {
+  cwd: ROOT, stdio: 'inherit', env: { ...process.env, HEMMA_FUZZ_SEEDS: path.join(WORK, 'mkv') },
+});
 fs.writeFileSync(path.join(WORK, 'hemma.env'),
   `HEMMA_ADMIN_USER=${ADMIN.user}\nHEMMA_ADMIN_PASSWORD=${ADMIN.password}\nHEMMA_ADMIN_NAME=${ADMIN.name}\n`);
 

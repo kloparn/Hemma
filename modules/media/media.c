@@ -73,7 +73,8 @@ typedef struct {
     char key[40];    /* unique among the video's: "en", "en.sdh", "en.2" (media_sub_key) */
     char label[160]; /* in the reader's words: "English", "English (for the hard of hearing)", "English 2" */
     bool named;      /* its name is the one Hemma gives such a subtitle ("x.en.2.srt"): it keeps its key */
-    bool on;         /* the viewer's language: shown from the start */
+    bool on;         /* shown from the start: the viewer's pick in this series, else their language */
+    bool pref;       /* what the C key turns on when none shows (the same, even when the pick was "off") */
     bool pic;        /* pictures (.sup, a VobSub's .idx): drawn by the player from its cue list, no <track> */
     char cues[240];  /* ... that list's address (C5: keyed, ?v=<size>-<mtime>) */
 } SubChoice;
@@ -106,6 +107,33 @@ static void sub_label(const MediaSubTags *t, char *out, size_t cap) {
     else if (t->sdh) snprintf(out, cap, T("%s (for the hard of hearing)"), name);
     else if (t->forced) snprintf(out, cap, T("%s (foreign speech only)"), name);
     else str_copy(out, cap, name);
+}
+
+/* The pref holding a viewer's last subtitles pick in a series (1.3; media.sub): "media.sub.<series id>" =
+   "<generation> <the pick's key>" ("3 en", "3 sv.forced"), the key "-" when they turned subtitles off. A new
+   "Subtitles on by default" (media.prefs) starts a new generation ("media.sub.gen"): every series then
+   starts from that language again. */
+typedef struct {
+    char k[32];
+} SubMemory;
+
+static SubMemory sub_memory_key(uint64_t series) {
+    SubMemory m;
+    char hex[17];
+    media_id_hex(series, hex);
+    snprintf(m.k, sizeof m.k, "media.sub.%s", hex);
+    return m;
+}
+
+static int sub_generation(int viewer) { return (int)str_int_or(pref(viewer, "media.sub.gen", "0"), 0); }
+
+/* the viewer's pick in a series, this generation's: a key, "-" (off), or "" (none) */
+static void sub_memory(int viewer, uint64_t series, char *out, size_t cap) {
+    const char *m = pref(viewer, sub_memory_key(series).k, "");
+    char *sp = NULL;
+    long gen = strtol(m, &sp, 10);
+    out[0] = '\0';
+    if (sp && sp > m && *sp == ' ' && gen == sub_generation(viewer)) str_copy(out, cap, sp + 1);
 }
 
 /* A video's subtitles as the player offers them (C4): by language, the plain one before SDH and forced
@@ -159,13 +187,28 @@ static int sub_choices(const Ctx *c, const MediaFile *f, SubChoice *out, int max
     if (moved) qsort(out, (size_t)n, sizeof *out, sub_order);
     int v = ctx_viewer(c);
     const char *want = v ? pref(v, "media.sublang", "") : "";
-    int on = -1;
-    for (int pass = 0; pass < 2 && on < 0 && *want; pass++) /* (text first, then pictures) */
-        for (int i = 0; i < n && on < 0; i++)
-            if (out[i].pic == (pass == 1) && str_ieq(out[i].t.lang, want)) on = i;
+    int lang = -1; /* the viewer's language (Library settings): text first, then pictures */
+    for (int pass = 0; pass < 2 && lang < 0 && *want; pass++)
+        for (int i = 0; i < n && lang < 0; i++)
+            if (out[i].pic == (pass == 1) && str_ieq(out[i].t.lang, want)) lang = i;
+    /* the viewer's last pick in this series (1.3; owner: "if enabled on an episode, carry on to the next episode
+       with the same language if it exists") - the same key, else the first of its language (the menu's order, as
+       the player picks), else none; "-" = turned off - wins over the language */
+    char mem[40] = "";
+    if (v && f->series) sub_memory(v, f->series, mem, sizeof mem);
+    int last = -1;
+    if (mem[0] && !str_eq(mem, "-")) {
+        size_t ml = strcspn(mem, ".");
+        for (int i = 0; i < n && last < 0; i++)
+            if (str_eq(out[i].key, mem)) last = i;
+        for (int i = 0; i < n && last < 0; i++)
+            if (strcspn(out[i].key, ".") == ml && !strncmp(out[i].key, mem, ml)) last = i;
+    }
+    int on = mem[0] ? last : lang, pick = last >= 0 ? last : lang;
     for (int i = 0; i < n; i++) {
         sub_label(&out[i].t, out[i].label, sizeof out[i].label);
         out[i].on = i == on;
+        out[i].pref = i == pick;
     }
     return n;
 }
@@ -199,7 +242,7 @@ void media_controls(const Ctx *c, Buf *b, const MediaFile *f, bool tv) {
     for (int i = 0; i < p.nsubs; i++) {
         const SubChoice *s = &choice[i];
         subs[i] = (UiSub){.key = s->key, .lang = s->t.lang[0] ? s->t.lang : "und", .label = s->label,
-                          .pic = s->pic ? s->cues : NULL, .on = s->on};
+                          .pic = s->pic ? s->cues : NULL, .on = s->on, .pref = s->pref};
     }
     ui_player(b, &p);
     free(choice);
@@ -455,9 +498,9 @@ static void series_card(Ctx *c, Buf *b, const MediaSeries *s) {
     int eps = media_episodes_in(s);
     H(b, "<span class=\"media-cap\">%s<small>", s->title);
     H(b, TN(eps, "%d episode", "%d episodes"), eps);
-    if (s->nseasons > 1) {
+    if (media_seasons(s) > 1) {
         buf_puts(b, " · ");
-        H(b, T("%d seasons"), s->nseasons);
+        H(b, T("%d seasons"), media_seasons(s));
     }
     buf_puts(b, "</small></span></a>");
 }
@@ -486,16 +529,19 @@ int media_in_progress(const Ctx *c, const MediaFile **out, int max) {
     return n;
 }
 
-/* What to play next in a series for the viewer: the first unfinished episode
- * after the last one they finished (or the one they're in the middle of). */
+/* What to play next in a series for the viewer: the one they're in the middle of, else the episode after the
+ * last one they finished. The specials (last, 1.3) are apart: a special watched doesn't move it into them, and
+ * after the last season it starts over - unless the series is nothing but specials. */
 const MediaFile *media_next_up(const Ctx *c, const MediaSeries *s) {
-    int last_done = -1, v = ctx_viewer(c);
+    int regular = s->count, last_done = -1, v = ctx_viewer(c); /* episodes [0, regular) are the seasons' */
+    while (regular > 0 && media_episode(s, regular - 1)->name.season == 0) regular--;
+    int upto = regular ? regular : s->count;
     for (int i = 0; v && i < s->count; i++) {
         MediaWatch *w = media_watch_get(v, media_episode(s, i)->id);
-        if (w && w->done) last_done = i;
+        if (w && w->done) last_done = i < upto ? i : last_done;
         else if (w && w->pos > 0) return media_episode(s, i);
     }
-    return media_episode(s, last_done + 1 < s->count ? last_done + 1 : 0);
+    return media_episode(s, last_done + 1 < upto ? last_done + 1 : 0);
 }
 
 /* ------------------------------------------------------------------ chrome */
@@ -926,8 +972,8 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
         H(b, "<span>%s</span></a>", T("Picture"));
     }
     H(b, "</div><div class=\"media-sdetail-t\"><h1>%s</h1><p class=\"sub\">", s->title);
-    if (s->nseasons > 1) {
-        H(b, T("%d seasons"), s->nseasons);
+    if (media_seasons(s) > 1) {
+        H(b, T("%d seasons"), media_seasons(s));
         buf_puts(b, " · ");
     }
     int eps = media_episodes_in(s);
@@ -967,7 +1013,8 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
             if (e->name.season == last) continue;
             last = e->name.season;
             H(b, "<a href=\"/media/series/%X?s=%d\"%r>", s->id, last, last == season ? " class=\"on\"" : "");
-            H(b, last == 0 ? T("Specials %d") : T("Season %d"), last);
+            if (last) H(b, T("Season %d"), last);
+            else H(b, "%s", T("Specials"));
             buf_puts(b, "</a>");
         }
         buf_puts(b, "</nav>");
@@ -1392,8 +1439,12 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
             H(b, "<p class=\"muted\">%s</p>", T("Being made playable everywhere - see the library settings."));
         else if (is_admin(c)) {
             bool hevc = str_eq(f->probe.vcodec, "hevc"), dolby = str_eq(f->probe.acodec, "ac3") || str_eq(f->probe.acodec, "eac3");
+            bool dts = str_eq(f->probe.acodec, "dts");
             H(b, "<p class=\"muted\">%s</p>",
-              hevc && dolby ? T("Its Dolby sound plays silently in Chrome and Firefox, and Safari can't open MKV files: a copy "
+              hevc && dts ? T("Its DTS sound plays in no browser, and Safari can't open MKV files: a copy with AAC sound fixes "
+                              "both - quick, the picture isn't re-encoded. HEVC still needs a device that can decode it (most "
+                              "from the last few years).")
+              : hevc && dolby ? T("Its Dolby sound plays silently in Chrome and Firefox, and Safari can't open MKV files: a copy "
                                 "with AAC sound fixes both - quick, the picture isn't re-encoded. HEVC still needs a device "
                                 "that can decode it (most from the last few years).")
               : hevc ? T("Safari (iPhone, iPad, Mac) can't open MKV files: a new container fixes that - quick, the picture "
@@ -1404,7 +1455,7 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
             char hex[17];
             media_id_hex(f->id, hex);
             ui_act(b, "media.convert", "btn",
-                   hevc && dolby ? T("Fix the sound") : hevc ? T("Make it play in Safari too") : T("Make it play everywhere"),
+                   hevc && (dolby || dts) ? T("Fix the sound") : hevc ? T("Make it play in Safari too") : T("Make it play everywhere"),
                    "id", hex, NULL);
         } else {
             buf_puts(b, "<p class=\"muted\">");
@@ -1795,7 +1846,7 @@ static void page_settings(Ctx *c, Buf *b) {
         "converted here (<i>Plays on newer devices</i>) plays in Safari and on most devices from the last few years."));
     H(b, "<li><span>%r</span></li></ul></details>",
       T("<b>Needs conversion:</b> MPEG-2 (DVD rips), AVI/XviD, DTS sound. Hemma converts MKV files with MPEG-2, H.264 or "
-        "HEVC video and Dolby or AAC sound itself, and keeps their text subtitles as .srt files next to them."));
+        "HEVC video and Dolby, DTS or AAC sound itself, and keeps their subtitles next to them."));
     ui_card_end(b);
     buf_puts(b, "</div>");
     media_drives_dialog(c, b); /* (?format=<disk>) */
@@ -1920,6 +1971,20 @@ static void act_progress(Ctx *c, Fields *f) {
     bool ended = fields_str(f, "ended")[0] == '1';
     if (media_watch_report(v, id, (int)fields_int(f, "pos", 0), (int)fields_int(f, "dur", 0), ended, c->now))
         app_changed(); /* finished: other screens' "continue watching" changes */
+}
+
+/* The viewer picked subtitles in the player (the menu, or the C key): kept for the series (1.3) - its next
+   episode, opened anywhere, starts with them. key "" = off (kept as "-"). Films keep nothing: the
+   viewer's language (Library settings) stays theirs. */
+static void act_sub(Ctx *c, Fields *f) {
+    uint64_t id = 0;
+    int v = ctx_viewer(c);
+    const MediaFile *mf = v && media_parse_id(fields_str(f, "id"), &id) ? media_file(id) : NULL;
+    const char *key = fields_str(f, "key");
+    if (!mf || !mf->series || strlen(key) > 32 || key[strspn(key, "abcdefghijklmnopqrstuvwxyz0123456789.")]) return;
+    char val[48];
+    snprintf(val, sizeof val, "%d %s", sub_generation(v), key[0] ? key : "-");
+    pref_set(v, sub_memory_key(mf->series).k, val);
 }
 
 static void act_watched(Ctx *c, Fields *f) {
@@ -2277,6 +2342,9 @@ static void act_prefs(Ctx *c, Fields *f) {
     char lang[16];
     str_copy(lang, sizeof lang, fields_str(f, "sublang"));
     pref_set(c->me->id, "media.sublang", lang);
+    char gen[16]; /* (the picks remembered per series give way to the new default) */
+    snprintf(gen, sizeof gen, "%d", sub_generation(c->me->id) + 1);
+    pref_set(c->me->id, "media.sub.gen", gen);
     if (*lang) ctx_ok(c, T("Subtitles: %s"), lang_name(lang));
     else ctx_ok(c, "%s", T("Subtitles off by default"));
 }
@@ -2284,7 +2352,7 @@ static void act_prefs(Ctx *c, Fields *f) {
 /* Watching is open to children and guests too (issue #44): searching, progress, ticks, their own prefs. */
 static const Action actions[] = {
     {"media.search", act_search, true, .may = ACT_ALL}, {"media.progress", act_progress, true, true, ACT_ALL},
-    {"media.watched", act_watched, false, true, ACT_ALL},
+    {"media.sub", act_sub, true, true, ACT_ALL}, {"media.watched", act_watched, false, true, ACT_ALL},
     {"media.rescan", act_rescan}, {"media.roots", act_roots}, {"media.roots_add", act_roots_add},       {"media.prefs", act_prefs, .may = ACT_ALL},
     {"media.upload_stop", upload_act_stop}, {"media.upload_preview", upload_act_preview, true}, {"media.art_remove", act_art_remove},
     {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove},
@@ -2295,7 +2363,8 @@ static const Action actions[] = {
     {"media.drive_use", media_drives_act_use}, {"media.drive_format", media_drives_act_format},
     {"media.drive_forget", media_drives_act_forget}, {"media.drive_seen", media_drives_act_seen},
     {"media.manage_remove", media_manage_act_remove}, {"media.fix_title", media_manage_act_fix_title},
-    {"media.fix_episode", media_manage_act_fix_episode}, {"media.take_subs", subtake_act_switch},
+    {"media.fix_episode", media_manage_act_fix_episode}, {"media.rename_series", media_manage_act_rename_series},
+    {"media.take_subs", subtake_act_switch},
     {0},
 };
 
@@ -2305,6 +2374,8 @@ static void init(void) {
     T_media_watch.api_owner = "person"; /* /api: watch history is for its person (and admins) */
     T_media_watch.what = "watch history";
     store_register(&T_media_watch);
+    T_media_series_name.what = "names of renamed series";
+    store_register(&T_media_series_name);
     media_kids_init();
 }
 

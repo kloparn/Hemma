@@ -19,6 +19,7 @@ void media_manage_room_card(Ctx *c, Buf *b);
 void media_manage_act_remove(Ctx *c, Fields *f);      /* media.manage_remove: what=episode|season|series, id, s */
 void media_manage_act_fix_title(Ctx *c, Fields *f);   /* media.fix_title: id, title, year */
 void media_manage_act_fix_episode(Ctx *c, Fields *f); /* media.fix_episode: id, season, episode, last, title */
+void media_manage_act_rename_series(Ctx *c, Fields *f); /* media.rename_series: id, title, year (1.3) */
 void media_manage_tick(int64_t now);                  /* a removal on its thread finished: history, Latest, rescan */
 
 #endif

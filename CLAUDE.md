@@ -26,7 +26,9 @@ Runs on a Raspberry Pi in production; developed on Windows 11 with `zig cc`.
 - **Server-driven UI**: C renders HTML; changes are pushed as DOM morphs over
   WebSocket to every open screen. Pages also work without JS (links + POST forms).
 - **Fast and light**: single-threaded event loop, small static binary for the Pi.
-  The only third-party code is SQLite (vendored, public domain).
+  The only third-party code is SQLite (vendored, public domain) - and, as data, FFmpeg's two DTS vector
+  tables in third_party/ffmpeg/dts_vq.h (LGPL 2.1+, its README; owner, 2026-10-24: "FFmpeg's, own file" -
+  the DTS specification leaves them out of every edition).
 - **Modular**: features are self-contained modules so several workers can build
   in parallel without touching each other's files.
 - **Tests**: co-located `*_test.c`, auto-registered. Cover parsers, protocol code,
@@ -456,6 +458,39 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  too. Subtitles never stop an upload. Dropped sidecars: .sup and .idx, and a .sub only with its .idx
                  in the same upload (upload_sort step 4: wherever its .idx goes; vobsub_pairs both or neither; the
                  .sub first in the todo); the picker's accept= lists .sup .idx .sub.
+                 SUBTITLES ONLY (1.3; owner, 2026-10-23: "still keep the logic of being able to extract it from the
+                 video"): an MKV/WebM that stays behind - a dupe (media_have_file: the library's video in full in
+                 UpFile.target + how many subtitle files it has, lib_subs), an original whose copy goes instead
+                 (skip_originals) or whose copy is on the server (convert_here: subs_beside counts its sidecars) -
+                 becomes todo {"i","f","subs":1} (subtitles_only, needs conv) when the library's video has none
+                 and no subtitle file of the batch goes along (UpFile.sidecars): the browser reads only its tracks
+                 (av.wasm conv_subs_only = av_subtitles), posts ?sub= / PUTs ?pic= as for a copy (copy_of -> the
+                 target) with ?pm= progress (shown on the card, "its subtitles"), then ?pm=1000 = done (subs_due:
+                 the batch stays open until then; counted as a file of the upload). Preview fate FATE_SUBS "Only its
+                 subtitles". SIDECARS FIND THEIR VIDEO: rehome() renames a subtitle file of a dupe (skip_companions)
+                 to "<the library video's stem><its own tags>" in the library video's folder ("goes next to X, which
+                 the library has"; one there already = skipped "X has these subtitles already"); lone_subtitles: a
+                 subtitle file with no video in the batch tries its name's stems SHORTEST first (media_sub_for takes
+                 only a rest of tags, so every tag stays) as "<stem>.mkv" with media_have_file.
+                 SENDING ORDER (1.3; owner: "be always at that limit"): wire.js sends ONE file at a time and never
+                 waits while something can go - what the converters finished first (converter().take(), in the
+                 order they finished), then the plain entries in the plan's order, else converter().next(). No more
+                 "a few ahead of the one being sent": the room slider alone bounds what waits. IN MEMORY (1.3;
+                 owner: "the option of storing converted videos in RAM or on a drive ... as a big checkbox. If
+                 other people use it, the old style is nice"): the form's "ram" box (in sight under the preview,
+                 pref PREF_UPLOAD_RAM media.upload_ram, saved with a converting plan, off by default) -> conv.js
+                 keeps the copy in 16 MB parts of plain memory (else a Blob, which the browser keeps on its disk
+                 past its own limit; out of memory mid-copy -> the rest goes on in a Blob) - at most RAM_MAX (8 GB)
+                 of copies in memory per tab (wire.js held()/inRam: past it a job's copy is a Blob; all a tab's
+                 workers share ONE process, and at ~12-16 GB its reads failed) - and PUTs it a part at a
+                 time: PUT ?at=A&end=E (Job.piece: saved, no rename, answered {"ok":true,"at":E}; the last piece's
+                 answer is a whole file's). form[data-part] (the browser tests only) = smaller parts.
+                 READS THAT FAIL (1.3; 13 episodes went up unconverted: "Failed to execute 'readAsArrayBuffer' on
+                 'FileReaderSync'" while the tab held ~12-16 GB, though the files read fine for the PUT): conv.js reads
+                 once more in a 1 MB piece, then posts {error, again} (a failed read, or "memory"/"allocat" in the
+                 message); wire.js converter() puts such a job back in line (again[], first in pump(), AGAIN = 2 times
+                 at most) instead of sending the original. form[data-flaky="N"] (tests only): each job's first try
+                 fails N reads (upload.spec.mjs "tried again").
                  THE PAGE (1.1; owner, 2026-10-21: "easy enough to understand"; "Add videos" in Watch's header,
                  "Add episodes" on a series page): form[data-upload][data-preview] with a [data-drop] area (wire.js
                  keeps dropped/picked files and folders on the form, each choice adding; [data-drop-clear] empties),
@@ -494,7 +529,9 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  Tests: media_zip_test_busy, media_download_test_pace; download_test.c holds a little unzip (end
                  records, central directory, local headers, descriptors, CRCs).
   media/manage.c LOOKING AFTER THE LIBRARY (1.1; owner, 2026-10-21: "easier and better control of the stuff
-                 inside"), admins only: the series page's Manage (/media/series/<id>?manage=1[&s=N]: per season
+                 inside"), admins only: the series page's Manage (/media/series/<id>?manage=1[&s=N]; top to bottom - owner,
+                 2026-10-25: nothing to scroll past - "The whole series" card (Rename, Remove the series), the season
+                 tabs, the season's card with its Remove first; per season
                  each episode/extra with its files (Original / Converted copy badges) and size, "Fix number"
                  (&fix=<id>), Remove (&rm=<id>); Remove season (&rm=season), Remove series (&rm=series)); the watch
                  page's "Fix title" (?fix=1; films and other videos - a film without a year shows up as one);
@@ -514,8 +551,24 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  the library will ("Hemma would read that name as ..."); never over a file (rename_safe; a
                  case-only change goes through a temp name); every move or none. Watch history moves to the new id
                  at once (media_watch_move; the rescan's watch_follow fills the rest); "Not for children" marks of
-                 a renamed folder follow (kids_follow), an episode leaving a marked folder marks its new one. A
-                 whole series isn't renamed (its id is its title; tv channels and screen rows keep series ids).
+                 a renamed folder follow (kids_follow), an episode leaving a marked folder marks its new one.
+                 RENAMING A SERIES (1.3; owner, 2026-10-24: "make it so the admin can rename the series", Manage ->
+                 "The whole series" -> Rename, ?rename=1, action media.rename_series id/title/year): its SHOW FOLDERS
+                 are renamed (show_dirs: each folder above its videos' season/disc folders that media_names_show the
+                 series - every one of them, up to 16; refused when a video lies in none (named by its file, or in
+                 the library folder), another video of the library is in one, one is inside another), "<title>" or
+                 "<title> (<year>)", all or none (Moves). First the bare folder name is parsed (".../Season 1/S01E01.mkv":
+                 "Show S01-S03" or "Season 2" refused - "Hemma would read that name as"), then every video of it at
+                 its new place must parse to that title (a file not in a season folder keeps its own name's show:
+                 "use Fix number on it first"); another series of that title, a conversion of it, an upload into the
+                 folder (upload_claims_under) or a removal running = refused. THE ID STAYS: a series' id is its folded
+                 title hashed (library.c series_id), so table media_series_name {title folded, series} - written by
+                 media_series_keep(id, new title): its old row and any row of that title go, none when the title
+                 hashes to the id itself - gives the new title the old id; the scan reads a copy (Scan.names, a
+                 thread-local t_names around index_finish), the event loop the table. TV channels (Channel.shows),
+                 screen rows, media.sub.<series> picks and bookmarks keep working unchanged. Watch history moves per
+                 video (media_watch_move to media_make_id of the new path), "Not for children" marks follow
+                 (kids_follow), Latest "renamed %s to %s".
                  Numbering one ripped disc's title by hand makes library.c number the rest after the season's
                  highest (the fix dialog says so).
   media/convert.c "play everywhere": MKV -> <name>.web.mp4 next to the original (H.264 + AAC, faststart),
@@ -524,7 +577,7 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  (hvcC arrays marked complete - what Safari needs; no HEVC decoder here, so it plays on Apple
                  devices and browsers with HEVC hardware, not everywhere; Convert says "play in Safari too", the watch page
                  badge "Plays on newer devices");
-                 AC-3 / E-AC-3 (Dolby Digital Plus) -> AAC at the track's own rate (48, 44.1 or 32 kHz - TV rips are 44.1; 1.1.2; E-AC-3 half rates refused; a frame at another rate than the file says = unsupported); AAC copied; the file's subtitles next to the ORIGINAL - also
+                 AC-3 / E-AC-3 (Dolby Digital Plus) and DTS (1.3: the core, 5.1 -> Lo/Ro) -> AAC at the track's own rate (48, 44.1 or 32 kHz - TV rips are 44.1; 1.1.2; E-AC-3 half rates refused; a frame at another rate than the file says = unsupported); AAC copied; the file's subtitles next to the ORIGINAL - also
                  after an `unsupported` refusal (1.2) - by convert_save_subs/convert_save_sub(video, AvConvSub,
                  ConvertSubs*): text .srt, PGS .sup, VobSub .sub + .idx (the pair or nothing, .idx last), media/subs.c
                  names ("x.en.srt", "x.sv.forced.srt", "x.en.sdh.srt", "x.en.2.sup"); a second track of the same
@@ -572,6 +625,14 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  Hemma-named file keeps its key, the other of two alike gets the next free number); labels = the
                  language in itself + "(for the hard of hearing)" / "(foreign speech only)" / "English 2";
                  media.sublang turns on the first in that language (the plain one; else its first picture track).
+                 FOLLOWING THE VIEWER (1.3; owner, 2026-10-24: "if enabled on a episode, to carry on to the next
+                 episode with the same language if it exists"): the player reports the viewer's pick (the menu, or
+                 C) with the live action media.sub (id, key; "" = off; .display - the TV's viewer -, ACT_ALL) ->
+                 pref "media.sub.<series hex>" = "<generation> <key|->" (episodes only; films keep nothing).
+                 sub_choices: that pick wins over media.sublang - the same key, else the first of its language
+                 (menu order, as wire.js picks), else none; "-" = off. media.prefs (a new "Subtitles on by
+                 default") bumps "media.sub.gen": every series starts from the language again. UiSub.pref ->
+                 data-subpref marks what C turns on (that pick, else the language's).
   media/subtake.c TAKING SUBTITLES OUT BY THEMSELVES (1.2): a thread (one, background priority, tick-started, never
                  under tests) reads each library MKV/WebM once (not play-alls, not .web.mp4), newest first: mkv_open
                  first - no track AV_CONV_CODECS takes, or every sidecar already there = done after the headers;
@@ -687,7 +748,25 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  only, the rest AC3_SKIP; enhanced coupling / half rates AC3_ERR_UNSUPPORTED): native/WAV-order/
                  Lo-Ro stereo float output. ac3_test.c's encoder writes E-AC-3 with every tool and the decoder
                  must rebuild exactly what it sent; Dolby's E-AC-3 encoders leave unused bits non-zero, so
-                 tail_zero is an AC-3 check). Feed mpeg2 the track's CodecPrivate first, then
+                 tail_zero is an AC-3 check). dts.* (1.3; owner, 2026-10-24: "let's fix this" - 108 Simpsons
+                 episodes had DTS): the DTS Coherent Acoustics CORE (ETSI TS 102 114 clause 5 + Annex C/D) -
+                 16-bit big-endian frames (sync 7F FE 80 01; DTS-HD's substream 64 58 20 25 after the core is
+                 left alone; 14-bit/LE packing and AMODE 10-15 DTS_ERR_UNSUPPORTED; core extensions XCh/X96/XBR
+                 skipped), every Huffman book, block codes, ADPCM prediction, high-frequency vectors, joint
+                 intensity, transients, sum/difference, dynamic range (off by default), LFE 64x/128x, both
+                 filter banks; native/WAV/Lo-Ro float output (the Lo/Ro normalised like ac3's). The spec says
+                 never to test its CRC words: skipped. Tables: dts_tables.h, MADE BY A SCRIPT from the
+                 specification's own pages and checked (each Huffman book a complete prefix code; two misprints
+                 mended there - see its comment; the perfect-reconstruction bank is V1.2.1's, which decoders
+                 use; V1.6.1 prints other numbers); the two vector tables NO edition prints are FFmpeg's
+                 (third_party/ffmpeg/dts_vq.h, LGPL 2.1+, its README: source, hashes; owner: "FFmpeg's, own
+                 file"). The synthesis's output gain (the spec's undefined rScale) = 128 sqrt 2 (QMF_GAIN),
+                 measured. CHECKED against FFmpeg on real tracks: 5 Simpsons episodes, 615k frames, no frame
+                 refused; every channel equal to rounding (largest difference ~6e-6). dts_testenc.h = a test
+                 frame writer (every tool, random; or tones: a steady value in subband k comes out at its EDGE,
+                 so tones use odd bands: (ch + 1) x 1500 Hz). HEMMA_TEST_DTS=<file.mkv> [HEMMA_TEST_DTS_S,
+                 HEMMA_TEST_DTS_WAV] ./build/test dts_real decodes a real track (native float WAV to compare).
+                 Feed mpeg2 the track's CodecPrivate first, then
                  each block with its pts; mpeg2_reset()/ac3_reset() after mkv_seek(). h264enc.* (Constrained
                  Baseline encoder, bit-exact vs Chrome; annexb=false + h264enc_avcc() for MP4; ~180 fps SD
                  per PC core, ~7.6 fps per Pi 3 core). mp4.* (faststart via reserved moov, or fragmented), flac.*, deint.* (IVTC / yadif / bob /
@@ -714,7 +793,8 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  frees them. Used by media/convert.c
                  and by wasm/avconv.c (conv_subs/conv_sub_text/_len/_lang/_name/_forced/_kind/_data/_size/_idx/
                  _idx_len exports; web/conv.js posts {size, subs, pics} - pics = [{kind 'pgs'|'vobsub', lang, name,
-                 forced, data: ArrayBuffer (transferred), idx}]), which
+                 forced, data: ArrayBuffer (transferred), idx}]; conv_subs_only(size) = av_subtitles alone, posted
+                 as {subsOnly, subs, pics} - 1.3, a video that stays behind), which
                  build.ps1/Makefile compile to $B/av.wasm (zig cc -target
                  wasm32-wasi -mexec-model=reactor -msimd128; ~370 KB, imports only 4 hemma.* functions,
                  embedded as /static/av.wasm). Measured on a DVD episode: wasm ~75% of native speed (374 s
@@ -742,7 +822,9 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  runs (distance 1). Checked against ffmpeg: a Simpsons PGS track (within 1 = colour rounding), a
                  70's Show VobSub track (identical). Not in av.wasm (the browser doesn't draw them; the server does).
 web/             app.css (core styles + shared vocabulary), wire.js, conv.js (the upload converter's Worker:
-                 feeds av.wasm a File, gathers the copy), icon.svg, manifest
+                 feeds av.wasm a File - reading ahead: reading on from where it stopped, each read twice the last,
+                 up to 32 MB (8 MB on a phone), so workers sharing a hard disk read in long runs (1.3) - and
+                 gathers the copy, in memory or a Blob; or only a file's subtitles), icon.svg, manifest
 third_party/sqlite/  SQLite 3.54.1 amalgamation + its recovery extension (ext/recover: dbdata.c, sqlite3recover.c/.h;
                  recover.c includes both as one object; sqlite3.c needs SQLITE_ENABLE_DBPAGE_VTAB) - see its
                  README for provenance + hashes
@@ -765,19 +847,22 @@ tools/convfuzz.c libFuzzer target over av_convert (MKV in memory -> MP4 in memor
                  replay/mutate driver that builds with zig on Windows (build lines at the top). Seeds:
                  `HEMMA_FUZZ_SEEDS=<dir> HEMMA_FUZZ_RAW=<dir2> ./build/test conv_fuzz_seeds` (generated, never
                  committed: the MKVs in <dir>, raw Dolby frames and MPEG-2 streams in <dir2>/ac3, /mpeg2)
-tools/avfuzz.c   five faster targets, one part alone each (issue #50): -DAVFUZZ_MKV the Matroska reader,
-                 -DAVFUZZ_AC3 the Dolby decoder (raw frames, CRC off), -DAVFUZZ_MPEG2 the MPEG-2 decoder (a raw
+tools/avfuzz.c   six faster targets, one part alone each (issue #50): -DAVFUZZ_MKV the Matroska reader,
+                 -DAVFUZZ_AC3 the Dolby decoder (raw frames, CRC off), -DAVFUZZ_DTS the DTS decoder (raw core
+                 frames; 1.3), -DAVFUZZ_MPEG2 the MPEG-2 decoder (a raw
                  stream in chunks of any size); an input's first byte picks options (layout, chunking, a reset).
                  -DAVFUZZ_PGS (a .sup) and -DAVFUZZ_VOBSUB (the .idx text, a NUL, the .sub) (1.2): opened, every cue
                  checked against subpic.h's promises (abort), drawn (2M pixels an input) and made a PNG.
                  Measured in WSL: ~1.3M inputs a minute (mkv), 210k (ac3), 310k (mpeg2), ~200k (pgs), ~90k
-                 (vobsub) vs 5.7k for convfuzz. convfuzz also checks every subtitle track is a whole file of its
+                 (vobsub), ~8k (dts: a 100-byte frame may say 4096 samples on 6 channels, so it takes 32 frames
+                 and 32 KB an input; its coverage levels off within a minute) vs 5.7k for convfuzz. The DTS
+                 decoder itself: ~220x real time on one PC core (5.1, 1.5 Mbit/s, -O2). convfuzz also checks every subtitle track is a whole file of its
                  kind within its bounds and that av_subtitles alone gives the very same subtitles
-tools/ci/fuzz.sh TARGET [S] [JOBS]: builds + runs conv | mkv | ac3 | mpeg2 | pgs | vobsub under ASan + UBSan from the
+tools/ci/fuzz.sh TARGET [S] [JOBS]: builds + runs conv | mkv | ac3 | dts | mpeg2 | pgs | vobsub under ASan + UBSan from the
                  tree's top after `make build/test` (seeds made when missing; pgs/vobsub's from `HEMMA_FUZZ_RAW=
                  build/fuzz-raw build/test subpic_fuzz_seeds`), corpus in build/fuzz-corpus-T, findings in
                  build/fuzz-found-T (exit 1); JOBS > 1 = libFuzzer -fork, carrying on after a finding. Used by
-                 build.yml's fuzz job (conv, 90 s), fuzz.yml (NIGHTLY 01:17 UTC: the six side by side on their own
+                 build.yml's fuzz job (conv, 90 s), fuzz.yml (NIGHTLY 01:17 UTC: the seven side by side on their own
                  runners, 170 min each with every core, the corpus cached night to night - owner, 2026-10-21:
                  "about 3 hours"; a finding fails the job and keeps the files as an artifact) and local.sh
 tests/           test.h (framework), runner.c, harness.* (boot the core without a server; th_boot_in(dir) for a
@@ -816,19 +901,25 @@ tests/browser/   CI-ONLY Node (owner, 2026-10-21: "The CI can use node"; nothing
                  Chrome (the bundled Chromium can't play H.264/AAC) against a real Hemma - server.mjs makes a fresh
                  folder under the OS temp (hemma-browser-tests), test clips by `build/test av_test_clips` with
                  HEMMA_TEST_CLIPS (modules/av/clips_test.c: H.264 + AAC MP4s from our own encoders, 64x48 - two
-                 100 s episodes, a 40 s film, an upload clip), an admin from the settings file, then build/hemma on
-                 127.0.0.1:18093; setup.mjs signs in, adds the library, waits for the scan. Specs: player (progress
+                 100 s episodes, a 40 s film, an upload clip) and MKVs by `build/test conv_fuzz_seeds` with
+                 HEMMA_FUZZ_SEEDS=<work>/mkv (1.3: the converter's seeds), an admin from the settings file, then
+                 build/hemma on 127.0.0.1:18093; setup.mjs signs in, adds the library, waits for the scan. Specs:
+                 player (progress
                  reported + resume, resume without wire.js via #t=, nothing in the last 5 s, the next episode in
-                 the SAME element), live (now, no pause/wind/speed, #t= without wire.js), upload (byte for byte),
+                 the SAME element), live (now, no pause/wind/speed, #t= without wire.js), upload (byte for byte;
+                 1.3: the converter in Chrome on h264-webvtt-pgs-vobsub.mkv - the copy + its subtitles, a copy in
+                 memory in 1000-byte pieces arriving identical, subtitles only, copies and plain files in one
+                 upload; skipped where the page has no data-wasm - CI's browser job sets up zig for av.wasm),
                  signin (Accept-Language, the language links), subtitles (two in one language, the pick by key into
-                 the next episode), subpictures (a picture track at its cue's time and place over the shown picture,
+                 the next episode; 1.3: C on and off, the pick following the series into a new page),
+                 upload (1.3: a DTS MKV converted in Chrome too), subpictures (a picture track at its cue's time and place over the shown picture,
                  lifted over the bar, never beside a text track, on from the viewer's language, phone, full screen -
                  clips_test.c writes <clips>/sidecars/pictures.sup 640x480 and pictures-576.sup 720x576, two cues
                  each), download. eslint.config.mjs (recommended rules) over
                  web/*.js, run from the repo top (`npm run lint`). Locally: build (./build.ps1 build + test, or
                  make), then `cd tests/browser && npm ci && npx playwright test`. Test-only modules' words etc.:
                  see Tests. CI jobs: build.yml `browser` and `lint`
-tools/ci/local.sh  CI's Linux jobs locally: test | asan | fuzz [S] [conv|mkv|ac3|mpeg2], on a fresh copy of the tree (stdin tar,
+tools/ci/local.sh  CI's Linux jobs locally: test | asan | fuzz [S] [conv|mkv|ac3|dts|mpeg2|pgs|vobsub], on a fresh copy of the tree (stdin tar,
                  --tar FILE, or this checkout) in /dev/shm, each job's build/ kept for the next run (only
                  what changed compiles); never deletes. Windows: ./build.ps1 ci [job] (WSL; $env:HEMMA_WSL)
 deploy/          hemma-disks (issue #74; sh, root, -> /usr/local/sbin): `sudo hemma-disks` [use UUID | format sdX | forget
@@ -1291,8 +1382,10 @@ it (MakeMKV's 720x576 on NTSC too); lifted above the bar while it's up (a new cu
 looked up on timeupdate/seeked and every frame while playing, the next PNG fetched ahead (spShow/spDraw/spPlace/
 spLoop). Never beside a text track (subHold: the same key, else the first of its language in the menu's order); an
 item arriving aria-checked is drawn from load (plWire); the pick goes on to the next episode and into the browser's
-own player (nativePlayer copies _sub). Keys (registered BEFORE [data-arrows]): Space/K, Left/
-Right ±10 s, M, F; on a computer they stay the video's even on a focused bar button; UiPlayer.tv puts
+own player (nativePlayer copies _sub). A pick made by the viewer (the menu, or C - subChoose) goes to the server
+too (live media.sub; kept while the socket is down: subLater) - see "FOLLOWING THE VIEWER" under media/subs.c.
+C (1.3) = subToggle: off, or back on - the last shown in this player (v._subPrev), else [data-subpref], else the
+first. Keys (registered BEFORE [data-arrows]): Space/K, Left/Right ±10 s, M, F, C; on a computer they stay the video's even on a focused bar button; UiPlayer.tv puts
 data-arrows on the bar (a remote moves along it; Down/Up on the picture go to the bar, Up on the seek bar
 back). Keys come by e.key, else by keyCode (KEY_CODES: a TV's browser may say "Unidentified"), the
 remote's MediaPlay/Pause/PlayPause/Rewind/FastForward included; Enter with nothing focused plays (live: the
@@ -1344,7 +1437,10 @@ keeps full screen into the next episode/programme/channel: stable ids media-vide
 any submit, socket or not) · `form[data-upload="/base"]` (files: POST base/plan, then one PUT per file
 to base/<batch>/<i>?at=<offset>, resuming from GET base/<batch>/<i>; a todo entry `[i, at, end]` sends
 only the bytes before `end`; `{i, f}` = convert file f here first (web/conv.js Workers, half the cores,
-max 8, a few ahead of the upload), POST ?size= / ?original=1, then PUT the result as entry i; a `conv`
+max 8, as far ahead as the room slider allows), POST ?size= / ?original=1, then PUT the result as entry i;
+`{i, f, subs: 1}` = only read f's subtitles and send those (1.3); ONE file at a time, whatever is ready first
+(finished copies, then plain entries in order - 1.3); the `ram` box keeps copies in memory, sent in pieces
+(?at=&end=; form[data-part] = the piece size, tests only); a `conv`
 form field is dropped when the browser can't run WebAssembly; the server renders progress; with a
 `[data-drop]` area inside, the form keeps its chosen files itself - dropped anywhere on the page, folders
 walked with their paths, each choice adding, the area `[data-over]` while dragging, `[data-drop-clear]`
@@ -1445,11 +1541,25 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
   folder. Across a joiner word the next number must follow directly ("S01E04 - E10 Title" stays a
   title). Rows show "1–2" (.media-ep-nn) and series totals count every episode. Names are parsed
   again from the path at every start (never cached), so parser changes reach existing libraries.
+  SPECIALS (1.3; owner, 2026-10-24: "everything that is not in a series increment ... goes inside like a specials
+  part of the series", "last, apart"): season 0 = Specials - S00Exx, a Specials/Season 0 folder, and (library.c
+  loose_specials, at index time) a MOVIE/OTHER video lying right in a series' own show folder (media_names_show;
+  never a category folder or the library folder; never an extra by name or a copy): an unnumbered season-0
+  episode, numbered by season_pass after the series' highest S00, ep_title = its file's own name parsed alone
+  minus the show's name in front. Extras folders stay left out, disc bonus clips stay MF_BONUS extras. ORDER:
+  season_order() puts season 0 after every season (episode_cmp, extra_cmp) - tabs, TV rows, Live TV channels,
+  zips follow; "Start watching" = S01E01. APART: media_neighbour never crosses between season 0 and the seasons
+  (no "Next episode" card from the last season into them); media_next_up goes by the seasons' episodes only
+  (after the last season: back to the first; a series of only specials walks them). MediaSeries.specials;
+  "%d seasons" = media_seasons(s) (without Specials); nseasons still counts the tabs. The tab says "Specials".
+  A RANGE OF SEASONS is a tag (names.c is_season_tok, 1.3): "S01-S31", "S1-12" (one token: tokenize doesn't
+  split on '-'), "Season 1-2", "Seasons 1-9" (SEASONS_WORDS) - "The.Simpsons.S01-S31.1080p" names "The
+  Simpsons"; such a folder is never a season folder.
   Movies vs series: episode markers / season folders -> series; "Title (Year)" -> movie; folders named
   Series/Serier/TV Shows/Anime or Movies/Films/Filmer or Home videos/Family/DCIM lean the guess.
 - Streaming is direct play (bytes as stored, Range requests, worker thread per stream, `sendfile`
   zero-copy on Linux). Browsers can't decode MPEG-2 (the owner's DVD seasons) and Chrome/Firefox
-  not AC-3 or E-AC-3 (they play the picture silently): that's what modules/av is for (owner wants it
+  not AC-3, E-AC-3 or DTS (they play the picture silently; DTS nothing plays): that's what modules/av is for (owner wants it
   built in C, not ffmpeg - ffmpeg is at most a comparison on a developer's machine, never shipped).
   E-AC-3 seen in real files: "DDP5.1" x265 releases (5.1, 640 kbit/s, 6 blocks, the exponent strategy
   table, no AHT/SPX; ~420x real time per PC core) and Dolby's own streaming encoders (SPX + AHT at
@@ -1528,7 +1638,13 @@ season or series; fix a film's title or an episode's number on disk; what takes 
 predicts from itself; Dolby at 44.1/32 kHz). 1.2.0 (branch fix/subtitles-addition; owner, 2026-10-23: "all the shows
 that have subs to be able to give subs") = subtitles from every MKV (refused ones too, WebVTT, 32 tracks), DVD/Blu-ray
 picture subtitles (.idx/.sub, .sup) drawn by the player, the server taking subtitles out of the library by itself
-(media/subtake.c), same-language tracks kept apart (keys, labels), uploads carrying them all.
+(media/subtake.c), same-language tracks kept apart (keys, labels), uploads carrying them all. 1.3.0 (branch
+feat/faster-uploads; owner, 2026-10-23: "make the 12mbit/s limit ... be always at that limit") = uploads send whatever
+is ready (no waiting on the list's order), conv.js reads ahead, copies optionally kept in memory (a big checkbox; sent
+in pieces), and what stays behind still gives the subtitles the library lacks (subtitles-only entries; sidecars and
+lone subtitle files go next to the library's video); then (owner, 2026-10-24: "faster branch + extra file support") DTS
+sound (av/dts.c) and subtitles following the viewer through a series, C toggling them; admins renaming a series
+(its folders; it keeps its id), and a release folder's season range ("S01-S31") no part of a series' name.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
@@ -1551,4 +1667,4 @@ on the wall (ticking the shopping list - needs .display actions), more wall bloc
 MKV→MP4 remux on the fly for Safari/iPhone (planned as 1.2, owner 2026-10-21: a "virtual MP4" over the MKV,
 Dolby passed through for Apple devices; live AC-3 -> AAC after), "Open in VLC" links, router integration, DLNA, API tokens for
 scripts, "tune in" on the TV's browser via a QR code, more video formats as files need them (HEVC decoding,
-DTS - each with its fuzz seed: docs/decisions/0006).
+Xvid/MP3, TrueHD - each with its fuzz seed: docs/decisions/0006).

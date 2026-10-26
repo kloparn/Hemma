@@ -82,6 +82,7 @@
   .media-sdetail-t .btn.big { padding: 10px 14px; font-size: 15px; }
 }
 .media-seasons { margin-bottom: 14px; }
+.card + .media-seasons { margin-top: 16px; } /* (Manage: the season tabs below the whole series card) */
 
 /* ---- pictures: the link under a series' art, and the dialog (admins) ---- */
 .media-pic-edit {
@@ -256,6 +257,13 @@
 .media-up-pick .btn { min-height: 44px; cursor: pointer; }
 .media-up-pick .btn:focus-within { outline: 2.5px solid var(--accent); outline-offset: 2px; }
 html[data-nodir] .media-up-folder { display: none; } /* (wire.js: no folder picker in this browser) */
+.media-up-ram { /* (1.3: a big checkbox - where copies wait, in sight) */
+  display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; cursor: pointer;
+  border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--panel-2);
+}
+.media-up-ram input { flex: none; width: 24px; height: 24px; margin: 1px 0 0; accent-color: var(--accent); cursor: pointer; }
+.media-up-ram b { display: block; font-size: 15.5px; }
+.media-up-ram small { display: block; margin-top: 3px; line-height: 1.4; }
 .media-up-pv { display: flex; flex-direction: column; gap: 12px; }
 .media-up-pv:empty { display: none; }
 .media-up-pv .notice { margin: 0; }

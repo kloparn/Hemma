@@ -65,7 +65,7 @@ uploads). Modules don't call each other; the core in `core/` gives them a stable
 ## Data
 
 `core/store.c` keeps every table in memory as typed C records - reading is free - and writes each
-change through to SQLite (`hemma.db`, the only third-party code). New fields become new columns
+change through to SQLite (`hemma.db`, the only third-party library). New fields become new columns
 by themselves; numbered migrations handle the rest, and an older Hemma refuses data it can't read
 safely. A damaged file is rescued page by page, and nightly backups go to another disk. The movie
 library is the folders themselves: a scan builds an index, cached in the same database.
@@ -73,7 +73,7 @@ library is the folders themselves: a scan builds an index, cached in the same da
 ## Video
 
 Videos play straight from disk (HTTP Range requests, `sendfile` on Linux). For files a browser
-can't play - DVD rips (MPEG-2, Dolby sound), Dolby Digital Plus - `modules/av` holds Hemma's own
+can't play - DVD rips (MPEG-2, Dolby sound), Dolby Digital Plus, DTS - `modules/av` holds Hemma's own
 decoders and encoders in plain C: one MKV in, one MP4 (H.264 + AAC) out, which every browser,
 phone and TV plays. The same C code runs on the server and, compiled to WebAssembly, in the
 browser that uploads a video: the uploading computer makes the copy, so the Pi does no heavy

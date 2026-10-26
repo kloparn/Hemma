@@ -36,12 +36,12 @@ TEST(convert_knows_what_each_file_needs) {
     CHECK_INT(convert_need(&f), CONV_TRANSCODE);
     f = video("mkv", "h264", "eac3");
     CHECK_INT(convert_need(&f), CONV_TRANSCODE);
-    f = video("mkv", "hevc", "dts");
-    CHECK_INT(convert_need(&f), CONV_NONE);
+    f = video("mkv", "hevc", "dts"); /* (1.3: DTS sound is made AAC too) */
+    CHECK_INT(convert_need(&f), CONV_TRANSCODE);
     f = video("mkv", "av1", "aac");
     CHECK_INT(convert_need(&f), CONV_NONE);
     f = video("mkv", "h264", "dts");
-    CHECK_INT(convert_need(&f), CONV_NONE);
+    CHECK_INT(convert_need(&f), CONV_TRANSCODE);
     f = video("mkv", "mpeg2", "ac3");
     f.web = 42; /* converted already */
     CHECK_INT(convert_need(&f), CONV_NONE);

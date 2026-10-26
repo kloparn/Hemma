@@ -10,6 +10,8 @@
 #include "ac3.h"
 #include "ac3_testenc.h"
 #include "conv.h"
+#include "dts.h"
+#include "dts_testenc.h"
 #include "h264enc.h"
 
 /* ------------------------------------------------------------ bytes in memory */
@@ -549,12 +551,12 @@ TEST(conv_says_what_it_cannot_convert) {
     CHECK_INT((int)out.len, 0); /* nothing written */
     free(in.p), free(out.p);
 
-    Tracks dts = {"V_MPEG2", NULL, 0, 48, 32, "A_DTS", NULL, 0};
-    seg = start_file(&in, &dts, 1000);
+    Tracks truehd = {"V_MPEG2", NULL, 0, 48, 32, "A_TRUEHD", NULL, 0};
+    seg = start_file(&in, &truehd, 1000);
     w_close(&in, seg);
     CHECK(!run(&in, &out, &j, &s));
     CHECK(j.unsupported);
-    CHECK_HAS(j.err, "Its sound is DTS");
+    CHECK_HAS(j.err, "Its sound is Dolby TrueHD");
     free(in.p), free(out.p);
 
     memset(&in, 0, sizeof in); /* not Matroska at all */
@@ -778,7 +780,7 @@ TEST(conv_turns_dolby_digital_plus_into_aac_and_keeps_text_subtitles) {
    still come out (1.2: they used to go with the refusal). */
 TEST(conv_names_the_sound_it_cant_convert) {
     W in;
-    Tracks t = {"V_MPEG2", NULL, 0, 48, 32, "A_DTS", NULL, 0, {{"S_TEXT/UTF8", "eng", NULL, false}}};
+    Tracks t = {"V_MPEG2", NULL, 0, 48, 32, "A_TRUEHD", NULL, 0, {{"S_TEXT/UTF8", "eng", NULL, false}}};
     size_t seg = start_file(&in, &t, 100);
     size_t cl = w_open(&in, 0x1F43B675);
     w_uint(&in, 0xE7, 0);
@@ -792,7 +794,7 @@ TEST(conv_names_the_sound_it_cant_convert) {
     Seen s;
     CHECK(!run(&in, &out, &j, &s));
     CHECK(j.unsupported);
-    CHECK_STR(j.err, "Its sound is DTS, which the converter can't change yet (browsers play it silently)");
+    CHECK_STR(j.err, "Its sound is Dolby TrueHD, which the converter can't change yet (browsers play it silently)");
     CHECK_INT((int)out.len, 0);
     CHECK_INT(j.nsubs, 1);
     CHECK_STR(j.subs[0].srt, "1\n00:00:00,000 --> 00:00:00,500\nHi\n\n");
@@ -1232,6 +1234,46 @@ static void add_aac(Stream *s, double seconds, uint8_t asc[2]) {
     for (int a = 0; a < n; a++) s_add(s, aus[a], (size_t)sizes[a], au_ms(a), true);
 }
 
+/* `frames` DTS frames of 512 samples (dts_testenc.h's tone: 5.1, or stereo), every one a block */
+static void add_dts(Stream *s, int frames, bool surround) {
+    static uint8_t dts[96 * 2048];
+    size_t len = dts_test_tone(dts, sizeof dts, frames, surround), at = 0;
+    for (int f = 0; at < len; f++) {
+        int n = dts_frame_size(dts + at, len - at);
+        if (n <= 0) break;
+        s_add(s, dts + at, (size_t)n, f * 32 / 3, true); /* (10.67 ms a frame) */
+        at += (size_t)n;
+    }
+}
+
+/* 1.3: DTS sound (Blu-ray rips: 5.1 at 48 kHz) becomes stereo AAC at its rate; the picture is copied */
+TEST(conv_turns_dts_into_aac) {
+    enum { NF = 60 }; /* 0.64 s */
+    for (int surround = 0; surround < 2; surround++) {
+        static Stream v, a;
+        uint8_t avcc[256];
+        size_t avcc_len = 0;
+        add_h264(&v, 20, avcc, &avcc_len);
+        add_dts(&a, NF, surround);
+        CHECK_INT(a.n, NF);
+        Tracks t = {"V_MPEG4/ISO/AVC", avcc, avcc_len, 64, 48, "A_DTS", NULL, 0};
+        W in, out;
+        mux(&in, &t, v.n * 33.4, &v, &a);
+        AvConvJob j = {0};
+        Seen s;
+        CHECK(run(&in, &out, &j, &s));
+        CHECK_STR(j.err, "");
+        CHECK_STR(j.what, "H.264 copied · DTS → AAC");
+        int n[2];
+        counts(&out, n);
+        CHECK_INT(n[0], 20);
+        CHECK(n[1] >= NF / 2 && n[1] <= NF / 2 + 3); /* 512 samples a DTS frame, 1024 an AAC one */
+        CHECK(track_bytes(&out, 1) / n[1] > 40);      /* a tone, not silence */
+        free(in.p), free(out.p);
+        s_free(&v), s_free(&a);
+    }
+}
+
 /* MPEG-2 coded interlaced, as most DVDs are: fields from different instants throughout are
    deinterlaced (one picture each), film telecined to 29.97 goes back to 23.976 (one picture in
    five dropped) - picked by the analysis, as for a real disc. */
@@ -1473,16 +1515,16 @@ TEST(conv_keeps_wild_timestamps_and_lengths_in_check) {
         }
 }
 
-/* 1.2: a file the converter refuses for what it holds (an AV1 picture, DTS sound) still gives its subtitles,
+/* 1.2: a file the converter refuses for what it holds (an AV1 picture, TrueHD sound) still gives its subtitles,
    read once more on their own and timed on the copy's clock (from the first picture, whatever its codec).
    Not when asked to skip that (the browser: the original goes to the server, which takes them itself); a
    real error (stopped) gives none. */
 TEST(conv_takes_subtitles_from_a_file_it_refuses) {
     static uint8_t set[1024], spu[600], pic[4096];
     static const char head[] = "size: 720x480\n";
-    for (int dts = 0; dts < 2; dts++) {
+    for (int sound = 0; sound < 2; sound++) {
         W in;
-        Tracks t = {dts ? "V_MPEG2" : "V_AV1", NULL, 0, 48, 32, dts ? "A_DTS" : NULL, NULL, 0,
+        Tracks t = {sound ? "V_MPEG2" : "V_AV1", NULL, 0, 48, 32, sound ? "A_TRUEHD" : NULL, NULL, 0,
                     {{"S_TEXT/UTF8", "swe", NULL, false},
                      {"S_HDMV/PGS", "eng", NULL, false},
                      {"S_VOBSUB", "eng", NULL, false, head, sizeof head - 1},
@@ -1491,7 +1533,7 @@ TEST(conv_takes_subtitles_from_a_file_it_refuses) {
         size_t cl = w_open(&in, 0x1F43B675);
         w_uint(&in, 0xE7, 0);
         for (int k = 0; k < 20; k++) {
-            if (dts) {
+            if (sound) {
                 w_simple(&in, 1, 300 + frame_ms(k), true, pic, mpeg2_picture(pic, k));
                 w_simple(&in, 2, 300 + k * 32, true, "\x7F\xFE\x80\x01", 4);
             } else {
@@ -1513,7 +1555,7 @@ TEST(conv_takes_subtitles_from_a_file_it_refuses) {
             Seen s;
             CHECK(!run(&in, &out, &j, &s));
             CHECK(j.unsupported);
-            CHECK_HAS(j.err, dts ? "Its sound is DTS" : "Its picture is AV1"); /* the refusal stays the reason */
+            CHECK_HAS(j.err, sound ? "Its sound is Dolby TrueHD" : "Its picture is AV1"); /* the refusal stays the reason */
             CHECK_INT((int)out.len, 0);
             CHECK_INT(j.nsubs, how ? 0 : 4);
             if (!how) {
@@ -1538,7 +1580,7 @@ TEST(conv_takes_subtitles_from_a_file_it_refuses) {
         Seen s;
         CHECK(!run(&in, &out, &j, &s));
         CHECK(j.unsupported);
-        CHECK_HAS(j.err, dts ? "Its sound is DTS" : "Its picture is AV1");
+        CHECK_HAS(j.err, sound ? "Its sound is Dolby TrueHD" : "Its picture is AV1");
         CHECK_INT(j.nsubs, 0);
         free(in.p), free(out.p);
     }
@@ -1795,13 +1837,33 @@ TEST(conv_fuzz_seeds) {
             CHECK(dir_make(folder));
             CHECK(file_write_atomic(path, b.p, b.len));
         }
+        /* DTS core frames (1.3): a 5.1 tone, and frames using every tool - stereo and 5.1, 512 and 1024 samples */
+        snprintf(path, sizeof path, "%s/dts", raw);
+        CHECK(dir_make(path));
+        for (int i = 0; i < 3; i++) {
+            static const char *const names[] = {"dts-tone", "dts-every-tool", "dts-every-tool-stereo-reset"};
+            static const uint8_t opts[] = {0, 2, 1 | 16};
+            static uint8_t frames[16 * 2048], frame[16384];
+            buf_reset(&b);
+            buf_putc(&b, (char)opts[i]);
+            if (i == 0) buf_put(&b, frames, dts_test_tone(frames, sizeof frames, 12, true));
+            else
+                for (uint32_t k = 1; k <= 6; k++) {
+                    TencOpts o = {.amode = i == 1 ? 9 : 2, .lfe = i == 1, .nblks = k & 1 ? 15 : 31, .subframes = k & 1 ? 2 : 4,
+                                  .random = true, .aspf = k == 2, .cpf = k == 3, .dynf = k == 4, .sumf = k == 5,
+                                  .sums = k == 6, .seed = k * 7919u + (uint32_t)i};
+                    buf_put(&b, frame, dts_test_frame(&o, frame, sizeof frame, NULL));
+                }
+            snprintf(path, sizeof path, "%s/dts/%s", raw, names[i]);
+            CHECK(file_write_atomic(path, b.p, b.len));
+        }
         buf_free(&b);
     }
     static const uint8_t hvcc[] = {1,    0x01, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 0x5D, 0xF0, 0, 0xFC,
                                    0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
     char took[64][40]; /* every CodecID a seed carries: each format the converter takes needs one (below) */
     int ntook = 0;
-    for (int seed = 0; seed < 13; seed++) {
+    for (int seed = 0; seed < 14; seed++) {
         uint8_t avcc[256], asc[2];
         size_t avcc_len = 0;
         Tracks mp2 = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0}, t = mp2;
@@ -1888,6 +1950,12 @@ TEST(conv_fuzz_seeds) {
             built = true, subs = 1;
             break;
         }
+        case 13: /* DTS sound (1.3): 5.1 + LFE, ~0.4 s */
+            name = "h264-dts.mkv";
+            add_h264(&v, 12, avcc, &avcc_len);
+            add_dts(&a, 38, true);
+            t = (Tracks){"V_MPEG4/ISO/AVC", avcc, avcc_len, 64, 48, "A_DTS", NULL, 0};
+            break;
         case 0:
             name = "mpeg2-aac.mkv";
             add_mpeg2(&v, 0, 30, 48, 32, false, 0, false);

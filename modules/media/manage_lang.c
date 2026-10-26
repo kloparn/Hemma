@@ -4,9 +4,9 @@
 static const Tr TR[] = {
     /* the Manage view of a series */
     {"Manage", "Hantera", "Gestionar"},
-    {"Fix episode numbers, or remove episodes, seasons or the whole series",
-     "Rätta avsnittsnummer, eller ta bort avsnitt, säsonger eller hela serien",
-     "Corrige números de episodio, o quita episodios, temporadas o la serie entera"},
+    {"Rename the series, fix episode numbers, or remove episodes, seasons or the whole series",
+     "Byt namn på serien, rätta avsnittsnummer, eller ta bort avsnitt, säsonger eller hela serien",
+     "Renombra la serie, corrige números de episodio, o quita episodios, temporadas o la serie entera"},
     {"Specials", "Specialavsnitt", "Especiales"},
     {"Original", "Original", "Original"},
     {"Fix number", "Rätta numret", "Corregir número"},
@@ -79,6 +79,48 @@ static const Tr TR[] = {
     {"A year like 1993 - or leave it empty", "Ett år som 1993 - eller lämna tomt", "Un año como 1993 - o déjalo vacío"},
     {"Without a year Hemma can't tell it's a film - add the year", "Utan år kan Hemma inte se att det är en film - lägg till året",
      "Sin año Hemma no sabe que es una película - añade el año"},
+
+    /* renaming a series (1.3) */
+    {"Rename", "Byt namn", "Renombrar"},
+    {"Rename the series", "Byt namn på serien", "Renombrar la serie"},
+    {"Hemma reads a series' name from its folder, so its folder <code class=\"media-code\">%s</code> gets the new name. TV "
+     "channels, screens and everyone's progress stay with it.",
+     "Hemma läser en series namn från dess mapp, så mappen <code class=\"media-code\">%s</code> får det nya namnet. "
+     "TV-kanaler, skärmar och allas framsteg följer med.",
+     "Hemma lee el nombre de una serie de su carpeta, así que su carpeta <code class=\"media-code\">%s</code> recibe el "
+     "nombre nuevo. Los canales de TV, las pantallas y el progreso de todos siguen con ella."},
+    {"Hemma reads a series' name from its folders, so its %d folders get the new name. TV channels, screens and "
+     "everyone's progress stay with it.",
+     "Hemma läser en series namn från dess mappar, så dess %d mappar får det nya namnet. TV-kanaler, skärmar och allas "
+     "framsteg följer med.",
+     "Hemma lee el nombre de una serie de sus carpetas, así que sus %d carpetas reciben el nombre nuevo. Los canales de "
+     "TV, las pantallas y el progreso de todos siguen con ella."},
+    {"Year (optional)", "År (frivilligt)", "Año (opcional)"},
+    {"Type its name - in letters a disk can store", "Skriv namnet - med tecken som en disk kan spara",
+     "Escribe su nombre - con caracteres que un disco pueda guardar"},
+    {"There's already a series called %s", "Det finns redan en serie som heter %s", "Ya hay una serie llamada %s"},
+    {"Videos are being uploaded into its folder - rename it once that's done",
+     "Videor laddas upp till dess mapp - byt namn när det är klart",
+     "Se están subiendo vídeos a su carpeta - renómbrala cuando termine"},
+    {"Hemma would still read %s as \"%s\" by its own file name - use Fix number on it first (that puts it in a season "
+     "folder), then rename the series",
+     "Hemma skulle fortfarande läsa %s som \"%s\" efter filens eget namn - använd Rätta numret på det först (det lägger "
+     "det i en säsongsmapp), byt sedan namn på serien",
+     "Hemma seguiría leyendo %s como \"%s\" por el nombre de su propio archivo - usa Corregir número en él primero (lo "
+     "pone en una carpeta de temporada) y luego renombra la serie"},
+    {"Some of its episodes aren't in a folder of the series' own, so Hemma can't rename it by its folder.",
+     "Några av avsnitten ligger inte i en mapp som är seriens egen, så Hemma kan inte byta namn på den via mappen.",
+     "Algunos de sus episodios no están en una carpeta propia de la serie, así que Hemma no puede renombrarla por su "
+     "carpeta."},
+    {"Its episodes are in too many folders to rename them all at once.",
+     "Avsnitten ligger i för många mappar för att byta namn på alla på en gång.",
+     "Sus episodios están en demasiadas carpetas para renombrarlas todas a la vez."},
+    {"One of its folders is inside another, so Hemma can't rename it by its folders.",
+     "En av dess mappar ligger i en annan, så Hemma kan inte byta namn på den via mapparna.",
+     "Una de sus carpetas está dentro de otra, así que Hemma no puede renombrarla por sus carpetas."},
+    {"Its folder holds other videos too, so Hemma can't rename it by its folder.",
+     "Mappen har andra videor också, så Hemma kan inte byta namn på den via mappen.",
+     "Su carpeta también tiene otros vídeos, así que Hemma no puede renombrarla por su carpeta."},
 
     /* fixing, either */
     {"Only an admin can fix names in the library", "Bara en administratör kan rätta namn i biblioteket",

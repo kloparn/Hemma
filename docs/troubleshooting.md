@@ -125,24 +125,29 @@ on its disk. On a Pi, run the installer again with every media folder after the 
 file, so Hemma may write there ([raspberry-pi.md](raspberry-pi.md#7-a-usb-disk-for-movies)).
 
 **A video won't play on some devices.**
-DVD rips, MKV files and Dolby sound don't play everywhere. **Watch → Library settings**
+DVD rips, MKV files and Dolby or DTS sound don't play everywhere. **Watch → Library settings**
 makes a copy of each that does.
 
 **A video plays, but without sound.**
 Its sound is most likely Dolby (Dolby Digital or Digital Plus - "DD5.1", "DDP5.1" in a file
-name): Chrome and Firefox play the picture and stay silent, Safari and Edge play it. The
-video's page says so under the player. Press **Fix the sound** there (or **Convert** on
+name): Chrome and Firefox play the picture and stay silent, Safari and Edge play it. Or DTS
+("DTS", "DTS-HD MA" in a file name), which no browser plays. The video's page says so under the
+player. Press **Fix the sound** there (or **Convert** on
 **Watch → Library settings** for every such video at once): Hemma makes a copy next to it with
 AAC sound, which every browser plays - the picture is copied as it is, so it's quick. Uploads
 from a browser make that copy before sending (the box *Make videos play everywhere on this
 device first*). If an upload couldn't, its card says which videos went up unconverted, and why.
 
 **Subtitles inside an MKV don't show.**
-Browsers can't read subtitles inside a video file, only separate ones. When Hemma converts an
-MKV (on the server or while uploading), it saves its text subtitles (SRT, ASS) as `.srt` files
-next to it - "Movie.en.srt" - and the player offers them. Subtitles that are pictures (PGS from
-Blu-rays, VobSub from DVDs) can't be turned into text yet; an `.srt` you put next to the video
-yourself works too.
+Browsers can't read subtitles inside a video file, only separate ones. Hemma takes them out and
+saves them next to the video - text ones as `.srt` ("Movie.en.srt"), DVD and Blu-ray ones (which
+are pictures) as `.idx`/`.sub` and `.sup`, which Hemma's player draws. It does that when it converts
+an MKV (on the server or while uploading), and by itself for the MKVs already in the library, a few
+at a time while nobody is watching (**Watch → Library settings → Subtitles inside videos** shows how
+far it's got). A video whose MKV isn't on the server - only its converted copy is - gets them when
+you upload the MKV again: the upload sees the library has the video and sends only its subtitles.
+An `.srt` you put next to the video yourself works too, and one you upload on its own finds its
+episode or film by its name ("Show S01E02.en.srt").
 
 **"Database rescued" on the System page.**
 At the start, Hemma found its database damaged and rescued what it could still read; the
