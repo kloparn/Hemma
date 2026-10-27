@@ -17,7 +17,10 @@
 
 #define MEDIA_MAX_ROOTS 8
 
-enum { MF_VIDEO = 'v', MF_SUB = 's', MF_IMAGE = 'i' };
+/* MF_NFO (1.4): a Kodi/Jellyfin ".nfo" - a series' tvshow.nfo, a film's "<its name>.nfo" or movie.nfo (an
+   episode's own is never indexed). Only its genres are read, at the scan, kept in name.title as written and
+   joined by '|' ("Comedy|Animation"): media_nfo_genres(); cats.c makes them categories. */
+enum { MF_VIDEO = 'v', MF_SUB = 's', MF_IMAGE = 'i', MF_NFO = 'n' };
 /* MediaFile.role of the titles on a ripped disc that are not episodes (see library.c), and
    of "<name>.web.mp4": the play-everywhere copy made by convert.c, hidden behind its original */
 enum { MF_MAIN = 0, MF_PLAYALL = 'a', MF_BONUS = 'b', MF_WEBCOPY = 'w' };
@@ -37,6 +40,7 @@ typedef struct {
     uint64_t web;     /* its "<name>.web.mp4" copy that plays everywhere (0 = none): what gets streamed */
     uint64_t fp;      /* its content: size + the first and last 64 KB, hashed - the same file under another
                          name or folder (issue #93); read once per file, kept in the cache; 0 = not yet */
+    uint64_t nfo;     /* films: its .nfo (MF_NFO), 0 = none */
     /* subtitles */
     uint64_t video; /* the video this subtitle belongs to (0 = none) */
     char lang[16];  /* "sv", "en", ... or "" */
@@ -51,6 +55,7 @@ typedef struct {
     int nseasons;     /* tabs: the seasons, and Specials when it has any */
     bool specials;    /* it has season 0 (S00, a Specials folder, loose videos in its folder: 1.3) */
     int64_t newest;   /* mtime of the newest episode */
+    uint64_t nfo;     /* its tvshow.nfo (MF_NFO): in the show folder, else the first episode's; 0 = none */
 } MediaSeries;
 /* "%d seasons": its seasons without the specials (1.3). Specials sit last and apart: next-up and
    "Next episode" never cross from a season into them (or back) - media_next_up, media_neighbour. */
@@ -102,6 +107,7 @@ const MediaSeries *media_series(uint64_t id);
 const MediaFile *media_episode(const MediaSeries *s, int i); /* i-th episode in order */
 const MediaFile *media_neighbour(const MediaFile *ep, int dir); /* next (+1) / previous (-1) episode */
 const MediaFile *media_playable(const MediaFile *f); /* the file to stream: its .web.mp4 copy when there is one */
+const char *media_nfo_genres(uint64_t nfo);          /* an MF_NFO's genres, '|' between ("" = none, or no such file) */
 bool media_is_web_copy(const char *rel);              /* "...name.web.mp4" */
 /* "...name.playall.mkv": just the first MB of a disc's play-all title (upload.c sends that instead
    of the whole thing). Its header says how long the disc is - all the library needs to tell the

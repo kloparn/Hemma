@@ -748,6 +748,13 @@ void media_manage_act_fix_title(Ctx *c, Fields *fl) {
     log_info("media: %s renamed %s to %s", c->me->name, f->rel, rel);
     if (own[0] && !str_eq(own, dest)) kids_follow(root, own, dest);
     media_watch_move(old_id, new_id);
+    if (f->name.kind == MEDIA_MOVIE && movie) { /* its categories go along; found online by its old name: asked again */
+        char from[20], to_key[20];
+        media_film_key(f->name.title, f->name.year, from);
+        media_film_key(n.title, n.year, to_key);
+        media_cats_move(from, to_key);
+        media_lookup_renamed(from, to_key);
+    }
     activity_add(c->me->id, "✏️", movie ? "/media/movies" : "/media/browse", N_("renamed %s to %s"), was, now_is);
     ctx_ok(c, T("Renamed it %s"), now_is);
     ctx_redirect(c, "/media/watch/%016llx", (unsigned long long)new_id);
@@ -967,6 +974,9 @@ void media_manage_act_rename_series(Ctx *c, Fields *fl) {
     char was[128];
     str_copy(was, sizeof was, s->title);
     media_series_keep(sid, named);
+    MediaWork work; /* (its id stays, so its categories do; found online by its old name: asked again) */
+    media_work_series(s, &work);
+    media_lookup_renamed(work.key, work.key);
     for (int i = 0; i < ix->nfiles; i++) {
         const MediaFile *f = &ix->files[i];
         if (!of_series(f, sid)) continue;
@@ -1255,6 +1265,9 @@ bool media_manage_series(Ctx *c, Buf *b, const MediaSeries *s) {
     buf_puts(b, "<span>");
     H(b, T("Remove the series (%s)"), size);
     buf_puts(b, "</span></a></div>");
+    MediaWork work; /* its categories from the internet: what was found, and "Update categories" by an id (1.4) */
+    media_work_series(s, &work);
+    media_lookup_form(c, b, &work);
     ui_card_end(b);
 
     if (s->nseasons > 1) {

@@ -114,6 +114,69 @@ bool media_root_add(const char *dir);
 bool media_root_drop(const char *dir);
 void media_kids_stop(void);
 
+/* CATEGORIES (cats.c, 1.4; owner, 2026-10-27: "increase the searching and usage of the series and movies"):
+   a series or a film is a WORK - key "s<16 hex>" = the series' id (kept through a rename), "m<16 hex>" = a film's
+   folded title + year hashed (the same film moved, or as several parts, keeps them). Its categories = the
+   genres of its .nfo (MF_NFO) and of the online lookup (lookup.c), mapped onto the starters ("Animation" ->
+   animated), plus what people ticked (table media_cat; a row with on = 0 takes one of those off). A category
+   is a starter's key ("comedy": T() its name) or "+" and a name of the household's own ("+Pokémon"). */
+#define MEDIA_CAT_MAX 16 /* a work's categories, at most */
+#define MEDIA_CAT_LEN 48
+typedef struct {
+    char key[20];
+    uint64_t nfo;
+    const MediaSeries *s; /* one of these two */
+    const MediaFile *f;
+} MediaWork;
+void media_work_series(const MediaSeries *s, MediaWork *w);
+void media_work_film(const MediaFile *f, MediaWork *w);
+void media_film_key(const char *title, int year, char out[20]); /* a film's key by its name (manage.c's Fix title) */
+bool media_work_find(const char *key, MediaWork *w); /* a work of the whole library by its key */
+int media_cats_of(const MediaWork *w, char out[][MEDIA_CAT_LEN], int max); /* in the order they're listed */
+bool media_cat_in(const MediaWork *w, const char *cat);
+const char *media_cat_label(const char *cat); /* in the reader's language (a starter's), or the household's name */
+/* The categories c's viewer finds titles in (series and/or films, media_lib_for): with how many, most first. */
+typedef struct {
+    char cat[MEDIA_CAT_LEN];
+    int series, films;
+} MediaCatUse;
+enum { MEDIA_CATS_SERIES = 1, MEDIA_CATS_FILMS = 2 };
+int media_cats_used(const Ctx *c, int kinds, MediaCatUse *out, int max);
+bool media_cat_parse(const char *q, char out[MEDIA_CAT_LEN]); /* a ?cat= value that names a category */
+/* What a series' / film's page shows: its categories as links to list (`/media/series` or `/media/movies`), and -
+   for whoever may tick them - a link to edit them (?cats=1 on `here`); the dialog itself when ?cats=1. */
+void media_cats_line(Ctx *c, Buf *b, const MediaWork *w, const char *list, const char *here);
+void media_cats_modal(Ctx *c, Buf *b, const MediaWork *w, const char *title, const char *close);
+void media_cats_words(const MediaWork *w, Buf *out); /* its categories' names for searching, both languages */
+void media_cats_move(const char *from, const char *to); /* a film renamed (manage.c): its ticks go along */
+void media_cats_init(void);
+void act_media_cat(Ctx *c, Fields *f);
+void act_media_cat_new(Ctx *c, Fields *f);
+
+/* LOOKING UP GENRES ONLINE (lookup.c, 1.4; owner: "if internet is available ... if the user has checked the box"):
+   off by default (setting media.lookup), an admin's box in Library settings - greyed while this Hemma can't
+   reach the services (checked when the page opens). Series from TVmaze (no key), films from OMDb with an admin's
+   key (setting media.omdb_key) - both plain HTTP, the only thing Hemma itself ever fetches from the internet. */
+const char *media_lookup_genres(const char *work); /* what was found, '|' between ("" = nothing yet) */
+void media_lookup_card(Ctx *c, Buf *b);           /* Library settings */
+/* Admins (owner, 2026-10-27: "press manage, and then maybe 'Update tags'? Where i paste the id"): what was found
+   for it and where, and a field for its TVmaze or IMDb link or id - looked up by that, and kept so (pinned). */
+void media_lookup_form(Ctx *c, Buf *b, const MediaWork *w);
+void media_lookup_renamed(const char *from, const char *to); /* renamed: found by name = looked up again; pinned moves */
+void media_lookup_init(void);
+void media_lookup_start(void);
+void media_lookup_tick(int64_t now);
+void media_lookup_stop(void);
+void act_media_lookup(Ctx *c, Fields *f);
+void act_media_lookup_id(Ctx *c, Fields *f);
+/* tests: what an answer gives (1 found, 0 nothing, -1 not understood); the scheduler's next ask (false = none);
+   the internet check's result (1 reachable, -1 not, 0 not known); a found row */
+int media_lookup_test_tvmaze(const char *json, const char *title, int year, char *genres, size_t cap);
+int media_lookup_test_omdb(const char *json, char *genres, size_t cap);
+bool media_lookup_test_next(char *host, size_t hcap, char *path, size_t pcap);
+void media_lookup_test_online(int state);
+void media_lookup_test_put(const char *work, const char *genres, bool pinned);
+
 /* TV mode's pages (tiles.c) and the rows media offers to screens */
 void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f);
 void media_series_tv(Ctx *c, Buf *b, const MediaSeries *s);

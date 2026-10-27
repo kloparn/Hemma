@@ -289,8 +289,15 @@ static int draw_rows(Ctx *c, Buf *b, const Screen *s, int *total) {
         if (!bl || !(bl->kinds & s->kind) || !module_visible(owner, c)) continue; /* gone, or not for this screen */
         Buf row = {0};
         if (bl->render(c, &row, s->kind, rows[i]->arg)) {
-            /* a heading the admin typed is theirs; the block's own is its module's N_() word */
-            const char *title = rows[i]->title[0] ? rows[i]->title : T(bl->title);
+            /* a heading the admin typed is theirs; else what was picked ("Family Guy", "Comedy" - 1.4: it said "A
+               series"); else the block's own, its module's N_() word */
+            char picked[96] = "";
+            BlockChoice *ch = NULL;
+            int nch = rows[i]->title[0] ? 0 : screens_choices(c, bl, &ch);
+            for (int k = 0; k < nch && !picked[0]; k++)
+                if (str_eq(ch[k].arg, rows[i]->arg)) str_copy(picked, sizeof picked, ch[k].label);
+            free(ch);
+            const char *title = rows[i]->title[0] ? rows[i]->title : picked[0] ? picked : T(bl->title);
             if (wall) H(b, "<section class=\"screens-card\" id=\"screens-r%d\"><h2>%s</h2>", rows[i]->id, title);
             else H(b, "<section class=\"screens-row\" id=\"screens-r%d\"><h2>%s</h2>", rows[i]->id, title);
             buf_put(b, row.p, row.len);

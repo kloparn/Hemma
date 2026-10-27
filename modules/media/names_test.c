@@ -315,6 +315,10 @@ TEST(media_names_film_parts) {
     CHECK_INT(media_name_part("Kill Bill (2003)/Kill Bill (2003) CD1.mkv"), 1);
     CHECK_INT(media_name_part("Kill Bill (2003)/Kill.Bill.2003.cd2.1080p.mkv"), 2);
     CHECK_INT(media_name_part("Film (1999) - Part 2.mp4"), 2);
+    CHECK_INT(media_name_part("Family Guy (1999) - S08E20 - Something Something Something Dark Side Pt. 2 [DSNP WEBDL-1080p]"
+                              "[AAC 2.0][h264].web.mp4"), 2); /* (an episode in two files too - 1.4) */
+    CHECK_INT(media_name_part("Family Guy (1999) - S08E20 - Something Something Something Dark Side [DSNP WEBDL-1080p]"
+                              "[AAC 2.0][h264]-playWEB.web.mp4"), 0);
     CHECK_INT(media_name_part("Film.1999.pt1.avi"), 1);
     CHECK_INT(media_name_part("Film (1999) Disc 1.mkv"), 1);
     CHECK_INT(media_name_part("Filmen (1999) del 2.mkv"), 2);

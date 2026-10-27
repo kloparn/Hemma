@@ -1180,6 +1180,13 @@ TEST(upload_skips_what_the_library_has_under_other_names) {
     CHECK_HAS(body_of(&r), "\"todo\":[[0,0],[3,0],[4,0]],\"skipped\":2");
     CHECK_HAS(th_page(adam_id, "/media/upload"), "the library has it: Hocus Pocus (1993)/Hocus Pocus (1993).mkv");
 
+    /* an episode's part 2 is new too (1.4: "Dark Side Pt. 2" is S08E20, like the "Dark Side" there) */
+    const char *parts = "{\"root\":\"0\",\"into\":\"Series\",\"files\":["
+                        "[\"Arthur/Season 3/Arthur S03E01 Pt. 2.mkv\",10]," /* 0: new */
+                        "[\"Arthur/Season 3/Arthur.S03E02.720p.mkv\",10]]}"; /* 1: have it */
+    plan_for(adam, parts, &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[[0,0]],\"skipped\":1");
+
     /* the box sends them anyway */
     const char *anyway = "{\"root\":\"0\",\"into\":\"Movies\",\"dupes\":\"1\",\"files\":["
                          "[\"Kill.Bill.2003.CD1.1080p.mkv\",10],[\"Hocus.Pocus.1993.1080p.BluRay.mkv\",10]]}";

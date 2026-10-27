@@ -289,6 +289,38 @@ TEST(media_library_episode_order_and_neighbours) {
     th_halt();
 }
 
+/* 1.4: one episode or film in two files - "Dark Side" and "Dark Side Pt. 2" are both S08E20, and by their names
+   part 2 came first ("Pt" < "["): "Next episode" played it before part 1 */
+TEST(media_library_puts_part_two_after_part_one) {
+    th_boot();
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    const char *s8 = "Series/Family Guy/Season 08/Family Guy (1999) - ";
+    char rel[4][300];
+    snprintf(rel[0], sizeof rel[0], "%sS08E19 - Brian's Got a Brand New Bag.web.mp4", s8);
+    snprintf(rel[1], sizeof rel[1], "%sS08E20 - Something Something Something Dark Side [DSNP WEBDL-1080p][AAC 2.0][h264]"
+                                    "-playWEB.web.mp4", s8);
+    snprintf(rel[2], sizeof rel[2], "%sS08E20 - Something Something Something Dark Side Pt. 2 [DSNP WEBDL-1080p][AAC 2.0]"
+                                    "[h264].web.mp4", s8);
+    snprintf(rel[3], sizeof rel[3], "%sS08E21 - Partial Terms of Endearment.web.mp4", s8);
+    for (int i = 3; i >= 0; i--) puts_file(root, rel[i], "e");
+    puts_file(root, "Movies/Kill Bill (2003) - Part 2.mkv", "kb2"); /* ("-" < "[") */
+    puts_file(root, "Movies/Kill Bill (2003) [1080p].mkv", "kb1");
+    setting_set("media.roots", root);
+    media_scan_sync();
+    const MediaSeries *s = &media_lib()->series[0];
+    CHECK_INT(s->count, 4);
+    for (int i = 0; i < 4; i++) CHECK_STR(media_episode(s, i)->rel, rel[i]);
+    CHECK(media_neighbour(media_episode(s, 0), +1) == media_episode(s, 1));
+    CHECK(media_neighbour(media_episode(s, 1), +1) == media_episode(s, 2));
+    CHECK(media_neighbour(media_episode(s, 2), +1) == media_episode(s, 3));
+    const MediaIndex *ix = media_lib();
+    CHECK_INT(ix->nmovies, 2);
+    CHECK_STR(ix->files[ix->movies[0]].rel, "Movies/Kill Bill (2003) [1080p].mkv");
+    CHECK_STR(ix->files[ix->movies[1]].rel, "Movies/Kill Bill (2003) - Part 2.mkv");
+    th_halt();
+}
+
 TEST(media_library_sorts_out_ripped_dvds) {
     th_boot();
     char root[512];

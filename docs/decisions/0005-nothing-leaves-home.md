@@ -1,6 +1,6 @@
 # 0005 - Nothing leaves the home unasked
 
-**Status:** accepted · **Since:** the start (2026-10)
+**Status:** accepted, amended by [0009](0009-categories-looked-up-when-asked.md) (2026-10-27: categories looked up online, when an admin asks) · **Since:** the start (2026-10)
 
 ## Context
 

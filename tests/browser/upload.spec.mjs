@@ -134,6 +134,26 @@ test('a conversion whose reads failed is tried again, and its copy goes', async 
   await expect(page.locator('.media-up-asis')).toHaveCount(0);
 });
 
+// 1.4: a network that's gone for a while is waited out (a PC's Wi-Fi dropped for ten minutes at night, and the
+// upload stopped after a minute of tries): sends that got no answer at all aren't tries, and the file arrives whole.
+test('an upload waits out a dropped network', async ({ page }) => {
+  const from = path.join(WORK, 'netdrop', 'Netdrop (2022).mp4'), to = path.join(LIBRARY, 'Movies', 'Netdrop (2022)', 'Netdrop (2022).mp4');
+  fs.mkdirSync(path.dirname(from), { recursive: true });
+  fs.copyFileSync(CLIP, from);
+  let cut = 12; /* (more than the 8 tries a send gets when the server answers) */
+  await page.route(/\/media\/upload\/[^/?]+\/\d+/, (route) =>
+    route.request().method() === 'PUT' && cut-- > 0 ? route.abort('internetdisconnected') : route.continue());
+  await page.goto('/media/upload');
+  await page.locator('input[name=files]').setInputFiles(from);
+  await expect(page.locator('.media-up-group .media-up-dir > span')).toHaveText(/Movies\s*\/\s*Netdrop \(2022\)/);
+  await page.locator('#media-up-form').evaluate((f) => { f.dataset.netpause = '20'; }); /* (ask again at once) */
+  await page.locator('#media-up-start').click();
+  await expect.poll(() => fs.existsSync(to), { message: 'it arrives', timeout: 30_000 }).toBe(true);
+  expect(cut).toBeLessThan(0);
+  expect(same(to, from)).toBe(true);
+  await expect(page.locator('.media-up h3')).toContainText('Finished · 1 file sent');
+});
+
 // 1.3: an episode the library has stays behind - but the subtitles it carries and the library's lacks go, read
 // out of it here, and land next to the library's own video.
 test('a video the library has gives only the subtitles it lacks', async ({ page }) => {

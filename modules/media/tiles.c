@@ -290,12 +290,51 @@ static int series_choices(Ctx *c, BlockChoice *out, int max) {
     return n;
 }
 
+/* One category (the builder's pick, 1.4): its series, then its films. */
+static bool row_category(Ctx *c, Buf *b, int kind, const char *arg) {
+    char cat[MEDIA_CAT_LEN];
+    if (!media_cat_parse(arg, cat)) return false;
+    const MediaIndex *ix = media_lib_for(c); /* (a child picked: what's theirs) */
+    char back[400];
+    media_row_back(c, back, sizeof back);
+    Buf row = {0};
+    MediaWork w;
+    int n = 0;
+    for (int i = 0; i < ix->nseries && n < 100; i++) {
+        media_work_series(&ix->series[i], &w);
+        if (media_cat_in(&w, cat)) series_tile(&row, &ix->series[i], kind, back, 0), n++;
+    }
+    for (int i = 0; i < ix->nmovies && n < 100; i++) {
+        const MediaFile *f = &ix->files[ix->movies[i]];
+        media_work_film(f, &w);
+        if (media_cat_in(&w, cat)) video_tile(c, &row, f, kind, back), n++;
+    }
+    if (n) {
+        buf_puts(b, "<div class=\"tiles\">");
+        buf_put(b, row.p, row.len);
+        buf_puts(b, "</div>");
+    }
+    buf_free(&row);
+    return n > 0;
+}
+
+static int category_choices(Ctx *c, BlockChoice *out, int max) {
+    MediaCatUse used[64];
+    int n = media_cats_used(c, MEDIA_CATS_SERIES | MEDIA_CATS_FILMS, used, MIN(max, countof(used)));
+    for (int i = 0; i < n; i++) {
+        str_copy(out[i].arg, sizeof out[i].arg, used[i].cat);
+        str_copy(out[i].label, sizeof out[i].label, media_cat_label(used[i].cat));
+    }
+    return n;
+}
+
 const Block media_blocks[] = {
     {"media.continue", N_("Continue watching"), SCREEN_TV, row_continue, NULL},
     {"media.recent", N_("Recently added"), SCREEN_TV | SCREEN_WALL, row_recent, NULL},
     {"media.series", N_("Series"), SCREEN_TV, row_series, NULL},
     {"media.movies", N_("Movies"), SCREEN_TV, row_movies, NULL},
     {"media.series_one", N_("A series"), SCREEN_TV, row_series_one, series_choices},
+    {"media.category", N_("A category"), SCREEN_TV, row_category, category_choices},
     {0},
 };
 

@@ -14,6 +14,7 @@ replaces the old one, which stays here marked as such.
 | [0006](0006-formats-grow-with-fuzzing.md) | New video formats when real files need them, each fuzzed | 2026-10-21 |
 | [0007](0007-reviews-and-releases.md) | A written review for the core; merging releases | 2026-10-21 |
 | [0008](0008-three-languages-built-in.md) | English, Swedish and Spanish, built in | 2026-10-20 |
+| [0009](0009-categories-looked-up-when-asked.md) | Categories may be looked up online, when an admin asks (amends 0005) | 2026-10-27 |
 
 New record: copy the shape of one of these (status, context, decision, consequences), number it
 next, add it to the table, and link it from the pull request that acts on it.

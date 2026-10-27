@@ -61,6 +61,9 @@ sock_t tcp_listen(const char *host, int port, char *err, size_t errcap);
 int tcp_local_port(sock_t s);
 sock_t tcp_accept(sock_t listener, uint32_t *peer_ip);
 sock_t tcp_connect_nb(uint32_t ip, int port); /* non-blocking; poll for POLLOUT */
+/* A name's IPv4 address by the system's resolver (DNS, /etc/hosts). BLOCKS - seconds when the network is
+   gone: threads only, never the event loop (core/fetch.c). */
+bool plat_resolve(const char *host, uint32_t *ip);
 bool tcp_connect_done(sock_t s);              /* after POLLOUT: did it connect? */
 sock_t udp_open(uint16_t port, bool broadcast);
 sock_t udp_open_loopback(uint16_t *port); /* 127.0.0.1 only, ephemeral port (wake-ups) */

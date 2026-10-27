@@ -99,11 +99,12 @@ static void add_url(const char *fmt, uint64_t id) {
 /* Data, not words: people's names (and their avatars' initials), films', series' and folders' names, the
    library folder - and what reads the same in the other language: "Series", "series", "Extras" and "Extra" in
    Spanish, "Video"/"video" and the System section in Swedish, "A–Z" in Spanish, the subtitle languages' names
-   (each in its own). */
-static const char *g_allow[40] = {"Anna", "Eva", "A", "E", "Garden Show", "Garden", "Show", "Seeds", "Roots",
+   (each in its own), and the services categories are looked up at (1.4). */
+static const char *g_allow[48] = {"Anna", "Eva", "A", "E", "Garden Show", "Garden", "Show", "Seeds", "Roots",
                                   "Inception", "Flower", "Midsommar", "IMG", "70's Show", "70's show", "Kino", "Shows",
                                   "Klipp", "Series", "series", "Extras", "Extra", "Video", "video", "A–Z", "Svenska",
-                                  "English", "Norsk", "Dansk", "Suomi", "Deutsch", "Français", "Español", "System", NULL};
+                                  "English", "Norsk", "Dansk", "Suomi", "Deutsch", "Français", "Español", "System",
+                                  "TVmaze", "OMDb", "omdbapi.com", NULL};
 
 static void allow_also(const char *s) {
     int n = 0;
@@ -296,7 +297,8 @@ TEST(media_speaks_swedish_and_spanish_before_there_is_a_library) {
     for (int i = tbl_count(&T_media_watch) - 1; i >= 0; i--) tbl_del(&T_media_watch, ((MediaWatch *)tbl_at(&T_media_watch, i))->id);
     media_scan_sync();
     static const char *const allow[] = {"Anna", "Eva", "A", "E", "Series", "series", "Svenska", "English", "Norsk",
-                                        "Dansk", "Suomi", "Deutsch", "Français", "Español", "System", NULL};
+                                        "Dansk", "Suomi", "Deutsch", "Français", "Español", "System",
+                                        "TVmaze", "OMDb", "omdbapi.com", NULL};
     Buf r = {0};
     int n = th_untranslated(anna, "/media", allow, &r) + th_untranslated(eva, "/media", allow, &r) +
             th_untranslated(eva, "/media/settings", allow, &r) + th_untranslated(anna, "/media/movies", allow, &r);
