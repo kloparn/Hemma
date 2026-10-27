@@ -151,7 +151,7 @@ TEST(media_upload_pages_speak_swedish_and_spanish) {
     char root[512];
     str_copy(root, sizeof root, test_tmpdir());
     /* (names, their initials, the library folder) */
-    const char *allow[] = {"Adam", "Maja", "Eva", "A", "M", "Show", "x.mkv", root, SAME_EVERYWHERE, NULL};
+    const char *allow[] = {"Adam", "Maja", "Eva", "A", "M", "Show", "x.mkv", "w.mp4", root, SAME_EVERYWHERE, NULL};
 
     /* no library folder yet; a member */
     static const char *const up[] = {"/media/upload"};
@@ -258,14 +258,14 @@ TEST(media_upload_pages_speak_swedish_and_spanish) {
     ThResult t = th_act(adam_id, "media.upload_stop", "");
     CHECK_HAS(t.toast, "Uppladdningen stoppad");
     pref_set(adam_id, PREF_LANG, "");
-    CHECK_HAS(th_page(adam_id, "/media/upload"), "Stopped · ");
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "</i>Stopped</span>");
     CHECK_INT(untranslated(adam_id, up, 1, allow), 0);
     plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"F/one.mp4\",5]]}", &r, batch);
     put_bytes(adam, batch, 0, "12345", 5, &r);
     CHECK_HAS(body_of(&r), "\"ok\":true");
     for (int64_t end = now_ms() + 3000; now_ms() < end && !strstr(th_page(adam_id, "/media/upload"), "Finished");)
         plat_sleep_ms(20);
-    CHECK_HAS(th_page(adam_id, "/media/upload"), "Finished · 1 file sent");
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "</i>Finished</span><span class=\"sr-only\"> · </span><span class=\"media-upc-count\">1 file sent</span>");
     CHECK_INT(untranslated(adam_id, up, 1, allow), 0);
 
     upload_test_free_space(-1);

@@ -796,17 +796,21 @@
       inRam.delete(k);
       pump();
     };
-    const tell = (k, pm) => {
-      seen.set(k, [pm, Date.now()]);
-      // (999 at most: a subtitles-only job's 1000 is sendMade's, once its subtitles are there)
-      fetch(`${base}/${batch}/${jobs[k].i}?pm=${Math.min(pm, 999)}`, { method: 'POST' }).then(json)
-        .then((s) => { if (s.stop) halt(s.error); }, () => {});
+    // (fed: what its converter has taken in of the original - the card shows how fast, 1.5)
+    const report = (k, pm, fed) => fetch(`${base}/${batch}/${jobs[k].i}?pm=${pm}${fed >= 0 ? `&fed=${fed}` : ''}`,
+      { method: 'POST' }).then(json)
+      .then((s) => { if (s.stop) halt(s.error); }, () => {});
+    const tell = (k, pm, fed) => {
+      seen.set(k, [pm, Date.now(), fed]);
+      // (999 at most: 1000 = a copy made, waiting its turn - finish() says it; a subtitles-only job's 1000 is
+      // sendMade's, once its subtitles are there)
+      report(k, Math.min(pm, 999), fed);
     };
     // a heartbeat: a long stretch without progress (a big file's first look) isn't "the browser left"
     const beat = setInterval(() => {
       for (const k of workers.keys()) {
-        const [pm, at] = seen.get(k) || [0, 0];
-        if (Date.now() - at >= 10000) tell(k, pm);
+        const [pm, at, fed] = seen.get(k) || [0, 0, -1];
+        if (Date.now() - at >= 10000) tell(k, pm, fed);
       }
     }, 5000);
     const finish = (k, m) => {
@@ -824,6 +828,7 @@
       if (m.size === undefined) inRam.delete(k);
       if (w && m.size !== undefined && !halted) { // made: it waits in its worker to be sent
         ready.set(k, w);
+        report(k, 1000); // (1.5: the card says "Ready" until it goes, not "Processing 99%")
         m = { size: m.size, subs: m.subs, pics: m.pics, send: sender(w), drop: () => drop(k) };
       } else if (w) {
         w.terminate();
@@ -840,8 +845,8 @@
         const m = e.data;
         if (m.pm === undefined) { finish(k, m); return; }
         const [, at] = seen.get(k) || [0, 0];
-        if (Date.now() - at >= 3000) tell(k, m.pm);
-        else seen.set(k, [m.pm, at]);
+        if (Date.now() - at >= 3000) tell(k, m.pm, m.fed);
+        else seen.set(k, [m.pm, at, m.fed]);
       };
       w.onerror = (e) => { e.preventDefault(); finish(k, { error: T('The converter stopped') }); };
       const ram = !!use.ram && !job.subs && held() + source(k) <= RAM_MAX;

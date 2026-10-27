@@ -503,6 +503,21 @@ TEST(upload_sets_pictures_and_sends_copies_not_originals) {
 
 /* ------------------------------------------- copies made by the sending browser */
 
+/* An upload's card (1.5): its state's pill and the count beside it */
+static bool card_is(const char *page, const char *state, const char *count) {
+    char pill[96], says[128];
+    snprintf(pill, sizeof pill, "<i aria-hidden=\"true\"></i>%s</span>", state);
+    snprintf(says, sizeof says, "<span class=\"media-upc-count\">%s</span>", count);
+    return strstr(page, pill) && strstr(page, says);
+}
+
+/* ... and the row of entry i there: tagged `tag` (Saved, Uploading, Ready, Processing, Subtitles); NULL = none */
+static const char *card_row(const char *page, const char *batch, int i, const char *tag) {
+    char row[160];
+    snprintf(row, sizeof row, "id=\"media-upc-%s-%d\"><span class=\"media-upc-tag\">%s</span>", batch, i, tag);
+    return strstr(page, row);
+}
+
 static void plan_for(const char *cookie, const char *json, Buf *r, char *batch) {
     call("POST", "/media/upload/plan", cookie, "Content-Type: application/json\r\n", json, strlen(json), strlen(json), r);
     const char *bp = strstr(body_of(r), "\"batch\":\"");
@@ -565,8 +580,43 @@ TEST(upload_takes_copies_the_browser_makes) {
     call("POST", url, adam, NULL, "", 0, 0, &r);
     CHECK_HAS(body_of(&r), "\"ok\":true");
     const char *page = th_page(adam_id, "/media/upload");
-    CHECK_HAS(page, "0 of 2 play-everywhere copies ready");
-    CHECK_HAS(page, "<span class=\"grow media-up-name\">x.mkv</span><progress class=\"media-up-bar\" max=\"1000\" value=\"420\">");
+    /* (1.5: the card lists it as being processed, how far, by its name on the sending device) */
+    CHECK(card_is(page, "Processing", "0 of 4 files"));
+    CHECK(card_row(page, batch, 0, "Processing"));
+    CHECK_HAS(page, "<span class=\"media-upc-num\">42%</span><span class=\"media-upc-rbar\" aria-hidden=\"true\"><i "
+                    "style=\"width:42.0%\"></i>");
+    CHECK_HAS(page, "<b>x.mkv</b><small>Up/S</small>"); /* (a name that says nothing more: where it goes) */
+    CHECK_HAS(page, "3 more waiting");
+    /* made, waiting its turn: "Ready" - and a report sent before that, arriving after, doesn't take it back */
+    snprintf(url, sizeof url, "/media/upload/%s/0?pm=1000", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    snprintf(url, sizeof url, "/media/upload/%s/0?pm=990", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    page = th_page(adam_id, "/media/upload");
+    CHECK(card_row(page, batch, 0, "Ready"));
+    CHECK(card_is(page, "Uploading", "0 of 4 files"));
+    /* the furthest along on top: ready above processing (more of it done above less) */
+    snprintf(url, sizeof url, "/media/upload/%s/1?pm=300", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    page = th_page(adam_id, "/media/upload");
+    CHECK(card_row(page, batch, 0, "Ready") && card_row(page, batch, 1, "Processing"));
+    CHECK(card_row(page, batch, 0, "Ready") < card_row(page, batch, 1, "Processing"));
+    CHECK_HAS(page, "2 more waiting");
+    /* how fast it's being made: what the converter took in of the original, per second - 0 when it stands still
+       (the heartbeat's reports carry the same count) */
+    upload_test_pace_window(0);
+    snprintf(url, sizeof url, "/media/upload/%s/1?pm=310&fed=1000", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    plat_sleep_ms(100);
+    snprintf(url, sizeof url, "/media/upload/%s/1?pm=320&fed=%d", batch, 1000 + (10 << 20)); /* (10 MB in ~0.1 s) */
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    page = th_page(adam_id, "/media/upload");
+    CHECK_HAS(page, "<span class=\"media-upc-num\">32% · ");
+    CHECK_HAS(page, " MB/s</span>");
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "<span class=\"media-upc-num\">32% · 0 KB/s</span>");
+    upload_test_pace_window(-1);
 
     /* no room for the copy: refused, and the upload stops */
     upload_test_free_space((1LL << 30) + 5);
@@ -589,6 +639,12 @@ TEST(upload_takes_copies_the_browser_makes) {
     CHECK_HAS(body_of(&r), "{\"ok\":true,\"at\":4}");
     CHECK(exists(root, "Up/S/x.web.mp4.hemma-part"));
     CHECK(!exists(root, "Up/S/x.web.mp4"));
+    /* (1.5: between its pieces - no PUT running - the card still says it's uploading, and how far) */
+    page = th_page(adam_id, "/media/upload");
+    CHECK(card_row(page, batch, 0, "Uploading"));
+    CHECK(card_is(page, "Uploading", "0 of 4 files"));
+    CHECK_HAS(page, "<span class=\"media-upc-num\">40%</span>");
+    CHECK(card_row(page, batch, 0, "Uploading") < card_row(page, batch, 1, "Processing"));
     snprintf(url, sizeof url, "/media/upload/%s/0?at=4&end=11", batch); /* (past the file: refused) */
     call("PUT", url, adam, NULL, "-bytes!", 7, 7, &r);
     CHECK_HAS(buf_cstr(&r), "400");
@@ -599,6 +655,9 @@ TEST(upload_takes_copies_the_browser_makes) {
     snprintf(path, sizeof path, "%s/Up/S/x.web.mp4", root);
     CHECK(same_file(path, "copy-bytes", 10));
     CHECK(!exists(root, "Up/S/x.mkv")); /* the original never came */
+    page = th_page(adam_id, "/media/upload"); /* (saved: on top, with the time) */
+    CHECK(card_is(page, "Processing", "1 of 4 files"));
+    CHECK(card_row(page, batch, 0, "Saved") && card_row(page, batch, 0, "Saved") < card_row(page, batch, 1, "Processing"));
 
     /* the file's text subtitles, taken out by the browser's converter: saved next to the copy, once - a
        second English track in the file as ".2" (as the server's converter names it), never over a file */
@@ -648,7 +707,7 @@ TEST(upload_takes_copies_the_browser_makes) {
         page = th_page(adam_id, "/media/upload");
         if (strstr(page, "Finished")) break;
     }
-    CHECK_HAS(page, "Finished · 4 files sent");
+    CHECK(card_is(page, "Finished", "4 files sent"));
     CHECK_HAS(page, "1 sent unconverted");
     CHECK_HAS(page, "S/y.mkv</code> — sent as it is: Can&#39;t convert V_MPEGH/ISO/HEVC video yet");
     CHECK_HAS(page, "1 video couldn't be converted on this device and went up as it was - it may not play "
@@ -1229,14 +1288,16 @@ TEST(upload_sends_the_subtitles_of_what_stays_behind) {
                       "[\"Arthur/Season 3/Arthur S03E01 720p.mkv\",10]]}"; /* 2: the library's has subtitles: not read */
     plan_for(adam, eps, &r, batch);
     CHECK_HAS(body_of(&r), "\"todo\":[{\"i\":0,\"f\":0,\"subs\":1},{\"i\":1,\"f\":1,\"subs\":1}],\"skipped\":3");
-    CHECK_HAS(th_page(adam_id, "/media/upload"), "Uploading · 0 of 2 files");
+    CHECK(card_is(th_page(adam_id, "/media/upload"), "Uploading", "0 of 2 files"));
 
     /* the browser reads 0: its progress shows, then its tracks go next to the library's E05-E06 */
     snprintf(url, sizeof url, "/media/upload/%s/0?pm=400", batch);
     call("POST", url, adam, NULL, "", 0, 0, &r);
     CHECK_HAS(body_of(&r), "\"ok\":true");
     const char *page = th_page(adam_id, "/media/upload");
-    CHECK_HAS(page, "Arthur S04E06.mkv <span class=\"muted\">· its subtitles</span>");
+    CHECK(card_row(page, batch, 0, "Subtitles")); /* (1.5: read for its subtitles, named as Hemma sees it) */
+    CHECK_HAS(page, "<b>Arthur · S04E06</b><small>Arthur S04E06.mkv</small></span><span class=\"media-upc-num\">40%</span>");
+    CHECK(card_is(page, "Processing", "0 of 2 files"));
     const char *srt = "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n";
     snprintf(url, sizeof url, "/media/upload/%s/0?sub=1&lang=eng&name=&forced=0&t=0", batch);
     call("POST", url, adam, "Content-Type: text/plain; charset=utf-8\r\n", srt, strlen(srt), strlen(srt), &r);
@@ -1260,12 +1321,12 @@ TEST(upload_sends_the_subtitles_of_what_stays_behind) {
     CHECK(!strstr(body_of(&r), "\"ok\":true"));
     CHECK(!exists(root, "Series/Arthur/Season 3/Arthur S03E01.sv.srt"));
     /* done once the browser says so (1000) for each */
-    CHECK_HAS(th_page(adam_id, "/media/upload"), "Uploading · 0 of 2 files");
+    CHECK(card_is(th_page(adam_id, "/media/upload"), "Processing", "0 of 2 files"));
     for (int i = 0; i < 2; i++) {
         snprintf(url, sizeof url, "/media/upload/%s/%d?pm=1000", batch, i);
         call("POST", url, adam, NULL, "", 0, 0, &r);
     }
-    CHECK_HAS(th_page(adam_id, "/media/upload"), "Finished · 2 files sent");
+    CHECK(card_is(th_page(adam_id, "/media/upload"), "Finished", "2 files sent"));
 
     /* a subtitle file alone: named for an episode the library has, it goes next to it - every tag kept */
     plan_for(adam, "{\"root\":\"0\",\"into\":\"Series\",\"files\":[[\"Arthur/Season 4/Arthur.S04E05-E06.720p.sv.forced.srt\",5]]}",

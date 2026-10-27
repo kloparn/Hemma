@@ -507,6 +507,29 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  every netPause (5 s; form[data-netpause] in tests) for up to NET_WAIT (30 min), put() then GETs where
                  the file got to. Only the server's own answers count as tries (put 8, ask 5, subtitles 3-4).
                  upload.spec.mjs "waits out a dropped network" aborts 12 PUTs with internetdisconnected.
+                 THE CARD (1.5; owner, 2026-10-27: "it sort of spams between texts ... make it more modern", "a list of
+                 the most processed items going up, and make it say if it's processing / uploading"): render_batch = a
+                 state pill (Processing / Uploading / Waiting for the browser - 30 s without a sign - / Finished /
+                 Stopped) + the count ("Uploading · 3 of 9 files" read as one heading: an sr-only " · "), one bar
+                 (batch_permille), then dl.media-upc-stats Sent / Speed / Time left in fixed places ("–" when none):
+                 Batch.rate is measured while bytes come (Batch.wrote) - also across a memory copy's pieces, each its
+                 own PUT, which used to restart it - and shown UP_SPEED_KEEP_S (60) after the last byte; time left =
+                 with copies still to make, the pace of the last UP_PACE (8) saves (UpFile.touched), else bytes/rate,
+                 coarser the longer. Then the rows under way (row_kind), the furthest along on top, ROW_CAP each:
+                 Saved (the 2 newest, HH:MM), Uploading (UP_WRITING, or its bytes came within UP_GAP_S 30 s - between
+                 pieces the old card's "Now:" line came and went every second or two), Ready (CV_READY, or CV_WAIT at
+                 pm 1000 = made, waiting its turn: wire.js finish() reports ?pm=1000; a later, lower report never
+                 takes it back), Processing (CV_WAIT, pm > 0), Subtitles (a subtitles-only entry being read; at 1000 it
+                 stays done: a progress report arriving late can't open it again), then "N more waiting". Rows
+                 are li#media-upc-<batch>-<i>, named as Hemma reads the sending device's name (row_label: "Show ·
+                 S04E12 · Title", "Film (2003) · part 2"; a name that says no more shows its folder below instead).
+                 PROCESSING SPEED ("9% · 2 MB/s"; owner: "no like indication on if it's actually doing something" - pm
+                 follows the video's time, and copying reads the whole file before 30%): conv.js counts what the
+                 converter took in (fed, the bytes hemma.read handed it) and posts {pm, fed} with progress and every 2 s
+                 while reading; wire.js sends ?pm=&fed= (tell/beat keep the last fed); pace_note measures over
+                 PACE_WINDOW_MS (4 s) or more, a window with nothing taken in = 0 at once (the heartbeat repeats the
+                 count every 10 s), shown while reports come (PACE_SHOW_MS 30 s). upload_test_pace_window() in tests.
+                 The tick's signature counts the pm (and the pace) of what's being made, so those rows move too.
                  THE PAGE (1.1; owner, 2026-10-21: "easy enough to understand"; "Add videos" in Watch's header,
                  "Add episodes" on a series page): form[data-upload][data-preview] with a [data-drop] area (wire.js
                  keeps dropped/picked files and folders on the form, each choice adding; [data-drop-clear] empties),
@@ -1720,7 +1743,10 @@ sound (av/dts.c) and subtitles following the viewer through a series, C toggling
 and movies") = categories (media/cats.c: by hand - members and admins -, from .nfo files, and - an admin's box, off by
 default - looked up online, media/lookup.c + core/fetch.c, with "Update categories" by a pasted TVmaze/IMDb id), the
 lists' chips, order and Not started/Started, a row per category on Watch and for the TV, search by every word in any
-order, grouped; and an upload that waits out a dropped network.
+order, grouped; and an upload that waits out a dropped network. 1.5.0 (branch feat/upload-fixes; owner, 2026-10-27: "it
+sort of spams between texts ... make it more modern") = an upload's card that says what it's doing - a state, three
+numbers in fixed places, and what's under way (Saved / Uploading / Ready / Processing / Subtitles), the furthest along
+on top - and a subtitles-only entry that stays done.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling

@@ -6,7 +6,7 @@
 //                            Blob, which the browser may keep on its disk) - sent in pieces of `part` bytes
 //        {file, wasm, subs}  only the file's subtitles (a video the library has: it stays behind)
 //        {put, at}           send the copy, from byte `at`, to that address (PUTs)
-//   out: {pm}                progress, 0..1000
+//   out: {pm, fed}           progress, 0..1000, and the original's bytes the converter has taken in so far
 //        {size, subs, pics}  the copy is made, this many bytes: it waits here to be sent; subs = the
 //                            file's text subtitles as SRT, [{t, lang, name, forced, text}] (maybe none);
 //                            pics = its picture subtitles, [{t, kind: 'pgs'|'vobsub', lang, name, forced,
@@ -134,6 +134,9 @@ self.onmessage = async (e) => {
     let wmem = null, last = -1;
     const bytes = () => new Uint8Array(wmem.buffer); // a fresh view: memory can grow
     let win = null, winAt = 0, grow = 1 << 20; // read ahead (AHEAD)
+    // fed: what the converter has taken in so far - with each progress report, and every 2 s while it reads, so
+    // the card can say how fast it goes (1.5): a percentage alone sat still for minutes on a DVD episode
+    let fed = 0, told = 0;
     const hemma = {
       read(off, dst, n) {
         if (!win || off < winAt || off + n > winAt + win.length) {
@@ -154,6 +157,11 @@ self.onmessage = async (e) => {
         }
         if (off + n > winAt + win.length) return 0;
         bytes().set(win.subarray(off - winAt, off - winAt + n), dst);
+        fed += n;
+        if (Date.now() - told >= 2000) {
+          told = Date.now();
+          postMessage({ pm: Math.max(last, 0), fed });
+        }
         return 1;
       },
       write(p, n) {
@@ -174,7 +182,13 @@ self.onmessage = async (e) => {
         copy = new Blob([copy.slice(0, off), bytes().slice(p, p + n), copy.slice(off + n)]);
         return 1;
       },
-      progress(pm) { if (pm - last >= 5 || pm === 1000) { last = pm; postMessage({ pm }); } },
+      progress(pm) {
+        if (pm - last >= 5 || pm === 1000) {
+          last = pm;
+          told = Date.now();
+          postMessage({ pm, fed });
+        }
+      },
     };
     const got = await fetch(wasm);
     if (!got.ok) throw new Error(`the converter is missing (${got.status})`);

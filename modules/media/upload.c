@@ -11,7 +11,8 @@
  * With "conv":"1" (the browser can run the converter, and the box is ticked) a video
  * browsers can't all play comes as a copy the browser makes first: its todo entry is
  * {"i":<entry>,"f":<the browser's file>} and the browser, while converting and after,
- *   POST /media/upload/<batch>/<i>?pm=<0..1000>      progress      -> {"ok":true} | {"stop":true,...}
+ *   POST /media/upload/<batch>/<i>?pm=<0..1000>[&fed=<bytes>]  progress (fed: what the converter has taken in of the
+ *        original so far - the card shows how fast, 1.5; 1000 = the copy is made) -> {"ok":true} | {"stop":true,...}
  *   POST /media/upload/<batch>/<i>?size=<bytes>      the copy's size -> {"at":0}: then PUT it
  *   POST /media/upload/<batch>/<i>?original=1&why=.. it couldn't   -> {"at":n} (PUT the original) | {"skip":true}
  *   POST /media/upload/<batch>/<i>?sub=1&lang=&name=&forced=&t=   (body: SRT) a text subtitle track of the
@@ -105,6 +106,13 @@ typedef struct {
     bool subs, sidecars;
     int lib_subs;      /* a dupe: subtitle files the library's video has already (any = nothing read) */
     char target[720];  /* the video its subtitles go next to, root/rel in full (a dupe: the library's) */
+    int64_t touched;   /* unix seconds: its bytes last arrived, or it was saved (the card, 1.5) */
+    /* being made (or read for its subtitles) on the sending device: how much of the original its converter has
+       taken in so far (its reports' fed=), when that was counted (monotonic ms) and how fast - the card's "23 MB/s"
+       (1.5; owner: "no like indication on if it's actually doing something") */
+    int64_t fed, fed_at;
+    double pace;
+    bool paced;
 } UpFile;
 
 typedef struct {
@@ -117,11 +125,19 @@ typedef struct {
     int64_t total, moved;         /* bytes to send in this batch / received so far */
     int64_t started, last, ended; /* unix seconds */
     int64_t busy; /* the browser's last sign of work on it (a PUT, a copy's progress): 0 = none yet */
+    int64_t wrote; /* unix seconds: bytes last arrived (the speed is measured while they do) */
     int workers, current, done, skipped, failed;
     bool stopped;
     double rate;                 /* bytes per second, smoothed (main thread) */
     int64_t rate_at, rate_moved; /* last speed sample: monotonic ms, moved */
 } Batch;
+
+/* Processing speed: measured over at least this long (the converter reads ahead in runs of up to 32 MB, so a
+   few seconds' worth evens out), and shown while reports keep coming (the browser's heartbeat sends one every
+   10 s even when nothing moved - a stuck converter's speed then falls towards 0) */
+#define PACE_WINDOW_MS 4000
+#define PACE_SHOW_MS 30000
+static int g_pace_window_ms = PACE_WINDOW_MS;
 
 /* Workers update progress, so everything below is guarded by g_lock. Lock order: g_lock may
    be held while asking convert.c (which takes its own), never the other way round. */
@@ -1286,7 +1302,7 @@ static void progress(Job *j, int64_t n) {
     lock_take(&g_lock);
     j->b->moved += n;
     j->b->files[j->i].saved += n;
-    j->b->last = j->b->busy = now_sec();
+    j->b->last = j->b->busy = j->b->wrote = j->b->files[j->i].touched = now_sec();
     lock_give(&g_lock);
 }
 
@@ -1403,6 +1419,7 @@ static void worker(void *arg) {
     uf->saved = j->at + got;
     if (complete) {
         uf->state = UP_DONE;
+        uf->touched = now_sec();
         b->done++;
         g_files_saved += b->art == 0;
         g_pictures_saved += b->art != 0;
@@ -1955,6 +1972,26 @@ static void pic_put(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i, const Fi
     }
 }
 
+void upload_test_pace_window(int ms) { g_pace_window_ms = ms < 0 ? PACE_WINDOW_MS : ms; }
+
+/* How fast the sending device's converter takes in the original (fed = its bytes so far; lock held) */
+static void pace_note(UpFile *f, int64_t fed, int64_t now) {
+    if (fed < 0) return;
+    if (!f->fed_at || fed < f->fed) { /* the first report, or the job started over (a read that failed: {again}) */
+        f->fed = fed;
+        f->fed_at = now;
+        f->paced = false;
+        return;
+    }
+    if (now - f->fed_at < g_pace_window_ms) return; /* (keep counting from the older report) */
+    double inst = (double)(fed - f->fed) * 1000.0 / (double)MAX(now - f->fed_at, 1);
+    /* (nothing taken in for a whole window is a converter standing still: 0 at once, not halving towards it) */
+    f->pace = f->paced && inst > 0 ? f->pace * 0.5 + inst * 0.5 : inst;
+    f->paced = true;
+    f->fed = fed;
+    f->fed_at = now;
+}
+
 /* The browser's side of a copy it makes (see the top): progress, the finished size, or "it
    couldn't" - then the original goes under its own name, unless it's on the list anyway. */
 static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
@@ -1965,7 +2002,7 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
         fields_free(&q);
         return;
     }
-    long long pm = fields_int(&q, "pm", -1), size = fields_int(&q, "size", -1);
+    long long pm = fields_int(&q, "pm", -1), size = fields_int(&q, "size", -1), fed = fields_int(&q, "fed", -1);
     bool original = str_eq(fields_str(&q, "original"), "1");
     char why[96], msg[400]; /* (why: the browser's converter's words - shown as they came) */
     str_copy(why, sizeof why, fields_str(&q, "why"));
@@ -1990,8 +2027,16 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     if (!b || b->person != c->me->id) err = T("That upload is over - start it again to continue"), status = 404;
     else if (b->stopped) err = T("The upload was stopped"), status = 410;
     else if (pm >= 0 && size < 0 && !original) { /* progress - also a late one, after the copy went: fine */
-        if (f && f->conv == CV_WAIT && f->state == UP_QUEUED) f->pm = (int)CLAMP(pm, 0, 999);
-        else if (f && f->subs) f->pm = (int)CLAMP(pm, 0, 1000); /* (only its subtitles: 1000 = all sent) */
+        /* 1000 = made, waiting its turn to go (1.5: the card says "Ready"); a report sent before it and arriving
+           after it doesn't take that back - a made copy is never made again */
+        if (f && f->conv == CV_WAIT && f->state == UP_QUEUED && (f->pm < 1000 || pm >= 1000)) {
+            f->pm = (int)CLAMP(pm, 0, 1000);
+            pace_note(f, fed, now_ms());
+        } else if (f && f->subs && f->pm < 1000) { /* (only its subtitles: 1000 = all sent) */
+            f->pm = (int)CLAMP(pm, 0, 1000);
+            pace_note(f, fed, now_ms());
+            if (f->pm == 1000) f->touched = now_sec();
+        }
         b->last = b->busy = now_sec();
         buf_puts(&out, "{\"ok\":true}");
     } else if (!f || !f->conv || f->state != UP_QUEUED) err = T("That file isn't waiting for a copy"), status = 404;
@@ -2672,11 +2717,145 @@ static int batch_permille(const Batch *u) {
     return all > 0 ? (int)(done * 1000 / all) : 1000;
 }
 
+/* THE CARD (1.5; owner, 2026-10-27: "it sort of spams between texts and is quite un representatry of what is
+   happening, make it more modern" - "a list of the most processed items going up, and make it say if it's
+   processing / uploading"): the upload's state, its files and one bar; three numbers that keep their places (sent,
+   speed, time left - a dash while there's none); then what's under way, the furthest along on top: just saved,
+   uploading, ready (made on the sending device, waiting its turn), processing (being made there - or read for its
+   subtitles). A copy kept in memory goes up in 16 MB pieces, each its own PUT: a file stays "uploading" until UP_GAP_S
+   after its last byte, so the card no longer flips between pieces ("Now: ..." came and went every second or two). */
+#define UP_GAP_S 30
+#define UP_SPEED_KEEP_S 60 /* the speed shows this long after the last byte (between files: the last one's) */
+#define UP_PACE 8          /* time left with copies still to make: the pace of the last this many saved */
+enum { ROW_SAVED, ROW_UP, ROW_READY, ROW_PROC, ROW_SUBS };
+static const int ROW_CAP[] = {2, 4, 4, 8}; /* rows shown of each (subtitles count with processing) */
+
+typedef struct {
+    int i, kind;
+    int64_t key; /* within its kind, higher first */
+} UpRow;
+
+static int row_kind(const UpFile *f, int64_t now) {
+    if (f->subs) return f->pm >= 1000 ? ROW_SAVED : f->pm > 0 ? ROW_SUBS : -1;
+    if (f->state == UP_DONE) return ROW_SAVED;
+    if (f->state == UP_WRITING) return ROW_UP;
+    if (f->state != UP_QUEUED) return -1;
+    if (f->saved > 0 && f->conv != CV_WAIT && now - f->touched <= UP_GAP_S) return ROW_UP;
+    if (f->conv == CV_READY || (f->conv == CV_WAIT && f->pm >= 1000)) return ROW_READY;
+    return f->conv == CV_WAIT && f->pm > 0 ? ROW_PROC : -1;
+}
+
+static int row_rank(int kind) { return kind == ROW_SUBS ? ROW_PROC : kind; }
+
+static int row_cmp(const void *x, const void *y) {
+    const UpRow *a = x, *b = y;
+    if (row_rank(a->kind) != row_rank(b->kind)) return row_rank(a->kind) - row_rank(b->kind);
+    return a->key < b->key ? 1 : a->key > b->key ? -1 : 0;
+}
+
+/* The file as the sending device names it ("x.mkv", not the copy's "x.web.mp4"), below its folders or not */
+static void sent_name(const UpFile *f, char *out, size_t cap, bool whole) {
+    const char *name = whole ? f->rel : base_name(f->rel);
+    if (media_is_web_copy(name) && f->ext[0]) snprintf(out, cap, "%.*s.%s", (int)media_stem_len(name), name, f->ext);
+    else str_copy(out, cap, name);
+}
+
+/* What it is: "Family Guy · S04E12 · Breaking Out Is Hard to Do", "Kill Bill (2003) · part 2", else its name */
+static void row_label(Buf *b, const UpFile *f) {
+    char rel[420];
+    sent_name(f, rel, sizeof rel, true);
+    MediaName n;
+    media_parse_name(rel, &n);
+    if (n.kind == MEDIA_EPISODE && n.episode > 0 && n.title[0]) {
+        if (n.episode_end > n.episode) H(b, "%s · S%02dE%02d–E%02d", n.title, n.season, n.episode, n.episode_end);
+        else H(b, "%s · S%02dE%02d", n.title, n.season, n.episode);
+        if (n.ep_title[0]) H(b, " · %s", n.ep_title);
+    } else if (n.kind == MEDIA_MOVIE && n.title[0]) {
+        if (n.year) H(b, "%s (%d)", n.title, n.year);
+        else H(b, "%s", n.title);
+        int part = media_name_part(rel);
+        if (part) {
+            buf_puts(b, " · ");
+            H(b, T("part %d"), part);
+        }
+    } else {
+        H(b, "%s", base_name(rel));
+    }
+}
+
+static void render_row(Buf *b, const Batch *u, int i, int kind) {
+    static const char *const TAG[] = {N_("Saved"), N_("Uploading"), N_("Ready"), N_("Processing"), N_("Subtitles")};
+    static const char *const CLS[] = {"saved", "up", "ready", "proc", "subs"};
+    const UpFile *f = &u->files[i];
+    int pm = kind == ROW_PROC || kind == ROW_SUBS ? CLAMP(f->pm, 0, 999)
+             : kind == ROW_SAVED                  ? 1000
+             : f->size > 0                        ? (int)(MIN(f->saved, f->size) * 1000 / f->size)
+                                                  : 0;
+    char name[300], dir[400] = "";
+    sent_name(f, name, sizeof name, false);
+    Buf label = {0}, shown = {0}; /* (both as on the page: escaped) */
+    row_label(&label, f);
+    H(&shown, "%s", name);
+    const char *slash = strrchr(f->rel, '/');
+    bool same = str_eq(buf_cstr(&label), buf_cstr(&shown)); /* (its name said nothing more: where it goes, then) */
+    if (same && slash) str_ncopy(dir, sizeof dir, f->rel, (size_t)(slash - f->rel));
+    H(b, "<li class=\"media-upc-row media-upc-r-%s\" id=\"media-upc-%X-%d\"><span class=\"media-upc-tag\">%s</span>"
+         "<span class=\"media-upc-what\"><b>%r</b><small>%s</small></span><span class=\"media-upc-num\">",
+      CLS[kind], u->id, i, T(TAG[kind]), buf_cstr(&label), same ? dir : name);
+    buf_free(&label);
+    buf_free(&shown);
+    if (kind == ROW_SAVED) {
+        if (f->touched) ui_hm(b, f->touched);
+    } else if (kind != ROW_READY || pm > 0) {
+        H(b, "%d%%", pm / 10);
+        if ((kind == ROW_PROC || kind == ROW_SUBS) && f->paced && now_ms() - f->fed_at < PACE_SHOW_MS) {
+            char pace[24]; /* (how fast it takes in the original: is it doing something?) */
+            media_size_text((int64_t)f->pace, pace, sizeof pace);
+            H(b, " · %s/s", pace);
+        }
+    }
+    /* (a ready copy's bar is full: the making is done - its own colour says it waits) */
+    H(b, "</span><span class=\"media-upc-rbar\" aria-hidden=\"true\"><i style=\"width:%d.%d%%\"></i></span></li>",
+      kind == ROW_READY && !pm ? 100 : pm / 10, kind == ROW_READY && !pm ? 0 : pm % 10);
+}
+
+/* What's left, in seconds (-1: can't tell yet). While copies are still being made, the pace of the last files
+   saved - their sizes are guesses until made, and the making sets the pace; else the bytes at the speed. */
+static int64_t time_left(const Batch *u, bool making, int files_left, int64_t now) {
+    if (files_left <= 0) return -1;
+    if (!making) return u->rate > 1 && u->total > u->moved ? (int64_t)((double)(u->total - u->moved) / u->rate) : -1;
+    int64_t t[UP_PACE];
+    int n = 0;
+    for (int i = 0; i < u->nfiles; i++) { /* the newest UP_PACE saves, newest first */
+        const UpFile *f = &u->files[i];
+        if (f->state != UP_DONE || !f->touched) continue;
+        int k = n < UP_PACE ? n++ : UP_PACE;
+        while (k > 0 && t[k - 1] < f->touched) {
+            if (k < UP_PACE) t[k] = t[k - 1];
+            k--;
+        }
+        if (k < UP_PACE) t[k] = f->touched;
+    }
+    if (n < 3 || t[0] <= t[n - 1]) return -1;
+    double each = (double)(t[0] - t[n - 1]) / (n - 1);
+    return MAX((int64_t)(each * files_left) - MIN(now - t[0], (int64_t)each), 0);
+}
+
+static void render_left(Buf *b, int64_t s) { /* "about 3 h 20 min": coarser the longer it is, so it doesn't twitch */
+    int64_t step = s > 2 * 3600 ? 600 : s > 3600 ? 300 : 60;
+    Buf d = {0};
+    ui_duration(&d, MAX((s + step / 2) / step * step, 60));
+    H(b, T("about %s"), buf_cstr(&d));
+    buf_free(&d);
+}
+
 static void render_batch(Ctx *c, Buf *b, const Batch *u) {
-    char moved[24], total[24], speed[24];
+    char moved[24], total[24], speed[24], why[300];
     media_size_text(u->moved, moved, sizeof moved);
     media_size_text(u->total, total, sizeof total);
-    int todo = u->nfiles - u->skipped, copies = 0, pending = 0, as_is = 0, heads = 0, done = u->done, reading = 0;
+    int todo = u->nfiles - u->skipped, copies = 0, pending = 0, as_is = 0, heads = 0, done = u->done, videos_left = 0;
+    int ups = 0, procs = 0, rest = 0, nrows = 0;
+    UpRow *rows = xcalloc((size_t)MAX(u->nfiles, 1), sizeof *rows);
     for (int i = 0; i < u->nfiles; i++) {
         const UpFile *f = &u->files[i];
         copies += f->conv != CV_NONE;
@@ -2685,81 +2864,98 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
         heads += f->head && f->state != UP_SKIPPED;
         todo += f->subs; /* (only its subtitles: a file of the upload too, done once they're sent) */
         done += f->subs && !subs_due(f);
-        reading += subs_due(f) && f->pm > 0;
+        bool going = f->state == UP_QUEUED || f->state == UP_WRITING;
+        videos_left += going;
+        rest += going || subs_due(f);
+        int k = row_kind(f, c->now);
+        if (k < 0 || (k == ROW_SAVED && !f->touched)) continue;
+        ups += k == ROW_UP;
+        procs += k == ROW_PROC || k == ROW_SUBS;
+        int64_t key = k == ROW_SAVED   ? f->touched * 8192 - i
+                      : k == ROW_READY ? -i
+                      : k == ROW_UP    ? (f->size > 0 ? MIN(f->saved, f->size) * 1000 / f->size : 0) * 8192 - i
+                                       : (int64_t)f->pm * 8192 - i;
+        rows[nrows++] = (UpRow){i, k, key};
     }
     bool open = batch_open(u);
-    bool waiting = open && !u->workers && c->now - u->last > 20;
-    char why[300];
-    H(b, "<section class=\"media-up\" id=\"media-up-%X\"><h3>", u->id);
-    if (u->stopped) H(b, TN(todo, "Stopped · %d of %d file sent", "Stopped · %d of %d files sent"), done, todo);
-    else if (!open) H(b, TN(done, "Finished · %d file sent", "Finished · %d files sent"), done);
-    else if (waiting)
-        H(b, TN(todo, "Waiting for the browser · %d of %d file sent", "Waiting for the browser · %d of %d files sent"),
-          done, todo);
-    else H(b, TN(todo, "Uploading · %d of %d file", "Uploading · %d of %d files"), done, todo);
-    buf_puts(b, "</h3>");
-    int per_mille = copies ? batch_permille(u) : u->total ? (int)(u->moved * 1000 / u->total) : 1000;
-    H(b, "<progress class=\"media-up-bar\" max=\"1000\" value=\"%d\"></progress><p class=\"media-up-nums\">",
-      MIN(per_mille, 1000));
-    H(b, pending ? T("%s of about %s") : T("%s of %s"), moved, total);
-    if (open && !waiting && u->rate > 1 && pending) {
-        media_size_text((int64_t)u->rate, speed, sizeof speed);
-        H(b, " · %s/s", speed);
-    } else if (open && !waiting && u->rate > 1) {
-        media_size_text((int64_t)u->rate, speed, sizeof speed);
-        H(b, " · %s/s", speed);
-        int64_t left = (int64_t)((double)(u->total - u->moved) / u->rate);
-        if (left > 0) {
-            Buf d = {0};
-            ui_duration(&d, MAX(left, 60));
-            buf_puts(b, " · ");
-            H(b, T("about %s left"), buf_cstr(&d));
-            buf_free(&d);
+    bool waiting = open && !u->workers && c->now - u->last > 30;
+    const char *state = u->stopped ? N_("Stopped")
+                        : !open    ? N_("Finished")
+                        : waiting  ? N_("Waiting for the browser")
+                        : !ups && procs ? N_("Processing")
+                                        : N_("Uploading");
+    const char *cls = u->stopped ? "stop" : !open ? "done" : waiting ? "wait" : !ups && procs ? "proc" : "up";
+    int per_mille = !open && !u->stopped ? 1000
+                    : copies ? batch_permille(u)
+                    : u->total ? (int)(u->moved * 1000 / u->total) : 1000;
+    per_mille = CLAMP(per_mille, 0, 1000);
+
+    /* the state, the files, how far (the heading reads "Uploading · 3 of 9 files" as a sentence) */
+    H(b, "<section class=\"media-up media-upc\" id=\"media-up-%X\"><div class=\"media-upc-top\"><h3 class=\"media-upc-head\">"
+         "<span class=\"media-upc-state media-upc-s-%s\"><i aria-hidden=\"true\"></i>%s</span>"
+         "<span class=\"sr-only\"> · </span><span class=\"media-upc-count\">",
+      u->id, cls, T(state));
+    if (!open && !u->stopped) H(b, TN(done, "%d file sent", "%d files sent"), done);
+    else if (open && !waiting) H(b, TN(todo, "%d of %d file", "%d of %d files"), done, todo);
+    else H(b, TN(todo, "%d of %d file sent", "%d of %d files sent"), done, todo);
+    H(b, "</span></h3><span class=\"media-upc-pct\">%d%%</span></div>", per_mille / 10);
+    H(b, "<div class=\"media-upc-bar\" role=\"progressbar\" aria-valuemin=\"0\" aria-valuemax=\"100\" aria-valuenow=\"%d\" "
+         "aria-label=\"%s\"><i style=\"width:%d.%d%%\"></i></div>",
+      per_mille / 10, T("How far the upload is"), per_mille / 10, per_mille % 10);
+
+    /* three numbers in their places */
+    H(b, "<dl class=\"media-upc-stats%r\"><div><dt>%s</dt><dd>", open ? "" : " media-upc-two", T("Sent"));
+    if (!open && !u->stopped) H(b, "%s", moved);
+    else H(b, pending ? T("%s of about %s") : T("%s of %s"), moved, total);
+    buf_puts(b, "</dd></div>");
+    if (open) {
+        H(b, "<div><dt>%s</dt><dd>", T("Speed"));
+        if (!waiting && u->rate > 1 && c->now - u->wrote <= UP_SPEED_KEEP_S) {
+            media_size_text((int64_t)u->rate, speed, sizeof speed);
+            H(b, "%s/s", speed);
+        } else {
+            buf_puts(b, "–");
         }
-    } else if (!open && u->ended >= u->started && u->done) {
+        H(b, "</dd></div><div><dt>%s</dt><dd>", T("Time left"));
+        int64_t left = waiting ? -1 : time_left(u, pending > 0, videos_left, c->now);
+        if (left >= 0) render_left(b, left);
+        else buf_puts(b, "–");
+        buf_puts(b, "</dd></div>");
+    } else if (u->ended >= u->started && u->done) {
         int64_t took = MAX(u->ended - u->started, 1);
-        buf_puts(b, " · ");
-        if (took < 60) H(b, T("took %d s"), (int)took);
+        H(b, "<div><dt>%s</dt><dd>", T("Took"));
+        if (took < 60) buf_puts(b, T("less than a minute"));
         else {
             Buf d = {0};
             ui_duration(&d, took);
-            H(b, T("took %s"), buf_cstr(&d));
+            H(b, "%s", buf_cstr(&d));
             buf_free(&d);
         }
+        buf_puts(b, "</dd></div>");
     }
-    buf_puts(b, "</p>");
-    if (open && u->current >= 0) {
-        const UpFile *f = &u->files[u->current];
-        int pct = f->size ? (int)(f->saved * 100 / f->size) : 100;
-        buf_puts(b, "<p class=\"muted media-up-now\">");
-        H(b, T("Now: <code class=\"media-code\">%s</code> · %d%%"), f->rel, pct);
+    buf_puts(b, "</dl>");
+
+    /* what's under way, the furthest along on top */
+    if (open && nrows) {
+        qsort(rows, (size_t)nrows, sizeof *rows, row_cmp);
+        int used[4] = {0};
+        H(b, "<ul class=\"media-upc-list\" aria-label=\"%s\">", T("Under way"));
+        for (int r = 0; r < nrows; r++) {
+            int rank = row_rank(rows[r].kind);
+            if (used[rank] >= ROW_CAP[rank]) continue;
+            used[rank]++;
+            if (rank != ROW_SAVED) rest--;
+            render_row(b, u, rows[r].i, rows[r].kind);
+        }
+        buf_puts(b, "</ul>");
+    }
+    free(rows);
+    if (open && rest > 0) {
+        buf_puts(b, "<p class=\"media-upc-rest\">");
+        H(b, TN(rest, "%d more waiting", "%d more waiting"), rest);
         buf_puts(b, "</p>");
     }
-    if (open && (copies || reading)) {
-        if (copies) {
-            buf_puts(b, "<p class=\"muted media-up-now\">");
-            H(b,
-              TN(copies, "Made on the sending device: %d of %d play-everywhere copy ready",
-                 "Made on the sending device: %d of %d play-everywhere copies ready"),
-              copies - pending, copies);
-            buf_puts(b, "</p>");
-        }
-        int shown = 0;
-        for (int i = 0; i < u->nfiles && shown < 12; i++) {
-            const UpFile *f = &u->files[i];
-            bool subs = subs_due(f) && f->pm > 0; /* (being read for its subtitles) */
-            if (!subs && (f->conv != CV_WAIT || f->state != UP_QUEUED || f->pm <= 0)) continue;
-            char orig[300]; /* (by the name it has on the sending device: "x.mkv", not the copy's "x.web.mp4") */
-            const char *name = base_name(f->rel);
-            if (media_is_web_copy(name) && f->ext[0]) snprintf(orig, sizeof orig, "%.*s.%s", (int)(media_stem_len(name)), name, f->ext);
-            else str_copy(orig, sizeof orig, name);
-            H(b, "%r<li class=\"row\"><span class=\"grow media-up-name\">%s", shown++ ? "" : "<ul class=\"rows media-conv\">",
-              orig);
-            if (subs) H(b, " <span class=\"muted\">· %s</span>", T("its subtitles"));
-            H(b, "</span><progress class=\"media-up-bar\" max=\"1000\" value=\"%d\"></progress></li>", f->pm);
-        }
-        if (shown) buf_puts(b, "</ul>");
-    }
+
     if (waiting)
         H(b, "<p class=\"muted media-small\">%s</p>",
           T("If the browser that started it was closed, choose the same files again and press Start - what's already "
@@ -3042,6 +3238,7 @@ void upload_act_stop(Ctx *c, Fields *f) {
 void upload_start(void) {
     atomic_store(&g_halt, false);
     g_since = now_sec();
+    g_pace_window_ms = PACE_WINDOW_MS; /* (a test's setting doesn't outlive it) */
 }
 
 void upload_tick(int64_t now) {
@@ -3053,11 +3250,13 @@ void upload_tick(int64_t now) {
     for (int s = 0; s < MAX_BATCHES; s++) {
         Batch *b = g_batch[s];
         if (!b) continue;
-        if (b->workers) { /* speed: smoothed over ~3 s */
+        /* speed: smoothed over ~5 s, measured while bytes come - also across the pauses between a copy's pieces
+           (each its own PUT, 1.3), which used to restart it every 16 MB */
+        if (b->workers || (b->wrote && now_sec() - b->wrote <= 2)) {
             active = true;
             if (b->rate_at && now - b->rate_at >= 900) {
                 double inst = (double)(b->moved - b->rate_moved) * 1000.0 / (double)(now - b->rate_at);
-                b->rate = b->rate > 0 ? b->rate * 0.6 + inst * 0.4 : inst;
+                b->rate = b->rate > 0 ? b->rate * 0.75 + inst * 0.25 : inst;
             }
             if (!b->rate_at || now - b->rate_at >= 900) {
                 b->rate_at = now;
@@ -3083,6 +3282,9 @@ void upload_tick(int64_t now) {
         }
         sig = sig * 31 + (uint64_t)b->moved + (uint64_t)b->done * 7 + (uint64_t)b->failed * 13 +
               (uint64_t)b->workers * 17 + b->stopped + (b->ended != 0) * 3u;
+        for (int i = 0; i < b->nfiles; i++) /* copies being made and subtitles being read move the card too */
+            if (b->files[i].pm > 0 && b->files[i].pm < 1000)
+                sig = sig * 31 + (uint64_t)b->files[i].pm + (uint64_t)i + (uint64_t)(b->files[i].pace / 65536.0) * 7;
     }
     saved = g_files_saved;
     pictures = g_pictures_saved;

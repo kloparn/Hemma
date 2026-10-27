@@ -30,6 +30,7 @@ void upload_test_free_space(int64_t bytes); /* tests: media_test_free_space (roo
    (url-encoded, as the page's fields) becomes what th_page shows `person` on /media/upload; NULL
    forgets it. */
 void upload_test_preview(int person, const char *form);
+void upload_test_pace_window(int ms); /* tests: how long the processing speed is measured over (-1: as shipped) */
 
 /* ------------------------------------------------------------------ sorting (upload_sort.c)
    Hemma sorts an upload by the files' names (owner, 2026-10-21): an episode goes into
