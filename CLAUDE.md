@@ -4,7 +4,12 @@ Hemma ("at home") is a self-hosted page for our home network: book shared things
 (car, laundry, guest room…), plan (chores, shopping list, calendar), a notice board,
 network/presence view, a media portal (movies/series from a local drive) and
 "90's TV channels" that run continuously on a shared clock. README.md is the
-owner-facing overview; this file is the working contract (for agents: every rule, in detail). For
+front page for people choosing Hemma - SHORT AND PLAIN (owner, 2026-10-27: "the wall of text to explain
+something? Way to much for a simple user ... why you should select us. I love the images"): what it is,
+the pictures with a few sentences each, Why Hemma, Is it for you, Try it, Get started, Need help, a few
+lines for developers. No feature lists, settings, tables of setup details or technical talk there: those
+go into docs/ (docs/features.md = everything it does, section by section; the guides for the rest), and
+the README links them. This file is the working contract (for agents: every rule, in detail). For
 people: ARCHITECTURE.md (how it fits together), CONTRIBUTING.md (how to send a change),
 docs/decisions/ (why - one record per big choice).
 
@@ -1061,7 +1066,8 @@ deploy/          hemma-disks (issue #74; sh, root, -> /usr/local/sbin): `sudo he
                  waits for /healthz, prints addresses + setup code + next steps, or the journal tail and exit 1),
                  local.hemma.plist (macOS launchd agent). The Windows guide runs Hemma as Local Service (S-1-5-19,
                  icacls on C:\Hemma and the media folders), never SYSTEM.
-docs/            user guides: raspberry-pi linux windows macos home-network ssh accounts troubleshooting development
+docs/            features (everything Hemma does - a new feature gets its line here, not in the README) + user
+                 guides: raspberry-pi linux windows macos home-network ssh accounts troubleshooting development
                  (README.md links them; "Why C?" and Contributing live in development.md). Public docs: generic
                  examples only (192.168.1.50, hemma.local, /srv/media) - never this household's names,
                  addresses, paths or passwords

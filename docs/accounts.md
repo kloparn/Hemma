@@ -59,7 +59,8 @@ Good to know:
 
 - **Only you can do it.** Without the setup code nobody becomes the admin, even if they
   reach the welcome page first. Wrong codes are refused, and a device that keeps guessing
-  has to wait. When Hemma starts without an admin, its log says so:
+  has to wait - hopeless anyway: there are about a trillion codes. When Hemma starts without
+  an admin, its log says so:
   `No admin yet - open http://192.168.1.50:8080/ in a browser to create one`, followed by
   `The welcome page asks for this setup code: ...`.
 - The welcome page appears **only once** in Hemma's life. As soon as the admin exists it
