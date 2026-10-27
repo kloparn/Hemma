@@ -38,7 +38,10 @@ because C suits that job better than anything else:
   for practically every chip. A household server shouldn't need rewriting when a framework
   goes out of fashion.
 - **Cheap to run.** When nobody is using it, Hemma wakes up about **0.2 times a second**.
-  The Pi stays cool and quiet and draws only a few watts.
+  The Pi stays cool and quiet and draws only a few watts. **Eight people streaming at once**
+  (8 Mbit/s each) used about **10% of one core** on a simulated Pi 3, with memory peaking at
+  8.6 MB; on a real Pi 3B+ eight such streams ran with zero errors. Uploading a 3.6 GB season
+  ran at full disk speed in 9 MB of memory.
 
 C asks for care in return: one careless line can crash the program or open a security hole.
 Hemma pays that back with **over 500 automated tests** (about 1.6 million checks), debug

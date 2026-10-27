@@ -126,7 +126,8 @@ file, so Hemma may write there ([raspberry-pi.md](raspberry-pi.md#7-a-usb-disk-f
 
 **A video won't play on some devices.**
 DVD rips, MKV files and Dolby or DTS sound don't play everywhere. **Watch → Library settings**
-makes a copy of each that does.
+makes a copy of each that does. Which videos it can change, and which not yet:
+[video formats](video-formats.md).
 
 **A video plays, but without sound.**
 Its sound is most likely Dolby (Dolby Digital or Digital Plus - "DD5.1", "DDP5.1" in a file
