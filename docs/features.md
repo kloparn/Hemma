@@ -40,7 +40,8 @@ Your movie and series drive as a little cinema.
 - **Remembers where you stopped**, for each person.
 - **Plays everywhere.** Hemma converts videos a browser can't play (DVD rips, Dolby sound that Chrome
   plays silently, DTS sound no browser plays) into a copy that does, keeping the file's subtitles as
-  .srt files, and puts HEVC films into a file Safari on iPhone, iPad and Mac can play.
+  .srt files, and puts HEVC films into a file Safari on iPhone, iPad and Mac can play
+  ([which videos](video-formats.md)).
 - **Live TV** ("90s TV"): channels that play your shows non-stop on a shared clock, with a TV guide.
 - **Downloads** for grown-ups: a video, or a whole season as one .zip, to watch away from home.
   Downloads slow down while someone is watching.

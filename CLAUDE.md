@@ -63,7 +63,10 @@ Runs on a Raspberry Pi in production; developed on Windows 11 with `zig cc`.
 - **Video formats grow with their fuzzing** (issue #50, owner 2026-10-21: "keep supporting more ... when
   we need it, minor bumps"; docs/decisions/0006): a format the converter takes is listed in
   modules/av/conv.h AV_CONV_CODECS (av_conv_codec() - the converter's checks consult it), and
-  conv_fuzz_seeds fails until a seed carries it; a new decoder gets an avfuzz target too.
+  conv_fuzz_seeds fails until a seed carries it; a new decoder gets an avfuzz target too. And its row in
+  docs/video-formats.md (owner, 2026-10-27: "a supported video list ... formats we help the client to
+  convert to"): what plays as it is, what's converted into what, the file-name words, "Not yet" - keep it
+  true to convert.c convert_need, probe.c judge_in and AV_CONV_CODECS.
 - **Every PR raises the version** (the VERSION file: MAJOR.MINOR.PATCH, digits only - semver.org; owner,
   2026-10-19: "easy to find") and gets its own CHANGELOG.md section
   (owner, 2026-10-12): **patch** = fixes only, **minor** = something new or changed, **major** = a big
@@ -1066,7 +1069,8 @@ deploy/          hemma-disks (issue #74; sh, root, -> /usr/local/sbin): `sudo he
                  waits for /healthz, prints addresses + setup code + next steps, or the journal tail and exit 1),
                  local.hemma.plist (macOS launchd agent). The Windows guide runs Hemma as Local Service (S-1-5-19,
                  icacls on C:\Hemma and the media folders), never SYSTEM.
-docs/            features (everything Hemma does - a new feature gets its line here, not in the README) + user
+docs/            features (everything Hemma does - a new feature gets its line here, not in the README), video-formats
+                 (what plays, what's converted into what, what can't be yet) + user
                  guides: raspberry-pi linux windows macos home-network ssh accounts troubleshooting development
                  (README.md links them; "Why C?" and Contributing live in development.md). Public docs: generic
                  examples only (192.168.1.50, hemma.local, /srv/media) - never this household's names,

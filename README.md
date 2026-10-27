@@ -53,7 +53,8 @@ haven't marked *Not for children*. Guests get a sign-in that ends on their last 
 ### Easy to fill with films
 
 Drop a folder of videos on the page. Before anything is sent, Hemma shows where each file will go,
-and it makes sure every video plays on every device. Fixing a name or tidying up later takes a tap.
+and it converts videos that wouldn't play everywhere, like DVD rips and Dolby or DTS sound
+([which videos](docs/video-formats.md)). Fixing a name or tidying up later takes a tap.
 
 <p align="center">
   <img src="docs/img/upload.webp" alt="Adding videos on a phone: before anything is sent, Hemma lists where each file goes - two films into Movies, one converted on this phone first and one sent as it is, and for a Caminandes episode the library already has, only its subtitles" width="270">
