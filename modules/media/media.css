@@ -225,8 +225,6 @@
 .media-up-bar::-webkit-progress-bar { background: var(--panel-2); border-radius: 99px; }
 .media-up-bar::-webkit-progress-value { background: var(--accent); border-radius: 99px; transition: width .6s ease; }
 .media-up-bar::-moz-progress-bar { background: var(--accent); border-radius: 99px; }
-.media-up-nums { margin: 8px 0 4px; font-variant-numeric: tabular-nums; font-weight: 600; }
-.media-up-now { margin: 0 0 8px; overflow-wrap: anywhere; }
 .media-up-list { margin: 8px 0; }
 .media-up-list summary { cursor: pointer; color: var(--muted); font-size: 13.5px; }
 .media-up-list ul { margin: 8px 0 0; padding-left: 18px; max-height: 260px; overflow: auto; font-size: 13px; }
@@ -236,6 +234,70 @@
 .media-conv .row { padding: 6px 0; }
 .media-conv .media-up-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13.5px; }
 .media-conv .media-up-bar { flex: 0 0 38%; }
+
+/* an upload's card (1.5): its state, the files and one bar; three numbers that keep their places; what's under way,
+   the furthest along on top - each row tagged Saved / Uploading / Ready / Processing / Subtitles in its own colour */
+.media-upc-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.media-upc .media-upc-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin: 0; font-size: 15px; }
+.media-upc-state {
+  display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px 4px 9px; border-radius: 99px;
+  font-size: 13px; font-weight: 700; background: var(--accent-soft); color: var(--accent);
+}
+.media-upc-state i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.media-upc-s-up i, .media-upc-s-proc i { animation: media-upc-pulse 1.6s ease-in-out infinite; }
+.media-upc-s-proc { background: var(--panel-2); background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--text); }
+.media-upc-s-proc i { background: var(--warn); }
+.media-upc-s-wait { background: var(--panel-2); color: var(--muted); }
+.media-upc-s-stop { background: var(--danger-soft); color: var(--danger); }
+@keyframes media-upc-pulse { 50% { opacity: .35; transform: scale(.7); } }
+.media-upc-count { font-variant-numeric: tabular-nums; font-weight: 650; }
+.media-upc-pct { font-size: 24px; font-weight: 750; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.media-upc-bar { height: 10px; margin: 12px 0 14px; border-radius: 99px; background: var(--panel-2); overflow: hidden; }
+.media-upc-bar i, .media-upc-rbar i { display: block; height: 100%; border-radius: inherit; transition: width .8s ease; }
+.media-upc-bar i { background: var(--accent); }
+.media-upc-stats { /* (what was sent is the longest: "217 MB of about 646 MB") */
+  display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr) minmax(0, 1fr); gap: 8px; margin: 0 0 12px;
+}
+.media-upc-stats.media-upc-two { grid-template-columns: repeat(2, minmax(0, 1fr)); } /* (done: sent, took) */
+.media-upc-stats div { min-width: 0; padding: 9px 12px; border-radius: var(--radius-sm); background: var(--panel-2); }
+.media-upc-stats dt { font-size: 12px; font-weight: 600; color: var(--muted); }
+.media-upc-stats dd { margin: 2px 0 0; font-size: 14.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.media-upc-list { list-style: none; margin: 0; padding: 0; }
+.media-upc-row {
+  display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; grid-template-areas: "tag what num" ". bar bar";
+  align-items: center; gap: 5px 12px; padding: 10px 0; border-top: 1px solid var(--line);
+}
+.media-upc-tag {
+  grid-area: tag; justify-self: start; padding: 3px 9px; border-radius: 99px; font-size: 12px; font-weight: 700;
+  white-space: nowrap; background: var(--panel-2); color: var(--muted);
+}
+.media-upc-what { grid-area: what; display: flex; flex-direction: column; min-width: 0; }
+.media-upc-what b, .media-upc-what small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-upc-what b { font-size: 14px; font-weight: 650; }
+.media-upc-what small { font-size: 12px; color: var(--muted); }
+.media-upc-num { grid-area: num; font-size: 13.5px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--muted); }
+.media-upc-rbar { grid-area: bar; height: 4px; border-radius: 99px; background: var(--panel-2); overflow: hidden; }
+.media-upc-rbar i { background: var(--muted); }
+.media-upc-r-up .media-upc-tag { background: var(--accent); color: var(--accent-ink); }
+.media-upc-r-up .media-upc-num { color: var(--text); }
+.media-upc-r-up .media-upc-rbar i { background: var(--accent); }
+.media-upc-r-ready .media-upc-tag { background: none; box-shadow: inset 0 0 0 1.5px var(--accent); color: var(--accent); }
+.media-upc-r-ready .media-upc-rbar i { background: var(--accent); opacity: .3; }
+.media-upc-r-proc .media-upc-tag, .media-upc-r-subs .media-upc-tag { /* (amber text on it would be 3.5:1: the text stays) */
+  background: var(--panel-2); background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--text);
+}
+.media-upc-r-proc .media-upc-rbar i, .media-upc-r-subs .media-upc-rbar i { background: var(--warn); }
+.media-upc-r-saved .media-upc-tag { background: var(--accent-soft); color: var(--accent); }
+.media-upc-r-saved .media-upc-rbar i { background: var(--ok); }
+.media-upc-rest { margin: 0; padding: 10px 0 2px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.media-upc > .media-small { margin-top: 10px; }
+@media (max-width: 600px) { /* a phone: the tag and the number on one line, the name under them */
+  .media-upc-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "tag num" "what what" "bar bar"; }
+  .media-upc-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .media-upc-stats:not(.media-upc-two) div:first-child { grid-column: 1 / -1; }
+  .media-upc-stats div { padding: 8px 10px; }
+  .media-upc-stats dd { font-size: 13.5px; }
+}
 
 /* the page: a place to drop videos, what Start will do with them (the server's preview), More options */
 .media-up-form [hidden] { display: none !important; } /* (.check's display beat the attribute: "Upload anyway" showed) */

@@ -4,6 +4,35 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 1.5.0 (2026-10-27)
+
+An upload's card shows what it's doing.
+
+### Changed
+
+- **An upload's card shows what's going on:** its state (Processing, Uploading, Waiting for the browser, Finished),
+  the files and one bar, then three numbers that stay in their places - what's been sent, the speed and the time
+  left - and a list of what's under way, the furthest along on top: **Saved** (with the time), **Uploading**, **Ready**
+  (made on the sending device, waiting its turn), **Processing** (being made there) and **Subtitles**. Each episode
+  is named as Hemma reads it ("Family Guy · S04E12 · Breaking Out Is Hard to Do"). The old card changed its lines
+  every second or two: a copy kept in memory goes up in pieces, and between two pieces it said nothing was being
+  sent. With copies still being made, the time left now comes from the pace of the last episodes saved.
+- **Processing says how fast it goes:** "9% · 2 MB/s" - how much of the original the sending device takes in each
+  second. A DVD episode's percentage can sit still for a minute; the speed shows it's working (and drops to 0 when it
+  isn't).
+
+### Fixed
+
+- **A video's subtitles, once sent, stay sent:** a progress report from the browser arriving after an upload's
+  "subtitles done" could open that video's entry again, and the upload never finished.
+
+### For developers
+
+- web/conv.js counts what the converter has taken in (`{pm, fed}`, also every 2 s while it reads) and wire.js
+  passes it on (`?pm=&fed=`, the heartbeat too); upload.c measures the speed over 4 s or more (`pace_note`).
+- web/wire.js reports `?pm=1000` when a copy is made: the card shows it as **Ready** (a later, lower report doesn't take
+  that back). upload.c keeps when each file's bytes last came (`UpFile.touched`) and the upload's (`Batch.wrote`).
+
 ## 1.4.0 (2026-10-27)
 
 Series and films get categories, the lists can be sorted and filtered, search finds more, and an upload waits out a
