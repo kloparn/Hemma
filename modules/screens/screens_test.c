@@ -315,13 +315,14 @@ TEST(screens_rows_are_added_moved_named_and_removed) {
     CHECK_INT(screen_rows(id, rows, SCREENS_MAX_ROWS), 2);
     CHECK_INT(rows[0]->pos, 1);
     CHECK_INT(rows[1]->pos, 2);
-    /* the screen shows them in that order, under their headings */
+    /* the screen shows them in that order, under their headings: the typed one, else the pick's name (1.4: a
+       picked series or category said the block's "A series" / "A category") */
     char url[40];
     snprintf(url, sizeof url, "/screens/%d", id);
     const char *h = th_page(adam, url);
     CHECK_HAS(h, "class=\"bare\"");
     CHECK_HAS(h, "data-arrows");
-    const char *a = strstr(h, "<h2>Cartoons</h2>"), *b = strstr(h, "<h2>Picked</h2>");
+    const char *a = strstr(h, "<h2>Cartoons</h2>"), *b = strstr(h, "<h2>First one</h2>");
     CHECK(a && b && a < b);
     CHECK_HAS(h, "zz-picked one");
     /* the builder: heading and pick as they are */

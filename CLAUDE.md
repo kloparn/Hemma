@@ -29,6 +29,12 @@ Runs on a Raspberry Pi in production; developed on Windows 11 with `zig cc`.
   The only third-party code is SQLite (vendored, public domain) - and, as data, FFmpeg's two DTS vector
   tables in third_party/ffmpeg/dts_vq.h (LGPL 2.1+, its README; owner, 2026-10-24: "FFmpeg's, own file" -
   the DTS specification leaves them out of every edition).
+- **The internet only when an admin ticks it** (1.4; owner, 2026-10-27: "if internet is available ... if the
+  user has checked the box", "It can be grayed if the server does not have online activity available to it"):
+  Hemma itself fetches nothing from outside the home but media/lookup.c's genres (TVmaze, OMDb with the admin's
+  key), off by default, over plain http (core/fetch.c - no TLS library; never anything secret that way), only
+  titles and years sent. Updates still go through the root helper (hemma-upgrade, curl). Anything new that goes
+  online gets its own box, off by default, greyed while unreachable.
 - **Modular**: features are self-contained modules so several workers can build
   in parallel without touching each other's files.
 - **Tests**: co-located `*_test.c`, auto-registered. Cover parsers, protocol code,
@@ -228,6 +234,10 @@ core/            framework with a stable API for modules
                  from a wasm32-wasi build - Windows Defender quarantines tiny unsigned test exes here)
   tar.*          the little of tar (ustar) the backup download and hemma --restore need: tar_add/tar_end,
                  tar_looks, tar_find (in memory; checksums checked; GNU tar reads ours)
+  fetch.*        Hemma's one way out (1.4): fetch_get(host, port, path, max, timeout) = a plain-HTTP/1.1 GET, BLOCKING
+                 (plat_resolve = getaddrinfo, tcp_connect_nb + poll, reads to the close) - threads only; Fetched =
+                 status (0 = no answer, err says why), the body de-chunked, a redirect's location (not followed:
+                 maybe https). fetch_parse alone is what fetch_test.c checks. No TLS: only services answering http://.
   main.c         command line (--gen-salt, --env, --web, --reset-password, --restore, --demo ...)
   zone.*         the time zone (issue #39; core/zone.h; series too: their start/end/until move, and a row a
                  series made at the start after a change counts as typed when its series was): zone_sig() = the offsets in January/July
@@ -491,6 +501,12 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  message); wire.js converter() puts such a job back in line (again[], first in pump(), AGAIN = 2 times
                  at most) instead of sending the original. form[data-flaky="N"] (tests only): each job's first try
                  fails N reads (upload.spec.mjs "tried again").
+                 A DROPPED NETWORK (1.4; 2026-10-27: a PC's Wi-Fi gone ~10 min at 4 am stopped a 425-episode upload
+                 for five hours - "The connection keeps dropping" after a minute of tries): wire.js down(since) - a
+                 request that got NO answer (fetch rejected; conv.js send {status: 0}) isn't a try: it's asked again
+                 every netPause (5 s; form[data-netpause] in tests) for up to NET_WAIT (30 min), put() then GETs where
+                 the file got to. Only the server's own answers count as tries (put 8, ask 5, subtitles 3-4).
+                 upload.spec.mjs "waits out a dropped network" aborts 12 PUTs with internetdisconnected.
                  THE PAGE (1.1; owner, 2026-10-21: "easy enough to understand"; "Add videos" in Watch's header,
                  "Add episodes" on a series page): form[data-upload][data-preview] with a [data-drop] area (wire.js
                  keeps dropped/picked files and folders on the form, each choice adding; [data-drop-clear] empties),
@@ -653,6 +669,58 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  ?v=<size>-<mtime>&k=<key>", no <track>. PNG addresses = the JSON's with ".json" -> "/<n>.png", the
                  query kept (they ride on the cookie: a key fits its exact path only). Scale from the JSON's w/h,
                  never the video's size: MakeMKV's .idx says 720x576 for an NTSC 720x480 disc.
+  media/cats.c   CATEGORIES (1.4; owner, 2026-10-27: "increase the searching and usage of the series and movies"; "by hand +
+                 .nfo genres", ticked by "admins and members"): a WORK = a series (key "s<16 hex>" = its id, kept through a
+                 rename) or a film ("m<16 hex>" = media_film_key: folded title + "|" + year hashed - its parts and copies,
+                 moved or not, share it; Fix title moves its rows: media_cats_move). Its categories (media_cats_of, at most
+                 MEDIA_CAT_MAX, listed starters first in their order, then the household's A-Z) = the genres of its .nfo
+                 (library.c MF_NFO: a series' tvshow.nfo in its show folder, else the first episode's; a film's
+                 "<stem>.nfo", else movie.nfo when alone in its folder; an episode's own .nfo is never indexed - read on
+                 the scan's thread, once per size+mtime, kept in name.title '|'-joined and in the cache's title column)
+                 and of the lookup (media_lookup_genres), mapped onto STARTERS (key, N_ name, `also` = other names folded:
+                 en/sv/es and the services' genres - "Animation", "Children", "Science-Fiction", "Sitcom", "Komedi"; one
+                 may map to two: "Action & Adventure"), else "+<name>" (the household's own; the first spelling in
+                 use wins, folded), plus table media_cat {work, cat, on, at}: on = ticked, on = 0 = one the .nfo/lookup
+                 gave taken off (a row only where it differs from them). A category = a starter's key or "+<name>"
+                 (media_cat_parse for ?cat=). Actions media.cat (work, cat, on) and media.cat_new (work, name: a starter's
+                 name in any language = that starter) - members and admins (no .may: children, guests, display accounts
+                 never; links to the dialog ask ui_can). media_cats_line on a series' / film's page (chips -> the list
+                 ?cat=, + "Categories" -> ?cats=1), media_cats_modal (?cats=1: a toggle form per starter and per own
+                 category in use, "A category of your own", admins: media_lookup_form). media_cats_used(c, kinds) =
+                 categories with counts in media_lib_for(c). USED BY media.c: Movies/Series chips (ListChoice: cat, sort
+                 "" | new | year (films) | watched (viewer), show "" | new (not started) | going (started, not finished)
+                 - list_href keeps the three), Watch's home rows (CAT_ROWS 6, two titles or more, the fullest first, See
+                 all = /media?cat=X: category_page), search (media_cats_words: the reader's label + English); tiles.c
+                 block media.category (choices = the categories in use) - screens heads a picked row with its choice's
+                 label (screens_page.c draw_rows: "Comedy", "Family Guy", not "A category"/"A series").
+                 SEARCH (media.c, 1.4): query_parse = folded words (word chars: ASCII alnum + any UTF-8 byte), one episode
+                 number token ("s02e03", "2x03"); EVERY word somewhere in the item's text (series: title year categories;
+                 films: + rel; episodes: show + episode title, and only when a word reaches the episode's own title or
+                 the number was asked - "simpsons" never lists 683 episodes; others: title + rel); title_rank 4 whole, 3
+                 start, 2 word starts, 1 in it, 0 elsewhere; groups Series 24, Movies 24, Episodes 30, Other videos 12
+                 ("and N more").
+  media/lookup.c CATEGORIES LOOKED UP ONLINE (1.4; owner: "if internet is available ... if the user has checked the box",
+                 "It can be grayed", "press manage, and then maybe 'Update tags'? Where i paste the id"): setting
+                 media.lookup (OFF by default; admins, Library settings card "Categories from the internet"), media.omdb_key
+                 (letters and digits; settings are api_hidden). The INTERNET CHECK: the card asks (g_probe_wanted, at
+                 most every PROBE_EVERY_S 300 s), the tick sends GET http://api.tvmaze.com/ on a thread; no answer =
+                 g_online -1 -> the box disabled (unless on) and "can't reach the internet", media.lookup on refused;
+                 a lookup without an answer marks it too; while on and unreachable the check repeats every
+                 OFFLINE_WAIT_S 900 s. LOOKUPS: one thread at a time, ASK_EVERY_MS 3000 apart (TVmaze allows 20/10 s);
+                 next_job = series without a row (by name: TVmaze /search/shows?q= - the one premiered in its year,
+                 else of its very name, else the first; genres + type Animation/Documentary), then films (OMDb
+                 /?type=movie&t=&y=&apikey=, only with a key OMDb hasn't refused - Response False "...API key" = -2,
+                 g_omdb_bad on the card; OMDb answers a bad key with a 401 + JSON). Table media_lookup {work, genres,
+                 source, ref, name ("That '70s Show (1998)": a wrong match shows), found, pinned, at}: found = false is
+                 asked again after NOT_FOUND_DAYS 30; an answer not understood (or a 5xx) is stored as not found one day
+                 before that (asked again tomorrow, never every 3 s). BY AN ID (media_lookup_form: Manage's "The whole
+                 series" card and the categories dialog, admins; action media.lookup_id work id): a TVmaze show link or
+                 number -> /shows/N, an IMDb tt-id (any link holding one) -> TVmaze /lookup/shows?imdb= (301 to an https
+                 /shows/N: its number asked again over http) or OMDb /?i=; an empty id = by name again; g_ask goes next,
+                 the result is pinned (never re-asked by name) and the admin gets a toast (app_notify_person). A series
+                 rename / a film's Fix title: media_lookup_renamed (by name = asked again; pinned moves). Lists re-drawn
+                 at most every 15 s while answers come. Under tests nothing is fetched: media_lookup_test_tvmaze/_omdb/
+                 _next/_online/_put (cats_test.c).
   media/kids.c   NOT FOR CHILDREN (issue #44; owner: "per folder"): table media_no_kids (root path + folder below
                  it, "" = all), marked on the Folders tab (media.kids, admins; Library settings lists them).
                  media_kid(c) = a child, or a display account with a child picked (ctx_viewer). media_lib_for(c)
@@ -1625,7 +1693,7 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
 ## Where things stand
 
 What each version changed is [CHANGELOG.md](CHANGELOG.md); why the big choices are what they are is
-[docs/decisions](docs/decisions/README.md) (0001-0008); how it fits together for humans is
+[docs/decisions](docs/decisions/README.md) (0001-0009); how it fits together for humans is
 [ARCHITECTURE.md](ARCHITECTURE.md) and [CONTRIBUTING.md](CONTRIBUTING.md). This file keeps the working rules.
 (Issue #51, 2026-10-21: the dated Status diary that lived here - every version's work, review passes -
 is the CHANGELOG's now.) 1.0.0 (2026-10-21) = the outside reviews' issues (#3-#103) and the planned
@@ -1644,7 +1712,12 @@ is ready (no waiting on the list's order), conv.js reads ahead, copies optionall
 in pieces), and what stays behind still gives the subtitles the library lacks (subtitles-only entries; sidecars and
 lone subtitle files go next to the library's video); then (owner, 2026-10-24: "faster branch + extra file support") DTS
 sound (av/dts.c) and subtitles following the viewer through a series, C toggling them; admins renaming a series
-(its folders; it keeps its id), and a release folder's season range ("S01-S31") no part of a series' name.
+(its folders; it keeps its id), and a release folder's season range ("S01-S31") no part of a series' name. 1.4.0
+(branch feat/add-categories-to-series-and-movies; owner, 2026-10-27: "increase the searching and usage of the series
+and movies") = categories (media/cats.c: by hand - members and admins -, from .nfo files, and - an admin's box, off by
+default - looked up online, media/lookup.c + core/fetch.c, with "Update categories" by a pasted TVmaze/IMDb id), the
+lists' chips, order and Not started/Started, a row per category on Watch and for the TV, search by every word in any
+order, grouped; and an upload that waits out a dropped network.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling

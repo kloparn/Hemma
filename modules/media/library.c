@@ -208,6 +208,68 @@ const MediaFile *media_playable(const MediaFile *f) {
     return w ? w : f;
 }
 
+const char *media_nfo_genres(uint64_t nfo) {
+    const MediaFile *f = nfo ? media_file(nfo) : NULL;
+    return f && f->type == MF_NFO ? f->name.title : "";
+}
+
+/* Worth indexing: a series' tvshow.nfo, a film's movie.nfo or "<its name>.nfo" - not an episode's own (Sonarr
+   writes one per episode: 146 in one series here). */
+static bool nfo_wanted(const char *name) {
+    if (!str_iends(name, ".nfo")) return false;
+    if (str_ieq(name, "tvshow.nfo") || str_ieq(name, "movie.nfo")) return true;
+    MediaName n;
+    media_parse_name(name, &n);
+    return n.kind != MEDIA_EPISODE;
+}
+
+/* A .nfo's genres, as written: every <genre>...</genre> (an old one's "Comedy / Drama" in one too), '|' between,
+   each once, in the first NFO_READ bytes. Read on the scan's thread, once per file (kept in the cache). */
+#define NFO_READ (256 << 10)
+static void nfo_genres(const char *path, char *out, size_t cap) {
+    out[0] = '\0';
+    FILE *f = file_open(path, "rb");
+    if (!f) return;
+    char *buf = xmalloc(NFO_READ + 1);
+    size_t n = fread(buf, 1, NFO_READ, f), len = 0;
+    fclose(f);
+    buf[n] = '\0';
+    for (const char *p = buf; (p = fold_find(p, "<genre"));) {
+        const char *gt = strchr(p, '>'), *end = gt ? fold_find(gt, "</genre") : NULL;
+        if (!end) break;
+        p = end;
+        char g[200];
+        size_t k = 0;
+        for (const char *s = gt + 1; s < end && k + 1 < sizeof g; s++) { /* the five entities, '/' and '|' as breaks */
+            static const char *const ent[][2] = {{"&amp;", "&"}, {"&lt;", "<"}, {"&gt;", ">"}, {"&quot;", "\""}, {"&apos;", "'"}};
+            int e = -1;
+            for (int i = 0; i < countof(ent) && e < 0; i++)
+                if (str_starts(s, ent[i][0])) e = i;
+            if (e >= 0) {
+                g[k++] = ent[e][1][0];
+                s += strlen(ent[e][0]) - 1;
+            } else {
+                g[k++] = *s == '/' || *s == '|' || *s == '\n' || *s == '\r' || *s == '\t' ? '|' : *s;
+            }
+        }
+        g[k] = '\0';
+        for (char *one = g, *bar; one; one = bar ? bar + 1 : NULL) {
+            bar = strchr(one, '|');
+            if (bar) *bar = '\0';
+            while (*one == ' ') one++;
+            size_t l = strlen(one);
+            while (l && one[l - 1] == ' ') one[--l] = '\0';
+            if (!l || l > 40 || !utf8_valid(one, l)) continue;
+            bool have = false; /* (each once) */
+            for (const char *q = out; *q && !have; q = strchr(q, '|') ? strchr(q, '|') + 1 : q + strlen(q))
+                have = strncmp(q, one, l) == 0 && (q[l] == '|' || !q[l]);
+            if (have || len + l + 2 > cap) continue;
+            len += (size_t)snprintf(out + len, cap - len, "%s%s", len ? "|" : "", one);
+        }
+    }
+    free(buf);
+}
+
 /* Names come from the path; a ".web.mp4" copy is named like its original ("x.web.mp4" as "x.mp4"),
    so it still makes sense on its own if the original is ever deleted. A play-all's header
    ("x.playall.mkv") is named like the title it stands in for. */
@@ -309,6 +371,15 @@ static void add_file(Scan *sc, int root, const char *rel, char type, int64_t siz
             join_path(sc->roots[root], rel, path, sizeof path);
             f->fp = fingerprint(path, size);
         }
+    } else if (type == MF_NFO) { /* its genres: read again only when it changed */
+        const MediaFile *o = sc->old ? index_find(sc->old, f->id) : NULL;
+        if (o && o->type == MF_NFO && o->size == size && o->mtime == mtime) {
+            str_copy(f->name.title, sizeof f->name.title, o->name.title);
+        } else {
+            char path[1024];
+            join_path(sc->roots[root], rel, path, sizeof path);
+            nfo_genres(path, f->name.title, sizeof f->name.title);
+        }
     }
     sc->n++;
 }
@@ -361,6 +432,7 @@ static void walk(Scan *sc, int root, const char *abs, const char *rel_dir, int d
                     : media_is_sub_ext(e.name) ? MF_SUB
                     : media_is_image_ext(e.name) ? MF_IMAGE
                     : media_is_vobsub_data(e.name) && vobsub_idx_beside(abs, e.name) ? MF_SUB
+                    : nfo_wanted(e.name)                                             ? MF_NFO
                                                                                      : 0;
         if (type) add_file(sc, root, rel, type, e.size, e.mtime);
     }
@@ -598,17 +670,21 @@ static bool span_ieq(const char *a, const char *b, size_t n) {
     return true;
 }
 
-/* Image in [group] whose stem (file name without extension) equals `stem`. */
-static uint64_t find_image(const MediaFile *files, const Ent *ents, int g0, int g1, const char *stem) {
+/* A file of that type in [group] whose stem (file name without extension) equals `stem`. */
+static uint64_t find_typed(const MediaFile *files, const Ent *ents, int g0, int g1, const char *stem, char type) {
     size_t sl = strlen(stem);
     for (int k = g0; k < g1; k++) {
         const MediaFile *f = &files[ents[k].idx];
-        if (f->type != MF_IMAGE) continue;
+        if (f->type != type) continue;
         const char *b = base_of(f->rel);
         const char *dot = strrchr(b, '.');
         if (dot && (size_t)(dot - b) == sl && span_ieq(b, stem, sl)) return f->id;
     }
     return 0;
+}
+
+static uint64_t find_image(const MediaFile *files, const Ent *ents, int g0, int g1, const char *stem) {
+    return find_typed(files, ents, g0, g1, stem, MF_IMAGE);
 }
 
 static uint64_t generic_poster(const MediaFile *files, const Ent *ents, int g0, int g1) {
@@ -986,6 +1062,10 @@ static void index_finish(MediaIndex *ix) {
                 snprintf(alt, sizeof alt, "%s-thumb", stem);
                 if (!f->poster) f->poster = find_image(F, ents, g0, g1, alt);
                 if (!f->poster && nvideos == 1 && f->name.kind != MEDIA_EPISODE) f->poster = generic_poster(F, ents, g0, g1);
+                if (f->name.kind == MEDIA_MOVIE) { /* its genres: "<its name>.nfo", else its own folder's movie.nfo */
+                    f->nfo = find_typed(F, ents, g0, g1, stem, MF_NFO);
+                    if (!f->nfo && nvideos == 1) f->nfo = find_typed(F, ents, g0, g1, "movie", MF_NFO);
+                }
             }
         }
     }
@@ -1033,9 +1113,14 @@ static void index_finish(MediaIndex *ix) {
         /* series poster: in the show folder (above "Season N/Disc N"), else the first episode's */
         size_t dl = dir_len(first->rel), show_dl = show_dir_len(first->rel, dl);
         int g0, g1;
-        if (find_group(F, ents, w, first->root, first->rel, show_dl, &g0, &g1)) s->poster = generic_poster(F, ents, g0, g1);
-        if (!s->poster && find_group(F, ents, w, first->root, first->rel, dl, &g0, &g1))
+        if (find_group(F, ents, w, first->root, first->rel, show_dl, &g0, &g1)) {
             s->poster = generic_poster(F, ents, g0, g1);
+            s->nfo = find_typed(F, ents, g0, g1, "tvshow", MF_NFO); /* (its genres: cats.c) */
+        }
+        if ((!s->poster || !s->nfo) && find_group(F, ents, w, first->root, first->rel, dl, &g0, &g1)) {
+            if (!s->poster) s->poster = generic_poster(F, ents, g0, g1);
+            if (!s->nfo) s->nfo = find_typed(F, ents, g0, g1, "tvshow", MF_NFO);
+        }
     }
     qsort(ix->series, (size_t)ix->nseries, sizeof *ix->series, series_cmp);
 
@@ -1126,7 +1211,7 @@ static void cache_load(void) {
     /* Names are parsed again from the path (2-3 µs each) rather than read back: the cache then never
        disagrees with a fresh scan, and parser improvements apply at once. Probes are the costly part. */
     sqlite3_stmt *st = db_prep("SELECT id, root, type, rel, size, mtime, container, duration_ms, width, height, "
-                               "vcodec, acodec, channels, playable, why, fp FROM media_file");
+                               "vcodec, acodec, channels, playable, why, fp, title FROM media_file");
     while (st && sqlite3_step(st) == SQLITE_ROW) {
         char root[300], type[4];
         col_text(st, 1, root, sizeof root);
@@ -1134,7 +1219,7 @@ static void cache_load(void) {
         for (int i = 0; i < ix->nroots; i++)
             if (str_eq(ix->roots[i], root)) r = i;
         col_text(st, 2, type, sizeof type);
-        if (r < 0 || (type[0] != MF_VIDEO && type[0] != MF_SUB && type[0] != MF_IMAGE)) continue;
+        if (r < 0 || (type[0] != MF_VIDEO && type[0] != MF_SUB && type[0] != MF_IMAGE && type[0] != MF_NFO)) continue;
         if (ix->nfiles == cap) {
             cap *= 2;
             ix->files = xrealloc(ix->files, (size_t)cap * sizeof *ix->files);
@@ -1160,6 +1245,7 @@ static void cache_load(void) {
         col_text(st, 14, f->probe.why, sizeof f->probe.why);
         if (f->probe.playable != PLAY_UNKNOWN) media_probe_judge(&f->probe); /* (a newer Hemma may say it better) */
         f->fp = (uint64_t)sqlite3_column_int64(st, 15);
+        if (f->type == MF_NFO) col_text(st, 16, f->name.title, sizeof f->name.title); /* (its genres: read back) */
         if (f->type == MF_VIDEO) { /* (the same rules as a scan: add_file) */
             parse_name(root_name(ix->roots[r]), f->rel, &f->name, false);
             if (f->name.extra && !named_but_real(f)) continue; /* hidden since it was stored */

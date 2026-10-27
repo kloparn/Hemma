@@ -18,9 +18,10 @@
 void conv_test_rip(const char *root, const char *rel, const char *doctype, int64_t size); /* convert_test.c */
 
 /* what reads the same in every language on the pages below: the subtitle languages Library settings
-   offers (each in itself) and its example folders */
+   offers (each in itself), its example folders and the services categories are looked up at (1.4) */
 #define SAME_EVERYWHERE \
-    "Svenska", "English", "Norsk", "Dansk", "Suomi", "Deutsch", "Français", "Español", "/mnt/media&#10;D:\\Movies"
+    "Svenska", "English", "Norsk", "Dansk", "Suomi", "Deutsch", "Français", "Español", "/mnt/media&#10;D:\\Movies", \
+        "TVmaze", "OMDb", "omdbapi.com"
 
 /* every url as person, in Swedish and Spanish; what reads as in English is printed */
 static int untranslated(int person, const char *const *urls, size_t n, const char *const *allow) {

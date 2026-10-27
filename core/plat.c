@@ -284,6 +284,17 @@ sock_t tcp_connect_nb(uint32_t ip, int port) {
     return s;
 }
 
+bool plat_resolve(const char *host, uint32_t *ip) {
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, NULL, &hints, &res) != 0 || !res) return false;
+    *ip = ntohl(((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr);
+    freeaddrinfo(res);
+    return true;
+}
+
 bool tcp_connect_done(sock_t s) {
     int err = 0;
     socklen_t len = sizeof err;

@@ -781,26 +781,281 @@ static bool library_empty_states(Ctx *c, Buf *b) {
 
 /* ---------------------------------------------------------------- search */
 
-static void search_results(Ctx *c, Buf *b, const char *q) {
-    const MediaIndex *ix = media_lib_for(c);
-    int shown = 0;
-    buf_puts(b, "<div class=\"media-grid\">");
-    for (int i = 0; i < ix->nseries && shown < 60; i++) {
-        if (!fold_find(ix->series[i].title, q)) continue;
-        series_card(c, b, &ix->series[i]);
-        shown++;
+/* 1.4: every word typed, in any order, somewhere in what's searched - a title, its year, its categories (in
+   the reader's words and English's), an episode's name and number ("simpsons s02e03", "2x03"), a film's folders;
+   the results grouped (series, movies, episodes, other videos), the best first: the whole title, a title that
+   starts so, words that start the title's words, then the rest. An episode shows only when the words reach
+   past its series' name (else "simpsons" would list 683 episodes) or its number was asked for. */
+#define SEARCH_WORDS 8
+typedef struct {
+    char all[160];               /* the whole query, folded */
+    char w[SEARCH_WORDS][64];
+    int n, season, episode;      /* episode: 0 = no number asked */
+} Query;
+
+static bool word_char(unsigned char ch) { return ch >= 0x80 || (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z'); }
+
+/* "s02e03", "s2e3", "2x03": an episode's number */
+static bool ep_token(const char *t, int *season, int *episode) {
+    int s = 0, e = 0, k = 0;
+    if (sscanf(t, "s%de%d%n", &s, &e, &k) == 2 && !t[k]) goto ok;
+    if (sscanf(t, "%dx%d%n", &s, &e, &k) == 2 && !t[k]) goto ok;
+    return false;
+ok:
+    *season = s, *episode = e;
+    return e > 0;
+}
+
+static void query_parse(const char *q, Query *out) {
+    memset(out, 0, sizeof *out);
+    fold_copy(out->all, sizeof out->all, q);
+    str_trim(out->all);
+    for (const char *p = out->all; *p && out->n < SEARCH_WORDS;) {
+        while (*p && !word_char((unsigned char)*p)) p++;
+        size_t len = 0;
+        while (p[len] && word_char((unsigned char)p[len])) len++;
+        if (!len) break;
+        str_ncopy(out->w[out->n], sizeof out->w[0], p, len);
+        if (!out->episode && ep_token(out->w[out->n], &out->season, &out->episode)) out->w[out->n][0] = '\0';
+        else out->n++;
+        p += len;
     }
-    for (int i = 0; i < ix->nrecent && shown < 60; i++) {
-        const MediaFile *f = &ix->files[ix->recent[i]];
-        bool hit = f->name.kind == MEDIA_EPISODE ? fold_find(f->name.ep_title, q) != NULL
-                                                 : fold_find(f->name.title, q) || fold_find(f->rel, q);
-        if (!hit) continue;
-        video_card(c, b, f);
-        shown++;
+}
+
+/* every word in hay (folded) */
+static bool all_words(const Query *q, const char *hay) {
+    for (int i = 0; i < q->n; i++)
+        if (!strstr(hay, q->w[i])) return false;
+    return true;
+}
+
+static bool at_word_start(const char *hay, const char *w) {
+    for (const char *p = hay; (p = strstr(p, w)); p++)
+        if (p == hay || !word_char((unsigned char)p[-1])) return true;
+    return false;
+}
+
+/* how well a title matches (folded title): 4 the whole of it, 3 its start, 2 every word starts one of its words,
+   1 every word in it, 0 the words were found elsewhere */
+static int title_rank(const Query *q, const char *title) {
+    if (!q->n) return 0;
+    if (str_eq(title, q->all)) return 4;
+    if (str_starts(title, q->all)) return 3;
+    bool starts = true, in = true;
+    for (int i = 0; i < q->n; i++) {
+        starts = starts && at_word_start(title, q->w[i]);
+        in = in && strstr(title, q->w[i]);
+    }
+    return starts ? 2 : in ? 1 : 0;
+}
+
+typedef struct {
+    int rank, i; /* i: a series' index, or a file's */
+    const char *title;
+} Hit;
+
+static int hit_order(const void *x, const void *y) {
+    const Hit *a = x, *b = y;
+    if (a->rank != b->rank) return b->rank - a->rank;
+    char fa[160], fb[160];
+    fold_copy(fa, sizeof fa, a->title);
+    fold_copy(fb, sizeof fb, b->title);
+    int k = strcmp(fa, fb);
+    return k ? k : a->i - b->i;
+}
+
+static void hay_of(Buf *h, const char *a, const char *b2, const char *c2) {
+    char f[1200];
+    buf_reset(h);
+    buf_printf(h, "%s %s %s", a, b2 ? b2 : "", c2 ? c2 : "");
+    fold_copy(f, sizeof f, buf_cstr(h));
+    buf_reset(h);
+    buf_puts(h, f);
+}
+
+/* One group of results: a heading with how many, the best `max` of them. */
+static void hits_group(Ctx *c, Buf *b, const MediaIndex *ix, const char *head, Hit *h, int n, int max, bool series) {
+    if (!n) return;
+    qsort(h, (size_t)n, sizeof *h, hit_order);
+    H(b, "<section class=\"media-found\"><h2>%s <small>%d</small></h2><div class=\"media-grid\">", head, n);
+    for (int i = 0; i < n && i < max; i++) {
+        if (series) series_card(c, b, &ix->series[h[i].i]);
+        else video_card(c, b, &ix->files[h[i].i]);
     }
     buf_puts(b, "</div>");
-    if (!shown)
-        ui_empty(b, "🤷", T("Nothing matches"), T("Try another word — titles, episode names and folders are searched."));
+    if (n > max) {
+        buf_puts(b, "<p class=\"muted media-found-more\">");
+        H(b, T("and %d more"), n - max);
+        H(b, " · %s</p>", T("more words narrow it down"));
+    }
+    buf_puts(b, "</section>");
+}
+
+static void search_results(Ctx *c, Buf *b, const char *qtext) {
+    const MediaIndex *ix = media_lib_for(c);
+    Query q;
+    query_parse(qtext, &q);
+    if (!q.n && !q.episode) return;
+    Hit *hs = xmalloc((size_t)(ix->nseries + 1) * sizeof *hs), *hf = xmalloc((size_t)(ix->nrecent + 1) * sizeof *hf);
+    Hit *he = xmalloc((size_t)(ix->nrecent + 1) * sizeof *he), *ho = xmalloc((size_t)(ix->nrecent + 1) * sizeof *ho);
+    int ns = 0, nf = 0, ne = 0, no = 0;
+    Buf hay = {0}, extra = {0};
+    char t[160], year[8];
+    MediaWork w;
+    for (int i = 0; i < ix->nseries && !q.episode; i++) {
+        const MediaSeries *s = &ix->series[i];
+        media_work_series(s, &w);
+        buf_reset(&extra);
+        media_cats_words(&w, &extra);
+        snprintf(year, sizeof year, "%d", s->year);
+        hay_of(&hay, s->title, s->year ? year : NULL, buf_cstr(&extra));
+        if (!all_words(&q, buf_cstr(&hay))) continue;
+        fold_copy(t, sizeof t, s->title);
+        hs[ns++] = (Hit){title_rank(&q, t), i, s->title};
+    }
+    for (int k = 0; k < ix->nrecent; k++) {
+        int i = ix->recent[k];
+        const MediaFile *f = &ix->files[i];
+        snprintf(year, sizeof year, "%d", f->name.year);
+        if (f->name.kind == MEDIA_EPISODE) {
+            if (q.episode && (f->name.season != q.season || q.episode < f->name.episode ||
+                              q.episode > MAX(f->name.episode, f->name.episode_end)))
+                continue;
+            hay_of(&hay, f->name.title, f->name.ep_title, NULL);
+            if (!all_words(&q, buf_cstr(&hay))) continue;
+            fold_copy(t, sizeof t, f->name.ep_title);
+            bool own = q.episode != 0; /* (the words reach its own name, or its number was asked for) */
+            for (int j = 0; j < q.n && !own; j++) own = strstr(t, q.w[j]) != NULL;
+            if (own) he[ne++] = (Hit){title_rank(&q, t), i, f->name.ep_title};
+        } else if (!q.episode && f->name.kind == MEDIA_MOVIE) {
+            media_work_film(f, &w);
+            buf_reset(&extra);
+            media_cats_words(&w, &extra);
+            buf_printf(&extra, " %s", f->rel);
+            hay_of(&hay, f->name.title, f->name.year ? year : NULL, buf_cstr(&extra));
+            if (!all_words(&q, buf_cstr(&hay))) continue;
+            fold_copy(t, sizeof t, f->name.title);
+            hf[nf++] = (Hit){title_rank(&q, t), i, f->name.title};
+        } else if (!q.episode) {
+            hay_of(&hay, f->name.title, f->rel, NULL);
+            if (!all_words(&q, buf_cstr(&hay))) continue;
+            fold_copy(t, sizeof t, f->name.title);
+            ho[no++] = (Hit){title_rank(&q, t), i, f->name.title};
+        }
+    }
+    hits_group(c, b, ix, T("Series"), hs, ns, 24, true);
+    hits_group(c, b, ix, T("Movies"), hf, nf, 24, false);
+    hits_group(c, b, ix, T("Episodes"), he, ne, 30, false);
+    hits_group(c, b, ix, T("Other videos"), ho, no, 12, false);
+    if (!ns && !nf && !ne && !no)
+        ui_empty(b, "🤷", T("Nothing matches"),
+                 T("Try another word — titles, episode names and numbers, categories and folders are searched."));
+    buf_free(&hay);
+    buf_free(&extra);
+    free(hs), free(hf), free(he), free(ho);
+}
+
+/* ------------------------------------------------- lists: categories, order, what's shown (1.4) */
+
+/* What the viewer has done with a series or film: 0 not started, 1 started, 2 seen to the end; *last = when
+   they last watched any of it (0 = never). */
+enum { SEEN_NONE, SEEN_GOING, SEEN_ALL };
+static int series_seen(const Ctx *c, const MediaSeries *s, int64_t *last) {
+    int v = ctx_viewer(c), done = 0, any = 0;
+    *last = 0;
+    for (int i = 0; v && i < s->count; i++) {
+        const MediaWatch *w = media_watch_get(v, media_episode(s, i)->id);
+        if (!w || (!w->done && w->pos <= 0)) continue;
+        any++;
+        done += w->done;
+        if (w->updated > *last) *last = w->updated;
+    }
+    return !any ? SEEN_NONE : done == s->count ? SEEN_ALL : SEEN_GOING;
+}
+
+static int film_seen(const Ctx *c, const MediaFile *f, int64_t *last) {
+    const MediaWatch *w = media_watch_of(c, f);
+    *last = w && (w->done || w->pos > 0) ? w->updated : 0;
+    return !*last ? SEEN_NONE : w->done ? SEEN_ALL : SEEN_GOING;
+}
+
+/* A list's address with its choices (each "" = its default): base?cat=&sort=&show= */
+static void list_href(Buf *b, const char *base, const char *cat, const char *sort, const char *show) {
+    const char *const keys[] = {"cat", "sort", "show"}, *vals[] = {cat, sort, show};
+    H(b, "%s", base);
+    for (int i = 0, n = 0; i < 3; i++)
+        if (*vals[i]) H(b, "%r%s=%u", n++ ? "&amp;" : "?", keys[i], vals[i]);
+}
+
+typedef struct {
+    const char *base, *sort, *show;
+    char cat[MEDIA_CAT_LEN];
+} ListChoice;
+
+/* The category chips (the ones this list's titles are in, most first), the order and what's shown. */
+static void list_controls(Ctx *c, Buf *b, const ListChoice *lc, int kind, const char *const sorts[][2], int nsorts) {
+    MediaCatUse used[48];
+    int nu = media_cats_used(c, kind, used, countof(used));
+    if (nu) {
+        H(b, "<nav class=\"chips media-cats\" aria-label=\"%s\"><a class=\"chip%r\" href=\"", T("Categories"),
+          lc->cat[0] ? "" : " on");
+        list_href(b, lc->base, "", lc->sort, lc->show);
+        H(b, "\">%s</a>", T("All"));
+        for (int i = 0; i < nu; i++) {
+            H(b, "<a class=\"chip%r\" href=\"", str_eq(lc->cat, used[i].cat) ? " on" : "");
+            list_href(b, lc->base, used[i].cat, lc->sort, lc->show);
+            H(b, "\">%s <small>%d</small></a>", media_cat_label(used[i].cat),
+              kind == MEDIA_CATS_SERIES ? used[i].series : used[i].films);
+        }
+        buf_puts(b, "</nav>");
+    }
+    buf_puts(b, "<div class=\"media-list-tools\"><nav class=\"seg media-sort\">");
+    for (int i = 0; i < nsorts; i++) {
+        H(b, "<a href=\"");
+        list_href(b, lc->base, lc->cat, i ? sorts[i][0] : "", lc->show);
+        H(b, "\"%r>%s</a>", str_eq(lc->sort, sorts[i][0]) ? " class=\"on\"" : "", T(sorts[i][1]));
+    }
+    buf_puts(b, "</nav>");
+    if (ctx_viewer(c)) { /* (a TV with nobody picked has nobody's progress to go by) */
+        static const char *const shows[][2] = {{"", N_("Everything")}, {"new", N_("Not started")}, {"going", N_("Started")}};
+        buf_puts(b, "<nav class=\"seg media-show\">");
+        for (int i = 0; i < countof(shows); i++) {
+            H(b, "<a href=\"");
+            list_href(b, lc->base, lc->cat, lc->sort, shows[i][0]);
+            H(b, "\"%r>%s</a>", str_eq(lc->show, shows[i][0]) ? " class=\"on\"" : "", T(shows[i][1]));
+        }
+        buf_puts(b, "</nav>");
+    }
+    buf_puts(b, "</div>");
+}
+
+static void list_choice(Ctx *c, ListChoice *lc, const char *base, const char *const sorts[][2], int nsorts) {
+    lc->base = base;
+    lc->sort = sorts[0][0];
+    for (int i = 1; i < nsorts; i++)
+        if (str_eq(ctx_q(c, "sort"), sorts[i][0])) lc->sort = sorts[i][0];
+    lc->show = str_eq(ctx_q(c, "show"), "new") ? "new" : str_eq(ctx_q(c, "show"), "going") ? "going" : "";
+    if (!ctx_viewer(c)) lc->show = "";
+    if (!media_cat_parse(ctx_q(c, "cat"), lc->cat)) lc->cat[0] = '\0';
+}
+
+static bool show_ok(const ListChoice *lc, int seen) {
+    return !*lc->show || (str_eq(lc->show, "new") ? seen == SEEN_NONE : seen == SEEN_GOING);
+}
+
+static void list_nothing(Buf *b, const ListChoice *lc) {
+    ui_empty(b, "🔎", T("Nothing here with these choices"), NULL);
+    H(b, "<p class=\"media-center\"><a class=\"btn\" href=\"%s\">%s</a></p>", lc->base, T("Show everything"));
+}
+
+typedef struct {
+    int i;
+    int64_t key; /* what it's ordered by (bigger first) */
+} Ordered;
+static int ordered_cmp(const void *x, const void *y) {
+    const Ordered *a = x, *b = y;
+    if (a->key != b->key) return a->key > b->key ? -1 : 1;
+    return a->i - b->i; /* (else as the index has them: A-Z) */
 }
 
 /* ----------------------------------------------------------------- pages */
@@ -808,6 +1063,9 @@ static void search_results(Ctx *c, Buf *b, const char *q) {
 /* "2 movies", "1 series" (the same word for one and many in English: hence "1 series" as its own text) */
 static void count_movies(char *out, size_t cap, int n) { snprintf(out, cap, TN(n, "%d movie", "%d movies"), n); }
 static void count_series(char *out, size_t cap, int n) { snprintf(out, cap, TN(n, "1 series", "%d series"), n); }
+
+static void category_page(Ctx *c, Buf *b, const char *cat); /* (below, with the lists) */
+static void category_rows(Ctx *c, Buf *b);
 
 static void page_home(Ctx *c, Buf *b) {
     const MediaIndex *ix = media_lib_for(c);
@@ -827,6 +1085,11 @@ static void page_home(Ctx *c, Buf *b) {
         return;
     }
     if (library_empty_states(c, b)) return;
+    char cat[MEDIA_CAT_LEN];
+    if (media_cat_parse(ctx_q(c, "cat"), cat)) {
+        category_page(c, b, cat);
+        return;
+    }
 
     const MediaFile *going[12];
     int ngoing = media_in_progress(c, going, countof(going));
@@ -864,21 +1127,12 @@ static void page_home(Ctx *c, Buf *b) {
         for (int i = 0; i < ix->nmovies && i < 14; i++) video_card(c, b, &ix->files[ix->movies[i]]);
         shelf_end(b);
     }
+    category_rows(c, b);
     if (ix->nothers) {
         shelf_head(b, T("Other videos"), "/media/browse");
         for (int i = 0; i < ix->nothers && i < 14; i++) video_card(c, b, &ix->files[ix->others[i]]);
         shelf_end(b);
     }
-}
-
-static const MediaIndex *g_sort_ix;
-static int by_new(const void *x, const void *y) {
-    const MediaFile *a = &g_sort_ix->files[*(const int *)x], *b = &g_sort_ix->files[*(const int *)y];
-    return a->mtime != b->mtime ? (a->mtime > b->mtime ? -1 : 1) : 0;
-}
-static int by_year(const void *x, const void *y) {
-    const MediaFile *a = &g_sort_ix->files[*(const int *)x], *b = &g_sort_ix->files[*(const int *)y];
-    return b->name.year - a->name.year;
 }
 
 static void page_movies(Ctx *c, Buf *b) {
@@ -893,24 +1147,33 @@ static void page_movies(Ctx *c, Buf *b) {
         return;
     }
     if (library_empty_states(c, b)) return;
-    const char *sort = ctx_q(c, "sort");
-    if (!*sort) sort = "az";
-    H(b, "<nav class=\"seg media-sort\"><a href=\"/media/movies\"%r>%s</a><a href=\"/media/movies?sort=new\"%r>%s</a>"
-         "<a href=\"/media/movies?sort=year\"%r>%s</a></nav>",
-      str_eq(sort, "az") ? " class=\"on\"" : "", T("A–Z"), str_eq(sort, "new") ? " class=\"on\"" : "", T("Newest"),
-      str_eq(sort, "year") ? " class=\"on\"" : "", T("Year"));
-    int *order = xmalloc((size_t)(ix->nmovies ? ix->nmovies : 1) * sizeof(int));
-    memcpy(order, ix->movies, (size_t)ix->nmovies * sizeof(int));
-    g_sort_ix = ix;
-    if (str_eq(sort, "new")) qsort(order, (size_t)ix->nmovies, sizeof(int), by_new);
-    else if (str_eq(sort, "year")) qsort(order, (size_t)ix->nmovies, sizeof(int), by_year);
-    buf_puts(b, "<div class=\"media-grid\">");
-    for (int i = 0; i < ix->nmovies; i++) video_card(c, b, &ix->files[order[i]]);
-    buf_puts(b, "</div>");
-    if (!ix->nmovies)
+    if (!ix->nmovies) {
         ui_empty(b, "🎞️", T("No movies yet"), T("Files with a year in the name — like \"Inception (2010).mkv\" — "
                                                 "become movies."));
-    free(order);
+        return;
+    }
+    static const char *const sorts[][2] = {{"", N_("A–Z")}, {"new", N_("Newest")}, {"year", N_("Year")},
+                                           {"watched", N_("Watched lately")}};
+    ListChoice lc;
+    list_choice(c, &lc, "/media/movies", sorts, ctx_viewer(c) ? 4 : 3);
+    list_controls(c, b, &lc, MEDIA_CATS_FILMS, sorts, ctx_viewer(c) ? 4 : 3);
+    Ordered *o = xmalloc((size_t)ix->nmovies * sizeof *o);
+    int n = 0;
+    for (int i = 0; i < ix->nmovies; i++) {
+        const MediaFile *f = &ix->files[ix->movies[i]];
+        MediaWork w;
+        media_work_film(f, &w);
+        int64_t last;
+        if (!show_ok(&lc, film_seen(c, f, &last)) || (lc.cat[0] && !media_cat_in(&w, lc.cat))) continue;
+        int64_t key = str_eq(lc.sort, "new") ? f->mtime : str_eq(lc.sort, "year") ? f->name.year : str_eq(lc.sort, "watched") ? last : 0;
+        o[n++] = (Ordered){i, key};
+    }
+    qsort(o, (size_t)n, sizeof *o, ordered_cmp);
+    buf_puts(b, "<div class=\"media-grid\">");
+    for (int i = 0; i < n; i++) video_card(c, b, &ix->files[ix->movies[o[i].i]]);
+    buf_puts(b, "</div>");
+    if (!n) list_nothing(b, &lc);
+    free(o);
 }
 
 static void page_series_list(Ctx *c, Buf *b) {
@@ -925,11 +1188,94 @@ static void page_series_list(Ctx *c, Buf *b) {
         return;
     }
     if (library_empty_states(c, b)) return;
-    buf_puts(b, "<div class=\"media-grid\">");
-    for (int i = 0; i < ix->nseries; i++) series_card(c, b, &ix->series[i]);
-    buf_puts(b, "</div>");
-    if (!ix->nseries)
+    if (!ix->nseries) {
         ui_empty(b, "📺", T("No series yet"), T("Episodes named like \"Show.S01E02.mkv\" are grouped into series."));
+        return;
+    }
+    static const char *const sorts[][2] = {{"", N_("A–Z")}, {"new", N_("Newest")}, {"watched", N_("Watched lately")}};
+    ListChoice lc;
+    list_choice(c, &lc, "/media/series", sorts, ctx_viewer(c) ? 3 : 2);
+    list_controls(c, b, &lc, MEDIA_CATS_SERIES, sorts, ctx_viewer(c) ? 3 : 2);
+    Ordered *o = xmalloc((size_t)ix->nseries * sizeof *o);
+    int n = 0;
+    for (int i = 0; i < ix->nseries; i++) {
+        const MediaSeries *s = &ix->series[i];
+        MediaWork w;
+        media_work_series(s, &w);
+        int64_t last;
+        if (!show_ok(&lc, series_seen(c, s, &last)) || (lc.cat[0] && !media_cat_in(&w, lc.cat))) continue;
+        o[n++] = (Ordered){i, str_eq(lc.sort, "new") ? s->newest : str_eq(lc.sort, "watched") ? last : 0};
+    }
+    qsort(o, (size_t)n, sizeof *o, ordered_cmp);
+    buf_puts(b, "<div class=\"media-grid\">");
+    for (int i = 0; i < n; i++) series_card(c, b, &ix->series[o[i].i]);
+    buf_puts(b, "</div>");
+    if (!n) list_nothing(b, &lc);
+    free(o);
+}
+
+/* A category's series and films (Watch's home rows' "See all": /media?cat=), grouped like search results. */
+static void category_page(Ctx *c, Buf *b, const char *cat) {
+    const MediaIndex *ix = media_lib_for(c);
+    Hit *hs = xmalloc((size_t)(ix->nseries + 1) * sizeof *hs), *hf = xmalloc((size_t)(ix->nmovies + 1) * sizeof *hf);
+    int ns = 0, nf = 0;
+    MediaWork w;
+    for (int i = 0; i < ix->nseries; i++) {
+        media_work_series(&ix->series[i], &w);
+        if (media_cat_in(&w, cat)) hs[ns++] = (Hit){0, i, ix->series[i].title};
+    }
+    for (int i = 0; i < ix->nmovies; i++) {
+        const MediaFile *f = &ix->files[ix->movies[i]];
+        media_work_film(f, &w);
+        if (media_cat_in(&w, cat)) hf[nf++] = (Hit){0, ix->movies[i], f->name.title};
+    }
+    H(b, "<a class=\"media-back\" href=\"/media\">");
+    ui_icon(b, "left");
+    H(b, "%s</a><h2 class=\"media-cat-h\">%s</h2>", T("Watch"), media_cat_label(cat));
+    hits_group(c, b, ix, T("Series"), hs, ns, 1000, true);
+    hits_group(c, b, ix, T("Movies"), hf, nf, 1000, false);
+    if (!ns && !nf) ui_empty(b, "🏷️", T("Nothing in this category yet"), NULL);
+    free(hs), free(hf);
+}
+
+/* Watch's home: a row for each category with titles in it (1.4), the fullest first. */
+#define CAT_ROWS 6
+static void category_rows(Ctx *c, Buf *b) {
+    const MediaIndex *ix = media_lib_for(c);
+    MediaCatUse used[48];
+    int nu = media_cats_used(c, MEDIA_CATS_SERIES | MEDIA_CATS_FILMS, used, countof(used));
+    int rows[CAT_ROWS], nrows = 0;
+    for (int i = 0; i < nu && nrows < CAT_ROWS; i++)
+        if (used[i].series + used[i].films >= 2) rows[nrows++] = i; /* (one title is no row) */
+    if (!nrows) return;
+    /* each title's categories once (series, then films), not once a row */
+    int nw = ix->nseries + ix->nmovies;
+    char (*of)[MEDIA_CAT_MAX][MEDIA_CAT_LEN] = xmalloc((size_t)(nw ? nw : 1) * sizeof *of);
+    int *n = xmalloc((size_t)(nw ? nw : 1) * sizeof *n);
+    MediaWork w;
+    for (int k = 0; k < nw; k++) {
+        if (k < ix->nseries) media_work_series(&ix->series[k], &w);
+        else media_work_film(&ix->files[ix->movies[k - ix->nseries]], &w);
+        n[k] = media_cats_of(&w, of[k], MEDIA_CAT_MAX);
+    }
+    for (int r = 0; r < nrows; r++) {
+        const char *cat = used[rows[r]].cat;
+        Buf more = {0};
+        H(&more, "/media?cat=%u", cat);
+        shelf_head(b, media_cat_label(cat), buf_cstr(&more));
+        buf_free(&more);
+        for (int k = 0, shown = 0; k < nw && shown < 14; k++) {
+            bool in = false;
+            for (int j = 0; j < n[k] && !in; j++) in = str_eq(of[k][j], cat);
+            if (!in) continue;
+            if (k < ix->nseries) series_card(c, b, &ix->series[k]);
+            else video_card(c, b, &ix->files[ix->movies[k - ix->nseries]]);
+            shown++;
+        }
+        shelf_end(b);
+    }
+    free(of);
+    free(n);
 }
 
 static void tick_form(Ctx *c, Buf *b, const MediaFile *f, bool done) {
@@ -985,6 +1331,11 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
         H(b, T("%d watched"), seen);
     }
     buf_puts(b, "</p>");
+    MediaWork work;
+    char here[64];
+    media_work_series(s, &work);
+    snprintf(here, sizeof here, "/media/series/%016llx", (unsigned long long)s->id);
+    media_cats_line(c, b, &work, "/media/series", here); /* (1.4) */
     const MediaFile *up = media_next_up(c, s);
     if (up) {
         const MediaWatch *w = media_watch_of(c, up);
@@ -1084,6 +1435,7 @@ static void page_series(Ctx *c, Buf *b, const char *idhex) {
         else snprintf(close, sizeof close, "/media/series/%016llx", (unsigned long long)s->id);
         art_modal(c, b, s->id, s->title, s->year, T("Series"), s->poster, close);
     }
+    media_cats_modal(c, b, &work, s->title, here); /* ?cats=1 */
 }
 
 /* Folder browser over the index: /media/browse?p=<root>:<dir> */
@@ -1374,7 +1726,15 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     quality(&q, f);
     if (q.len) H(b, " · %s", buf_cstr(&q));
     buf_free(&q);
-    buf_puts(b, "</p></div><div class=\"ph-a\">");
+    buf_puts(b, "</p>");
+    MediaWork work;
+    char here[64];
+    snprintf(here, sizeof here, "/media/watch/%016llx", (unsigned long long)f->id);
+    if (f->name.kind == MEDIA_MOVIE) { /* its categories (1.4): links to Movies with each, and the dialog's */
+        media_work_film(f, &work);
+        media_cats_line(c, b, &work, "/media/movies", here);
+    }
+    buf_puts(b, "</div><div class=\"ph-a\">");
     if (prev) {
         H(b, "<a class=\"btn\" href=\"/media/watch/%X\" title=\"%s\">", prev->id, T("Previous episode"));
         ui_icon(b, "left");
@@ -1504,6 +1864,7 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         remove_modal(c, b, f, close);
     }
     media_manage_watch_dialog(c, b, f); /* ?fix=1 */
+    if (f->name.kind == MEDIA_MOVIE) media_cats_modal(c, b, &work, title, here); /* ?cats=1 */
 }
 
 /* Who may rescan the library: admins, and the members an admin lets (setting "media.rescanners",
@@ -1771,6 +2132,7 @@ static void page_settings(Ctx *c, Buf *b) {
     }
     convert_card(c, b);
     subtake_card(c, b); /* (admins: the subtitles inside the MKVs, taken out by themselves) */
+    media_lookup_card(c, b); /* (admins: categories looked up online - lookup.c, 1.4) */
 
     ui_card(b, T("Status"), NULL, NULL);
     buf_puts(b, "<dl class=\"media-stats\">");
@@ -2365,6 +2727,8 @@ static const Action actions[] = {
     {"media.manage_remove", media_manage_act_remove}, {"media.fix_title", media_manage_act_fix_title},
     {"media.fix_episode", media_manage_act_fix_episode}, {"media.rename_series", media_manage_act_rename_series},
     {"media.take_subs", subtake_act_switch},
+    {"media.cat", act_media_cat}, {"media.cat_new", act_media_cat_new}, /* (members and admins: 1.4) */
+    {"media.lookup", act_media_lookup}, {"media.lookup_id", act_media_lookup_id},
     {0},
 };
 
@@ -2376,6 +2740,8 @@ static void init(void) {
     store_register(&T_media_watch);
     T_media_series_name.what = "names of renamed series";
     store_register(&T_media_series_name);
+    media_cats_init();
+    media_lookup_init();
     media_kids_init();
 }
 
@@ -2401,9 +2767,11 @@ static void start(void) {
     media_health_reset();
     g_disks_at = 0; /* (a start measures afresh: a test before this one may have measured other folders) */
     media_drives_start(); /* (after the library: a disk the helper just mounted becomes a folder of it) */
+    media_lookup_start();
 }
 
 static void stop(void) {
+    media_lookup_stop();
     media_drives_stop();
     subtake_stop(); /* (the file it was reading goes back on its list) */
     media_stream_stop();
@@ -2483,6 +2851,7 @@ static void tick(int64_t now) {
     media_health_tick(now);
     media_drives_tick(now);
     media_manage_tick(now); /* (a removal finished on its thread) */
+    media_lookup_tick(now);
     if (!g_disks_at || now - g_disks_at >= 30000) disks_refresh(now);
 }
 

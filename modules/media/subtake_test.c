@@ -477,9 +477,11 @@ TEST(subtake_card_speaks_swedish_and_spanish) {
     mkv(path, NULL, 0, false, NULL);
     setting_set("media.roots", root);
     media_scan_sync();
-    /* (data: names, the library folder; the subtitle languages, each in its own words) */
+    /* (data: names, the library folder; the subtitle languages, each in its own words; the services categories are
+       looked up at) */
     const char *const allow[] = {"Anna", "A",     "Show",  "MKV",   root,       "Svenska", "English",
-                                 "Norsk", "Dansk", "Suomi", "Deutsch", "Français", "Español", NULL};
+                                 "Norsk", "Dansk", "Suomi", "Deutsch", "Français", "Español", "TVmaze", "OMDb",
+                                 "omdbapi.com", NULL};
     Buf r = {0};
     int bad = 0;
     subtake_tick(now_ms());

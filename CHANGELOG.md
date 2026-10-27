@@ -4,6 +4,51 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 1.4.0 (2026-10-27)
+
+Series and films get categories, the lists can be sorted and filtered, search finds more, and an upload waits out a
+dropped network.
+
+### New
+
+- **Categories:** a series or film can be in categories - Comedy, Animated, Kids, Drama, Science fiction,
+  Christmas, Halloween and the other starters (in English, Swedish and Spanish), or any of the household's own
+  ("Pokémon", "Sunday films"). Tap **Categories** on its page to tick them: members and admins can, children,
+  guests and the TV can't. A name typed in any of the three languages finds its starter ("Komedi" is Comedy).
+- **Genres from .nfo files:** a series' `tvshow.nfo` and a film's `<its name>.nfo` (or `movie.nfo`) - what Kodi,
+  Jellyfin and Sonarr write - fill in its categories by themselves. Untick one you don't want.
+- **Categories looked up online, if you want:** a box under **Library settings → Categories from the internet**,
+  off until an admin ticks it, and greyed while this Hemma can't reach the internet (it checks when the page is
+  opened). Then series are looked up at TVmaze (no key needed) and films at OMDb (with a free key you paste in),
+  one every few seconds in the background. Only titles and years are sent. Hemma never contacted the internet
+  itself before; this is the only thing it fetches, over plain http.
+- **Update categories by an id:** when a title is looked up as the wrong show, paste its TVmaze or IMDb link (a
+  film's IMDb link) under **Manage → The whole series**, or in a film's **Categories** - it's looked up by that,
+  and kept so.
+- **Lists with categories, order and what you've started:** Movies and Series show a chip for each category their
+  titles are in, with how many. Series can now be ordered A–Z, newest or **Watched lately** (Movies too), and both
+  show **Everything**, **Not started** or **Started**.
+- **A row per category on Watch,** the fullest first, with **See all** - and **A category** as a row for the TV
+  view. A row picked in the TV's builder is headed by its pick ("Family Guy", "Comedy"), not "A series".
+
+### Changed
+
+- **Search takes every word, in any order:** "show garden" finds Garden Show, and a word can be in a title, its
+  year, its categories, an episode's name or its number ("simpsons s02e03", "2x03"). Results come in groups -
+  series, movies, episodes, other videos - the best matches first. A series' name alone no longer lists every
+  one of its episodes.
+- **An upload waits out a dropped network:** a send that gets no answer at all (the Wi-Fi gone) isn't counted as
+  a failed try any more - the upload asks again every few seconds, for up to 30 minutes, and carries on where it
+  stopped. Ten minutes without Wi-Fi at night stopped an upload of 425 episodes for five hours.
+
+### For developers
+
+- core/fetch.c: a plain-HTTP GET for threads (`plat_resolve` + the non-blocking connect, de-chunking, a redirect's
+  Location), and its parser's tests. Only media/lookup.c uses it.
+- modules/media/cats.c (categories: the starters and their other names, table `media_cat`), lookup.c (table
+  `media_lookup`, settings `media.lookup` and `media.omdb_key`), library files of type `MF_NFO`; the screens
+  module heads a row with its pick's name.
+
 ## 1.3.0 (2026-10-24)
 
 Uploads keep the connection busy, DTS sound converts, subtitles follow you through a series, and admins can rename a series.

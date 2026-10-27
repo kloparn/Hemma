@@ -534,6 +534,17 @@
   // moves bytes - and keeps going while you browse other pages.
   const pause = (ms) => new Promise((ok) => setTimeout(ok, ms));
   const json = (r) => r.json().catch(() => ({ error: T('Unexpected answer (%d)', r.status) }));
+  // No answer at all is the network, not the server (1.4: a PC's Wi-Fi dropped for ten minutes at 4 am, and a
+  // night's upload stopped with "The connection keeps dropping" after a minute of tries): it's waited out -
+  // asked again every NET_PAUSE, for up to NET_WAIT - and isn't a try. Only the server's answers count.
+  // down() = true after a wait (go on asking), false once the network has been gone NET_WAIT.
+  const NET_WAIT = 30 * 60 * 1000;
+  let netPause = 5000; // (form[data-netpause]: the browser tests' shorter wait)
+  const down = async (since) => {
+    if (Date.now() - since >= NET_WAIT) return false;
+    await pause(netPause);
+    return true;
+  };
   // The server's converter, built to WebAssembly, can run here (web/conv.js in a Worker).
   // It needs SIMD (Chrome 91, Firefox 89, Safari 16.4): a 30-byte module that uses it tells.
   const canConvert = (() => {
@@ -669,6 +680,7 @@
     // data-flaky (tests only): each job's first try fails that many reads, as a browser short of memory did
     const use = { worker: f.dataset.convert, wasm: f.dataset.wasm, part: Number(f.dataset.part) || 0,
       flaky: Number(f.dataset.flaky) || 0 };
+    netPause = Number(f.dataset.netpause) || 5000;
     if (!canConvert || !use.worker || !use.wasm) delete body.conv;
     body.files = picked.map((x) => [x.path, x.file.size]);
     uploading = true;
@@ -731,8 +743,11 @@
       const tracks = (m.subs || []).concat(m.pics || []).sort((a, b) => (a.t || 0) - (b.t || 0));
       for (const sub of tracks) await (sub.data ? subPictures(url, sub) : subtitle(url, sub));
       if (job.subs) {
-        for (let tries = 0; tries < 3; tries++) {
-          const s = await fetch(`${url}?pm=1000`, { method: 'POST' }).then(json).catch(() => ({}));
+        for (let tries = 0, since = 0; tries < 3; tries++) {
+          const s = await fetch(`${url}?pm=1000`, { method: 'POST' }).then(json).catch(() => null);
+          if (!s && await down(since = since || Date.now())) { tries--; continue; }
+          if (!s) break;
+          since = 0;
           if (s.stop) throw new Error(s.error);
           if (s.ok) break;
           await pause(1000 * 2 ** tries);
@@ -872,9 +887,12 @@
   const subQuery = (sub) => `lang=${encodeURIComponent(sub.lang)}&name=${encodeURIComponent(sub.name)}` +
     `&forced=${sub.forced ? 1 : 0}${sub.t === undefined ? '' : `&t=${sub.t}`}`;
   async function subtitle(url, sub) {
-    for (let tries = 0; tries < 3; tries++) {
+    for (let tries = 0, since = 0; tries < 3; tries++) {
       const s = await fetch(`${url}?sub=1&${subQuery(sub)}`, { method: 'POST',
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: sub.text }).then(json).catch(() => ({}));
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: sub.text }).then(json).catch(() => null);
+      if (!s && await down(since = since || Date.now())) { tries--; continue; }
+      if (!s) return;
+      since = 0;
       if (s.stop) throw new Error(s.error);
       if (s.ok || s.skip) return;
       await pause(1000 * 2 ** tries);
@@ -887,9 +905,12 @@
     const idx = sub.kind === 'vobsub' ? new TextEncoder().encode(sub.idx || '') : null;
     const q = `pic=${sub.kind}&${subQuery(sub)}${idx ? `&idx=${idx.length}` : ''}`;
     const body = new Blob(idx ? [idx, sub.data] : [sub.data]);
-    for (let tries = 0, waits = 0; tries < 4 && waits < 90;) {
+    for (let tries = 0, waits = 0, since = 0; tries < 4 && waits < 90;) {
       const s = await fetch(`${url}?${q}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body })
-        .then(json).catch(() => ({}));
+        .then(json).catch(() => null);
+      if (!s && await down(since = since || Date.now())) continue;
+      if (!s) return;
+      since = 0;
       if (s.stop) throw new Error(s.error);
       if (s.ok || s.skip) return;
       if (s.error === 'busy') { waits++; await pause(2000); continue; }
@@ -899,8 +920,11 @@
 
   // A small POST with retries; {stop} answers end the upload.
   async function ask(url, query) {
-    for (let tries = 0; ; tries++) {
-      const s = await fetch(`${url}?${query}`, { method: 'POST' }).then(json).catch(() => ({}));
+    for (let tries = 0, since = 0; ; tries++) {
+      let s = await fetch(`${url}?${query}`, { method: 'POST' }).then(json).catch(() => null);
+      if (!s && await down(since = since || Date.now())) { tries--; continue; }
+      if (s) since = 0;
+      s = s || {};
       if (s.stop) throw new Error(s.error);
       if (!s.error && (s.skip || typeof s.at === 'number')) return s;
       if (tries >= 5) throw new Error(s.error || T('The connection keeps dropping'));
@@ -921,7 +945,7 @@
       : (a) => fetch(`${url}?at=${a}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: src.slice(a, end),
         });
-    for (let tries = 0; ; tries++) {
+    for (let tries = 0, since = 0; ; tries++) {
       let r = null;
       try {
         r = await send(at);
@@ -929,6 +953,14 @@
         if (err && err.message === LOST) throw err; /* else a network hiccup */
       }
       if (r && r.ok) return;
+      if (!r && await down(since = since || Date.now())) { // the network: wait, then ask how far it got
+        tries--;
+        const g = await fetch(url).then(json).catch(() => null);
+        if (g && g.stop) throw new Error(g.error);
+        if (g && typeof g.at === 'number') at = g.at;
+        continue;
+      }
+      if (r) since = 0;
       const s = r ? await json(r) : {};
       if (s.stop) throw new Error(s.error); // stopped, not allowed, disk full: no point retrying
       if (s.error === 'busy') { // other uploads are writing: wait for a turn, as long as it takes

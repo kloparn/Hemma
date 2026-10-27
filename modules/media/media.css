@@ -341,6 +341,33 @@ html[data-nodir] .media-up-folder { display: none; } /* (wire.js: no folder pick
   .media-search { max-width: none; min-width: 0; flex-basis: 100%; }
 }
 
+/* ---- categories (1.4): a list's chips, a title's line and dialog, search results in groups ---- */
+.media-cats { margin: 0 0 10px; }
+.media-cats .chip small, .media-found h2 small { color: var(--muted); font-weight: 600; }
+.media-cats .chip.on small { color: inherit; }
+@media (max-width: 600px) { /* one row that scrolls sideways, not a wall of chips above the posters */
+  .media-cats { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+  .media-cats::-webkit-scrollbar { display: none; }
+}
+.media-list-tools { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 14px; }
+.media-list-tools .media-sort { margin-bottom: 0; }
+.media-cats-line { margin: 10px 0 0; }
+.media-cats-edit { color: var(--muted); border-style: dashed; }
+.media-cats-edit .i { width: 14px; height: 14px; }
+.media-cats-pick { margin: 6px 0 16px; }
+.media-cat-t { min-height: 44px; padding: 8px 15px; font-size: 14.5px; } /* (a tap target: issue #67) */
+.media-cats-own { margin: 0 0 12px; }
+.media-cats-own summary { cursor: pointer; font-weight: 650; color: var(--muted); padding: 12px 0; } /* (44 px to tap) */
+.media-cats-new { display: flex; gap: 8px; margin-top: 4px; }
+.media-cats-new input { flex: 1; min-width: 0; }
+.media-found { margin-bottom: 6px; }
+.media-found h2 { font-size: 18px; margin-bottom: 10px; }
+.media-found-more { margin: -6px 0 18px; font-size: 13.5px; }
+.media-cat-h { font-size: 22px; margin: 4px 0 14px; }
+.media-lookup-at { margin: 10px 0 12px; }
+.media-lookup-one { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.media-lookup-one h3 { font-size: 15px; margin-bottom: 4px; }
+
 /* ---- tiles (web/app.css .tiles/.tile): a drawn poster when the library has no picture ---- */
 .tile-art.media-drawn {
   --h: 220; --h2: 260; --h3: 245;
