@@ -41,6 +41,13 @@ dropped network.
   a failed try any more - the upload asks again every few seconds, for up to 30 minutes, and carries on where it
   stopped. Ten minutes without Wi-Fi at night stopped an upload of 425 episodes for five hours.
 
+### Fixed
+
+- **Part 2 comes after part 1:** an episode in two files with the same number ("Dark Side" and "Dark Side Pt. 2",
+  both S08E20) was listed - and played by **Next episode** - in the order of their file names, part 2 first. Now a
+  part 2 follows its part 1 (or the file naming no part), for films in two parts too. And an upload no longer
+  skips an episode's part 2 as one the library has.
+
 ### For developers
 
 - core/fetch.c: a plain-HTTP GET for threads (`plat_resolve` + the non-blocking connect, de-chunking, a redirect's

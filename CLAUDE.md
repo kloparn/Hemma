@@ -449,8 +449,8 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  30 s - Batch.busy), a new plan is refused with who/how far, unless "force" ("Upload
                  anyway", shown only then) - both run, the running one's files skipped. ALREADY HAVE IT: a video
                  the library has under another name (library.c media_have: named as it will be there; same
-                 show+season+every episode of its range, or same film title+year+part via names.c
-                 media_name_part "CD2") is skipped in the plan, before any converting, and so are its
+                 show+season+every episode of its range+part (1.4: "Dark Side Pt. 2" is new beside "Dark Side"),
+                 or same film title+year+part via names.c media_name_part "CD2") is skipped in the plan, before any converting, and so are its
                  subtitles/pictures (skip_companions); box "dupes" sends them anyway. Disc-rip titles numbered
                  only by order, extras and the file's own original/copy are never matched. A disc's
                  "play all" (spotted by size) sends just its first MB as x.playall.mkv: the header's duration
@@ -1607,7 +1607,10 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
   Several episodes in one file (MediaName.episode_end): S01E01-E02, S01E01E02, S01E01-02, S01E01.E02,
   S01E01+E02, "S01E01 & E02" / "and" / "och", 1x01-1x02, 1x01-02, and "01-02 - Title" in a season
   folder. Across a joiner word the next number must follow directly ("S01E04 - E10 Title" stays a
-  title). Rows show "1–2" (.media-ep-nn) and series totals count every episode. Names are parsed
+  title). Rows show "1–2" (.media-ep-nn) and series totals count every episode. One episode (or film) in
+  two files with the same number: library.c part_cmp orders them by media_name_part ("Pt. 2", "CD2", "del 2";
+  none = 0), then the path (1.4; owner, 2026-10-27: "any part 2 to be after the first part" - by name alone
+  "Dark Side Pt. 2 [..." came before "Dark Side [...", and Next episode played it first). Names are parsed
   again from the path at every start (never cached), so parser changes reach existing libraries.
   SPECIALS (1.3; owner, 2026-10-24: "everything that is not in a series increment ... goes inside like a specials
   part of the series", "last, apart"): season 0 = Specials - S00Exx, a Specials/Season 0 folder, and (library.c

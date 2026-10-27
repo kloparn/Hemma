@@ -497,10 +497,19 @@ static int title_cmp(const char *a, const char *b) {
     return strcmp(px, py);
 }
 
+/* One episode or film in two files: part 2 after part 1 (or after the one naming no part), whatever their names
+   say after that (1.4: "Dark Side Pt. 2 [..." sorted before "Dark Side [...", and "Next episode" played it first) */
+static int part_cmp(const MediaFile *a, const MediaFile *b) {
+    int pa = media_name_part(a->rel), pb = media_name_part(b->rel);
+    return pa != pb ? pa - pb : strcmp(a->rel, b->rel);
+}
+
 static int movie_cmp(const void *x, const void *y) {
     const MediaFile *a = &t_files[*(const int *)x], *b = &t_files[*(const int *)y];
     int c = title_cmp(a->name.title, b->name.title);
-    return c ? c : a->name.year - b->name.year;
+    if (c) return c;
+    if (a->name.year != b->name.year) return a->name.year - b->name.year;
+    return part_cmp(a, b);
 }
 
 static int other_cmp(const void *x, const void *y) {
@@ -525,7 +534,7 @@ static int episode_cmp(const void *x, const void *y) {
     if (a->series != b->series) return a->series < b->series ? -1 : 1;
     if (a->name.season != b->name.season) return season_order(a->name.season) < season_order(b->name.season) ? -1 : 1;
     if (a->name.episode != b->name.episode) return a->name.episode - b->name.episode;
-    return strcmp(a->rel, b->rel);
+    return part_cmp(a, b);
 }
 
 static int series_cmp(const void *x, const void *y) {
@@ -618,9 +627,11 @@ bool media_have_file(const char *root, const char *rel, char *have, size_t cap, 
         const MediaSeries *s = media_series(series_id(n.title));
         if (!s || from <= 0 || to - from >= 64) return false;
         uint64_t want = to - from == 63 ? ~0ULL : (1ULL << (to - from + 1)) - 1, got = 0;
+        int part = media_name_part(rel); /* (1.4: "Dark Side Pt. 2" is S08E20 too, and not the "Dark Side" there) */
         for (int i = 0; i < s->count && got != want; i++) {
             const MediaFile *e = media_episode(s, i);
             if (!e || e->name.season != n.season || same_item(ix, e, root, rel, sl)) continue;
+            if (media_name_part(e->rel) != part) continue;
             int a = MAX(from, e->name.episode), z = MIN(to, MAX(e->name.episode, e->name.episode_end));
             for (int k = a; k <= z; k++) got |= 1ULL << (k - from);
             if (a <= z && !hit) hit = e;
