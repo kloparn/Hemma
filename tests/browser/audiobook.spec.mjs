@@ -79,6 +79,43 @@ test('the speed is this device\'s, and the sleep timer stops at the end of the c
   await page.evaluate(() => localStorage.removeItem('hemma.speed'));
 });
 
+test('a paused book taken off the page leaves the lock screen, its buttons and its file', async ({ page }) => {
+  /* (the lock screen's play, a keyboard's play key or the computer's media controls played it on, out of sight) */
+  await page.addInitScript(() => {
+    const ms = navigator.mediaSession, set = ms.setActionHandler.bind(ms);
+    window.hemmaHandlers = {};
+    ms.setActionHandler = (what, fn) => { window.hemmaHandlers[what] = fn; set(what, fn); };
+  });
+  await bookPage(page, 'Test Story');
+  const a = audio(page);
+  await loaded(a);
+  await a.evaluate((m) => { m.muted = true; return m.play(); });
+  await expect.poll(() => page.evaluate(() => !!navigator.mediaSession.metadata)).toBe(true);
+  await page.locator('[data-b="play"]').click(); /* paused, on the page */
+  await a.evaluate((m) => { window.hemmaOld = m; });
+  await page.locator('a[href="/media/books"]:visible').first().click();
+  await expect(page).toHaveURL(/\/media\/books$/);
+  expect(await page.evaluate(() => window.hemmaOld.isConnected)).toBe(false); /* (the same document: wire.js's nav) */
+  expect(await page.evaluate(() => navigator.mediaSession.metadata)).toBe(null);
+  expect(await page.evaluate(() => typeof window.hemmaHandlers.play)).not.toBe('function');
+  expect(await page.evaluate(() => { const m = window.hemmaOld; return [m.hasAttribute('src'), m.networkState, m.paused]; }))
+    .toEqual([false, 0, true]);
+});
+
+test('a book playing when another page comes keeps its place', async ({ page }) => {
+  /* (letting go of the file sets the element's time to 0 - that must not be reported as the place) */
+  const href = await bookPage(page, 'Test Story');
+  const a = audio(page);
+  await loaded(a);
+  await a.evaluate((m) => { m.muted = true; m.currentTime = 22; return m.play(); });
+  await expect.poll(() => a.evaluate((m) => !m.paused && m.currentTime > 22.5)).toBe(true);
+  await page.locator('a[href="/media/books"]:visible').first().click();
+  await expect(page).toHaveURL(/\/media\/books$/);
+  await page.waitForTimeout(1000);
+  await page.goto(href);
+  expect(Number(await audio(page).getAttribute('data-resume'))).toBeGreaterThanOrEqual(22);
+});
+
 test('a page going out of sight sends the place as a plain POST', async ({ page }) => {
   await bookPage(page, 'Test Story');
   const a = audio(page);

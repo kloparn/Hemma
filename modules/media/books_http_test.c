@@ -118,6 +118,44 @@ TEST(books_read_their_tags_and_chapters) {
     th_halt();
 }
 
+/* LibriVox's files (the free audiobooks most people find first) carry titles like these */
+TEST(books_titles_from_librivox_tags) {
+    th_boot();
+    const char *root = test_tmpdir();
+    static const struct { const char *rel, *title, *album, *want; } CASES[] = {
+        {"Oz/1 Wizard.m4b", "Wonderful Wizard of Oz ver 2", "The Wonderful Wizard of Oz ver 2", "Wonderful Wizard of Oz"},
+        {"Oz/2 Land.m4b", "themarvelouslandofozver3_1501", "The Marvelous Land of Oz (version 3)", "The Marvelous Land of Oz"},
+        {"Oz/3 Ozma.m4b", "Ozma of Oz v2", "Ozma of Oz version 2", "Ozma of Oz"},
+        {"Audiobooks/Rabbit.m4b", "velveteen_rabbit", "The Velveteen Rabbit", "The Velveteen Rabbit"},
+        {"Audiobooks/Some Story.m4b", "some_story_0911", NULL, "Some Story"}, /* (no album: the file's name) */
+        {"Audiobooks/Solo.m4b", "A Tale (solo version 2) (Unabridged)", NULL, "A Tale"},
+        /* what stays */
+        {"Audiobooks/Apollo.m4b", "Apollo 13", NULL, "Apollo 13"},
+        {"Audiobooks/Clover.m4b", "Clover 2", NULL, "Clover 2"},
+        {"Audiobooks/Catch.m4b", "Catch-22", NULL, "Catch-22"},
+        {"Audiobooks/V2.m4b", "v2", NULL, "v2"},
+    };
+    Buf b = {0};
+    for (size_t i = 0; i < sizeof CASES / sizeof *CASES; i++) {
+        buf_reset(&b);
+        at_test_m4b(&b, &(AtTestM4b){.title = CASES[i].title, .album = CASES[i].album, .artist = "L. Frank Baum",
+                                     .duration_ms = 60000});
+        put(root, CASES[i].rel, b.p, b.len);
+    }
+    buf_free(&b);
+    setting_set("media.roots", root);
+    media_scan_sync();
+    CHECK_INT(media_lib()->nbooks, (int)(sizeof CASES / sizeof *CASES));
+    for (size_t i = 0; i < sizeof CASES / sizeof *CASES; i++) {
+        const MediaBook *bk = book_titled(CASES[i].want);
+        if (!bk) fprintf(stderr, "  no book titled \"%s\" (from \"%s\")\n", CASES[i].want, CASES[i].title);
+        CHECK(bk != NULL);
+    }
+    const MediaBook *land = book_titled("The Marvelous Land of Oz");
+    CHECK(land && str_eq(land->series, "Oz") && land->number == 2);
+    th_halt();
+}
+
 /* ------------------------------------------------------------- over sockets */
 
 static volatile int g_done;

@@ -7,8 +7,9 @@
  *     with its parent's - by disc, then their tags' track, then their names (numbers by value: "2" before "10").
  *     One lying loose in a books folder ("Audiobooks/Book.mp3") or the library folder is a book of its own.
  *   - A book's title: an .m4b's own title tag, else its album, else its file's name; a book of parts: their
- *     album, else its folder's name. "(Unabridged)" at the end is left off. Its author and narrator: the first
- *     part that names one.
+ *     album, else its folder's name - a tag that is a file's name ("velveteen_rabbit": one word with a '_') isn't
+ *     one. "(Unabridged)" at the end is left off, and so is which recording it is ("(version 3)", "v2", "ver 2":
+ *     LibriVox's). Its author and narrator: the first part that names one.
  *   - Books sitting in one folder with other books (not a books folder like "Audiobooks", not the library folder)
  *     are a series named by that folder ("Harry Potter Full-Cast Audio Editions"), numbered by the number their
  *     name starts with ("1 Harry Potter and ..."); numbered books right in the library folder, by its own name.
@@ -102,21 +103,44 @@ static void name_title(const char *name, size_t n, bool file, char *out, size_t 
     if (!out[0]) str_copy(out, cap, s);
 }
 
-/* "... (Unabridged)" at the end: not part of the title */
+/* Which recording, at the end of a name - LibriVox's ("The Marvelous Land of Oz (version 3)", "Ozma of Oz v2",
+   "... ver 2", "(solo version 2)"): where it starts in lo[0..n), else n */
+static size_t version_mark(const char *lo, size_t n) {
+    static const char *const words[] = {"solo version ", "version ", "ver. ", "ver ", "v", NULL};
+    bool paren = n && lo[n - 1] == ')';
+    size_t e = paren ? n - 1 : n, d = e;
+    while (d && isdigit((unsigned char)lo[d - 1])) d--;
+    if (d == e || e - d > 2) return n;
+    for (int i = 0; words[i]; i++) {
+        size_t w = strlen(words[i]);
+        if (d < w || strncmp(lo + d - w, words[i], w) != 0) continue;
+        size_t s = d - w;
+        if (paren && (!s || lo[--s] != '(')) continue;
+        if (s && lo[s - 1] == ' ') return s;
+    }
+    return n;
+}
+
+/* "... (Unabridged)" and which recording it is, at the end: not part of the title */
 static void tidy_title(char *t) {
     static const char *const ends[] = {"(unabridged)", "[unabridged]", "(ungekürzt)", "(oförkortad)", "(íntegro)", NULL};
-    char lo[256];
-    fold_copy(lo, sizeof lo, t);
-    size_t n = strlen(lo);
-    for (int i = 0; ends[i]; i++) {
-        size_t e = strlen(ends[i]);
-        if (n > e && str_eq(lo + n - e, ends[i])) {
-            t[n - e] = '\0';
-            str_trim(t);
-            return;
+    for (int pass = 0; pass < 2; pass++) { /* ("Book (version 2) (Unabridged)") */
+        char lo[256];
+        fold_copy(lo, sizeof lo, t); /* (as long as t, byte for byte) */
+        size_t n = strlen(lo), cut = version_mark(lo, n);
+        for (int i = 0; ends[i] && cut == n; i++) {
+            size_t e = strlen(ends[i]);
+            if (n > e && str_eq(lo + n - e, ends[i])) cut = n - e;
         }
+        if (cut == n) return;
+        t[cut] = '\0';
+        str_trim(t);
     }
 }
+
+/* A tag that names a file rather than a book ("themarvelouslandofozver3_1501", "velveteen_rabbit" - LibriVox's
+   titles): one word with a '_' in it */
+static bool file_like(const char *s) { return !strchr(s, ' ') && strchr(s, '_'); }
 
 static const MediaTags *tags_of(const MediaIndex *ix, uint64_t file) {
     int lo = 0, hi = ix->ntags;
@@ -277,8 +301,8 @@ void media_books_build(MediaIndex *ix) {
         size_t dl = it[a].dl;
         const char *seg = seg_of(first->rel, dl);
         if (it[a].key[0]) { /* an .m4b: its own name and picture, in its folder */
-            if (t && t->title[0]) str_copy(b->title, sizeof b->title, t->title);
-            else if (t && t->album[0]) str_copy(b->title, sizeof b->title, t->album);
+            if (t && t->title[0] && !file_like(t->title)) str_copy(b->title, sizeof b->title, t->title);
+            else if (t && t->album[0] && !file_like(t->album)) str_copy(b->title, sizeof b->title, t->album);
             b->number = lead_number(base_of(first->rel), NULL);
             char stem[256];
             str_copy(stem, sizeof stem, base_of(first->rel));
@@ -287,7 +311,7 @@ void media_books_build(MediaIndex *ix) {
             b->poster = picture_named(ix, img, nimg, b->root, first->rel, dl, stem);
             home[k] = dl;
         } else { /* a folder of parts: the folder is the book */
-            if (t && t->album[0]) str_copy(b->title, sizeof b->title, t->album);
+            if (t && t->album[0] && !file_like(t->album)) str_copy(b->title, sizeof b->title, t->album);
             else if (dl) name_title(seg, (size_t)(first->rel + dl - seg), false, b->title, sizeof b->title);
             b->number = dl ? lead_number(seg, NULL) : 0;
             b->poster = folder_picture(ix, img, nimg, b->root, first->rel, dl);

@@ -13,8 +13,9 @@ Audiobooks: Watch gets an Audiobooks tab, and a book keeps playing with the phon
 - **Audiobooks in the library:** an `.m4b` anywhere in a library folder is an audiobook, and so is a folder of
   `.mp3` or `.m4a` files inside a folder called *Audiobooks* (*Ljudböcker*, *Audiolibros* ... work too) - each such
   folder one book, its files in order, `CD1`/`CD2` folders included. Hemma reads each book's title, author,
-  narrator, cover and chapters from the files themselves. Books in one folder are a series, in the order of the
-  numbers their names start with ("1 Harry Potter and ...").
+  narrator, cover and chapters from the files themselves (a title that is only a file's name, or ends in which
+  recording it is - LibriVox's "velveteen_rabbit", "Ozma of Oz v2", "(version 3)" - is tidied up). Books in one
+  folder are a series, in the order of the numbers their names start with ("1 Harry Potter and ...").
 - **The Audiobooks tab** under Watch (there once the library has a book): Continue listening, then every book, a
   series' books together. Search finds books by title, author, narrator and series.
 - **A book's page:** its cover, who wrote and reads it, its chapters, and a player made for listening - back 15 s,
@@ -29,6 +30,13 @@ Audiobooks: Watch gets an Audiobooks tab, and a book keeps playing with the phon
 - **Uploads take audiobooks:** `.m4b`, `.m4a` and `.mp3` files go into the library's *Audiobooks* folder, their
   folders kept; their pictures go with them. A show's theme song or a film's soundtrack goes with its show or film.
 - **Children** see only the books outside folders marked *Not for children*, as with videos.
+
+### Fixed
+
+- **A paused video played on from another page:** a video paused before going to another page in Hemma (Watch, Add
+  videos ...) kept its file, and a keyboard's play key or the computer's media controls started it again, unseen -
+  only its sound. A video or a book taken off the page now lets go of its file whether it was playing or paused, and
+  a book leaves the lock screen with its buttons.
 
 ### For developers
 

@@ -586,7 +586,8 @@ void media_lib_head(Ctx *c, Buf *b, const char *active, const char *title, const
       "</nav><form class=\"media-search\" method=\"get\" action=\"/media\" role=\"search\">"
       "<input type=\"search\" name=\"q\" value=\"%s\" placeholder=\"%s\" autocomplete=\"off\"%r "
       "data-key=\"/\" aria-label=\"%s\"></form></div>",
-      str_eq(active, "tv") ? "" : query(c), T("Search movies and series…"), str_eq(active, "tv") ? "" : " data-live=\"media.search\"",
+      str_eq(active, "tv") ? "" : query(c), str_eq(active, "books") ? T("Search audiobooks…") : T("Search movies and series…"),
+      str_eq(active, "tv") ? "" : " data-live=\"media.search\"",
       T("Search the library"));
 }
 

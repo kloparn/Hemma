@@ -8,6 +8,7 @@ static const Tr TR[] = {
     {"%d audiobook", "%d ljudbok", "%d audiolibro"},
     {"%d audiobooks", "%d ljudböcker", "%d audiolibros"},
     {"Books", "Böcker", "Libros"},
+    {"Search audiobooks…", "Sök ljudböcker…", "Buscar audiolibros…"},
     {"No audiobooks yet", "Inga ljudböcker än", "Todavía no hay audiolibros"},
     {"An .m4b file anywhere in the library is an audiobook - and so is a folder of .mp3 files inside a folder called "
      "Audiobooks.",

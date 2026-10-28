@@ -1261,6 +1261,22 @@
       for (const m of within(el, 'video,audio')) media(m);
       for (const b of within(el, '[data-fullscreen]')) fsButton(b);
     }
+    letGo();
+  }
+
+  // A video or a book taken off the page (another page came) lets go of its file - a paused one too: it kept it,
+  // and a keyboard's play key, the computer's media controls or a phone's lock screen played it on, out of sight
+  // (1.6). One still playing is paused first: its pause handler reports the place, then lets go (media(), book()).
+  const wired = new Set();
+  function letGo() {
+    for (const m of wired) {
+      if (m.isConnected) continue;
+      wired.delete(m);
+      if (m._book) sessionDrop(m);
+      if (!m.paused) { m.pause(); continue; }
+      m.removeAttribute('src');
+      m.load();
+    }
   }
 
   // [data-start="id"] on a horizontal scroller: open it at that child (today's column on a
@@ -1442,6 +1458,7 @@
   }
 
   function media(m) {
+    wired.add(m);
     if (m.hasAttribute('data-book')) { book(m); return; } // (an audiobook: the listener, below)
     const src = (m.getAttribute('data-static') || '') + ' ' + (m.getAttribute('src') || ''); // (a channel airs a file again)
     if (m._src === src) return;
@@ -2179,10 +2196,7 @@
     a.addEventListener('pause', () => {
       if (!a.ended) bookTell(a, false);
       if (!a.isConnected) { /* (another page came: the lock screen lets go, and so does the stream) */
-        if ('mediaSession' in navigator && navigator.mediaSession._book === a) {
-          navigator.mediaSession.metadata = null;
-          navigator.mediaSession.playbackState = 'none';
-        }
+        sessionDrop(a);
         setTimeout(() => { if (!a.isConnected) { a.removeAttribute('src'); a.load(); } });
       }
     });
@@ -2208,7 +2222,8 @@
   // the place in the book to the server: over the socket, else (a locked phone's socket gone, the page going out
   // of sight) a plain POST that outlives the page; redirect "manual": its answer is a 303 to the page, not wanted
   function bookTell(a, ended, sure) {
-    if (!a.dataset.report || !(a._len > 0)) return;
+    /* (one that let go of its file has nothing to say: its time went back to 0 - "timeupdate" - which isn't the place) */
+    if (!a.dataset.report || !(a._len > 0) || !a.hasAttribute('src')) return;
     const f = [['id', a.dataset.id || ''], ['pos', String(Math.floor(bookAt(a)))], ['dur', String(Math.floor(a._len))],
       ['ended', ended ? '1' : '']];
     if (!sure && send({ t: 'live', a: a.dataset.report, url: here(), f })) return;
@@ -2328,6 +2343,16 @@
       on('nexttrack', () => chapterGo(a, 1));
     }
     sessionMeta(a);
+  }
+  // (a book taken off the page: the lock screen forgets it, and its buttons go - they'd play it on, unseen)
+  function sessionDrop(a) {
+    const ms = 'mediaSession' in navigator ? navigator.mediaSession : null;
+    if (!ms || ms._book !== a) return;
+    ms._book = null;
+    ms.metadata = null;
+    ms.playbackState = 'none';
+    for (const what of ['play', 'pause', 'stop', 'seekbackward', 'seekforward', 'seekto', 'previoustrack', 'nexttrack'])
+      try { ms.setActionHandler(what, null); } catch (_) {}
   }
   function sessionMeta(a) {
     const ms = navigator.mediaSession, title = a._chapter || a.dataset.title || '';

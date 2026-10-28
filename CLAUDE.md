@@ -795,7 +795,9 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  one title - media_name_part - one book); .mp3/.m4a: every one in a folder is one book, a short
                  CD1/Disc 2/Del 3 folder's with its parent's, by disc, track tag, then natural name order ("2"
                  before "10"); one loose in a books folder or the library folder = a book of its own. Title: an
-                 .m4b's title tag > album > file name; parts: album > folder name; "(Unabridged)" dropped. Series =
+                 .m4b's title tag > album > file name; parts: album > folder name; a tag that's a file's name (one
+                 word with '_': LibriVox's "velveteen_rabbit") is skipped; "(Unabridged)" and which recording it is
+                 at the end ("(version 3)", "v2", "ver 2", "(solo version 2)" - version_mark) dropped. Series =
                  the folder holding 2+ books (not a books folder, not the library folder), numbered by the number
                  their name starts with. Picture: "<stem>.jpg" beside an .m4b, else (alone in its folder / a folder
                  of parts) cover|folder|poster.*, else MediaBook.cover = a part with a picture INSIDE (served by
@@ -806,7 +808,9 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  in its last 15 s (a video at 92%). media_in_progress (Continue watching) skips MF_AUDIO;
                  media_books_going is Continue listening. PAGES (books.c): /media/books = Watch's "Audiobooks" tab
                  (media_lib_head shows it only while media_lib_for(c)->nbooks; the search box searches books too:
-                 media_search_shown), Continue listening, then a section per series and "Books"; /media/book/<id>
+                 media_search_shown; its placeholder "Search audiobooks…" there), Continue listening, then a section
+                 per series, then ONE "Books" for the rest (the list is sorted by series-or-title, so the rest isn't
+                 together in it); /media/book/<id>
                  (?at=<s>: start there, autoplay - a chapter's link without wire.js) = cover, author/narrator/year/
                  length, series line, the player, Mark as finished, Download (grown-ups: one file =
                  /media/file/<id>?download=1, parts = /media/zip/<book id>), "About this book" (the description
@@ -1633,8 +1637,15 @@ down - and always when the page goes out of sight (visibilitychange hidden, page
 LOCK SCREEN (owner: "listen to it while the phone is locked"): the Media Session API (not a secure-context API -
 works on plain http), set while it plays: metadata {title = the chapter, artist = data-author, album = data-title,
 artwork = data-art}, handlers play/pause/stop/seekbackward 15/seekforward 30/seekto/previoustrack/nexttrack
-(chapters), setPositionState every 4 s. Taken off the page (another page came), it lets go of the lock screen and
-the stream. Keys: Space/K, Left -15, Right +30, Escape closes a menu ·
+(chapters), setPositionState every 4 s. Taken off the page (another page came), it lets go of the lock screen, its
+handlers (sessionDrop) and the stream. Keys: Space/K, Left -15, Right +30, Escape closes a menu ·
+LETTING GO (1.6; owner, 2026-10-28: a paused South Park episode played on from Watch and Add videos with the
+keyboard's play key / the OS's media controls): every wired video/audio is in `wired`; settle() ends with letGo() -
+one no longer on the page is paused if it plays (its pause handler reports, then drops src + load()), else drops
+its src at once; a book also leaves the Media Session. A paused element kept its file before: only removal while
+playing (the browser's own pause) let go. load() without a src sets the time to 0 and fires timeupdate: a report
+after letting go would say "0" - bookTell says nothing without a src (a video's tell needs m.duration, NaN then).
+Held by player.spec.mjs and audiobook.spec.mjs ·
 `video[data-resume|data-report|data-next]` (THE PLAYER'S RULES - issue #49, each held by tests/browser:
 player.spec.mjs / live.spec.mjs: data-resume = where it starts once loaded, never in its last 5 s; data-report
 = media.progress (live) every 15 s of the video's own time, at a pause and at the end; ended -> data-next; the

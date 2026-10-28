@@ -143,6 +143,11 @@ TEST(books_tab_page_and_player) {
     CHECK_HAS(html, "7 audiobooks");
     CHECK_HAS(html, "<h2>Harry Potter Full-Cast</h2>"); /* the series' books together, under its name */
     CHECK_HAS(html, "The Hobbit");
+    /* then the other books, in one section - "Big Book" sorts before the series and "The Hobbit" after it */
+    const char *books = strstr(html, "<h2>Books</h2>");
+    CHECK(books && !strstr(books + 1, "<h2>Books</h2>") && books > strstr(html, "<h2>Harry Potter Full-Cast</h2>"));
+    CHECK(books && strstr(books, ">Big Book<") && strstr(books, ">The Hobbit<"));
+    CHECK_HAS(html, "placeholder=\"Search audiobooks…\"");
     CHECK(!strstr(html, "Continue listening"));
     const MediaBook *h = book_titled("The Hobbit");
     html = th_page(adam, book_url("/media/book/%s", h->id));

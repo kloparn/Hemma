@@ -224,24 +224,29 @@ void media_books_page(Ctx *c, Buf *b) {
         return;
     }
     media_books_shelf(c, b);
-    /* every book: a series' together, under its name */
+    /* every book: each series' together under its name, then one "Books" for the rest (the list is in order of
+       series-or-title: "Alice ...", "Oz", "The Velveteen Rabbit" - two "Books" once) */
+    int alone = 0;
     for (int i = 0; i < ix->nbooks;) {
         const MediaBook *bk = &ix->books[i];
-        int k = i + 1;
-        while (bk->series[0] && k < ix->nbooks && str_eq(ix->books[k].series, bk->series)) k++;
-        if (bk->series[0]) {
-            H(b, "<section class=\"media-row\"><header class=\"media-row-h\"><h2>%s</h2></header>", bk->series);
-            buf_puts(b, "<div class=\"media-grid media-grid-sq\">");
-            for (int j = i; j < k; j++) media_book_card(c, b, &ix->books[j]);
-            buf_puts(b, "</div></section>");
-            i = k;
+        if (!bk->series[0]) {
+            alone++, i++;
             continue;
         }
-        H(b, "<section class=\"media-row\"><header class=\"media-row-h\"><h2>%s</h2></header>", T("Books"));
+        int k = i + 1;
+        while (k < ix->nbooks && str_eq(ix->books[k].series, bk->series)) k++;
+        H(b, "<section class=\"media-row\"><header class=\"media-row-h\"><h2>%s</h2></header>", bk->series);
         buf_puts(b, "<div class=\"media-grid media-grid-sq\">");
-        for (; i < ix->nbooks && !ix->books[i].series[0]; i++) media_book_card(c, b, &ix->books[i]);
+        for (int j = i; j < k; j++) media_book_card(c, b, &ix->books[j]);
         buf_puts(b, "</div></section>");
+        i = k;
     }
+    if (!alone) return;
+    H(b, "<section class=\"media-row\"><header class=\"media-row-h\"><h2>%s</h2></header>", T("Books"));
+    buf_puts(b, "<div class=\"media-grid media-grid-sq\">");
+    for (int i = 0; i < ix->nbooks; i++)
+        if (!ix->books[i].series[0]) media_book_card(c, b, &ix->books[i]);
+    buf_puts(b, "</div></section>");
 }
 
 /* The listening player (wire.js "the listener"; the header comment above): <audio> + Hemma's controls */
