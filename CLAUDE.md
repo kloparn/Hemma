@@ -94,6 +94,13 @@ core/            framework with a stable API for modules
   base.*         buffers (always NUL-terminated), strings, UTF-8, time/calendar, hashing, logging
                  (log_set_sink: called on ANY thread after log_clean - the sink locks and never logs;
                  g_log_stderr = false keeps tests quiet)
+                 free_on_loop(p)/buf_free_on_loop(&b) (1.5.1, docs/decisions/0010): a worker thread hands back what
+                 the EVENT LOOP allocated (its job, conn_detach's bytes) instead of free()ing it; server_run frees them
+                 each turn (free_on_loop_now(), also app_halt). musl (the Pi's static builds) never reused a block
+                 another thread freed while the loop kept allocating: 2 KB upload jobs held 100 MB on the Pi after an
+                 afternoon. A worker never grows (realloc) a loop buffer either - it copies it into its own.
+                 thread_spawn's start record goes back the same way. glibc/Windows never showed it: check memory
+                 on a musl build (x86_64-linux-musl under WSL, or the Pi)
                  lang_now()/lang_use(): the THREAD's language (issue #46) - weekday_name()/month_name()
                  follow it (Swedish and Spanish in lower case; ui_day capitalises a line start)
   i18n.*         LANGUAGES (issue #46; owner, 2026-10-20: English, Swedish, Spanish - "a helper that
@@ -1421,6 +1428,9 @@ MODULE(things)   /* self-registers: no shared file to edit */
 - **Rules**: no `#ifdef _WIN32` (use plat.h/lan.h); don't block the event loop (threads for disk
   scans/streaming, results handed back on `tick`); check `app_testing()` before opening sockets or
   starting threads; don't edit core/ or web/ for one module's needs — ask for a core change instead.
+  A thread you start frees only what it allocated itself: the job the event loop made for it, the bytes
+  `conn_detach` handed over and anything else from the loop go back with `free_on_loop()` /
+  `buf_free_on_loop()` (core/base.h; docs/decisions/0010 - musl kept every block freed the other way).
 - **Tests**: `modules/<id>/<id>_test.c` with tests/harness.h: `th_boot()`, `th_person()`,
   `th_act(person, "mod.verb", "a=1&b=2")`, `th_page(person, "/mod?x=1")`, `th_halt()`.
   Anonymous = person 0 → expect the sign-in page (`data-mod="auth"`). For sign-in tests call
@@ -1729,7 +1739,7 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
 ## Where things stand
 
 What each version changed is [CHANGELOG.md](CHANGELOG.md); why the big choices are what they are is
-[docs/decisions](docs/decisions/README.md) (0001-0009); how it fits together for humans is
+[docs/decisions](docs/decisions/README.md) (0001-0010); how it fits together for humans is
 [ARCHITECTURE.md](ARCHITECTURE.md) and [CONTRIBUTING.md](CONTRIBUTING.md). This file keeps the working rules.
 (Issue #51, 2026-10-21: the dated Status diary that lived here - every version's work, review passes -
 is the CHANGELOG's now.) 1.0.0 (2026-10-21) = the outside reviews' issues (#3-#103) and the planned
@@ -1756,7 +1766,10 @@ lists' chips, order and Not started/Started, a row per category on Watch and for
 order, grouped; and an upload that waits out a dropped network. 1.5.0 (branch feat/upload-fixes; owner, 2026-10-27: "it
 sort of spams between texts ... make it more modern") = an upload's card that says what it's doing - a state, three
 numbers in fixed places, and what's under way (Saved / Uploading / Ready / Processing / Subtitles), the furthest along
-on top - and a subtitles-only entry that stays done.
+on top - and a subtitles-only entry that stays done. 1.5.1 (branch fix/memory-leak-issue; owner, 2026-10-27: "we
+should find it out what caused it") = memory on the Pi no longer grows with uploads and streams: worker threads hand
+the event loop's memory back (free_on_loop, decision 0010) - musl had kept every 2 KB job a worker freed - and the
+Network page's eviction no longer loses a list.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling

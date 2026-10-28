@@ -374,7 +374,8 @@ static bool gone_lately(uint64_t mac) {
    ids go first: each delete then moves only the rows that stay. Returns how many went. */
 static int evict(MacIndex *ix, int count, int64_t now) {
     Spare *s;
-    int n = MIN(spares(now, &s), count);
+    int n = spares(now, &s); /* (not inside MIN(): a macro, it would make - and lose - a second list) */
+    n = MIN(n, count);
     qsort(s, (size_t)n, sizeof *s, by_id_desc);
     for (int i = 0; i < n; i++) {
         Device *old = tbl_get(&T_device, s[i].id);

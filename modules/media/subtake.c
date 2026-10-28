@@ -314,8 +314,8 @@ static void worker(void *arg) {
         log_warn("media: subtitles: %d video%s couldn't be opened, e.g. %s", closed, closed == 1 ? "" : "s",
                  r->todo[first].path);
     atomic_store(&g_finished, i == r->n && !must_stop());
-    free(r->todo);
-    free(r);
+    free_on_loop(r->todo); /* (the event loop made the run: base.h free_on_loop) */
+    free_on_loop(r);
     atomic_store(&g_running, false);
     app_tick_soon();
 }

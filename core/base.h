@@ -29,6 +29,15 @@ void *xmalloc(size_t n);
 void *xcalloc(size_t count, size_t size);
 void *xrealloc(void *p, size_t n);
 char *xstrdup(const char *s);
+/* A WORKER THREAD never free()s what the EVENT LOOP allocated (the job it was started with, the bytes conn_detach
+   handed over, a copy made for it): it hands the block back with free_on_loop(), and the event loop frees it on its
+   next turn (free_on_loop_now(): server_run, app_halt). musl's malloc - the Pi's and every static Linux build's -
+   doesn't reuse a block another thread freed while the thread that made it kept allocating: 2 KB upload jobs, one
+   per PUT, held 100 MB on a Pi after an afternoon of uploads (1.5.1). What the worker made itself it frees itself
+   (that way round is fine: the event loop may free what a worker made). Any thread; p may be NULL. A worker never
+   grows (realloc) an event-loop buffer either: that frees its old bytes there - copy it into one of its own. */
+void free_on_loop(void *p);
+int free_on_loop_now(void); /* frees what was handed back; returns how many it freed (event loop only) */
 
 /* ---- Buf: growable byte buffer. Zero-initialise ({0}) before use. Once
  * anything was written, p is always NUL-terminated (the NUL isn't counted). */
@@ -45,6 +54,7 @@ void buf_printf(Buf *b, const char *fmt, ...) FMT(2, 3);
 void buf_vprintf(Buf *b, const char *fmt, va_list ap);
 void buf_consume(Buf *b, size_t n); /* drop n bytes from the front */
 void buf_free(Buf *b);
+void buf_free_on_loop(Buf *b); /* buf_free for a worker thread: the bytes go back to the event loop (free_on_loop) */
 const char *buf_cstr(Buf *b); /* NUL-terminated view; the NUL is not counted in len */
 static inline void buf_reset(Buf *b) {
     b->len = 0;

@@ -1453,9 +1453,9 @@ static void worker(void *arg) {
     if (complete) log_info("upload: saved %s", j->full);
     else if (!piece) log_warn("upload: %s - %s", j->full, fail);
     app_tick_soon(); /* the tick shows it now (a new picture: at once), not at the next idle tick */
-    buf_free(&j->head);
-    buf_free(&j->body);
-    free(j);
+    buf_free_on_loop(&j->head); /* (the job and its bytes are the event loop's: base.h free_on_loop) */
+    buf_free_on_loop(&j->body);
+    free_on_loop(j);
 }
 
 /* -------------------------------------------------------------- endpoints */
@@ -1862,9 +1862,9 @@ static void pic_worker(void *arg) {
     if (left == TRACK_SAVED) log_info("upload: saved %s%s", j->path, vob ? " and its .idx" : "");
     else if (fail) log_warn("upload: %s - %s", j->path, fail);
     app_tick_soon();
-    buf_free(&j->head);
-    buf_free(&j->body);
-    free(j);
+    buf_free_on_loop(&j->head); /* (the event loop's: base.h free_on_loop) */
+    buf_free_on_loop(&j->body);
+    free_on_loop(j);
 }
 
 /* PUT ...?pic=pgs|vobsub: a picture subtitle track for the copy file i is (see the top) */

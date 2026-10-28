@@ -647,6 +647,7 @@ void server_run(const ServerHooks *hooks) {
     if (g_wake == SOCK_BAD) g_wake = udp_open_loopback(&g_wake_port);
     while (!g_stop) {
         compact();
+        free_on_loop_now(); /* what worker threads handed back (base.h: freed on the thread that made it) */
         int need = 2 + nconns + nwatches;
         if (need > cap) {
             cap = need + 32;

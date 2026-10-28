@@ -1,6 +1,8 @@
 #include "../tests/test.h"
 #include "plat.h"
 
+#include <stdatomic.h>
+
 TEST(ip_parse_and_format) {
     uint32_t ip = 0;
     CHECK(ip_parse("192.168.1.42", &ip) && ip == 0xC0A8012A);
@@ -172,4 +174,29 @@ TEST(plat_parse_mounts_keeps_disks_under_mnt_and_media) {
     CHECK_INT(plat_parse_mounts("", out, 8), 0);
     char real[8][300];
     CHECK(plat_mounts(real, 8) >= 0); /* (whatever this machine has) */
+}
+
+/* Worker threads hand back what the event loop made (base.h free_on_loop; 1.5.1: musl kept every 2 KB upload job a
+   worker freed - 100 MB on a Pi in an afternoon). The blocks wait, from any number of threads at once, until the
+   event loop frees them - thread_spawn's own start records among them. */
+static atomic_int g_handed;
+static void hand_back(void *arg) {
+    (void)arg;
+    for (int i = 0; i < 100; i++) free_on_loop(xmalloc(1 + (size_t)i * 40));
+    free_on_loop(NULL); /* (nothing: fine) */
+    atomic_fetch_add(&g_handed, 1);
+}
+
+TEST(free_on_loop_takes_blocks_back_from_threads) {
+    free_on_loop_now(); /* (whatever earlier tests' threads left) */
+    atomic_store(&g_handed, 0);
+    for (int t = 0; t < 4; t++) CHECK(thread_spawn(hand_back, NULL));
+    for (int waited = 0; atomic_load(&g_handed) < 4 && waited < 5000; waited++) plat_sleep_ms(1);
+    CHECK_INT(atomic_load(&g_handed), 4);
+    CHECK(free_on_loop_now() >= 4 * 100 + 4); /* every block, and the four threads' start records */
+    Buf b = {0};
+    buf_puts(&b, "a job's bytes");
+    buf_free_on_loop(&b);
+    CHECK(!b.p && !b.len && !b.cap);
+    CHECK(free_on_loop_now() >= 1);
 }

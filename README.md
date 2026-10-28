@@ -74,8 +74,8 @@ see [the credits](docs/img/CREDITS.md).</sub>
   file on your own computer.
 - **Nothing to install.** Any browser works: phones, laptops, smart TVs, old ones too.
 - **Live on every screen.** Book the sauna, and every open phone and the wall tablet show it at once.
-- **Small and cheap to run.** One program of about 4 MB that's happy on a $15 Raspberry Pi and uses
-  a few MB of memory ([why it's so light](docs/development.md#why-c)).
+- **Small and cheap to run.** One program of about 4 MB that's happy on a $15 Raspberry Pi, with no
+  database server, runtime or Docker to look after ([why it's so light](docs/development.md#why-c)).
 - **In your language.** English, Swedish or Spanish, and everyone picks their own.
 - **Free and open source** ([Apache 2.0](LICENSE)).
 
