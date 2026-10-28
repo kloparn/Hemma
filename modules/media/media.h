@@ -16,7 +16,8 @@
 /* ------------------------------------------------------------ neighbours */
 
 /* Watch's page header (title, subtitle, the scanning badge, Library settings) and its tabs:
-   Home | Movies | Series | Live TV | Folders. active: "home" "movies" "series" "tv" "browse".
+   Home | Movies | Series | Audiobooks | Live TV | Folders. active: "home" "movies" "series" "books" "tv" "browse".
+   Audiobooks is there while the library has some (1.6).
    buttons: trusted HTML for the header's right-hand side (NULL = none), e.g. "New channel".
    Live TV is there only while the tv module is. */
 void media_lib_head(Ctx *c, Buf *b, const char *active, const char *title, const char *sub, const char *buttons);
@@ -176,6 +177,16 @@ int media_lookup_test_omdb(const char *json, char *genres, size_t cap);
 bool media_lookup_test_next(char *host, size_t hcap, char *path, size_t pcap);
 void media_lookup_test_online(int state);
 void media_lookup_test_put(const char *work, const char *genres, bool pinned);
+
+/* AUDIOBOOKS (books.c, 1.6): Watch's Audiobooks tab (/media/books), a book's page with its player
+   (/media/book/<id>), the cards, and the viewer's books under way (Continue listening). */
+bool media_kids_book_ok(const Ctx *c, const MediaBook *bk); /* (issue #44: as for a series - all of it, or none) */
+void media_books_page(Ctx *c, Buf *b);
+void media_book_page(Ctx *c, Buf *b, const char *idhex);
+void media_book_card(Ctx *c, Buf *b, const MediaBook *bk);
+int media_books_going(const Ctx *c, const MediaBook **out, int max); /* the viewer's unfinished books, latest first */
+void media_books_shelf(Ctx *c, Buf *b); /* "Continue listening" (nothing when there's none) */
+bool media_search_shown(Ctx *c, Buf *b); /* the library's search results, while a search is typed (media.c) */
 
 /* TV mode's pages (tiles.c) and the rows media offers to screens */
 void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f);

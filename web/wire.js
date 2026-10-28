@@ -1261,6 +1261,22 @@
       for (const m of within(el, 'video,audio')) media(m);
       for (const b of within(el, '[data-fullscreen]')) fsButton(b);
     }
+    letGo();
+  }
+
+  // A video or a book taken off the page (another page came) lets go of its file - a paused one too: it kept it,
+  // and a keyboard's play key, the computer's media controls or a phone's lock screen played it on, out of sight
+  // (1.6). One still playing is paused first: its pause handler reports the place, then lets go (media(), book()).
+  const wired = new Set();
+  function letGo() {
+    for (const m of wired) {
+      if (m.isConnected) continue;
+      wired.delete(m);
+      if (m._book) sessionDrop(m);
+      if (!m.paused) { m.pause(); continue; }
+      m.removeAttribute('src');
+      m.load();
+    }
   }
 
   // [data-start="id"] on a horizontal scroller: open it at that child (today's column on a
@@ -1442,6 +1458,8 @@
   }
 
   function media(m) {
+    wired.add(m);
+    if (m.hasAttribute('data-book')) { book(m); return; } // (an audiobook: the listener, below)
     const src = (m.getAttribute('data-static') || '') + ' ' + (m.getAttribute('src') || ''); // (a channel airs a file again)
     if (m._src === src) return;
     const again = m._src !== undefined;
@@ -2097,6 +2115,349 @@
     e.preventDefault();
     act();
   }
+
+  // ------------------------------------------------------------ the listener
+  // <audio data-book> (an audiobook, modules/media/books.c; 1.6) with its controls [data-listen="<audio id>"]:
+  // the chapter that's on (the page's #media-chapters a[data-at] - seconds in the whole book), a seek bar over the
+  // whole book, back 15 s / forward 30 s, previous and next chapter, speed (remembered on this device) and a sleep
+  // timer. A book in parts (data-parts = [[address, start, length], ...]) plays them one after the other in the
+  // same element; its place is always in the whole book - what's reported (media.progress, every 15 s of it, at a
+  // pause, when the page goes out of sight, at the end), what the seek bar and the lock screen show. The LOCK SCREEN
+  // (owner: "listen to it while the phone is locked") is the Media Session API: title, author, cover, the chapter;
+  // play/pause, 15/30 s and the chapters from there. While the socket is down - a locked phone may close it - the
+  // reports go as plain POSTs (keepalive). Without this file the element keeps the browser's own controls.
+  const SPEED = 'hemma.speed';
+  const lsOf = (a) => document.querySelector(`[data-listen="${CSS.escape(a.id)}"]`);
+  const bookAt = (a) => (a._parts[a._part] ? a._parts[a._part].at : 0) + (a.currentTime || 0);
+  const partAt = (a, t) => { /* the part holding second t of the book */
+    let k = 0;
+    while (k + 1 < a._parts.length && t >= a._parts[k + 1].at) k++;
+    return k;
+  };
+  const chapters = () => [...document.querySelectorAll('#media-chapters a[data-at]')]
+    .map((el) => ({ at: parseFloat(el.dataset.at) || 0, el, title: (el.querySelector('.media-ch-t') || el).textContent }));
+  const chapterAt = (list, t) => { let k = -1; for (let i = 0; i < list.length; i++) if (list[i].at <= t + 0.5) k = i; return k; };
+
+  function book(a) {
+    if (a._book) return;
+    a._book = true;
+    const len = parseFloat(a.dataset.length) || 0;
+    let parts;
+    try { parts = JSON.parse(a.dataset.parts || 'null'); } catch (_) { parts = null; }
+    a._parts = Array.isArray(parts) && parts.length
+      ? parts.map((p) => ({ src: String(p[0]), at: +p[1] || 0, len: +p[2] || 0 }))
+      : [{ src: (a.getAttribute('src') || '').split('#')[0], at: 0, len }];
+    a._len = len;
+    const resume = parseFloat(a.dataset.resume || '0');
+    a._part = partAt(a, resume);
+    a._seekTo = resume > 0 ? resume - a._parts[a._part].at : null; /* (the address's #t= says the same) */
+    a._last = resume;
+    a._sleepAt = 0;
+    a._sleepCh = -1;
+    soundApply(a);
+    let rate = 1;
+    try { rate = parseFloat(localStorage.getItem(SPEED) || '1') || 1; } catch (_) {}
+    a._rate = rate >= 0.5 && rate <= 3 ? rate : 1;
+    const ls = lsOf(a);
+    if (ls) {
+      ls.hidden = false;
+      a.controls = false;
+    }
+    const lengthKnown = () => { /* (a book of one file whose length the server couldn't read: the element's) */
+      if (a._len > 0 || a._parts.length !== 1 || !(a.duration > 0) || !isFinite(a.duration)) return;
+      a._len = a._parts[0].len = a.duration;
+    };
+    a.addEventListener('durationchange', lengthKnown);
+    a.addEventListener('loadedmetadata', () => {
+      lengthKnown();
+      if (a._seekTo !== null && a._seekTo > 0 && (!a.duration || a._seekTo < a.duration)) a.currentTime = a._seekTo;
+      a._seekTo = null;
+      a.playbackRate = a._rate; /* (a new part may start at 1) */
+      lsSync(a);
+    });
+    for (const t of ['play', 'pause', 'playing', 'seeked', 'durationchange', 'ratechange', 'volumechange'])
+      a.addEventListener(t, () => {
+        if (t === 'playing') { a._played = true; clearTimeout(a._dog); }
+        if (t === 'play' && !a._played) watch(a);
+        if (t === 'play') a.playbackRate = a._rate;
+        if (t === 'volumechange') soundSave(a);
+        lsSync(a);
+        session(a, t === 'play' || t === 'playing' || t === 'pause');
+      });
+    a.addEventListener('timeupdate', () => {
+      const t = bookAt(a);
+      if (Math.abs(t - a._last) >= 15) { a._last = t; bookTell(a, false); }
+      if ((a._sleepAt && Date.now() >= a._sleepAt) || (a._sleepCh >= 0 && t >= a._sleepCh)) {
+        sleepSet(a, '0');
+        a.pause();
+      }
+      lsSync(a);
+    });
+    a.addEventListener('pause', () => {
+      if (!a.ended) bookTell(a, false);
+      if (!a.isConnected) { /* (another page came: the lock screen lets go, and so does the stream) */
+        sessionDrop(a);
+        setTimeout(() => { if (!a.isConnected) { a.removeAttribute('src'); a.load(); } });
+      }
+    });
+    a.addEventListener('ended', () => {
+      if (a._part + 1 < a._parts.length) { partGo(a, a._part + 1, 0, true); return; } /* on to the next part */
+      bookTell(a, true);
+    });
+    a.addEventListener('error', () => {
+      const e = a.error;
+      if (!e || !a.isConnected) return;
+      if (ls) flag(ls, 'data-err', true);
+      report(`audiobook ${a.dataset.id || a.id}: error ${e.code}${e.message ? ` (${e.message})` : ''}`);
+    });
+    if (a.readyState >= 1) { /* (it had its length before this file came: the address's #t= placed it, or not) */
+      lengthKnown();
+      if (a._seekTo !== null && Math.abs(a.currentTime - a._seekTo) > 2) a.currentTime = a._seekTo;
+      a._seekTo = null;
+    }
+    a.playbackRate = a._rate;
+    lsSync(a);
+  }
+
+  // the place in the book to the server: over the socket, else (a locked phone's socket gone, the page going out
+  // of sight) a plain POST that outlives the page; redirect "manual": its answer is a 303 to the page, not wanted
+  function bookTell(a, ended, sure) {
+    /* (one that let go of its file has nothing to say: its time went back to 0 - "timeupdate" - which isn't the place) */
+    if (!a.dataset.report || !(a._len > 0) || !a.hasAttribute('src')) return;
+    const f = [['id', a.dataset.id || ''], ['pos', String(Math.floor(bookAt(a)))], ['dur', String(Math.floor(a._len))],
+      ['ended', ended ? '1' : '']];
+    if (!sure && send({ t: 'live', a: a.dataset.report, url: here(), f })) return;
+    try {
+      fetch(`/a/${a.dataset.report}`, { method: 'POST', body: new URLSearchParams(f), keepalive: true, redirect: 'manual',
+        credentials: 'same-origin' }).catch(() => {});
+    } catch (_) {}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden') return;
+    for (const a of document.querySelectorAll('audio[data-book]')) if (a._book && !a.paused) bookTell(a, false, true);
+  });
+  addEventListener('pagehide', () => { for (const a of document.querySelectorAll('audio[data-book]')) if (a._book && a._played) bookTell(a, false, true); });
+
+  // To part k at its second `at` (playing on when `go`, or when it played)
+  function partGo(a, k, at, go) {
+    const play = go || !a.paused;
+    if (k === a._part && a.readyState >= 1) {
+      a.currentTime = Math.max(0, at);
+      if (play && a.paused) a.play().catch(() => {});
+      return;
+    }
+    a._part = k;
+    a._seekTo = at > 0 ? at : null;
+    a.src = a._parts[k].src;
+    if (play) a.play().catch(() => {});
+    lsSync(a);
+  }
+  const bookSeek = (a, t) => {
+    t = Math.max(0, Math.min(a._len > 1 ? a._len - 0.5 : t, t));
+    const k = partAt(a, t);
+    partGo(a, k, t - a._parts[k].at, false);
+    a._last = t;
+  };
+  const bookBy = (a, s) => bookSeek(a, bookAt(a) + s);
+  function chapterGo(a, dir) {
+    const list = chapters(), t = bookAt(a), k = chapterAt(list, t);
+    if (!list.length) return;
+    if (dir < 0) bookSeek(a, k >= 0 && t - list[k].at > 3 ? list[k].at : list[Math.max(0, k - 1)].at);
+    else if (k + 1 < list.length) bookSeek(a, list[k + 1].at);
+  }
+
+  // The controls, the chapter list and the lock screen as the book is now (timeupdate: often - attributes and text
+  // only when they change)
+  function lsSync(a) {
+    const ls = lsOf(a), t = bookAt(a), len = a._len || 0;
+    const list = chapters(), k = chapterAt(list, t);
+    for (let i = 0; i < list.length; i++) {
+      const on = i === k;
+      if (on !== (list[i].el.getAttribute('aria-current') === 'true')) {
+        if (on) list[i].el.setAttribute('aria-current', 'true');
+        else list[i].el.removeAttribute('aria-current');
+      }
+    }
+    a._chapter = k >= 0 ? list[k].title : '';
+    if (!ls) return;
+    flag(ls, 'data-paused', a.paused);
+    const p = ls.querySelector('[data-b="play"]');
+    attr(p, 'aria-label', a.paused ? T('Play') : T('Pause'));
+    const ch = ls.querySelector('[data-b="chapter"]');
+    if (ch && a._chapter && ch.textContent !== a._chapter) ch.textContent = a._chapter;
+    const seek = ls.querySelector('[data-b="seek"]');
+    if (seek && len > 0) {
+      const at = ls._drag ? ls._to : t;
+      if (!ls._drag) { if (+seek.max !== len) seek.max = len; seek.value = at; }
+      const fill = ls.querySelector('.media-ab-fill');
+      if (fill) fill.style.width = (100 * Math.min(at, len) / len) + '%';
+      attr(seek, 'aria-valuetext', T('%s of %s', clock(at), clock(len)));
+      const at1 = ls.querySelector('[data-b="at"]'), left = ls.querySelector('[data-b="left"]');
+      if (at1 && at1.textContent !== clock(at)) at1.textContent = clock(at);
+      if (left && left.textContent !== '-' + clock(len - at)) left.textContent = '-' + clock(len - at);
+    }
+    for (const b of ls.querySelectorAll('[data-speed]')) attr(b, 'aria-checked', +b.dataset.speed === a._rate ? 'true' : 'false');
+    const sp = ls.querySelector('[data-speed][aria-checked="true"]'), spt = ls.querySelector('[data-b="speed-t"]');
+    if (sp && spt && spt.textContent !== sp.textContent) spt.textContent = sp.textContent;
+    const sl = ls.querySelector('[data-b="sleep-t"]');
+    if (sl) {
+      if (sl._was === undefined) sl._was = sl.textContent; /* ("Sleep timer", as the server said it) */
+      const on = ls.querySelector('[data-sleep][aria-checked="true"]');
+      const text = a._sleepAt ? clock(Math.max(0, (a._sleepAt - Date.now()) / 1000))
+        : a._sleepCh >= 0 && on ? on.textContent : sl._was;
+      if (sl.textContent !== text) sl.textContent = text;
+    }
+    sessionPlace(a);
+  }
+  function sleepSet(a, v) {
+    a._sleepAt = 0;
+    a._sleepCh = -1;
+    if (v === 'ch') {
+      const list = chapters(), k = chapterAt(list, bookAt(a));
+      a._sleepCh = k + 1 < list.length ? list[k + 1].at : a._len;
+    } else if (+v > 0) a._sleepAt = Date.now() + v * 60000;
+    const ls = lsOf(a);
+    if (ls) for (const b of ls.querySelectorAll('[data-sleep]')) attr(b, 'aria-checked', b.dataset.sleep === String(v) ? 'true' : 'false');
+    lsSync(a);
+  }
+  setInterval(() => { /* (the sleep timer's minutes count down while nothing else moves) */
+    for (const a of document.querySelectorAll('audio[data-book]')) if (a._book && a._sleepAt) lsSync(a);
+  }, 1000);
+
+  // The lock screen: what plays (the chapter as its title), and its buttons - once per book element, when it plays
+  function session(a, now) {
+    if (!('mediaSession' in navigator) || !now) return;
+    const ms = navigator.mediaSession;
+    if (a.paused) { ms.playbackState = 'paused'; return; }
+    ms.playbackState = 'playing';
+    if (ms._book !== a) {
+      ms._book = a;
+      const on = (what, fn) => { try { ms.setActionHandler(what, fn); } catch (_) {} };
+      on('play', () => a.play().catch(() => {}));
+      on('pause', () => a.pause());
+      on('stop', () => a.pause());
+      on('seekbackward', (d) => bookBy(a, -((d && d.seekOffset) || 15)));
+      on('seekforward', (d) => bookBy(a, (d && d.seekOffset) || 30));
+      on('seekto', (d) => { if (d && typeof d.seekTime === 'number') bookSeek(a, d.seekTime); });
+      on('previoustrack', () => chapterGo(a, -1));
+      on('nexttrack', () => chapterGo(a, 1));
+    }
+    sessionMeta(a);
+  }
+  // (a book taken off the page: the lock screen forgets it, and its buttons go - they'd play it on, unseen)
+  function sessionDrop(a) {
+    const ms = 'mediaSession' in navigator ? navigator.mediaSession : null;
+    if (!ms || ms._book !== a) return;
+    ms._book = null;
+    ms.metadata = null;
+    ms.playbackState = 'none';
+    for (const what of ['play', 'pause', 'stop', 'seekbackward', 'seekforward', 'seekto', 'previoustrack', 'nexttrack'])
+      try { ms.setActionHandler(what, null); } catch (_) {}
+  }
+  function sessionMeta(a) {
+    const ms = navigator.mediaSession, title = a._chapter || a.dataset.title || '';
+    if (!ms || ms._book !== a || !window.MediaMetadata || a._metaFor === title) return;
+    a._metaFor = title;
+    const art = a.dataset.art ? [{ src: new URL(a.dataset.art, location.href).href }] : [];
+    try {
+      ms.metadata = new MediaMetadata({ title, artist: a.dataset.author || '', album: a.dataset.title || '', artwork: art });
+    } catch (_) {}
+  }
+  function sessionPlace(a) {
+    const ms = 'mediaSession' in navigator ? navigator.mediaSession : null;
+    if (!ms || ms._book !== a) return;
+    sessionMeta(a);
+    const now = Date.now();
+    if (now - (a._placed || 0) < 4000 || !(a._len > 0) || !ms.setPositionState) return;
+    a._placed = now;
+    try { ms.setPositionState({ duration: a._len, playbackRate: a.playbackRate || 1, position: Math.min(bookAt(a), a._len) }); } catch (_) {}
+  }
+
+  // The controls: their buttons, menus (speed, sleep timer), the seek bar; a chapter in the list goes there
+  const lsAudio = (ls) => document.getElementById(ls.dataset.listen);
+  function lsMenus(keep) {
+    for (const m of document.querySelectorAll('[data-listen] [role="menu"]:not([hidden])')) if (m !== keep) m.hidden = true;
+  }
+  // (capturing: before the links' own handler, which would load the chapter's address - it's for a page without
+  // this file)
+  document.addEventListener('click', (e) => {
+    const jump = e.target.closest && e.target.closest('#media-chapters a[data-at]'), a = jump && document.querySelector('audio[data-book]');
+    if (!a || !a._book || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault(); /* a chapter: there, playing */
+    bookSeek(a, parseFloat(jump.dataset.at) || 0);
+    if (a.paused) a.play().catch(() => {});
+  }, true);
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+    if (!t.closest) return;
+    /* (buttons only: the seek bar is an input, and a button's own label may be a [data-b] too - speed-t, sleep-t) */
+    const part = t.closest('[data-listen] button[data-b], [data-listen] [data-speed], [data-listen] [data-sleep]');
+    const ls = part && part.closest('[data-listen]'), a = ls && lsAudio(ls);
+    if (!a || !a._book) { if (!t.closest('[data-listen] [role="menu"]')) lsMenus(null); return; }
+    e.preventDefault();
+    if (part.hasAttribute('data-speed')) {
+      a._rate = +part.dataset.speed || 1;
+      a.playbackRate = a._rate;
+      try { localStorage.setItem(SPEED, String(a._rate)); } catch (_) {}
+      lsMenus(null);
+      lsSync(a);
+      return;
+    }
+    if (part.hasAttribute('data-sleep')) { sleepSet(a, part.dataset.sleep); lsMenus(null); return; }
+    const what = part.dataset.b;
+    if (what === 'speed' || what === 'sleep') {
+      const menu = part.parentNode.querySelector('[role="menu"]');
+      lsMenus(menu);
+      if (menu) {
+        menu.hidden = !menu.hidden;
+        const c = !menu.hidden && !e.detail && menu.querySelector('[aria-checked="true"]'); // (a key, not a pointer)
+        if (c) c.focus();
+      }
+      return;
+    }
+    lsMenus(null);
+    if (what === 'play') { if (a.paused) a.play().catch(() => {}); else a.pause(); }
+    else if (what === 'back') bookBy(a, -15);
+    else if (what === 'fwd') bookBy(a, 30);
+    else if (what === 'prev') chapterGo(a, -1);
+    else if (what === 'next') chapterGo(a, 1);
+  });
+  document.addEventListener('input', (e) => {
+    const r = e.target, ls = r.dataset && r.dataset.b === 'seek' && r.closest('[data-listen]'), a = ls && lsAudio(ls);
+    if (!a || !a._book) return;
+    ls._drag = true;
+    ls._to = +r.value;
+    lsSync(a);
+  });
+  document.addEventListener('change', (e) => {
+    const r = e.target, ls = r.dataset && r.dataset.b === 'seek' && r.closest('[data-listen]'), a = ls && lsAudio(ls);
+    if (!a || !a._book || !ls._drag) return;
+    ls._drag = false;
+    bookSeek(a, +r.value);
+  });
+  // Keys while nothing else wants them (or the focus is on the controls): Space/K play, Left/Right 15 s back and 30
+  // forward (the seek bar keeps its own arrows), Escape closes a menu
+  addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+    const a = document.querySelector('audio[data-book]');
+    if (!a || !a._book) return;
+    const t = document.activeElement, ls = lsOf(a), inside = ls && ls.contains(t);
+    if (e.key === 'Escape' && document.querySelector('[data-listen] [role="menu"]:not([hidden])')) {
+      e.preventDefault();
+      lsMenus(null);
+      return;
+    }
+    if (!unfocused() && !inside) return;
+    if (t && (t.tagName === 'INPUT' || t.closest('[role="menu"]'))) return;
+    const k = e.key;
+    let act = null;
+    if (k === ' ' || k === 'k' || k === 'K') act = () => { if (a.paused) a.play().catch(() => {}); else a.pause(); };
+    else if (k === 'ArrowLeft') act = () => bookBy(a, -15);
+    else if (k === 'ArrowRight') act = () => bookBy(a, 30);
+    if (!act) return;
+    e.preventDefault();
+    act();
+  });
 
   // ------------------------------------------------------------- full screen
   // [data-fullscreen="id"]: #id in full screen - the player with what's drawn over it (the video

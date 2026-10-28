@@ -977,6 +977,37 @@ bool media_is_image_ext(const char *name) {
     return ext_in(name, v);
 }
 
+bool media_is_audio_ext(const char *name) {
+    static const char *const v[] = {"m4b", "m4a", "mp3", NULL};
+    return ext_in(name, v);
+}
+
+bool media_is_books_folder(const char *name) {
+    static const char *const words[] = {"audiobooks", "audiobook", "audio books", "audio book", "ljudböcker", "ljudbocker",
+                                        "ljudbok", "audiolibros", "audiolibro", "hörbücher", "hörbuch", "lydbøger",
+                                        "lydbøker", "äänikirjat", NULL};
+    char f[96];
+    fold_copy(f, sizeof f, name ? name : "");
+    for (char *p = f; *p; p++)
+        if (*p == '_' || *p == '.' || *p == '-') *p = ' ';
+    str_trim(f);
+    for (int i = 0; words[i]; i++)
+        if (str_eq(f, words[i])) return true;
+    return false;
+}
+
+bool media_is_book_file(const char *root_name, const char *rel) {
+    if (!media_is_audio_ext(rel)) return false;
+    if (str_iends(rel, ".m4b")) return true; /* (an audiobook by its very kind) */
+    if (root_name && media_is_books_folder(root_name)) return true;
+    for (const char *s = rel, *slash; (slash = strchr(s, '/')); s = slash + 1) { /* a folder above it says so */
+        char seg[96];
+        str_ncopy(seg, sizeof seg, s, (size_t)(slash - s));
+        if (media_is_books_folder(seg)) return true;
+    }
+    return false;
+}
+
 static const char *container_from_ext(const char *name) {
     const char *e = ext_of(name);
     static const struct {

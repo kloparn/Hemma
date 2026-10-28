@@ -40,6 +40,22 @@ test('without wire.js the page still resumes, from the address', async ({ page }
   expect(await at(w)).toBeGreaterThan(23);
 });
 
+test('a paused video lets go of its file when another page comes', async ({ page }) => {
+  /* (it kept it: a keyboard's play key or the computer's media controls played it on, out of sight) */
+  const [e1] = await episodes(page);
+  await page.goto(e1);
+  const v = page.locator('#media-video');
+  await ready(v);
+  await v.evaluate((m) => { m.muted = true; return m.play(); });
+  await page.waitForTimeout(500);
+  await v.evaluate((m) => { m.pause(); window.hemmaOld = m; });
+  await page.locator('a[href="/media"]:visible').first().click();
+  await expect(page).toHaveURL(/\/media$/);
+  expect(await page.evaluate(() => window.hemmaOld.isConnected)).toBe(false); /* (the same document: wire.js's nav) */
+  expect(await page.evaluate(() => { const m = window.hemmaOld; return [m.hasAttribute('src'), m.networkState]; }))
+    .toEqual([false, 0]); /* NETWORK_EMPTY: nothing left to play */
+});
+
 test('a spot in the last 5 seconds starts the video from the top', async ({ page }) => {
   const clip = await film(page);
   await page.goto(clip);

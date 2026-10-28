@@ -22,5 +22,17 @@ Commons licenses. Their posters and pictures come from
 The upload picture (`upload.webp`) also names two more of Blender Studio's open films, *Charge* (2022)
 and *Coffee Run* (2020), as files someone might add - their names only, no pictures.
 
+The audiobooks (`audiobooks.webp`, `audiobook.webp`) are [LibriVox](https://librivox.org) recordings of
+books in the public domain. LibriVox puts its recordings and their cover art in the public domain
+([its words](https://librivox.org/pages/public-domain/): "all our recordings are public domain in the USA";
+"CD cover art ... in the public domain"). The files and covers come from the Internet Archive:
+
+| Shown | Read by | License | Source |
+|---|---|---|---|
+| *The Wonderful Wizard of Oz* (L. Frank Baum), recording and cover | Phil Chenevert | Public domain | [wizardofoz_pc_librivox](https://archive.org/details/wizardofoz_pc_librivox) |
+| *The Marvelous Land of Oz* (L. Frank Baum), cover | Phil Chenevert | Public domain | [themarvelouslandofozver3_1501_librivox](https://archive.org/details/themarvelouslandofozver3_1501_librivox) |
+| *Ozma of Oz* (L. Frank Baum), cover | Phil Chenevert | Public domain | [ozma_oz_1201_librivox](https://archive.org/details/ozma_oz_1201_librivox) |
+| *Alice's Adventures in Wonderland* (Lewis Carroll), cover | LibriVox volunteers | Public domain | [alice_in_wonderland_librivox](https://archive.org/details/alice_in_wonderland_librivox) |
+
 The screenshots themselves are part of Hemma's documentation, under the project's
-[license](../../LICENSE); the posters inside them keep the licenses above.
+[license](../../LICENSE); the posters and covers inside them keep the licenses above.

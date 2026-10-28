@@ -446,7 +446,20 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  system_test_update_dirs(ask, answers) after th_boot, system_test_update_os.
                  dependencies: tv needs media (it links modules/media/library.c), media needs av (the converter)
   media/upload.c admins add videos from a browser (plan + streamed PUTs, .hemma-part files, resume); a folder
-                 holding x.mkv + x.web.mp4 sends only the copy (checkbox "also send originals"). Other MKVs
+                 holding x.mkv + x.web.mp4 sends only the copy (checkbox "also send originals").
+                 AUDIOBOOKS (1.6): the plan takes .m4b .m4a .mp3 (media_is_audio_ext) as they are - never converted, never
+                 checked against the library (media_have), never a video's companion (skip_companions) - and refuses the
+                 rest as "not a video, subtitle, poster or audiobook". The preview reads "An audiobook" / "Part of an
+                 audiobook" (UpSorted.part) / "Goes with <show or film>" (UPK_AUDIO) and counts "N audiobook files" / "N
+                 audio files"; the card names one by its file (row_label); the picker's accept= adds .m4b,.m4a,.mp3,audio/*.
+                 SORTING UPK_BOOK (step 1b, after the videos): an .m4a/.mp3 inside a show's or film's mapped folder
+                 (map_of(..., false): a theme.mp3, Soundtrack/) is UPK_AUDIO instead and goes along with that folder in
+                 step 3, like its poster; an .m4b is always a book. <books folder> = the library folder's own one
+                 (media_is_books_folder, the first by name; "" when it is one), else "Audiobooks"; a book's file goes to
+                 <books folder>/<its path below the deepest books folder among its folders, else all of it>; ?series= never
+                 takes it. Its own folder (above CD1/, Disc 2/: media_disc_folder) maps there as a DirMap.book - only
+                 pictures and subtitles follow it (map_of(..., books)), none made inside a show's or film's folder; pictures
+                 named after the file go with it (step 2). Other MKVs
                  (box "make videos play everywhere on this device first", on by default) are converted BY THE
                  UPLOADING BROWSER (todo {i,f}; web/conv.js runs av.wasm in Workers; the finished copy STAYS IN ITS WORKER, which PUTs it
                  itself ({put, at} -> {status, body} | {lost}) and is terminated once sent - a copy handed to the page lived until
@@ -766,7 +779,49 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  lists filtered (files, episodes, roots shared; remade when media_lib_gen() - bumped at every
                  swap - or the marks change): a series with ANY episode marked goes whole. By id: media_kids_ok /
                  media_kids_series_ok (watch, series, stream /media/file -> 404, Continue watching, browse, tv's
-                 channels: a channel airing anything marked is left out for them - for_kid in tv.c).
+                 channels: a channel airing anything marked is left out for them - for_kid in tv.c). Audiobooks
+                 (1.6): the copy's books list too - a book with ANY part marked goes whole (media_kids_book_ok).
+  media/books.c + booklist.c AUDIOBOOKS (1.6; owner, 2026-10-28: "audio books library ... another tab or slot about
+                 audio books, and also make it so that we can listen to it while the phone is locked"). WHICH FILES:
+                 mediainfo.h media_is_book_file(root_name, rel) = an .m4b anywhere, an .mp3/.m4a only below a books
+                 folder (media_is_books_folder: Audiobooks, Audio books, Ljudböcker, Audiolibros, Hörbücher ... any
+                 case; or the library folder itself is one) - a show's theme.mp3 or a film's soundtrack never is.
+                 They're MF_AUDIO files (library.c walk): add_file reads modules/av/audiotags.c once per size+mtime
+                 (MediaTags in MediaIndex.tags, sorted by file id - NOT in every MediaFile: an index holds ~10,000
+                 files) and fills the probe's container/duration/acodec; the cache keeps them in media_file's
+                 `tags` (\x1f fields, TAGS_FORMAT first - a newer one, and the scan reads the files again) and
+                 `chapters` (\x1e between) columns, added in place by ALTER like fp. BOOKS (booklist.c
+                 media_books_build, end of index_finish, any thread): an .m4b is a book (several named as parts of
+                 one title - media_name_part - one book); .mp3/.m4a: every one in a folder is one book, a short
+                 CD1/Disc 2/Del 3 folder's with its parent's, by disc, track tag, then natural name order ("2"
+                 before "10"); one loose in a books folder or the library folder = a book of its own. Title: an
+                 .m4b's title tag > album > file name; parts: album > folder name; a tag that's a file's name (one
+                 word with '_': LibriVox's "velveteen_rabbit") is skipped; "(Unabridged)" and which recording it is
+                 at the end ("(version 3)", "v2", "ver 2", "(solo version 2)" - version_mark) dropped. Series =
+                 the folder holding 2+ books (not a books folder, not the library folder), numbered by the number
+                 their name starts with. Picture: "<stem>.jpg" beside an .m4b, else (alone in its folder / a folder
+                 of parts) cover|folder|poster.*, else MediaBook.cover = a part with a picture INSIDE (served by
+                 GET /media/cover/<file id>?v=: stream.c reads just those bytes, cover_off/len found by the scan).
+                 MediaBook.id = its FIRST PART'S FILE ID and each part's MediaFile.series = its book's id - so a
+                 book's progress is a plain media_watch row (pos/dur in the WHOLE book's seconds), and media.progress,
+                 media.watched, media.forget work on it unchanged; media_watch_report marks an MF_AUDIO row done only
+                 in its last 15 s (a video at 92%). media_in_progress (Continue watching) skips MF_AUDIO;
+                 media_books_going is Continue listening. PAGES (books.c): /media/books = Watch's "Audiobooks" tab
+                 (media_lib_head shows it only while media_lib_for(c)->nbooks; the search box searches books too:
+                 media_search_shown; its placeholder "Search audiobooks…" there), Continue listening, then a section
+                 per series, then ONE "Books" for the rest (the list is sorted by series-or-title, so the rest isn't
+                 together in it); /media/book/<id>
+                 (?at=<s>: start there, autoplay - a chapter's link without wire.js) = cover, author/narrator/year/
+                 length, series line, the player, Mark as finished, Download (grown-ups: one file =
+                 /media/file/<id>?download=1, parts = /media/zip/<book id>), "About this book" (the description
+                 tag), the chapters (a part's own, else each part one - "01 - Chapter One.mp3" -> "Chapter One",
+                 "01.mp3" -> "Part 1"; #media-chapters data-static, a[data-at]), "Next in the series". THE PLAYER's
+                 markup (wire.js "the listener"): <audio id=media-audio data-book data-static data-id data-report=
+                 media.progress data-length data-resume data-title data-author data-art [data-parts]> with the
+                 browser's controls until wire.js hides them, and div[data-listen=media-audio][data-static] (hidden,
+                 data-paused) holding [data-b] chapter seek at left play prev back fwd next speed speed-t sleep
+                 sleep-t, [data-speed] and [data-sleep] menu items, .media-ab-err (data-err). Watch's home shows
+                 Continue listening (media_books_shelf); a library of only books says so and links the tab.
   media/drives.c USB DISKS (issue #74): media_drives_scan(sys, udev, mountinfo) reads /sys/block/<dev> (dev, size,
                  partitions = subdirs with a "partition" file), udev's /run/udev/data/b<maj:min> (ID_FS_TYPE/UUID/
                  LABEL_ENC, ID_MODEL_ENC; USB = ID_BUS=usb or any ID_USB_DRIVER - a USB-SATA bridge says ata) and
@@ -846,7 +901,14 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  ("Movies"). Also drops watch progress, logs to the activity feed. Episodes, seasons and series:
                  media_purge_* here too, driven by manage.c.
   av/            pure-C codec library, no MODULE(), libc only (no core/ deps, no globals) so it also
-                 builds for wasm32: mkv.* (Matroska demuxer: cues/bisect seeking, lacing, unknown
+                 builds for wasm32 (audiotags.* isn't in av.wasm: the server's alone).
+                 audiotags.* (1.6): an audio file's tags without decoding a sound - MP4/M4B by box headers only (never the
+                 sound's sample tables: ~180 reads, 5-7 KB of a 1.5 GB book; chapters from the tref 'chap' text track with its
+                 simple elst, else Nero chpl; ilst tags, description ldes > desc > ©des > ©cmt, covr located by offset) and MP3
+                 (ID3v2.2-2.4 with unsynchronisation, CHAP, APIC located only when unsync left its bytes alone; ID3v1 without v2;
+                 Xing/Info less LAME's delay+padding, VBRI, else CBR). Text out as clean UTF-8 (Latin-1 = cp1252, or UTF-8 when
+                 it is). Equal to ffprobe on 7 real m4bs. audiotags_testmk.h = test builders (at_test_m4b takes aac.c's AUs;
+                 clips_test.c makes the browser tests' books with it). mkv.* (Matroska demuxer: cues/bisect seeking, lacing, unknown
                  sizes), mpeg2.* (MPEG-2 MP@ML + MPEG-1 video decoder, display-order frames, IEEE 1180
                  IDCT), ac3.* (full A/52 + E-AC-3 decoder (ETSI TS 102 366 Annex E: 1/2/3/6 blocks a frame,
                  Ac3Info.samples; spectral extension; AHT with ac3_aht.h = the spec's VQ tables - FFmpeg's
@@ -963,12 +1025,16 @@ tools/avfuzz.c   six faster targets, one part alone each (issue #50): -DAVFUZZ_M
                  (vobsub), ~8k (dts: a 100-byte frame may say 4096 samples on 6 channels, so it takes 32 frames
                  and 32 KB an input; its coverage levels off within a minute) vs 5.7k for convfuzz. The DTS
                  decoder itself: ~220x real time on one PC core (5.1, 1.5 Mbit/s, -O2). convfuzz also checks every subtitle track is a whole file of its
-                 kind within its bounds and that av_subtitles alone gives the very same subtitles
-tools/ci/fuzz.sh TARGET [S] [JOBS]: builds + runs conv | mkv | ac3 | dts | mpeg2 | pgs | vobsub under ASan + UBSan from the
+                 kind within its bounds and that av_subtitles alone gives the very same subtitles.
+                 -DAVFUZZ_TAGS (1.6): audiotags.c over any bytes - the first byte picks the name hint (none, x.mp3, x.m4b,
+                 book.MP3); aborts on text that isn't clean UTF-8, chapters out of order, a cover past the end or without its
+                 JPEG/PNG bytes there. Seeds: HEMMA_FUZZ_RAW=build/fuzz-raw build/test audiotags_fuzz_seeds (~40-50k inputs/s;
+                 50 min with 8 processes before 1.6 found one bug, in its own text check)
+tools/ci/fuzz.sh TARGET [S] [JOBS]: builds + runs conv | mkv | ac3 | dts | mpeg2 | pgs | vobsub | tags under ASan + UBSan from the
                  tree's top after `make build/test` (seeds made when missing; pgs/vobsub's from `HEMMA_FUZZ_RAW=
                  build/fuzz-raw build/test subpic_fuzz_seeds`), corpus in build/fuzz-corpus-T, findings in
                  build/fuzz-found-T (exit 1); JOBS > 1 = libFuzzer -fork, carrying on after a finding. Used by
-                 build.yml's fuzz job (conv, 90 s), fuzz.yml (NIGHTLY 01:17 UTC: the seven side by side on their own
+                 build.yml's fuzz job (conv, 90 s), fuzz.yml (NIGHTLY 01:17 UTC: the eight side by side on their own
                  runners, 170 min each with every core, the corpus cached night to night - owner, 2026-10-21:
                  "about 3 hours"; a finding fails the job and keeps the files as an artifact) and local.sh
 tests/           test.h (framework), runner.c, harness.* (boot the core without a server; th_boot_in(dir) for a
@@ -1557,6 +1623,29 @@ form field is dropped when the browser can't run WebAssembly; the server renders
 walked with their paths, each choice adding, the area `[data-over]` while dragging, `[data-drop-clear]`
 empties - and `form[data-preview="<live action>"]` sends them as [[path,size]] for the server to draw what
 Start will do) ·
+`audio[data-book]` + `[data-listen="<audio id>"]` (THE LISTENER, 1.6 - an audiobook, media/books.c; held by
+tests/browser audiobook.spec.mjs): media() hands it to book(). Its place is always in the WHOLE book (data-length
+seconds): a book in parts (data-parts [[address, start, length]...]) plays them in the same element, on 'ended' the
+next part (partGo: src swapped, play on), and every seek (the bar, back 15 / forward 30, chapters, the lock screen's
+seekto) maps book time to a part (bookSeek). Chapters = the page's #media-chapters a[data-at] (aria-current on the one
+playing, its title in [data-b=chapter] and on the lock screen); a click on one seeks there and plays. Speed: the
+[data-speed] menu, localStorage "hemma.speed", put back on every new part/play. Sleep timer: [data-sleep] minutes or
+"ch" (the end of the chapter playing), checked on timeupdate + a 1 s interval, the button counting down. REPORTS
+(bookTell): media.progress (live) every 15 s of the book, at a pause, at the very end (ended=1); when the socket is
+down - and always when the page goes out of sight (visibilitychange hidden, pagehide: a phone being locked) - a plain
+`fetch('/a/media.progress', {keepalive, redirect: 'manual'})` (app.c's POST path: same origin, the cookie). THE
+LOCK SCREEN (owner: "listen to it while the phone is locked"): the Media Session API (not a secure-context API -
+works on plain http), set while it plays: metadata {title = the chapter, artist = data-author, album = data-title,
+artwork = data-art}, handlers play/pause/stop/seekbackward 15/seekforward 30/seekto/previoustrack/nexttrack
+(chapters), setPositionState every 4 s. Taken off the page (another page came), it lets go of the lock screen, its
+handlers (sessionDrop) and the stream. Keys: Space/K, Left -15, Right +30, Escape closes a menu ·
+LETTING GO (1.6; owner, 2026-10-28: a paused South Park episode played on from Watch and Add videos with the
+keyboard's play key / the OS's media controls): every wired video/audio is in `wired`; settle() ends with letGo() -
+one no longer on the page is paused if it plays (its pause handler reports, then drops src + load()), else drops
+its src at once; a book also leaves the Media Session. A paused element kept its file before: only removal while
+playing (the browser's own pause) let go. load() without a src sets the time to 0 and fires timeupdate: a report
+after letting go would say "0" - bookTell says nothing without a src (a video's tell needs m.duration, NaN then).
+Held by player.spec.mjs and audiobook.spec.mjs ·
 `video[data-resume|data-report|data-next]` (THE PLAYER'S RULES - issue #49, each held by tests/browser:
 player.spec.mjs / live.spec.mjs: data-resume = where it starts once loaded, never in its last 5 s; data-report
 = media.progress (live) every 15 s of the video's own time, at a pause and at the end; ended -> data-next; the
@@ -1769,7 +1858,12 @@ numbers in fixed places, and what's under way (Saved / Uploading / Ready / Proce
 on top - and a subtitles-only entry that stays done. 1.5.1 (branch fix/memory-leak-issue; owner, 2026-10-27: "we
 should find it out what caused it") = memory on the Pi no longer grows with uploads and streams: worker threads hand
 the event loop's memory back (free_on_loop, decision 0010) - musl had kept every 2 KB job a worker freed - and the
-Network page's eviction no longer loses a list.
+Network page's eviction no longer loses a list. 1.6.0 (branch feat/audio-book-support; owner, 2026-10-28: "audio books
+library ... listen to it while the phone is locked"; a minor version: nothing breaks) = audiobooks: .m4b anywhere and
+folders of .mp3/.m4a under an Audiobooks folder (av/audiotags.c reads their tags, chapters and covers), Watch's
+Audiobooks tab, a book's page with a listening player (15/30 s, chapters, speed, sleep timer, parts in one element),
+the lock screen through the Media Session API, progress that survives a locked phone, downloads and uploads of books.
+Owner's idea for later (not 1.6): an Android app (sideloaded, unsigned) that connects locally without the browser.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling

@@ -1,7 +1,10 @@
 /* modules/media/stream.c — HTTP endpoints for the media module:
  *
- *   /media/file/<id>      the video itself, with Range support (seeking); ?download=1 = as a download
- *   /media/zip/<series>   a season (?s=<season>) or the whole series as one .zip (download.h)
+ *   /media/file/<id>      the video itself, with Range support (seeking); ?download=1 = as a download - and an
+ *                         audiobook's file (1.6) the same way
+ *   /media/cover/<id>     the picture inside an audiobook's file (1.6)
+ *   /media/zip/<series>   a season (?s=<season>) or the whole series as one .zip (download.h); an audiobook of
+ *                         parts by its id the same way (1.6)
  *   /media/img/<id>       poster / folder art
  *   /media/sub/<id>.vtt   subtitles, SRT converted to WebVTT on the fly
  *   /media/subpic/<id>.json, /media/subpic/<id>/<n>.png   picture subtitles (.sup, .idx + .sub): the cues,
@@ -251,15 +254,25 @@ static void say(Conn *conn, int status, const char *text, const char *extra) {
     buf_free(&b);
 }
 
+/* The bytes [base, base + size) of path as one answer - a whole file, or the picture inside an audiobook (1.6) -
+   Range and HEAD as for any file, sent by a worker thread. kind: JOB_*; dl: the Content-Disposition line of a
+   download (NULL = an ordinary request). */
+static bool serve_bytes(Conn *conn, HttpReq *r, const char *path, int64_t base, int64_t size, const char *ctype,
+                        const char *cache, const char *dl, int kind);
+
+static bool get_only(Conn *conn, HttpReq *r) {
+    if (str_eq(r->method, "GET") || str_eq(r->method, "HEAD")) return true;
+    conn_reply(conn, 405, "text/plain; charset=utf-8", "GET only\n", 9, "Allow: GET, HEAD\r\n");
+    return false;
+}
+
 /* dl: the Content-Disposition line of a download (NULL = an ordinary request) */
 static bool serve_file(Conn *conn, HttpReq *r, const char *idhex, char want, const char *dl) {
-    if (!str_eq(r->method, "GET") && !str_eq(r->method, "HEAD")) {
-        conn_reply(conn, 405, "text/plain; charset=utf-8", "GET only\n", 9, "Allow: GET, HEAD\r\n");
-        return true;
-    }
+    if (!get_only(conn, r)) return true;
     uint64_t id = 0;
     const MediaFile *f = media_parse_id(idhex, &id) ? media_file(id) : NULL;
     if (f && want == MF_VIDEO) f = media_playable(f); /* its play-everywhere copy, when converted */
+    if (f && want == MF_VIDEO && f->type == MF_AUDIO) want = MF_AUDIO; /* (an audiobook's part: the same address) */
     char path[1024];
     int64_t size = 0;
     bool dir = false;
@@ -271,15 +284,42 @@ static bool serve_file(Conn *conn, HttpReq *r, const char *idhex, char want, con
         plain(conn, 404, "the file has gone - rescan the library?\n");
         return true;
     }
-    const char *ctype = want == MF_IMAGE                ? http_mime(f->rel)
-                        : f->probe.container[0] ? media_mime(f->probe.container)
-                                                : http_mime(f->rel);
-    MediaRange rg = media_range(http_header(r, "Range"), size);
-    Buf head = {0};
+    const char *ctype = want == MF_IMAGE                                     ? http_mime(f->rel)
+                        : want == MF_AUDIO && str_eq(f->probe.container, "mp3") ? "audio/mpeg"
+                        : want == MF_AUDIO                                   ? "audio/mp4"
+                        : f->probe.container[0]                              ? media_mime(f->probe.container)
+                                                                             : http_mime(f->rel);
     /* a picture URL carries its version (?v=): a new picture is a new URL, so it can stay cached */
     const char *cache = want != MF_IMAGE                ? "no-cache"
                         : strstr(r->query, "v=") ? "private, max-age=31536000, immutable"
                                                   : "private, max-age=86400";
+    return serve_bytes(conn, r, path, 0, size, ctype, cache, dl,
+                       dl ? JOB_DOWNLOAD : want == MF_VIDEO ? JOB_WATCH : JOB_OTHER);
+}
+
+/* /media/cover/<file id>: the picture inside an audiobook's file (1.6) - its place found by the scan, so nothing
+   is read but the picture's own bytes */
+static bool serve_cover(Conn *conn, HttpReq *r, const char *idhex) {
+    if (!get_only(conn, r)) return true;
+    uint64_t id = 0;
+    const MediaFile *f = media_parse_id(idhex, &id) ? media_file(id) : NULL;
+    const MediaTags *t = f && f->type == MF_AUDIO ? media_tags(f->id) : NULL;
+    char path[1024];
+    int64_t size = 0;
+    if (!t || t->cover_len <= 0 || !media_full_path(f, path, sizeof path) || !path_stat(path, &size, NULL, NULL) ||
+        size != f->size || t->cover_off < 0 || t->cover_off + t->cover_len > size) {
+        plain(conn, 404, "no picture\n");
+        return true;
+    }
+    return serve_bytes(conn, r, path, t->cover_off, t->cover_len, t->cover_type,
+                       strstr(r->query, "v=") ? "private, max-age=31536000, immutable" : "private, max-age=86400", NULL,
+                       JOB_OTHER);
+}
+
+static bool serve_bytes(Conn *conn, HttpReq *r, const char *path, int64_t base, int64_t size, const char *ctype,
+                        const char *cache, const char *dl, int kind) {
+    MediaRange rg = media_range(http_header(r, "Range"), size);
+    Buf head = {0};
     media_range_head(&head, &rg, size, ctype, cache);
     if (dl && *dl) { /* (before the blank line that ends the head) */
         head.len -= 2;
@@ -300,9 +340,9 @@ static bool serve_file(Conn *conn, HttpReq *r, const char *idhex, char want, con
     }
     Job *j = xcalloc(1, sizeof *j);
     str_copy(j->path, sizeof j->path, path);
-    j->from = rg.from;
+    j->from = base + rg.from;
     j->len = rg.len;
-    j->kind = dl ? JOB_DOWNLOAD : want == MF_VIDEO ? JOB_WATCH : JOB_OTHER;
+    j->kind = kind;
     count_job(j->kind, +1);
     Detached d;
     conn_detach(conn, r, &d);
@@ -414,7 +454,9 @@ static bool serve_zip(Ctx *c, Conn *conn, HttpReq *r) {
     }
     uint64_t id = 0;
     const MediaSeries *s = media_parse_id(r->path + 11, &id) ? media_series(id) : NULL;
-    if (!s) {
+    const MediaBook *bk = s ? NULL : media_book(id); /* (1.6: an audiobook in parts - "<Title>/<each part>") */
+    if (bk && !media_kids_book_ok(c, bk)) bk = NULL;
+    if (!s && !bk) {
         say(conn, 404, T("This series isn't in the library"), NULL);
         return true;
     }
@@ -422,8 +464,22 @@ static bool serve_zip(Ctx *c, Conn *conn, HttpReq *r) {
     long long season = -1;
     int n = 0;
     MediaZipItem *items = NULL;
-    if (!*sq || (str_int(sq, &season) && season >= 0 && season < 10000))
+    char zname[300], folder[200];
+    if (bk) {
+        media_safe_name(bk->title, folder, sizeof folder);
+        snprintf(zname, sizeof zname, "%s.zip", folder);
+        items = xcalloc((size_t)bk->count, sizeof *items);
+        for (; n < bk->count; n++) {
+            const MediaFile *f = media_book_part(bk, n);
+            const char *base = strrchr(f->rel, '/');
+            items[n].file = f->id;
+            items[n].size = f->size;
+            snprintf(items[n].name, sizeof items[n].name, "%s/%s", folder, base ? base + 1 : f->rel);
+        }
+    } else if (!*sq || (str_int(sq, &season) && season >= 0 && season < 10000)) {
         items = media_zip_items(s, *sq ? (int)season : -1, &n);
+        media_zip_name(s, *sq ? (int)season : -1, zname, sizeof zname);
+    }
     if (!n) {
         free(items);
         say(conn, 404, T("That season isn't in the library"), NULL);
@@ -446,8 +502,6 @@ static bool serve_zip(Ctx *c, Conn *conn, HttpReq *r) {
         j->n++;
     }
     free(items);
-    char zname[300];
-    media_zip_name(s, *sq ? (int)season : -1, zname, sizeof zname);
     media_content_disposition(&j->disposition, zname);
     j->head_only = str_eq(r->method, "HEAD");
     j->pace.on = true;
@@ -794,8 +848,8 @@ static bool serve_subpic(Ctx *c, Conn *conn, HttpReq *r) {
 bool media_http(Ctx *c, Conn *conn, HttpReq *r) {
     bool file = str_starts(r->path, "/media/file/"), img = str_starts(r->path, "/media/img/"),
          sub = str_starts(r->path, "/media/sub/"), zip = str_starts(r->path, "/media/zip/"),
-         pic = str_starts(r->path, "/media/subpic/");
-    if (!file && !img && !sub && !zip && !pic) return false;
+         pic = str_starts(r->path, "/media/subpic/"), cover = str_starts(r->path, "/media/cover/");
+    if (!file && !img && !sub && !zip && !pic && !cover) return false;
     /* The household's videos (and home photos used as posters) are for signed-in
        people only; browsers send the session cookie with <video>/<img> requests. */
     if (!c->me) {
@@ -804,6 +858,15 @@ bool media_http(Ctx *c, Conn *conn, HttpReq *r) {
     }
     if (zip) return serve_zip(c, conn, r);
     if (pic) return serve_subpic(c, conn, r);
+    if (cover) {
+        uint64_t id = 0;
+        const MediaFile *f = media_parse_id(r->path + 13, &id) ? media_file(id) : NULL;
+        if (!media_kids_ok(c, f)) {
+            plain(conn, 404, "no picture\n");
+            return true;
+        }
+        return serve_cover(conn, r, r->path + 13);
+    }
     if (file) {
         uint64_t id = 0;
         const MediaFile *f = media_parse_id(r->path + 12, &id) ? media_file(id) : NULL;
@@ -817,9 +880,10 @@ bool media_http(Ctx *c, Conn *conn, HttpReq *r) {
             return true;
         }
         Buf dl = {0};
-        if (f && f->type == MF_VIDEO) {
+        if (f && (f->type == MF_VIDEO || f->type == MF_AUDIO)) { /* (an audiobook's file: its own name) */
             char name[600];
-            media_download_name(f, name, sizeof name);
+            if (f->type == MF_AUDIO) str_copy(name, sizeof name, strrchr(f->rel, '/') ? strrchr(f->rel, '/') + 1 : f->rel);
+            else media_download_name(f, name, sizeof name);
             media_content_disposition(&dl, name);
             if (!str_eq(r->method, "HEAD") && !http_header(r, "Range"))
                 log_info("media: %s downloads %s", c->me->username, name);

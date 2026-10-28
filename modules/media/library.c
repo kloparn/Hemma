@@ -7,6 +7,7 @@
 #include "../../core/app.h"
 #include "remove.h"
 #include "room.h"
+#include "../av/audiotags.h"
 
 #include <limits.h>
 #include <stdatomic.h>
@@ -37,6 +38,9 @@ static void index_free(MediaIndex *ix) {
     free(ix->series);
     free(ix->left);
     free(ix->parts);
+    media_tags_free(ix->tags, ix->ntags);
+    free(ix->books);
+    free(ix->book_parts);
     free(ix);
 }
 
@@ -175,6 +179,8 @@ typedef struct {
     int nleft, nleft_all, nparts, nparts_all;
     int64_t parts_bytes, now;
     struct SeriesNames *names; /* renamed series, copied for the scan's thread */
+    MediaTags *tags; /* of the audio files (MediaIndex.tags) */
+    int ntags, tcap;
 } Scan;
 
 static void note_left(MediaLeft **list, int *n, int *all, int root, const char *rel, int64_t size, int64_t mtime,
@@ -211,6 +217,50 @@ const MediaFile *media_playable(const MediaFile *f) {
 const char *media_nfo_genres(uint64_t nfo) {
     const MediaFile *f = nfo ? media_file(nfo) : NULL;
     return f && f->type == MF_NFO ? f->name.title : "";
+}
+
+static const MediaTags *tags_find(const MediaIndex *ix, uint64_t file) {
+    int lo = 0, hi = ix->ntags;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (ix->tags[mid].file < file) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo < ix->ntags && ix->tags[lo].file == file ? &ix->tags[lo] : NULL;
+}
+
+const MediaTags *media_tags(uint64_t file) { return file ? tags_find(media_lib(), file) : NULL; }
+
+const MediaBook *media_book(uint64_t id) {
+    const MediaIndex *ix = media_lib();
+    for (int i = 0; id && i < ix->nbooks; i++)
+        if (ix->books[i].id == id) return &ix->books[i];
+    return NULL;
+}
+
+const MediaFile *media_book_part(const MediaBook *b, int i) {
+    const MediaIndex *ix = media_lib();
+    if (!b || i < 0 || i >= b->count) return NULL;
+    return &ix->files[ix->book_parts[b->first + i]];
+}
+
+void media_tags_free(MediaTags *t, int n) {
+    for (int i = 0; t && i < n; i++) {
+        free(t[i].desc);
+        free(t[i].ch);
+    }
+    free(t);
+}
+
+/* A deep copy (the old index's go with it) */
+static void tags_copy(MediaTags *to, const MediaTags *from) {
+    *to = *from;
+    to->desc = from->desc ? xstrdup(from->desc) : NULL;
+    to->ch = NULL;
+    if (from->nch > 0) {
+        to->ch = xmalloc((size_t)from->nch * sizeof *to->ch);
+        memcpy(to->ch, from->ch, (size_t)from->nch * sizeof *to->ch);
+    }
 }
 
 /* Worth indexing: a series' tvshow.nfo, a film's movie.nfo or "<its name>.nfo" - not an episode's own (Sonarr
@@ -326,6 +376,75 @@ static uint64_t fingerprint(const char *path, int64_t size) {
     return h;
 }
 
+/* ------------------------------------------------------------- audiobooks */
+
+static const char *base_of(const char *rel);
+
+static bool file_read_at(void *ctx, int64_t off, void *dst, size_t n) {
+    return file_seek(ctx, off) && fread(dst, 1, n, ctx) == n;
+}
+
+/* What an audio file says (modules/av/audiotags.c) as the library keeps it: its tags, and the probe's
+   fields every file has (length, sound) - MP4 sound and MP3 play in every browser. */
+static void tags_take(const AudioTags *a, MediaTags *t, MediaProbe *p) {
+    str_copy(p->container, sizeof p->container, a->format);
+    str_copy(p->acodec, sizeof p->acodec, a->codec);
+    p->audio_channels = a->channels;
+    p->duration_ms = a->duration_ms;
+    p->playable = str_eq(a->codec, "aac") || str_eq(a->codec, "mp3") ? PLAY_YES : a->codec[0] ? PLAY_MAYBE : PLAY_UNKNOWN;
+    if (p->playable == PLAY_MAYBE) snprintf(p->why, sizeof p->why, "Its sound (%s) may not play in every browser", a->codec);
+    str_copy(t->title, sizeof t->title, a->title[0] ? a->title : a->album);
+    str_copy(t->author, sizeof t->author, a->artist[0] ? a->artist : a->album_artist);
+    str_copy(t->narrator, sizeof t->narrator, a->narrator);
+    str_copy(t->album, sizeof t->album, a->album);
+    t->year = a->year;
+    t->track = a->track;
+    t->disc = a->disc;
+    if (a->cover_len > 0 && a->cover_type[0]) {
+        t->cover_off = a->cover_off;
+        t->cover_len = a->cover_len;
+        str_copy(t->cover_type, sizeof t->cover_type, a->cover_type);
+    }
+    t->desc = a->description && a->description[0] ? xstrdup(a->description) : NULL;
+    if (a->nchapters > 0) {
+        t->ch = xmalloc((size_t)a->nchapters * sizeof *t->ch);
+        for (int i = 0; i < a->nchapters; i++) {
+            t->ch[i].start_ms = a->chapters[i].start_ms;
+            str_copy(t->ch[i].title, sizeof t->ch[i].title, a->chapters[i].title);
+        }
+        t->nch = a->nchapters;
+    }
+}
+
+static void audio_file(Scan *sc, MediaFile *f, const char *path) {
+    if (sc->ntags == sc->tcap) {
+        sc->tcap = sc->tcap ? sc->tcap * 2 : 32;
+        sc->tags = xrealloc(sc->tags, (size_t)sc->tcap * sizeof *sc->tags);
+    }
+    MediaTags *t = &sc->tags[sc->ntags++];
+    memset(t, 0, sizeof *t);
+    t->file = f->id;
+    const MediaFile *o = sc->old ? index_find(sc->old, f->id) : NULL;
+    const MediaTags *ot = o && o->type == MF_AUDIO && o->size == f->size && o->mtime == f->mtime ? tags_find(sc->old, f->id) : NULL;
+    if (ot) { /* unchanged: as the last scan (or the cache) read it */
+        tags_copy(t, ot);
+        f->probe = o->probe;
+        f->fp = o->fp;
+        return;
+    }
+    FILE *fh = file_open(path, "rb");
+    if (fh) {
+        AtReader r = {fh, f->size, file_read_at};
+        AudioTags a;
+        audio_tags_read(&r, base_of(f->rel), &a);
+        tags_take(&a, t, &f->probe);
+        audio_tags_free(&a);
+        fclose(fh);
+    }
+    sc->probed++;
+    f->fp = fingerprint(path, f->size);
+}
+
 static void add_file(Scan *sc, int root, const char *rel, char type, int64_t size, int64_t mtime) {
     if (sc->n == sc->cap) {
         sc->cap = sc->cap ? sc->cap * 2 : 256;
@@ -371,6 +490,11 @@ static void add_file(Scan *sc, int root, const char *rel, char type, int64_t siz
             join_path(sc->roots[root], rel, path, sizeof path);
             f->fp = fingerprint(path, size);
         }
+    } else if (type == MF_AUDIO) { /* an audiobook's: its tags, chapters and length (read again only when it changed) */
+        parse_name(root_name(sc->roots[root]), rel, &f->name, false); /* (what to call it in a lost history's label) */
+        char path[1024];
+        join_path(sc->roots[root], rel, path, sizeof path);
+        audio_file(sc, f, path);
     } else if (type == MF_NFO) { /* its genres: read again only when it changed */
         const MediaFile *o = sc->old ? index_find(sc->old, f->id) : NULL;
         if (o && o->type == MF_NFO && o->size == size && o->mtime == mtime) {
@@ -428,8 +552,9 @@ static void walk(Scan *sc, int root, const char *abs, const char *rel_dir, int d
             }
             continue;
         }
-        char type = media_is_video_ext(e.name) ? MF_VIDEO
-                    : media_is_sub_ext(e.name) ? MF_SUB
+        char type = media_is_video_ext(e.name)                          ? MF_VIDEO
+                    : media_is_book_file(root_name(sc->roots[root]), rel) ? MF_AUDIO
+                    : media_is_sub_ext(e.name)                          ? MF_SUB
                     : media_is_image_ext(e.name) ? MF_IMAGE
                     : media_is_vobsub_data(e.name) && vobsub_idx_beside(abs, e.name) ? MF_SUB
                     : nfo_wanted(e.name)                                             ? MF_NFO
@@ -486,6 +611,11 @@ static int ent_cmp(const void *x, const void *y) {
 static int id_cmp(const void *x, const void *y) {
     const MediaFile *a = x, *b = y;
     return a->id < b->id ? -1 : a->id > b->id;
+}
+
+static int tags_cmp(const void *x, const void *y) {
+    const MediaTags *a = x, *b = y;
+    return a->file < b->file ? -1 : a->file > b->file;
 }
 
 static int title_cmp(const char *a, const char *b) {
@@ -1159,6 +1289,20 @@ static void index_finish(MediaIndex *ix) {
     qsort(ix->recent, (size_t)ix->nrecent, sizeof(int), recent_cmp);
     free(ents);
     t_files = NULL;
+
+    /* audiobooks: their files' tags by file id (each once), then the books */
+    if (ix->ntags) qsort(ix->tags, (size_t)ix->ntags, sizeof *ix->tags, tags_cmp); /* (none: tags may be NULL) */
+    int nt = 0;
+    for (int i = 0; i < ix->ntags; i++) {
+        if ((nt && ix->tags[nt - 1].file == ix->tags[i].file) || !index_find(ix, ix->tags[i].file)) {
+            free(ix->tags[i].desc);
+            free(ix->tags[i].ch);
+            continue;
+        }
+        ix->tags[nt++] = ix->tags[i];
+    }
+    ix->ntags = nt;
+    media_books_build(ix);
 }
 
 static void names_free(SeriesNames *s) {
@@ -1180,6 +1324,7 @@ static MediaIndex *scan_run(Scan *sc) {
         free(sc->files);
         free(sc->left);
         free(sc->parts);
+        media_tags_free(sc->tags, sc->ntags);
         names_give_back(sc->names);
         sc->names = NULL;
         return NULL;
@@ -1192,6 +1337,8 @@ static MediaIndex *scan_run(Scan *sc) {
     ix->parts_bytes = sc->parts_bytes;
     ix->files = sc->files ? sc->files : xmalloc(sizeof(MediaFile));
     ix->nfiles = sc->n;
+    ix->tags = sc->tags;
+    ix->ntags = sc->ntags;
     ix->probed = sc->probed;
     t_names = sc->names;
     index_finish(ix);
@@ -1213,11 +1360,87 @@ static const char *SCHEMA =
     " ep_title TEXT NOT NULL DEFAULT '', container TEXT NOT NULL DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0,"
     " width INTEGER NOT NULL DEFAULT 0, height INTEGER NOT NULL DEFAULT 0, vcodec TEXT NOT NULL DEFAULT '',"
     " acodec TEXT NOT NULL DEFAULT '', channels INTEGER NOT NULL DEFAULT 0, playable INTEGER NOT NULL DEFAULT 0,"
-    " why TEXT NOT NULL DEFAULT '', fp INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID";
+    " why TEXT NOT NULL DEFAULT '', fp INTEGER NOT NULL DEFAULT 0, tags TEXT NOT NULL DEFAULT '',"
+    " chapters TEXT NOT NULL DEFAULT '') WITHOUT ROWID";
 
 static void col_text(sqlite3_stmt *st, int col, char *out, size_t cap) {
     const char *s = (const char *)sqlite3_column_text(st, col);
     str_copy(out, cap, s ? s : "");
+}
+
+/* An audio file's tags in the cache (1.6: columns tags + chapters, added in place like fp - nothing else is read
+   again): fields between \x1f, chapters between \x1e, TAGS_FORMAT first - a newer one, and the next scan reads
+   the audio files again. */
+#define TAGS_FORMAT 1
+static void put_text(Buf *b, const char *s) {
+    for (; s && *s; s++) buf_putc(b, *s == '\x1f' || *s == '\x1e' ? ' ' : *s);
+}
+
+static void tags_pack(const MediaTags *t, Buf *tags, Buf *chap) {
+    buf_printf(tags, "%d", TAGS_FORMAT);
+    const char *text[] = {t->title, t->author, t->narrator, t->album};
+    for (int i = 0; i < countof(text); i++) {
+        buf_putc(tags, '\x1f');
+        put_text(tags, text[i]);
+    }
+    buf_printf(tags, "\x1f%d\x1f%d\x1f%d\x1f%lld\x1f%lld\x1f", t->year, t->track, t->disc, (long long)t->cover_off,
+               (long long)t->cover_len);
+    put_text(tags, t->cover_type);
+    buf_putc(tags, '\x1f');
+    put_text(tags, t->desc);
+    for (int i = 0; i < t->nch; i++) {
+        buf_printf(chap, "%lld\x1f", (long long)t->ch[i].start_ms);
+        put_text(chap, t->ch[i].title);
+        buf_putc(chap, '\x1e');
+    }
+}
+
+/* the next field of s (up to sep, or the end) into out; s moves past it */
+static void field_take(const char **s, char sep, char *out, size_t cap) {
+    size_t n = strcspn(*s, (char[]){sep, 0});
+    if (out) str_ncopy(out, cap, *s, n);
+    *s += n + ((*s)[n] ? 1 : 0);
+}
+
+static bool tags_unpack(const char *tags, const char *chap, MediaTags *t) {
+    char num[32];
+    field_take(&tags, '\x1f', num, sizeof num);
+    if (str_int_or(num, 0) != TAGS_FORMAT) return false;
+    field_take(&tags, '\x1f', t->title, sizeof t->title);
+    field_take(&tags, '\x1f', t->author, sizeof t->author);
+    field_take(&tags, '\x1f', t->narrator, sizeof t->narrator);
+    field_take(&tags, '\x1f', t->album, sizeof t->album);
+    int64_t v[5];
+    for (int i = 0; i < countof(v); i++) {
+        field_take(&tags, '\x1f', num, sizeof num);
+        v[i] = str_int_or(num, 0);
+    }
+    t->year = (int)v[0], t->track = (int)v[1], t->disc = (int)v[2], t->cover_off = v[3], t->cover_len = v[4];
+    field_take(&tags, '\x1f', t->cover_type, sizeof t->cover_type);
+    t->desc = *tags ? xstrdup(tags) : NULL;
+    int n = 0;
+    for (const char *p = chap; *p; p++) n += *p == '\x1e';
+    if (n) {
+        t->ch = xcalloc((size_t)n, sizeof *t->ch);
+        while (*chap && t->nch < n) {
+            MediaChapter *c = &t->ch[t->nch++];
+            field_take(&chap, '\x1f', num, sizeof num);
+            c->start_ms = str_int_or(num, 0);
+            field_take(&chap, '\x1e', c->title, sizeof c->title);
+        }
+    }
+    return true;
+}
+
+static bool tags_same(const MediaIndex *a, const MediaIndex *b, uint64_t file) {
+    const MediaTags *x = tags_find(a, file), *y = tags_find(b, file);
+    if (!x || !y) return x == y;
+    Buf p = {0}, q = {0}, pc = {0}, qc = {0};
+    tags_pack(x, &p, &pc);
+    tags_pack(y, &q, &qc);
+    bool same = str_eq(buf_cstr(&p), buf_cstr(&q)) && str_eq(buf_cstr(&pc), buf_cstr(&qc));
+    buf_free(&p), buf_free(&q), buf_free(&pc), buf_free(&qc);
+    return same;
 }
 
 static void cache_load(void) {
@@ -1228,7 +1451,8 @@ static void cache_load(void) {
     /* Names are parsed again from the path (2-3 µs each) rather than read back: the cache then never
        disagrees with a fresh scan, and parser improvements apply at once. Probes are the costly part. */
     sqlite3_stmt *st = db_prep("SELECT id, root, type, rel, size, mtime, container, duration_ms, width, height, "
-                               "vcodec, acodec, channels, playable, why, fp, title FROM media_file");
+                               "vcodec, acodec, channels, playable, why, fp, title, tags, chapters FROM media_file");
+    int tcap = 0;
     while (st && sqlite3_step(st) == SQLITE_ROW) {
         char root[300], type[4];
         col_text(st, 1, root, sizeof root);
@@ -1236,7 +1460,9 @@ static void cache_load(void) {
         for (int i = 0; i < ix->nroots; i++)
             if (str_eq(ix->roots[i], root)) r = i;
         col_text(st, 2, type, sizeof type);
-        if (r < 0 || (type[0] != MF_VIDEO && type[0] != MF_SUB && type[0] != MF_IMAGE && type[0] != MF_NFO)) continue;
+        if (r < 0 || (type[0] != MF_VIDEO && type[0] != MF_SUB && type[0] != MF_IMAGE && type[0] != MF_NFO &&
+                      type[0] != MF_AUDIO))
+            continue;
         if (ix->nfiles == cap) {
             cap *= 2;
             ix->files = xrealloc(ix->files, (size_t)cap * sizeof *ix->files);
@@ -1260,13 +1486,24 @@ static void cache_load(void) {
         f->probe.audio_channels = sqlite3_column_int(st, 12);
         f->probe.playable = (Playable)sqlite3_column_int(st, 13);
         col_text(st, 14, f->probe.why, sizeof f->probe.why);
-        if (f->probe.playable != PLAY_UNKNOWN) media_probe_judge(&f->probe); /* (a newer Hemma may say it better) */
+        if (f->probe.playable != PLAY_UNKNOWN && f->type != MF_AUDIO)
+            media_probe_judge(&f->probe); /* (a newer Hemma may say it better) */
         f->fp = (uint64_t)sqlite3_column_int64(st, 15);
         if (f->type == MF_NFO) col_text(st, 16, f->name.title, sizeof f->name.title); /* (its genres: read back) */
         if (f->type == MF_VIDEO) { /* (the same rules as a scan: add_file) */
             parse_name(root_name(ix->roots[r]), f->rel, &f->name, false);
             if (f->name.extra && !named_but_real(f)) continue; /* hidden since it was stored */
             if (f->name.sample || f->name.named) parse_name(root_name(ix->roots[r]), f->rel, &f->name, true);
+        }
+        if (f->type == MF_AUDIO) { /* its tags (an older format's: none - the next scan reads the file again) */
+            if (!media_is_book_file(root_name(ix->roots[r]), f->rel)) continue; /* (no longer one, by today's rules) */
+            parse_name(root_name(ix->roots[r]), f->rel, &f->name, false);
+            const char *tags = (const char *)sqlite3_column_text(st, 17), *chap = (const char *)sqlite3_column_text(st, 18);
+            MediaTags t = {.file = f->id};
+            if (tags_unpack(tags ? tags : "", chap ? chap : "", &t)) {
+                if (ix->ntags == tcap) ix->tags = xrealloc(ix->tags, (size_t)(tcap = tcap ? tcap * 2 : 32) * sizeof *ix->tags);
+                ix->tags[ix->ntags++] = t;
+            }
         }
         ix->nfiles++;
     }
@@ -1296,10 +1533,12 @@ static void cache_store(const MediaIndex *old, const MediaIndex *nw) {
     for (int i = 0; i < nw->nfiles; i++) {
         const MediaFile *f = &nw->files[i];
         const MediaFile *o = index_find(old, f->id);
-        if (o && old->nroots > o->root && str_eq(old->roots[o->root], nw->roots[f->root]) && same_file(o, f)) continue;
+        if (o && old->nroots > o->root && str_eq(old->roots[o->root], nw->roots[f->root]) && same_file(o, f) &&
+            (f->type != MF_AUDIO || tags_same(old, nw, f->id)))
+            continue;
         up = db_prep("INSERT OR REPLACE INTO media_file (id, root, type, rel, size, mtime, kind, title, year, season, "
                      "episode, episode_end, ep_title, container, duration_ms, width, height, vcodec, acodec, channels, "
-                     "playable, why, fp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                     "playable, why, fp, tags, chapters) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         if (!up) break;
         char hex[17], type[2] = {f->type, 0};
         media_id_hex(f->id, hex);
@@ -1326,6 +1565,13 @@ static void cache_store(const MediaIndex *old, const MediaIndex *nw) {
         sqlite3_bind_int(up, 21, (int)f->probe.playable);
         sqlite3_bind_text(up, 22, f->probe.why, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(up, 23, (int64_t)f->fp);
+        Buf tags = {0}, chap = {0};
+        const MediaTags *t = f->type == MF_AUDIO ? tags_find(nw, f->id) : NULL;
+        if (t) tags_pack(t, &tags, &chap);
+        sqlite3_bind_text(up, 24, buf_cstr(&tags), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(up, 25, buf_cstr(&chap), -1, SQLITE_TRANSIENT);
+        buf_free(&tags);
+        buf_free(&chap);
         if (sqlite3_step(up) == SQLITE_DONE) written++;
     }
     for (int i = 0; i < old->nfiles; i++) {
@@ -1472,10 +1718,20 @@ void media_lib_start(void) {
     db_exec(SCHEMA);
     /* (issue #93: a column added in place - no new format, so nothing is probed again; the next scan
        reads each video's fingerprint once) */
-    sqlite3_stmt *col = db_prep("SELECT count(*) FROM pragma_table_info('media_file') WHERE name = 'fp'");
-    bool has_fp = !col || (sqlite3_step(col) == SQLITE_ROW && sqlite3_column_int(col, 0) > 0);
-    if (col) sqlite3_reset(col); /* (a statement left mid-way would hold the table: no DROP next time) */
-    if (!has_fp) db_exec("ALTER TABLE media_file ADD COLUMN fp INTEGER NOT NULL DEFAULT 0");
+    static const char *const added[][2] = {{"fp", "fp INTEGER NOT NULL DEFAULT 0"}, /* (1.6: an audio file's tags) */
+                                           {"tags", "tags TEXT NOT NULL DEFAULT ''"},
+                                           {"chapters", "chapters TEXT NOT NULL DEFAULT ''"}};
+    for (int i = 0; i < countof(added); i++) {
+        sqlite3_stmt *col = db_prep("SELECT count(*) FROM pragma_table_info('media_file') WHERE name = ?");
+        if (col) sqlite3_bind_text(col, 1, added[i][0], -1, SQLITE_STATIC);
+        bool has = !col || (sqlite3_step(col) == SQLITE_ROW && sqlite3_column_int(col, 0) > 0);
+        if (col) sqlite3_reset(col); /* (a statement left mid-way would hold the table: no DROP next time) */
+        if (!has) {
+            char sql[120];
+            snprintf(sql, sizeof sql, "ALTER TABLE media_file ADD COLUMN %s", added[i][1]);
+            db_exec(sql);
+        }
+    }
     cache_load();
     watch_fill_from_cache();
     g_next_scan = now_ms() + RESCAN_EVERY_MS;
@@ -1677,7 +1933,9 @@ bool media_watch_report(int person, uint64_t id, int pos, int dur, bool ended, i
     if (f) identify(&rec, f);
     rec.pos = CLAMP(pos, 0, 7 * 86400);
     if (dur > 0) rec.dur = CLAMP(dur, 0, 7 * 86400);
-    if (ended || (rec.dur > 0 && rec.pos >= rec.dur * 92 / 100)) rec.done = true;
+    /* a video's credits count as seen; a book is read to its end (92% of a 20-hour book leaves well over an hour) */
+    int seen = f && f->type == MF_AUDIO ? rec.dur - 15 : rec.dur * 92 / 100;
+    if (ended || (rec.dur > 0 && rec.pos >= seen)) rec.done = true;
     rec.updated = now;
     if (!w || rec.done != was_done || now - rec.saved >= 15) {
         rec.saved = now;
@@ -1812,7 +2070,7 @@ static void watch_follow(const MediaIndex *ix, const MediaIndex *old) {
     int nv = 0;
     for (int i = 0; i < ix->nfiles; i++) {
         const MediaFile *f = &ix->files[i];
-        if (f->type != MF_VIDEO) continue;
+        if (f->type != MF_VIDEO && f->type != MF_AUDIO) continue; /* (an audiobook's history is its first part's) */
         place[nv] = (Key){hash64_str(f->rel), f->id};
         fp[nv] = (Key){f->fp, f->id};
         name[nv] = (Key){media_ident(&f->name), f->id};

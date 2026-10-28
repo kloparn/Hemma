@@ -292,29 +292,38 @@ TEST(media_upload_preview_speaks_swedish_and_spanish) {
     media_id_hex(media_lib()->series[0].id, hex);
     snprintf(url, sizeof url, "/media/upload?series=%s", hex);
     /* every kind of file, and every fate: sent, converted here, skipped, a play-all's header, left out, an
-       episode of no series, a disc rip, a film, an extra, subtitles, pictures, a copy beside its original */
+       episode of no series, a disc rip, a film, an extra, subtitles, pictures, a copy beside its original,
+       audiobooks (1.6: a book in parts, a book in one file) and a show's theme song */
     const char *files =
         "[[\"Show.S01E02.mp4\",2],[\"Show.S01E03.Third.mkv\",3000],[\"Show.S01E03.Third.en.srt\",30],"
         "[\"Show/poster.jpg\",40],[\"Show/Show.S01E04.mp4\",50],[\"Film (2001).mp4\",60],[\"Film (2001)-trailer.mp4\",7],"
         "[\"notes.txt\",3],[\"Season 2/01 - Unknown.mp4\",8],[\"Holiday/IMG_1.mov\",9],"
         "[\"Rip/Season 1/Disc - 1/A1_t01.mkv\",943718400],[\"Rip/Season 1/Disc - 1/A2_t02.mkv\",996147200],"
         "[\"Rip/Season 1/Disc - 1/A3_t03.mkv\",1048576000],[\"Rip/Season 1/Disc - 1/A4_t04.mkv\",1048576000],"
-        "[\"Rip/Season 1/Disc - 1/A7_t00.mkv\",4037017600],[\"Sub only.srt\",5]]";
+        "[\"Rip/Season 1/Disc - 1/A7_t00.mkv\",4037017600],[\"Sub only.srt\",5],"
+        "[\"Book/01.mp3\",3],[\"Book/02.mp3\",3],[\"Lone.m4b\",4],[\"Show/theme.mp3\",2]]";
     Buf form = {0};
     buf_puts(&form, "sort=1&root=0&conv=1&originals=1&all=99&files=");
     url_encode(&form, files, false);
     upload_test_free_space(1LL << 40);
     upload_test_preview(adam_id, buf_cstr(&form));
     const char *page = th_page(adam_id, "/media/upload");
-    CHECK_HAS(page, "This shows the first 16 of 99 files");
+    CHECK_HAS(page, "This shows the first 20 of 99 files");
     CHECK_HAS(page, "Which series are these episodes from?");
     CHECK_HAS(page, "Rip · season 1, disc 1");
     CHECK_HAS(page, "An extra for Film");
     CHECK_HAS(page, "Just its first MB");
     CHECK_HAS(page, "the copy of Show.S01E03.Third.mkv, made on this device");
-    /* (names, folders and file names are data; "Series"/"Movies" are folder names) */
+    CHECK_HAS(page, "Part of an audiobook");
+    CHECK_HAS(page, "<small>An audiobook</small>");
+    CHECK_HAS(page, "2 audiobook files");
+    CHECK_HAS(page, "<small>Goes with Show</small>");
+    CHECK_HAS(page, "1 audio file");
+    /* (names, folders and file names are data; "Series"/"Movies"/"Audiobooks" are folder names) */
     static const char *const allow[] = {"Adam", "A", "Show", "Rip", "Film", "Season 1", "Season 2", "Holiday",
-                                        "Series", "Movies", "Disc - 1", "Film (2001)", "Show · S01E03 · Third",
+                                        "Series", "Movies", "Audiobooks", "Book", "01.mp3", "02.mp3", "Lone.m4b",
+                                        "theme.mp3",
+                                        "Disc - 1", "Film (2001)", "Show · S01E03 · Third",
                                         "Show · S01E02", "Show · S01E04", "Show · S01E03",
                                         /* the files' own names */
                                         "01 - Unknown.mp4", "A1_t01.mkv", "A1_t01.web.mp4", "A2_t02.mkv",

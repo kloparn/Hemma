@@ -113,6 +113,7 @@ static void kids_free(void) {
     free(g_kids.recent);
     free(g_kids.extras);
     free(g_kids.series);
+    free(g_kids.books);
     free(g_hidden);
     memset(&g_kids, 0, sizeof g_kids);
     g_hidden = NULL;
@@ -161,6 +162,17 @@ static void refresh(const MediaIndex *ix) {
     g_kids.others = keep_list(ix->others, ix->nothers, &g_kids.nothers);
     g_kids.recent = keep_list(ix->recent, ix->nrecent, &g_kids.nrecent);
     g_kids.extras = keep_list(ix->extras, ix->nextras, &g_kids.nextras);
+    /* audiobooks (1.6): a book with a part in a marked folder goes whole, as a series does */
+    g_kids.books = xmalloc((size_t)(ix->nbooks ? ix->nbooks : 1) * sizeof *g_kids.books);
+    g_kids.nbooks = 0;
+    for (int i = 0; i < ix->nbooks; i++) {
+        const MediaBook *b = &ix->books[i];
+        bool hide = false;
+        for (int p = 0; p < b->count && !hide; p++) hide = g_hidden[ix->book_parts[b->first + p]];
+        if (!hide) g_kids.books[g_kids.nbooks++] = *b;
+        else
+            for (int p = 0; p < b->count; p++) g_hidden[ix->book_parts[b->first + p]] = true;
+    }
 }
 
 const MediaIndex *media_lib_for(const Ctx *c) {

@@ -4,6 +4,54 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 1.6.0 (2026-10-28)
+
+Audiobooks: Watch gets an Audiobooks tab, and a book keeps playing with the phone locked.
+
+### New
+
+- **Audiobooks in the library:** an `.m4b` anywhere in a library folder is an audiobook, and so is a folder of
+  `.mp3` or `.m4a` files inside a folder called *Audiobooks* (*Ljudböcker*, *Audiolibros* ... work too) - each such
+  folder one book, its files in order, `CD1`/`CD2` folders included. Hemma reads each book's title, author,
+  narrator, cover and chapters from the files themselves (a title that is only a file's name, or ends in which
+  recording it is - LibriVox's "velveteen_rabbit", "Ozma of Oz v2", "(version 3)" - is tidied up). Books in one
+  folder are a series, in the order of the numbers their names start with ("1 Harry Potter and ...").
+- **The Audiobooks tab** under Watch (there once the library has a book): Continue listening, then every book, a
+  series' books together. Search finds books by title, author, narrator and series.
+- **A book's page:** its cover, who wrote and reads it, its chapters, and a player made for listening - back 15 s,
+  forward 30 s, previous and next chapter, speed (0.8× to 2×, remembered on that device) and a sleep timer (15 to
+  60 minutes, or the end of the chapter). A book in several files plays them one after the other.
+- **Listening with the phone locked:** the lock screen shows the book, its cover and the chapter, with play,
+  pause, 15/30 seconds and the chapters. Your place is kept as you listen, also while the phone is locked: when
+  the page loses its connection, it sends your place the plain way.
+- **Your place in a book** is kept for each person, like a video's - but a book counts as finished only at its
+  very end, not at 92% like a film with its credits.
+- **Downloads** for grown-ups: a book in one file as that file, a book in parts as one .zip.
+- **Uploads take audiobooks:** `.m4b`, `.m4a` and `.mp3` files go into the library's *Audiobooks* folder, their
+  folders kept; their pictures go with them. A show's theme song or a film's soundtrack goes with its show or film.
+- **Children** see only the books outside folders marked *Not for children*, as with videos.
+
+### Fixed
+
+- **A paused video played on from another page:** a video paused before going to another page in Hemma (Watch, Add
+  videos ...) kept its file, and a keyboard's play key or the computer's media controls started it again, unseen -
+  only its sound. A video or a book taken off the page now lets go of its file whether it was playing or paused, and
+  a book leaves the lock screen with its buttons.
+
+### For developers
+
+- modules/av/audiotags.c: an audio file's tags, chapters (QuickTime chapter tracks, Nero `chpl`, ID3 `CHAP`) and
+  cover without decoding it - MP4/M4B/M4A by walking its boxes (an audiobook's moov can be 18 MB, mostly sample
+  tables, before or after the mdat), MP3 by its ID3v2/ID3v1 tags and Xing/VBRI/CBR length. A new fuzz target
+  (`tags`, tools/avfuzz.c, nightly).
+- The library: file type MF_AUDIO (mediainfo.h `media_is_book_file`), MediaIndex.tags (each audio file's, kept in
+  the cache's new `tags` and `chapters` columns, added in place) and .books (booklist.c). A book's id is its first
+  part's file id, so its progress is a media_watch row like a video's. modules/media/books.c: the pages and the
+  player's markup; `/media/cover/<file>` serves the picture inside a file; `/media/zip/<book>` a book in parts.
+- web/wire.js "the listener": `audio[data-book]` + `[data-listen]`, data-parts, the Media Session API, progress
+  over the socket or `fetch(..., {keepalive: true})`.
+- core/ui.c: icons back15, fwd30, prev, next, moon, book.
+
 ## 1.5.1 (2026-10-28)
 
 Hemma on a Raspberry Pi no longer grows in memory while videos are uploaded or watched.

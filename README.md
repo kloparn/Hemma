@@ -39,6 +39,17 @@ the 90s.
   <img src="docs/img/tv.webp" alt="Hemma on a TV: Continue watching and On TV rows with film posters" width="820">
 </p>
 
+### Audiobooks too
+
+Your audiobooks get a shelf of their own, and everyone keeps their own place in each book. Listen
+chapter by chapter, at your own speed, with a sleep timer, and it keeps playing with the phone locked.
+
+<p align="center">
+  <img src="docs/img/audiobooks.webp" alt="The Audiobooks tab on a phone: Continue listening with two books, then the Oz series with each book's cover" width="270">
+  &nbsp;
+  <img src="docs/img/audiobook.webp" alt="Listening to The Wonderful Wizard of Oz on a phone: the cover, the chapter playing, 15 seconds back, 30 forward, speed 1.25x, a sleep timer and the chapters" width="270">
+</p>
+
 ### Made for the whole family
 
 Children see what's for them: their own to-dos, the things they may book, and only the films you
@@ -65,8 +76,8 @@ and it converts videos that wouldn't play everywhere, like DVD rips and Dolby or
 There's more, like a notice board, who's home, nightly backups, and English, Swedish and Spanish:
 **[everything Hemma does](docs/features.md)**.
 
-<sub>The household is made up, and the films are the Blender Foundation's open movies (CC BY):
-see [the credits](docs/img/CREDITS.md).</sub>
+<sub>The household is made up, the films are the Blender Foundation's open movies (CC BY) and the
+audiobooks LibriVox's public-domain recordings: see [the credits](docs/img/CREDITS.md).</sub>
 
 ## Why Hemma?
 
@@ -154,5 +165,5 @@ browser runs one small script, plus Hemma's own video converter compiled to WebA
 ## License
 
 [Apache 2.0](LICENSE). SQLite is in the public domain, and two tables from FFmpeg are under the
-LGPL 2.1 or later ([notes](third_party/ffmpeg/README.md)). The films in the screenshots:
-[credits](docs/img/CREDITS.md).
+LGPL 2.1 or later ([notes](third_party/ffmpeg/README.md)). The films and audiobooks in the
+screenshots: [credits](docs/img/CREDITS.md).

@@ -4,14 +4,16 @@
  *   HEMMA_TEST_CLIPS=<folder> build/test av_test_clips
  *
  * writes a library under <folder>/library (a series of two 100-second episodes - long enough for the
- * "next episode" card, which wants three times its 30 seconds - and a 40-second film), one clip to
- * upload under <folder>/upload, and picture subtitles (Blu-ray .sup files) in <folder>/sidecars
+ * "next episode" card, which wants three times its 30 seconds - and a 40-second film; 1.6: audiobooks - a
+ * 40-second .m4b with three chapters, its index after its sound as some are, and a book in two .m4a parts),
+ * one clip to upload under <folder>/upload, and picture subtitles (Blu-ray .sup files) in <folder>/sidecars
  * - outside the library: the test that wants them puts them beside the episodes. Without the variable
  * it only makes one clip and the .sup files in memory and checks them - so the suite keeps the generator
  * working. */
 #include "../../tests/test.h"
 #include "../../core/plat.h"
 #include "aac.h"
+#include "audiotags_testmk.h"
 #include "h264enc.h"
 #include "mp4.h"
 #include "subpic.h"
@@ -197,6 +199,41 @@ static bool sup_mem_read(void *ctx, int64_t off, void *dst, size_t n) {
     return true;
 }
 
+/* An audiobook's file: `seconds` of a tone as AAC (44.1 kHz stereo, aac.c), with what m says of it
+   (audiotags_testmk.h at_test_m4b: tags, chapters, the moov's place) */
+static bool book_file(const char *dir, const char *rel, int seconds, int pitch, AtTestM4b m) {
+    AacConfig ac = {44100, 2, 64000, 0, 0};
+    AacEnc *e = aac_open(&ac, NULL, 0);
+    if (!e) return false;
+    uint8_t asc[2], au[AAC_MAX_AU];
+    aac_specific_config(e, asc);
+    static float pcm[AAC_FRAME * 2];
+    int blocks = seconds * 44100 / AAC_FRAME + 1, n = 0;
+    int *lens = malloc((size_t)(blocks + 8) * sizeof *lens);
+    Buf aus = {0};
+    for (int k = 0; lens && k < blocks + 8; k++) {
+        for (int i = 0; k < blocks && i < AAC_FRAME; i++)
+            pcm[2 * i] = pcm[2 * i + 1] = 0.2f * (float)sin(2 * 3.14159265 * pitch * (k * AAC_FRAME + i) / 44100.0);
+        int got = k < blocks ? aac_encode(e, pcm, au, AAC_MAX_AU) : aac_flush(e, au, AAC_MAX_AU);
+        if (got > 0) buf_put(&aus, au, (size_t)got), lens[n++] = got;
+        if (k >= blocks && got <= 0) break;
+    }
+    aac_close(e);
+    m.aac = (const uint8_t *)aus.p, m.aac_len = lens, m.aac_frames = n, m.asc = asc, m.asc_len = 2, m.priming = AAC_PRIMING;
+    Buf b = {0};
+    if (lens) at_test_m4b(&b, &m);
+    char path[600], folder[600];
+    snprintf(path, sizeof path, "%s/%s", dir, rel);
+    snprintf(folder, sizeof folder, "%s", path);
+    char *slash = strrchr(folder, '/');
+    if (slash) *slash = '\0';
+    bool ok = lens && b.len > 1000 && dir_make(folder) && file_write_atomic(path, b.p, b.len);
+    buf_free(&b);
+    buf_free(&aus);
+    free(lens);
+    return ok;
+}
+
 static bool clip_file(const char *dir, const char *rel, int seconds, int pitch) {
     char path[600], folder[600];
     snprintf(path, sizeof path, "%s/%s", dir, rel);
@@ -276,6 +313,14 @@ TEST(av_test_clips) {
     CHECK(clip_file(lib, "Series/Testshow/Season 1/Testshow S01E01.mp4", 100, 440));
     CHECK(clip_file(lib, "Series/Testshow/Season 1/Testshow S01E02.mp4", 100, 550));
     CHECK(clip_file(lib, "Movies/Clip (2020)/Clip (2020).mp4", 40, 660));
+    static const AtTestChapter story[] = {{0, "Opening"}, {16000, "Chapter 1 - The Middle"}, {30000, "Chapter 2 - The End"}};
+    CHECK(book_file(lib, "Audiobooks/Test Story.m4b", 40, 330,
+                    (AtTestM4b){.title = "Test Story", .artist = "Ann Author", .narrator = "Nora Narrator", .year = 2026,
+                                .chapters = story, .nchapters = 3, .moov_last = true}));
+    CHECK(book_file(lib, "Audiobooks/Parted Book/01 - Part One.m4a", 6, 440,
+                    (AtTestM4b){.title = "Part One", .album = "Parted Book", .artist = "Ann Author", .track = 1}));
+    CHECK(book_file(lib, "Audiobooks/Parted Book/02 - Part Two.m4a", 6, 550,
+                    (AtTestM4b){.title = "Part Two", .album = "Parted Book", .artist = "Ann Author", .track = 2}));
     CHECK(clip_file(up, "Upload test (2021).mp4", 4, 330));
     CHECK(dir_make(sides));
     for (int s = 0; s < (int)countof(SUPS); s++) {

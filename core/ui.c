@@ -55,6 +55,17 @@ static const struct {
     {"fwd10", "<path d=\"M19.4 13A7.5 7.5 0 1 1 17.2 6.7\"/><path d=\"M17.5 2.8v4.1h-4.1\"/><text x=\"11.6\" y=\"15.9\" "
               "text-anchor=\"middle\" font-size=\"7.6\" font-weight=\"700\" fill=\"currentColor\" "
               "stroke=\"none\">10</text>"},
+    {"back15", "<path d=\"M4.6 13A7.5 7.5 0 1 0 6.8 6.7\"/><path d=\"M6.5 2.8v4.1h4.1\"/><text x=\"12.4\" y=\"15.9\" "
+               "text-anchor=\"middle\" font-size=\"7.6\" font-weight=\"700\" fill=\"currentColor\" "
+               "stroke=\"none\">15</text>"},
+    {"fwd30", "<path d=\"M19.4 13A7.5 7.5 0 1 1 17.2 6.7\"/><path d=\"M17.5 2.8v4.1h-4.1\"/><text x=\"11.6\" y=\"15.9\" "
+              "text-anchor=\"middle\" font-size=\"7.6\" font-weight=\"700\" fill=\"currentColor\" "
+              "stroke=\"none\">30</text>"},
+    {"prev", "<path fill=\"currentColor\" d=\"M18 5.5v13L8.5 12z\"/><path d=\"M6 5.5v13\"/>"},
+    {"next", "<path fill=\"currentColor\" d=\"M6 5.5v13l9.5-6.5z\"/><path d=\"M18 5.5v13\"/>"},
+    {"moon", "<path d=\"M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z\"/>"},
+    {"book", "<path d=\"M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5z\"/><path d=\"M5 19.5A1.5 1.5 0 0 0 "
+             "6.5 21H19v-3\"/><path d=\"M9 7h6\"/>"},
     {"sound", "<path d=\"M4 9.5h3.5L12 5.5v13l-4.5-4H4z\"/><path d=\"M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11\"/>"},
     {"muted", "<path d=\"M4 9.5h3.5L12 5.5v13l-4.5-4H4z\"/><path d=\"m16 9.5 5 5M21 9.5l-5 5\"/>"},
     {"cc", "<rect x=\"3\" y=\"5.5\" width=\"18\" height=\"13\" rx=\"2.5\"/><path d=\"M10.6 10.2a2.3 2.3 0 1 0 0 3.6M17 "
