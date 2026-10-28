@@ -676,8 +676,8 @@ static void download_thread(void *arg) {
     memset(d->salt, 0, sizeof d->salt);
     buf_free(&tar);
     buf_free(&out);
-    buf_free(&d->head);
-    free(d);
+    buf_free_on_loop(&d->head); /* (the event loop's: base.h free_on_loop) */
+    free_on_loop(d);
     atomic_fetch_sub(&g_downloads, 1);
     i18n_use(LANG_EN);
 }

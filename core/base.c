@@ -2,6 +2,7 @@
 #include "base.h"
 
 #include <ctype.h>
+#include <stdatomic.h>
 #include <time.h>
 
 #ifdef _WIN32
@@ -34,6 +35,32 @@ void *xrealloc(void *p, size_t n) {
     void *q = realloc(p, n ? n : 1);
     if (!q) oom(n);
     return q;
+}
+
+/* Blocks handed back by worker threads, as a stack of little nodes. A node is the worker's own (made there, freed
+   here: that way round musl reuses it); the event loop takes the whole stack at once. */
+typedef struct OnLoop {
+    struct OnLoop *next;
+    void *p;
+} OnLoop;
+static _Atomic(OnLoop *) g_on_loop;
+
+void free_on_loop(void *p) {
+    if (!p) return;
+    OnLoop *n = xmalloc(sizeof *n);
+    n->p = p;
+    n->next = atomic_load(&g_on_loop);
+    while (!atomic_compare_exchange_weak(&g_on_loop, &n->next, n)) {}
+}
+
+int free_on_loop_now(void) {
+    int count = 0;
+    for (OnLoop *n = atomic_exchange(&g_on_loop, NULL), *next; n; n = next, count++) {
+        next = n->next;
+        free(n->p);
+        free(n);
+    }
+    return count;
 }
 
 char *xstrdup(const char *s) {
@@ -115,6 +142,12 @@ void buf_consume(Buf *b, size_t n) {
 
 void buf_free(Buf *b) {
     free(b->p);
+    b->p = NULL;
+    b->len = b->cap = 0;
+}
+
+void buf_free_on_loop(Buf *b) {
+    free_on_loop(b->p);
     b->p = NULL;
     b->len = b->cap = 0;
 }

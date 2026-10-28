@@ -286,7 +286,7 @@ static void ask_thread(void *arg) {
     Job *old = g_done;
     g_done = j;
     lock_give(&g_lock);
-    free(old); /* (never: the loop takes each answer before it asks again) */
+    free_on_loop(old); /* (never: the loop takes each answer before it asks again) */
     app_tick_soon();
 }
 

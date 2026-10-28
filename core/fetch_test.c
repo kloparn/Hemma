@@ -3,13 +3,14 @@
 #include "../tests/test.h"
 #include "fetch.h"
 
-static bool parse(const char *raw, size_t max, Fetched *f) {
+static bool parse(const char *raw, size_t max, Fetched *f) { /* (f: the last answer, freed first - or {0}) */
+    fetched_free(f);
     memset(f, 0, sizeof *f);
     return fetch_parse(raw, strlen(raw), max, f);
 }
 
 TEST(fetch_reads_an_answer_with_its_length) {
-    Fetched f;
+    Fetched f = {0};
     CHECK(parse("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\ncontent-length: 7\r\n\r\n{\"a\":1}extra", 100, &f));
     CHECK_INT(f.status, 200);
     CHECK_INT((int)f.body.len, 7);
@@ -24,7 +25,7 @@ TEST(fetch_reads_an_answer_with_its_length) {
 }
 
 TEST(fetch_reads_a_chunked_answer_and_a_redirect) {
-    Fetched f;
+    Fetched f = {0};
     CHECK(parse("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n6;x=y\r\npedia \r\nE\r\nin \r\n\r\nchunks.\r\n0\r\n\r\n",
                 100, &f));
     CHECK_STR(f.body.p, "Wikipedia in \r\n\r\nchunks.");

@@ -2244,6 +2244,7 @@ void app_halt(void) {
     undo_reset();
     g_nhome = 0;
     g_tracking = false;
+    free_on_loop_now(); /* (the modules' workers have stopped: what they handed back goes now) */
 }
 
 static int g_test_dev_lang = -1;

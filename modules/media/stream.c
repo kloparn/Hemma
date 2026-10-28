@@ -233,8 +233,8 @@ static void stream_thread(void *arg) {
     Pace pc = {.on = j->kind == JOB_DOWNLOAD};
     stream_run(j->s, j->path, j->from, j->len, j->head.p, j->head.len, pc.on ? DOWNLOAD_STALL_MS : STALL_MS, &pc);
     count_job(j->kind, -1);
-    buf_free(&j->head);
-    free(j);
+    buf_free_on_loop(&j->head); /* (the event loop's: base.h free_on_loop) */
+    free_on_loop(j);
 }
 
 /* ------------------------------------------------------------ endpoints */
@@ -364,8 +364,8 @@ static void zip_thread(void *arg) {
         bool dir = false;
         if (!path_stat(j->parts[i].path, &size, &mtime, &dir) || dir || size < 0) {
             log_warn("media: %s is left out of a download: it has gone", j->parts[i].path);
-            free(j->parts[i].path);
-            free(j->parts[i].name);
+            free_on_loop(j->parts[i].path); /* (the event loop's: base.h free_on_loop) */
+            free_on_loop(j->parts[i].name);
             continue;
         }
         j->parts[n] = j->parts[i];
@@ -375,12 +375,14 @@ static void zip_thread(void *arg) {
         n++;
     }
     j->n = n;
-    buf_printf(&j->head,
+    Buf head = {0}; /* (this thread's own: growing the event loop's j->head would free its old bytes here) */
+    buf_put(&head, j->head.p, j->head.len);
+    buf_printf(&head,
                "HTTP/1.1 200 OK\r\nServer: hemma\r\nX-Content-Type-Options: nosniff\r\nContent-Type: application/zip\r\n"
                "Content-Length: %llu\r\nAccept-Ranges: none\r\nCache-Control: no-store\r\n%sConnection: close\r\n\r\n",
-               (unsigned long long)zip_size(e, n), buf_cstr(&j->disposition));
+               (unsigned long long)zip_size(e, n), j->disposition.p ? j->disposition.p : "");
     sock_nonblock(j->s, true);
-    if (send_wait(j->s, j->head.p, j->head.len, DOWNLOAD_STALL_MS) && !j->head_only) {
+    if (send_wait(j->s, head.p, head.len, DOWNLOAD_STALL_MS) && !j->head_only) {
         char *buf = xmalloc(CHUNK);
         ZipIo io = {zip_read, zip_send, j};
         j->open = -1;
@@ -390,12 +392,13 @@ static void zip_thread(void *arg) {
     if (j->f) fclose(j->f);
     sock_shutdown_write(j->s);
     sock_close(j->s);
-    for (int i = 0; i < j->n; i++) free(j->parts[i].path), free(j->parts[i].name);
-    free(j->parts);
+    for (int i = 0; i < j->n; i++) free_on_loop(j->parts[i].path), free_on_loop(j->parts[i].name);
+    free_on_loop(j->parts); /* (the job and all it came with are the event loop's: base.h free_on_loop) */
     free(e);
-    buf_free(&j->head);
-    buf_free(&j->disposition);
-    free(j);
+    buf_free(&head);
+    buf_free_on_loop(&j->head);
+    buf_free_on_loop(&j->disposition);
+    free_on_loop(j);
     atomic_fetch_sub(&g_zips, 1);
     count_job(JOB_DOWNLOAD, -1);
 }
@@ -646,13 +649,16 @@ static void pic_put(PicEnt *e) {
 }
 
 static void pic_answer(PicJob *j, int status, const char *ctype, const void *body, size_t n) {
-    buf_printf(&j->head,
+    Buf out = {0}; /* (this thread's own: growing the event loop's j->head would free its old bytes here) */
+    buf_put(&out, j->head.p, j->head.len);
+    buf_printf(&out,
                "HTTP/1.1 %d %s\r\nServer: hemma\r\nX-Content-Type-Options: nosniff\r\nContent-Type: %s\r\n"
                "Content-Length: %lld\r\nCache-Control: %s\r\nConnection: close\r\n\r\n",
                status, http_status_text(status), ctype, (long long)n, status == 200 ? "private, max-age=86400" : "no-cache");
-    if (!j->head_only && n) buf_put(&j->head, body, n);
+    if (!j->head_only && n) buf_put(&out, body, n);
     sock_nonblock(j->s, true);
-    send_all(j->s, j->head.p, j->head.len);
+    send_all(j->s, out.p, out.len);
+    buf_free(&out);
     sock_shutdown_write(j->s);
     sock_close(j->s);
 }
@@ -706,8 +712,8 @@ static void pic_thread(void *arg) {
         pic_answer(j, 404, "text/plain; charset=utf-8", why, strlen(why));
     }
     buf_free(&body);
-    buf_free(&j->head);
-    free(j);
+    buf_free_on_loop(&j->head); /* (the event loop's: base.h free_on_loop) */
+    free_on_loop(j);
     atomic_fetch_sub(&g_pic_jobs, 1);
     count_job(JOB_OTHER, -1);
 }

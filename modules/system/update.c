@@ -788,9 +788,9 @@ static void receive(void *arg) {
     lock_give(&g_lock);
     if (status) job_reply(j->s, status, fail ? T_in(j->lang, fail) : NULL);
     sock_close(j->s);
-    buf_free(&j->head);
-    buf_free(&j->body);
-    free(j);
+    buf_free_on_loop(&j->head); /* (the event loop's: base.h free_on_loop) */
+    buf_free_on_loop(&j->body);
+    free_on_loop(j);
     app_tick_soon();
 }
 

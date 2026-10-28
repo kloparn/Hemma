@@ -4,6 +4,33 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 1.5.1 (2026-10-28)
+
+Hemma on a Raspberry Pi no longer grows in memory while videos are uploaded or watched.
+
+### Fixed
+
+- **Memory that only grew:** on a Pi, Hemma held about 20 MB after a start, 100 MB after an afternoon of uploads,
+  and gained a megabyte or more a minute during a long one - until a restart, or until the Pi ran out. Nothing was
+  lost from Hemma's point of view: every upload piece (and every video request, subtitle picture and download) is
+  handled on a thread of its own, and that thread freed the little record the main loop had made for it. The C
+  library of Hemma's Pi and Linux programs (musl) never reuses a block freed that way while the main loop keeps
+  allocating, so each one stayed taken: about 2.6 KB for every 16 MB piece of a copy kept in memory. The threads now
+  hand those records back and the main loop frees them; a test upload of 1,600 pieces left memory where it was
+  (before: +4.6 MB). Windows and the CI's Linux (glibc) never showed it.
+- **The Network page leaked a list** each time a full list of 1,024 devices made room for a newcomer.
+
+### For developers
+
+- core/base.h `free_on_loop(p)` / `buf_free_on_loop(&b)`: a worker thread hands back what the event loop allocated
+  (its job, the bytes `conn_detach` gave it); `server_run` frees them on its next turn (`free_on_loop_now()`, also in
+  `app_halt`). A worker never grows an event-loop buffer either (that frees its old bytes on the thread): it copies it
+  into one of its own. thread_spawn's own start record goes the same way. Used by every worker: upload.c (PUTs,
+  picture tracks), stream.c (streams, zips, subtitle pictures), backup.c (downloads), update.c (uploaded updates),
+  library.c (the scan), subtake.c, lookup.c. [Decision 0010](docs/decisions/0010-free-on-the-thread-that-allocated.md).
+- net.c `evict()`: `MIN(spares(...), count)` called spares() twice (a macro) and lost the first list; core/fetch_test.c
+  freed its answers.
+
 ## 1.5.0 (2026-10-27)
 
 An upload's card shows what it's doing.

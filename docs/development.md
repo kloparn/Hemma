@@ -20,8 +20,9 @@ because C suits that job better than anything else:
 
 - **Nothing sits between Hemma and the hardware.** There's no interpreter, no virtual machine
   and no garbage collector. A Node.js or Python app needs its runtime and tens of megabytes of
-  memory before it does any work. Hemma uses **about 2.4 MB** on a Raspberry Pi, so even a
-  Pi Zero 2 (512 MB) has room to spare.
+  memory before it does any work. Hemma starts in **about 2.4 MB** on a Raspberry Pi and grows
+  with the film library it keeps track of: with 10,000 files (videos, subtitles, posters) it holds
+  about 20 MB. Even a Pi Zero 2 (512 MB) has room to spare.
 - **One file that just runs.** C compiles to a single program for each kind of computer:
   Raspberry Pi, Linux, Windows and Mac. Installing Hemma means copying one file. Nothing to
   `npm install` or `pip install`, and no runtime update that can break it next year.

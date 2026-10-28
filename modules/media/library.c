@@ -1166,6 +1166,12 @@ static void names_free(SeriesNames *s) {
     free(s->e);
     free(s);
 }
+/* ... from the scan's thread: the copy is the event loop's (base.h free_on_loop) */
+static void names_give_back(SeriesNames *s) {
+    if (!s) return;
+    free_on_loop(s->e);
+    free_on_loop(s);
+}
 
 static MediaIndex *scan_run(Scan *sc) {
     sc->now = now_sec();
@@ -1174,7 +1180,7 @@ static MediaIndex *scan_run(Scan *sc) {
         free(sc->files);
         free(sc->left);
         free(sc->parts);
-        names_free(sc->names);
+        names_give_back(sc->names);
         sc->names = NULL;
         return NULL;
     }
@@ -1190,7 +1196,7 @@ static MediaIndex *scan_run(Scan *sc) {
     t_names = sc->names;
     index_finish(ix);
     t_names = NULL;
-    names_free(sc->names);
+    names_give_back(sc->names);
     sc->names = NULL;
     return ix;
 }
@@ -1369,7 +1375,7 @@ static void scan_thread(void *arg) {
     Scan *sc = arg;
     MediaIndex *ix = scan_run(sc);
     if (ix) publish(ix);
-    free(sc);
+    free_on_loop(sc); /* (the event loop made it: base.h) */
     atomic_store(&g_scanning, false);
     app_tick_soon(); /* show it now, not at the next idle tick (up to 5 s) */
 }

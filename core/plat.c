@@ -812,7 +812,7 @@ typedef struct {
 #ifdef _WIN32
 static DWORD WINAPI thread_tramp(LPVOID p) {
     ThreadStart ts = *(ThreadStart *)p;
-    free(p);
+    free_on_loop(p); /* (the event loop made it: base.h) */
     ts.fn(ts.arg);
     return 0;
 }
@@ -843,7 +843,7 @@ void thread_background(void) { SetThreadPriority(GetCurrentThread(), THREAD_PRIO
 #else
 static void *thread_tramp(void *p) {
     ThreadStart ts = *(ThreadStart *)p;
-    free(p);
+    free_on_loop(p); /* (the event loop made it: base.h) */
     ts.fn(ts.arg);
     return NULL;
 }
