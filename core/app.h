@@ -461,6 +461,14 @@ void app_set_testing(bool on);
 const char *app_name(void);        /* household name, default "Hemma" */
 const char *app_asset_version(void); /* changes whenever web/ assets change */
 bool app_dev_mode(void);
+/* THE ANDROID APP (2.0): app_instance() = this Hemma's own id (16 hex, made once: setting core.instance) - GET
+   /hemma.json says it, so the app knows the same Hemma at a new address; app_static_size("/hemma.apk") = the
+   size of a file built into the program (the app is, when the build found Android's tools), -1 = none;
+   session_in_app() = signed in from the Hemma app (its browser says "HemmaApp/"; Session.agent) */
+const char *app_instance(void);
+long long app_static_size(const char *path);
+void app_test_static(const char *path, long long size); /* tests: as if built in at that size, -1 = not (until a boot) */
+bool session_in_app(const Session *s);
 
 /* Bring the core up without a server (used by app_main and tests/harness.c):
  * registers core tables, runs module init hooks, opens the store, runs start hooks. */

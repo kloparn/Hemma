@@ -1,0 +1,13 @@
+<?xml version="1.0" standalone='no'?>
+<!-- Hemma announced on the home network (2.0): the Hemma app for Android finds it by "_hemma._tcp" (mDNS / DNS-SD),
+     then checks GET /hemma.json. install-pi.sh writes it to /etc/avahi/services/hemma.service - with Hemma's port
+     in place of @PORT@ - when Avahi is there (Raspberry Pi OS has it: it's what makes <name>.local work). -->
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">Hemma on %h</name>
+  <service>
+    <type>_hemma._tcp</type>
+    <port>@PORT@</port>
+    <txt-record>path=/hemma.json</txt-record>
+  </service>
+</service-group>

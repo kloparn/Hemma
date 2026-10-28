@@ -139,6 +139,7 @@ Another computer, or a Pi you already use? Pick your guide:
 | [macOS](docs/macos.md) | A Mac |
 | [Your home network](docs/home-network.md) | A fixed address, `hemma.local`, TVs, reaching it from outside |
 | [Accounts](docs/accounts.md) | The admin, adding people, children, guests, the TV, a forgotten password |
+| [The Android app](docs/android.md) | Hemma in an app of its own: it finds Hemma at home by itself |
 
 ## Need help?
 

@@ -130,3 +130,16 @@ jobs:
         run: |
           npm ci
           npm run lint
+
+  # The Android app (2.0; apps/android): it builds, and its address rules hold (test/NetTest.java) - signed with a
+  # key made up for this run (a check only: CI builds of Hemma leave the app out without the release key)
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Build the app (the runner has the Android SDK)
+        run: make app

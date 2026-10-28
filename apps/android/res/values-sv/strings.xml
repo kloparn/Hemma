@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="looking">Letar efter Hemma på det här wifi-nätverket…</string>
+    <string name="found_one">Hittade på det här wifi-nätverket:</string>
+    <string name="found_none">Inget Hemma svarade på det här wifi-nätverket. Är mobilen på hemnätverket?</string>
+    <string name="no_wifi">Anslut mobilen till hemmets wifi och leta sedan igen.</string>
+    <string name="lost">Når inte %1$s just nu. Letar efter det igen…</string>
+    <string name="look_again">Leta igen</string>
+    <string name="or_type">Eller skriv adressen (den står på sidan Skärmar):</string>
+    <string name="address_hint">192.168.1.50 eller hemma.local</string>
+    <string name="open">Öppna</string>
+    <string name="needs_local">För att hitta Hemma behöver appen nå enheter i ditt hemnätverk: tillåt det när Android frågar och tryck sedan på Leta igen.</string>
+    <string name="not_home">Det är ingen adress på hemnätverket: appen ansluter bara till Hemma hemma.</string>
+    <string name="not_hemma">Inget på %1$s svarade som Hemma.</string>
+    <string name="other_hemma">Ett annat Hemma</string>
+    <string name="playing">Lyssnar</string>
+    <string name="back15">Bakåt 15 sekunder</string>
+    <string name="fwd30">Framåt 30 sekunder</string>
+    <string name="play">Spela</string>
+    <string name="pause">Pausa</string>
+    <string name="downloading">Laddar ner %1$s</string>
+</resources>

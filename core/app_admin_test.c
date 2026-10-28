@@ -1,6 +1,7 @@
 /* MOD_ADMIN (a section only admins have: navigation, pages, raw endpoints) and the public
  * /healthz - the first through the harness and over real sockets, with a module of its own. */
 #include "../tests/harness.h"
+#include "i18n.h"
 #include "server.h"
 
 static volatile int g_hook_calls;
@@ -221,5 +222,66 @@ TEST(app_healthz_says_ok_and_nothing_more) {
     CHECK(!strstr(body_of(&r), "ok\n") || strstr(body_of(&r), "Hemma doesn't answer"));
     CHECK(stop_server());
     buf_free(&r);
+    th_halt();
+}
+
+/* 2.0: the Android app finds Hemma by asking GET /hemma.json - who it is, and nothing more */
+TEST(app_hemma_json_says_which_hemma_this_is) {
+    char data[512];
+    str_copy(data, sizeof data, test_tmpdir());
+    th_boot_in(data);
+    setting_set("household.name", "Björk \"by the lake\"");
+    char id[17];
+    str_copy(id, sizeof id, app_instance());
+    CHECK_INT((int)strlen(id), 16);
+    int port = 0;
+    CHECK(start_server(&port));
+    Buf r = {0};
+    request(port, "GET /hemma.json HTTP/1.1\r\nHost: 192.168.1.50\r\nConnection: close\r\n\r\n", &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 200 OK\r\n"));
+    CHECK_HAS(buf_cstr(&r), "Content-Type: application/json\r\n");
+    CHECK_HAS(buf_cstr(&r), "Cache-Control: no-store\r\n");
+    char want[200];
+    snprintf(want, sizeof want, "{\"hemma\":\"%s\",\"id\":\"%s\",\"name\":\"Björk \\\"by the lake\\\"\"}\n", HEMMA_VERSION, id);
+    CHECK_STR(body_of(&r), want); /* (signed out: no cookie, no sign-in page) */
+    CHECK(!strstr(buf_cstr(&r), "Set-Cookie"));
+    request(port, "POST /hemma.json HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 405 "));
+    request(port, "GET /hemma.json HTTP/1.1\r\nHost: evil.example.com\r\nConnection: close\r\n\r\n", &r);
+    CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 403 ")); /* (the host guard first) */
+    CHECK(stop_server());
+    buf_free(&r);
+    th_halt();
+    /* the same Hemma after a restart: the same id */
+    th_boot_in(data);
+    CHECK_STR(app_instance(), id);
+    th_halt();
+}
+
+/* 2.0: a sign-in from the app is named as one - and pages know it (session_in_app) */
+TEST(app_knows_a_sign_in_from_the_app) {
+    th_boot();
+    int eva = person_as("Eva", ROLE_MEMBER);
+    char sid[33];
+    CHECK(session_create(eva, false,
+                         "Mozilla/5.0 (Linux; Android 17; Pixel 10 Build/X; wv) AppleWebKit/537.36 (KHTML, like Gecko) "
+                         "Version/4.0 Chrome/140.0.0.0 Mobile Safari/537.36 HemmaApp/2.0.0",
+                         sid));
+    CHECK(session_create(eva, false, "Mozilla/5.0 (Linux; Android 17) Chrome/140.0.0.0 Mobile Safari/537.36", sid));
+    int in_app = 0, browser = 0;
+    for (int i = 0; i < tbl_count(&T_session); i++) {
+        Session *s = tbl_at(&T_session, i);
+        Buf said = {0};
+        i18n_unpack(&said, s->agent);
+        if (session_in_app(s)) {
+            in_app++;
+            CHECK_STR(buf_cstr(&said), "The Hemma app on Android");
+        } else {
+            browser++;
+            CHECK_STR(buf_cstr(&said), "Chrome on Android");
+        }
+        buf_free(&said);
+    }
+    CHECK(in_app == 1 && browser == 1);
     th_halt();
 }

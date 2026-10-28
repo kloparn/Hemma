@@ -11,6 +11,8 @@
     ./build.ps1 pi32            Raspberry Pi 32-bit  -> build/hemma-pi32   (static, armv6: every Pi)
     ./build.ps1 linux           Linux x86_64         -> build/hemma-linux  (static; pi/pi32 run on any ARM Linux)
     ./build.ps1 mac             macOS 11+            -> build/hemma-mac-arm64 (Apple silicon), build/hemma-mac-x64 (Intel)
+    ./build.ps1 app             the Android app      -> build/hemma.apk (built into the program too, when the
+                                Android SDK and a JDK are found: see Build-App)
     ./build.ps1 all             tests + every target
     ./build.ps1 clean
 
@@ -119,6 +121,8 @@ function Build-Assets {
     $served = @{ "/app.css" = "$B/app.css" }
     foreach ($f in $files) { $served["/" + $f.Substring(4)] = $f }
     if ($Skip -notcontains "av") { $served["/av.wasm"] = Build-Wasm }
+    $apk = Build-App $false
+    if ($apk) { $served["/hemma.apk"] = $apk }
     # a gzipped twin of each text file and of av.wasm ("/app.css.gz"): served to browsers that
     # accept it - a first page load shrinks from ~120 KB to ~30 KB
     New-Item -ItemType Directory -Force "$B/gz" | Out-Null
@@ -156,6 +160,92 @@ function Build-Wasm {
                 "-Wl,-z,stack-size=8388608", "-Imodules/av") + $WasmSources + @("-o", $out))
     }
     return $out
+}
+
+# The Hemma app for Android (apps/android, 2.0; docs/decisions/0011) -> $B/hemma.apk, built into the program as
+# /static/hemma.apk (Your account -> "Get the app for Android"). Built when Android's tools are here - an SDK
+# (ANDROID_HOME, else Android Studio's %LOCALAPPDATA%\Android\Sdk) and a JDK (JAVA_HOME, else Android Studio's own)
+# - else left out, like av.wasm without zig. The same steps as apps/android/build.sh (its header: the key). In CI
+# only with the release key (HEMMA_APP_KEYSTORE): one made up there would make later versions refuse to install.
+function Find-AndroidTools {
+    $sdk = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT, "$env:LOCALAPPDATA\Android\Sdk") | Where-Object { $_ -and (Test-Path $_) } |
+        Select-Object -First 1
+    $jdk = @($env:JAVA_HOME, "$env:ProgramFiles\Android\Android Studio\jbr") | Where-Object { $_ -and (Test-Path "$_\bin\javac.exe") } |
+        Select-Object -First 1
+    if (-not $sdk -or -not $jdk) { return $null }
+    $bt = Get-ChildItem "$sdk\build-tools" -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path "$($_.FullName)\aapt2.exe" } |
+        Sort-Object { [version]($_.Name -replace '[^0-9.].*$', '') } | Select-Object -Last 1
+    $plat = Get-ChildItem "$sdk\platforms" -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^android-(\d+)' } |
+        Sort-Object { [int]($_.Name -replace '^android-(\d+).*$', '$1') } | Select-Object -Last 1
+    if (-not $bt -or -not $plat -or -not (Test-Path "$($plat.FullName)\android.jar")) { return $null }
+    return @{ Jdk = $jdk; BT = $bt.FullName; Jar = "$($plat.FullName)\android.jar" }
+}
+
+function Invoke-Tool([string]$Exe, [string[]]$ToolArgs) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $out = & $Exe @ToolArgs 2>&1
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    if ($code -ne 0) { $out | ForEach-Object { Write-Host $_ }; throw "$(Split-Path $Exe -Leaf) failed (exit $code)" }
+    return $out
+}
+
+function Build-App([bool]$Force) {
+    if ($Skip -contains "app") { return "" }
+    $t = Find-AndroidTools
+    if (-not $t) { if ($Force) { throw "Android's tools weren't found (ANDROID_HOME, JAVA_HOME)" }; return "" }
+    if ($env:CI -and -not $env:HEMMA_APP_KEYSTORE -and -not $Force) { return "" }
+    $apk = "$B/hemma.apk"
+    $newest = (@(Get-ChildItem apps/android -Recurse -File) + @(Get-Item VERSION) | Measure-Object -Property LastWriteTime -Maximum).Maximum
+    if (-not $Force -and (Test-Path $apk) -and (Get-Item $apk).LastWriteTime -ge $newest) { return $apk }
+    $out = "$B/app"
+    Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue
+    foreach ($d in "test", "gen", "classes") { New-Item -ItemType Directory -Force "$out/$d" | Out-Null }
+    $jb = "$($t.Jdk)\bin"
+    $savedHome = $env:JAVA_HOME
+    $env:JAVA_HOME = $t.Jdk # (d8.bat and apksigner.bat run Java through it)
+    try {
+        # 1. the address rules, with a JDK alone
+        $net = "apps/android/src/io/github/kloparn/hemma/Net.java"
+        Invoke-Tool "$jb\javac.exe" @("-encoding", "UTF-8", "-d", "$out/test", $net, "apps/android/test/NetTest.java") | Out-Null
+        Invoke-Tool "$jb\java.exe" @("-cp", "$out/test", "NetTest") | ForEach-Object { Write-Host $_ -ForegroundColor DarkGray }
+        # 2. the key: the release key (HEMMA_APP_KEYSTORE + HEMMA_APP_KEY_PASSWORD), else this developer's own
+        if ($env:HEMMA_APP_KEYSTORE) {
+            $ks = $env:HEMMA_APP_KEYSTORE; $pw = $env:HEMMA_APP_KEY_PASSWORD; $debugMode = @()
+            if (-not $pw) { throw "HEMMA_APP_KEY_PASSWORD isn't set" }
+        } else {
+            $ks = "$env:USERPROFILE\.hemma\hemma-app-dev.p12"; $pw = "hemma-dev"; $debugMode = @("--debug-mode")
+            if (-not (Test-Path $ks)) {
+                New-Item -ItemType Directory -Force (Split-Path $ks) | Out-Null
+                Invoke-Tool "$jb\keytool.exe" @("-genkeypair", "-keystore", $ks, "-storetype", "PKCS12", "-storepass", $pw, "-keypass", $pw,
+                    "-alias", "hemma", "-keyalg", "RSA", "-keysize", "3072", "-validity", "10000", "-dname", "CN=Hemma developer build") | Out-Null
+            }
+        }
+        # 3. resources + manifest -> base.apk (and R.java)
+        $v = [version]$Version
+        $code = $v.Major * 10000 + $v.Minor * 100 + $v.Build
+        Invoke-Tool "$($t.BT)\aapt2.exe" @("compile", "--dir", "apps/android/res", "-o", "$out/res.zip") | Out-Null
+        Invoke-Tool "$($t.BT)\aapt2.exe" (@("link", "-I", $t.Jar, "--manifest", "apps/android/AndroidManifest.xml",
+                "--min-sdk-version", "26", "--target-sdk-version", "36", "--version-code", "$code", "--version-name", $Version,
+                "--java", "$out/gen") + $debugMode + @("-o", "$out/base.apk", "$out/res.zip")) | Out-Null
+        # 4. Java -> classes.dex
+        $src = @(Get-ChildItem apps/android/src, "$out/gen" -Recurse -Filter *.java | ForEach-Object { $_.FullName })
+        $boot = "$($t.Jar);$($t.BT)\core-lambda-stubs.jar" # (a lambda needs LambdaMetafactory, which d8 then removes)
+        Invoke-Tool "$jb\javac.exe" (@("-source", "8", "-target", "8", "-bootclasspath", $boot, "-Xlint:-options", "-encoding", "UTF-8",
+                "-d", "$out/classes") + $src) | Out-Null
+        $classes = @(Get-ChildItem "$out/classes" -Recurse -Filter *.class | ForEach-Object { $_.FullName })
+        Invoke-Tool "$($t.BT)\d8.bat" (@("--release", "--min-api", "26", "--lib", $t.Jar, "--output", $out) + $classes) | Out-Null
+        # 5. classes.dex into the APK, aligned, signed
+        Push-Location $out
+        try { Invoke-Tool "$($t.BT)\aapt.exe" @("add", "base.apk", "classes.dex") | Out-Null } finally { Pop-Location }
+        Invoke-Tool "$($t.BT)\zipalign.exe" @("-f", "-p", "4", "$out/base.apk", "$out/aligned.apk") | Out-Null
+        Invoke-Tool "$($t.BT)\apksigner.bat" @("sign", "--ks", $ks, "--ks-pass", "pass:$pw", "--out", $apk, "$out/aligned.apk") | Out-Null
+        Remove-Item "$apk.idsig" -ErrorAction SilentlyContinue
+    } finally { $env:JAVA_HOME = $savedHome }
+    $size = [math]::Round((Get-Item $apk).Length / 1KB)
+    Write-Host "built $apk ($size KB, $Version)" -ForegroundColor Green
+    return $apk
 }
 
 # SQLite and its recovery extension (third_party/sqlite/recover.c): one object each, built again when
@@ -270,6 +360,7 @@ switch ($Cmd) {
         Invoke-Tests $Rest
     }
     "ci" { Invoke-CI $(if ($Rest) { $Rest } else { @("test") }) }
+    "app" { $null = Build-App $true }
     "pi" { Build-Target "pi" $Release }
     "pi32" { Build-Target "pi32" $Release }
     "linux" { Build-Target "linux" $Release }

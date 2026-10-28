@@ -4,6 +4,33 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.0.0 (2026-10-28)
+
+Hemma gets an app: Hemma for Android finds Hemma on the home network by itself.
+
+### New
+
+- **The Hemma app for Android**, from your own Hemma: Household -> Your account -> *Get the app for Android*. It
+  looks for Hemma on the Wi-Fi you're on by itself (no address to type), keeps you signed in, and opens Hemma's
+  pages in a window of its own. It only ever connects to Hemma on the home network.
+- **Audiobooks with the phone locked, in the app:** the app's own media controls on the lock screen and in the
+  notifications, with the cover, the chapter, play/pause, 15/30 seconds and the chapters.
+- Your account's list of devices says "The Hemma app on Android" for a sign-in from the app.
+
+### For developers
+
+- `GET /hemma.json` (public, like `/healthz`): `{"hemma": version, "id": this Hemma's own id, "name": the
+  household}` - what the app looks for. The id is made once (setting `core.instance`).
+- apps/android: plain Java on Android's own APIs, no libraries, no Gradle - `apps/android/build.sh` / `make app`
+  / `./build.ps1 app` (aapt2, javac, d8, zipalign, apksigner), about 40 KB; docs/decisions/0011, docs/android.md.
+  A build that finds the Android SDK and a JDK puts it into the program as `/static/hemma.apk`. Its address rules
+  are tested with a JDK alone (test/NetTest.java); CI builds it (build.yml `android`).
+- Releases carry `hemma-android.apk`, signed with the project's app key (GitHub secrets `HEMMA_APP_KEYSTORE`,
+  `HEMMA_APP_KEY_PASSWORD`; a release without them fails), and the programs serve that same app.
+- The installer announces Hemma through Avahi (`deploy/avahi-hemma.service` -> `/etc/avahi/services/hemma.service`).
+- web/wire.js: in the app (`window.HemmaApp`) the listener tells the app what plays and takes its lock-screen
+  buttons back through `window.hemmaAction`.
+
 ## 1.6.0 (2026-10-28)
 
 Audiobooks: Watch gets an Audiobooks tab, and a book keeps playing with the phone locked.

@@ -25,6 +25,7 @@ static const char *content_type(const char *path) {
         {".woff2", "font/woff2"},
         {".txt", "text/plain; charset=utf-8"},
         {".wasm", "application/wasm"},
+        {".apk", "application/vnd.android.package-archive"},
     };
     const char *dot = strrchr(path, '.');
     for (size_t i = 0; dot && i < sizeof types / sizeof types[0]; i++)

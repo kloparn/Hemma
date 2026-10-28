@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="looking">Buscando Hemma en esta wifi…</string>
+    <string name="found_one">Encontrado en esta wifi:</string>
+    <string name="found_none">Ningún Hemma respondió en esta wifi. ¿Está el móvil en la red de casa?</string>
+    <string name="no_wifi">Conecta el móvil a la wifi de casa y vuelve a buscar.</string>
+    <string name="lost">No se puede llegar a %1$s ahora mismo. Buscándolo otra vez…</string>
+    <string name="look_again">Buscar otra vez</string>
+    <string name="or_type">O escribe su dirección (está en la página Pantallas):</string>
+    <string name="address_hint">192.168.1.50 o hemma.local</string>
+    <string name="open">Abrir</string>
+    <string name="needs_local">Para encontrar Hemma, la app necesita llegar a los dispositivos de tu red de casa: permítelo cuando Android lo pregunte y luego pulsa Buscar otra vez.</string>
+    <string name="not_home">Esa no es una dirección de la red de casa: la app solo se conecta a Hemma en casa.</string>
+    <string name="not_hemma">Nada en %1$s respondió como Hemma.</string>
+    <string name="other_hemma">Otro Hemma</string>
+    <string name="playing">Escuchando</string>
+    <string name="back15">Atrás 15 segundos</string>
+    <string name="fwd30">Adelante 30 segundos</string>
+    <string name="play">Reproducir</string>
+    <string name="pause">Pausar</string>
+    <string name="downloading">Descargando %1$s</string>
+</resources>

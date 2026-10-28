@@ -180,6 +180,14 @@ else
 fi
 answers() { [ -n "$FETCH" ] && $FETCH "http://$PROBE:$PORT/healthz" 2>/dev/null | grep -q '^ok'; }
 
+# The Hemma app finds this Hemma on the home network (2.0): announced through Avahi as _hemma._tcp on Hemma's port,
+# when Avahi is here (it's what makes <name>.local work). Without it the app still finds Hemma by asking around.
+if [ -f "$HERE/avahi-hemma.service" ] && [ -d /etc/avahi/services ]; then
+    sed "s/@PORT@/$PORT/" "$HERE/avahi-hemma.service" >/etc/avahi/services/hemma.service
+    chmod 644 /etc/avahi/services/hemma.service
+    systemctl reload avahi-daemon >/dev/null 2>&1 || true
+fi
+
 # The database as it was, before the new program first opens it (a new data format can mean an older
 # Hemma refuses it): hemma.db.before-install-<when>, the newest 3 kept. Stopped first, so it's whole.
 DATA=/var/lib/hemma

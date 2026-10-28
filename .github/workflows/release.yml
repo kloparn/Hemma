@@ -60,13 +60,36 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
-      - name: Test, then build the programs (no Windows one yet)
+      # The Android app (2.0; apps/android, docs/decisions/0011): built with the runner's Android SDK, signed with
+      # the project's app key (HEMMA_APP_KEYSTORE = the PKCS12 file in base64, HEMMA_APP_KEY_PASSWORD) and built
+      # into every program (Your account -> Get the app for Android) - and a download of its own. Android installs
+      # an update only over an app signed with the same key: a release without it fails here.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Test, then build the programs (no Windows one yet) - with the Android app
         shell: powershell
+        env:
+          APP_KEY_B64: ${{ secrets.HEMMA_APP_KEYSTORE }}
+          HEMMA_APP_KEY_PASSWORD: ${{ secrets.HEMMA_APP_KEY_PASSWORD }}
+          PUBLISH: ${{ needs.check.outputs.publish }}
         run: |
+          if ($env:APP_KEY_B64) {
+            $ks = Join-Path $env:RUNNER_TEMP "hemma-app.p12"
+            [IO.File]::WriteAllBytes($ks, [Convert]::FromBase64String($env:APP_KEY_B64))
+            $env:HEMMA_APP_KEYSTORE = $ks
+          } elseif ($env:PUBLISH -eq 'true') {
+            Write-Host "::error::The secret HEMMA_APP_KEYSTORE is missing: the Android app must be signed with the project's own key"
+            exit 1
+          } else {
+            Write-Host "::warning::No HEMMA_APP_KEYSTORE: a dry run without the Android app"
+          }
           foreach ($t in 'test', 'pi', 'pi32', 'linux', 'mac') {
             ./build.ps1 $t
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+          if ($env:APP_KEY_B64 -and -not (Test-Path build/hemma.apk)) { Write-Host "::error::The Android app wasn't built"; exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: programs
@@ -77,6 +100,7 @@ jobs:
             build/hemma-linux
             build/hemma-mac-arm64
             build/hemma-mac-x64
+            build/hemma.apk
 
   publish:
     needs: [check, build]

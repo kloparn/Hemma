@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The app's own words (the rest is Hemma's pages, in the language Hemma speaks to you); Swedish and Spanish in
+     values-sv / values-es, like every text Hemma shows -->
+<resources>
+    <string name="app_name">Hemma</string>
+    <string name="looking">Looking for Hemma on this Wi-Fi…</string>
+    <string name="found_one">Found on this Wi-Fi:</string>
+    <string name="found_none">No Hemma answered on this Wi-Fi. Is the phone on the home network?</string>
+    <string name="no_wifi">Connect the phone to the home Wi-Fi, then look again.</string>
+    <string name="lost">Can\'t reach %1$s right now. Looking for it again…</string>
+    <string name="look_again">Look again</string>
+    <string name="or_type">Or type its address (it\'s on the Screens page):</string>
+    <string name="address_hint">192.168.1.50 or hemma.local</string>
+    <string name="open">Open</string>
+    <string name="needs_local">To find Hemma, the app needs to reach devices on your home network: allow it when Android asks, then Look again.</string>
+    <string name="not_home">That\'s not an address on the home network: the app only connects to Hemma at home.</string>
+    <string name="not_hemma">Nothing at %1$s answered as Hemma.</string>
+    <string name="other_hemma">Another Hemma</string>
+    <string name="playing">Listening</string>
+    <string name="back15">Back 15 seconds</string>
+    <string name="fwd30">Forward 30 seconds</string>
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="downloading">Downloading %1$s</string>
+</resources>

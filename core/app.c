@@ -68,11 +68,13 @@ static atomic_int g_exit_code; /* app_quit(): what app_main returns */
 static char g_asset_ver[17];
 static bool g_testing;
 static char g_extra_hosts[512]; /* HEMMA_HOSTS: more names this server answers to */
+#define SETTING_INSTANCE "core.instance" /* this Hemma's own id (2.0: GET /hemma.json) */
 
 bool app_testing(void) { return g_testing; }
 void app_set_testing(bool on) { g_testing = on; }
 
 const char *app_name(void) { return setting("household.name", "Hemma"); }
+const char *app_instance(void) { return setting(SETTING_INSTANCE, ""); }
 const char *app_asset_version(void) { return g_asset_ver; }
 bool app_dev_mode(void) { return g_cfg.web_dir != NULL; }
 bool app_demo(void) { return g_cfg.demo_password != NULL; }
@@ -366,7 +368,12 @@ static Session *session_by_token(const char *token) {
 
 /* "Chrome on Windows" - kept packed (i18n_pack), so Your account says it in the reader's language:
    show Session.agent with i18n_unpack. */
+#define IN_APP N_("The Hemma app on %s")
 static void agent_summary(const char *ua, char *out, size_t cap) {
+    if (ua && strstr(ua, "HemmaApp/")) { /* (2.0: the app's own browser - "... Chrome/... HemmaApp/2.0.0") */
+        i18n_pack(out, cap, IN_APP, strstr(ua, "Android") ? "Android" : "?");
+        return;
+    }
     const char *browser = !ua                       ? ""
                           : strstr(ua, "Edg/")      ? "Edge"
                           : strstr(ua, "Firefox/")  ? "Firefox"
@@ -386,6 +393,8 @@ static void agent_summary(const char *ua, char *out, size_t cap) {
     else if (os[0]) i18n_pack(out, cap, N_("A browser on %s"), os);
     else i18n_pack(out, cap, N_("A browser"));
 }
+
+bool session_in_app(const Session *s) { return s && str_starts(s->agent, IN_APP); } /* (packed: the format first) */
 
 bool session_create(int person, bool remember, const char *user_agent, char sid_out[33]) {
     rand_hex(sid_out, 16);
@@ -1724,6 +1733,21 @@ static const Asset *asset_find(const char *path) {
     return NULL;
 }
 
+static struct {
+    char path[64];
+    long long size;
+} g_test_static;
+void app_test_static(const char *path, long long size) {
+    str_copy(g_test_static.path, sizeof g_test_static.path, path ? path : "");
+    g_test_static.size = size;
+}
+
+long long app_static_size(const char *path) {
+    if (g_test_static.path[0] && str_eq(path, g_test_static.path)) return g_test_static.size;
+    const Asset *a = asset_find(path);
+    return a ? (long long)a->len : -1;
+}
+
 static void serve_static(Conn *conn, HttpReq *r) {
     const char *name = str_starts(r->path, "/static/") ? r->path + 7 : "/icon.svg"; /* "/app.css" */
     if (g_cfg.web_dir && str_eq(name, "/app.css")) {
@@ -1923,6 +1947,26 @@ static void api(Ctx *c, Conn *conn, HttpReq *r) {
     buf_free(&out);
 }
 
+/* GET /hemma.json, public (2.0; the Android app finds Hemma on the home network by it): this is Hemma, which version,
+   which one ("id": the same Hemma at another address after the router hands out a new one) and the household's
+   name - which the sign-in page shows anyone anyway. Nothing else. */
+static void hemma_json(Conn *conn, HttpReq *r) {
+    if (!str_eq(r->method, "GET") && !str_eq(r->method, "HEAD")) {
+        conn_reply(conn, 405, "text/plain", "GET only\n", 9, "Allow: GET, HEAD\r\n");
+        return;
+    }
+    Buf b = {0};
+    buf_puts(&b, "{\"hemma\":");
+    json_str(&b, HEMMA_VERSION);
+    buf_puts(&b, ",\"id\":");
+    json_str(&b, app_instance());
+    buf_puts(&b, ",\"name\":");
+    json_str(&b, app_name());
+    buf_puts(&b, "}\n");
+    conn_reply(conn, 200, "application/json", b.p, b.len, "Cache-Control: no-store\r\n");
+    buf_free(&b);
+}
+
 static void on_http(Conn *conn, HttpReq *r) {
     if (!http_host_ok(r, g_extra_hosts)) { /* DNS rebinding: someone else's name pointing at us */
         static const char msg[] = "Hemma doesn't answer to this host name.\nOpen it by its address "
@@ -1935,6 +1979,10 @@ static void on_http(Conn *conn, HttpReq *r) {
         if (str_eq(r->method, "GET") || str_eq(r->method, "HEAD"))
             conn_reply(conn, 200, "text/plain; charset=utf-8", "ok\n", 3, "Cache-Control: no-store\r\n");
         else conn_reply(conn, 405, "text/plain", "GET only\n", 9, "Allow: GET, HEAD\r\n");
+        return;
+    }
+    if (!r->streaming && str_eq(r->path, "/hemma.json")) { /* "is this Hemma?" - the app asks it while looking (2.0) */
+        hemma_json(conn, r);
         return;
     }
     if (!r->streaming && str_starts(r->path, "/cal/")) { /* a person's calendar feed: its own key, no cookie */
@@ -2228,6 +2276,12 @@ bool app_boot(const char *data_dir) {
         auth_bootstrap_admin();
     }
     auth_start(); /* password resets left by `hemma --reset-password` */
+    if (!setting(SETTING_INSTANCE, "")[0]) { /* (once: the Android app knows this Hemma by it - GET /hemma.json) */
+        char id[17];
+        rand_hex(id, 8);
+        setting_set(SETTING_INSTANCE, id);
+    }
+    g_test_static.path[0] = '\0';
     str_copy(g_extra_hosts, sizeof g_extra_hosts, env("HEMMA_HOSTS", ""));
     prune_sessions();
     zone_boot(); /* a new time zone since the last start: days kept on their days (issue #39) */

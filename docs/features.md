@@ -106,6 +106,9 @@ account ([setting one up](accounts.md#a-tablet-on-the-wall)).
 - Someone moving out keeps their history, or it's all erased - Hemma says what will happen first.
 - Everyone's own privacy: on the wall, on the TV, who's home, what they're doing.
 - Your home's name, and the link that puts your calendar on your phone.
+- **The Hemma app for Android**, from your own Hemma (Your account → *Get the app for Android*): it finds
+  Hemma on the home Wi-Fi by itself, keeps you signed in, and plays audiobooks with the lock screen's
+  controls. It connects to nothing but Hemma at home. [The Android app](android.md).
 
 More in [Accounts](accounts.md).
 
