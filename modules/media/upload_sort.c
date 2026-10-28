@@ -5,16 +5,25 @@
  *   a disc rip  -> <series folder>/<Show>/<its path below its own show folder>: the library numbers
  *                  those by their disc and title folders ("Season 1/Disc - 2/B3_t03.mkv"), so they stay
  *   a film      -> <movies folder>/<Title (Year)>/<its name>
+ *   an audiobook's file (1.6: an .m4b anywhere; an .m4a or .mp3 anywhere but in a show's or a film's own
+ *               folder - an admin who uploads one means an audiobook)
+ *               -> <books folder>/<its path below a books folder among its folders>
+ *                  ("Ljudböcker/Astrid/Book/01.mp3" -> "Astrid/Book/01.mp3"), else <books folder>/<its path>
+ *                  as it was chosen ("Book/CD1/01.mp3", a loose "Book.m4b"); ?series= never takes it
  *   subtitles and pictures go with their video (the same name, in the same folder) - a DVD VobSub's .sub
- *   (only with its .idx among the chosen files) wherever its .idx goes; whatever else sits
- *   in a show's or a film's own folder (a poster.jpg, Extras/, Subs/) goes along into that folder; the
- *   rest stays as it was chosen.
+ *   (only with its .idx among the chosen files) wherever its .idx goes - and pictures with their
+ *   audiobook's file ("Book.jpg" with "Book.m4b"); whatever else sits in a show's or a film's own folder
+ *   (a poster.jpg, Extras/, Subs/, a theme.mp3, Soundtrack/ - the library leaves audio there alone) goes
+ *   along into that folder, and the pictures and subtitles in an audiobook's own folder (above its CD1/,
+ *   Disc 2/: a cover.jpg) into its folder - not one inside a show's or a film's, which keeps what's there;
+ *   the rest stays as it was chosen.
  *
  * <series folder> is the library folder's own "Series" / "Serier" / "TV Shows" / "TV" / "Anime" (any
  * case), else "Series" - nothing when the library folder itself is one; <movies folder> likewise
- * "Movies" / "Films" / "Filmer". A show the library has (by its folded name) goes into ITS folder, and a
- * season into its season folder there; a film it has, into that film's folder. File names never change:
- * a copy (x.web.mp4), its original and their subtitles keep finding each other. */
+ * "Movies" / "Films" / "Filmer"; <books folder> its own "Audiobooks" / "Ljudböcker" / "Audiolibros" ...
+ * (media_is_books_folder), else "Audiobooks". A show the library has (by its folded name) goes into ITS
+ * folder, and a season into its season folder there; a film it has, into that film's folder. File names
+ * never change: a copy (x.web.mp4), its original and their subtitles keep finding each other. */
 #include <ctype.h>
 
 #include "remove.h" /* media_names_show */
@@ -30,11 +39,12 @@ static const char *const EXTRA_DIRS[] = {"extras",     "extra",   "featurettes",
                                          "deleted scenes", "interviews", "trailers", "trailer", "samples",
                                          "sample",     "bonus",   "scenes",      "shorts",     NULL};
 
-/* A folder of the chosen files that names a show or a film, and where its contents go. */
+/* A folder of the chosen files that names a show or a film (or is an audiobook's), and where its contents go. */
 typedef struct {
     char src[400], dst[400];
     char title[128];
     bool clash; /* two shows claim it (a "Season 1" folder with two shows' episodes): nothing follows it */
+    bool book;  /* an audiobook's own folder: only pictures and subtitles follow it, never a video */
 } DirMap;
 
 typedef struct {
@@ -54,7 +64,7 @@ typedef struct {
     const UpSortOpts *o;
     const MediaIndex *ix;
     int root_ix; /* the library folder in the index (-1: not scanned yet - nothing to find there) */
-    char series_dir[256], movies_dir[256];
+    char series_dir[256], movies_dir[256], books_dir[256];
     bool series_ok; /* ?series= names a series of this library folder */
     char series_show[400], series_title[128];
     DirMap maps[MAPS_MAX];
@@ -242,7 +252,22 @@ static void top_dir(const char *root, const char *const *list, const char *dflt,
     if (it) dir_close(it);
 }
 
-static void add_map(Sorter *s, const char *rel, size_t len, const char *dst, const char *title) {
+/* ... and its own folder for audiobooks: "Audiobooks", "Ljudböcker" ... as it's spelled there (the first by
+   name, if it has two), else "Audiobooks" - "" when the library folder itself is one. */
+static void books_dir(const char *root, char *out, size_t cap) {
+    const char *own = strrchr(root, '/');
+    out[0] = '\0';
+    if (media_is_books_folder(own ? own + 1 : root)) return;
+    DirIter *it = dir_open(root);
+    DirEntry e;
+    while (it && dir_next(it, &e))
+        if (e.is_dir && media_is_books_folder(e.name) && (!out[0] || strcmp(e.name, out) < 0))
+            str_copy(out, cap, e.name);
+    if (it) dir_close(it);
+    if (!out[0]) str_copy(out, cap, "Audiobooks");
+}
+
+static void add_map(Sorter *s, const char *rel, size_t len, const char *dst, const char *title, bool book) {
     if (!len || len >= sizeof s->maps[0].src) return;
     for (int i = 0; i < s->nmaps; i++) {
         DirMap *m = &s->maps[i];
@@ -257,6 +282,7 @@ static void add_map(Sorter *s, const char *rel, size_t len, const char *dst, con
     str_copy(m->dst, sizeof m->dst, dst);
     str_copy(m->title, sizeof m->title, title);
     m->clash = false;
+    m->book = book;
 }
 
 static bool mapped(const Sorter *s, const char *rel, size_t len) {
@@ -265,12 +291,13 @@ static bool mapped(const Sorter *s, const char *rel, size_t len) {
     return false;
 }
 
-static const DirMap *map_of(const Sorter *s, const char *rel) { /* the deepest folder of rel's that's mapped */
+/* the deepest folder of rel's that's mapped (books: an audiobook's folder counts too) */
+static const DirMap *map_of(const Sorter *s, const char *rel, bool books) {
     const DirMap *best = NULL;
     for (int i = 0; i < s->nmaps; i++) {
         const DirMap *m = &s->maps[i];
         size_t n = strlen(m->src);
-        if (m->clash || strncmp(rel, m->src, n) != 0 || rel[n] != '/') continue;
+        if (m->clash || (m->book && !books) || strncmp(rel, m->src, n) != 0 || rel[n] != '/') continue;
         if (!best || n > strlen(best->src)) best = m;
     }
     return best;
@@ -475,7 +502,7 @@ static void sort_episode(Sorter *s, UpSorted *u, const char *rel, const MediaNam
         char folder[256];
         part_name(&p, sp, folder, sizeof folder);
         if (!mapped(s, rel, end) && (s->o->series || folder_names(folder, nm->title, false, 0)))
-            add_map(s, rel, end, show->dest, show->title);
+            add_map(s, rel, end, show->dest, show->title, false);
     }
     if (nm->unnumbered) return; /* (a disc rip keeps its folders: placed with the rest, below) */
     char season[400];
@@ -485,7 +512,7 @@ static void sort_episode(Sorter *s, UpSorted *u, const char *rel, const MediaNam
         char folder[256];
         part_name(&p, i, folder, sizeof folder);
         if (media_season_folder(folder) == nm->season || media_disc_folder(folder) >= 0)
-            add_map(s, rel, part_end(rel, &p, i), season, show->title);
+            add_map(s, rel, part_end(rel, &p, i), season, show->title, false);
     }
 }
 
@@ -501,9 +528,46 @@ static void sort_film(Sorter *s, UpSorted *u, const char *rel, const MediaName *
         char folder[256];
         part_name(&p, i, folder, sizeof folder);
         if (rank_in(folder, EXTRA_DIRS) >= 0) continue;
-        if (folder_names(folder, nm->title, true, nm->year)) add_map(s, rel, part_end(rel, &p, i), film->dest, film->title);
+        if (folder_names(folder, nm->title, true, nm->year))
+            add_map(s, rel, part_end(rel, &p, i), film->dest, film->title, false);
         break;
     }
+}
+
+/* An audiobook's file (1.6): into the books folder by the path it was chosen with - from below the last books
+   folder among its folders ("Ljudböcker/Astrid/Book/01.mp3" -> <books>/Astrid/Book/01.mp3), else all of it.
+   Its own folder (above a CD1/ or Disc 2/ it's in) takes its cover along - unless that lies in a show's or a
+   film's folder, which keeps what's there. Returns how long its book's folder is in rel (0: none - a loose
+   file, or one right in a books folder, is a book of its own); u->title = its own name (upload_sort names an
+   .m4a or .mp3 after its book's folder). */
+static size_t sort_book(Sorter *s, UpSorted *u, const char *rel) {
+    Parts p;
+    split(rel, &p);
+    char name[256];
+    int bk = p.n - 2;
+    for (; bk >= 0; bk--) {
+        part_name(&p, bk, name, sizeof name);
+        if (media_is_books_folder(name)) break;
+    }
+    size_t from = bk >= 0 ? part_end(rel, &p, bk) + 1 : 0; /* rel + from: the path below the books folder */
+    cat(u->dest, sizeof u->dest, s->books_dir, rel + from);
+    u->kept = false;
+    const char *base = p.n ? p.at[p.n - 1] : rel;
+    str_ncopy(u->title, sizeof u->title, base, media_stem_len(base));
+    int own = p.n - 2;
+    for (; own > bk + 1; own--) {
+        part_name(&p, own, name, sizeof name);
+        if (media_disc_folder(name) < 0) break;
+    }
+    if (own < 0) return 0;
+    size_t end = part_end(rel, &p, own);
+    char below[400], dst[400];
+    str_ncopy(below, sizeof below, rel + from, end > from ? end - from : 0);
+    cat(dst, sizeof dst, s->books_dir, below);
+    if (own > bk) part_name(&p, own, name, sizeof name);
+    else name[0] = '\0'; /* (the books folder itself) */
+    if (!map_of(s, rel, true)) add_map(s, rel, end, dst, name, true);
+    return own > bk ? end : 0;
 }
 
 /* "x.en.srt", "x.jpg", "x-poster.jpg", "x.web.mp4" next to the video x.mkv (same folder) */
@@ -536,6 +600,7 @@ void upload_sort(const UpSortOpts *o, const char *const *rels, int n, UpSorted *
         if (str_eq(s->ix->roots[i], o->root)) s->root_ix = i;
     top_dir(o->root, SERIES_DIRS, "Series", s->series_dir, sizeof s->series_dir);
     top_dir(o->root, MOVIE_DIRS, "Movies", s->movies_dir, sizeof s->movies_dir);
+    books_dir(o->root, s->books_dir, sizeof s->books_dir);
     if (o->series) series_target(s);
     bool to_series = o->series && s->series_ok;
     bool *lead = xcalloc((size_t)n + 1, sizeof *lead); /* placed by its own name: others may go with it */
@@ -553,6 +618,7 @@ void upload_sort(const UpSortOpts *o, const char *const *rels, int n, UpSorted *
         str_copy(u->dest, sizeof u->dest, rel);
         if (media_is_sub_ext(rel) || vobsub_idx(rels, n, i) >= 0) u->kind = UPK_SUB;
         else if (media_is_image_ext(rel)) u->kind = UPK_PIC;
+        else if (media_is_audio_ext(rel)) u->kind = UPK_BOOK; /* (placed in 1b) */
         else if (!media_is_video_ext(rel)) u->kind = UPK_JUNK;
         if (u->kind) continue;
         MediaName nm;
@@ -584,8 +650,36 @@ void upload_sort(const UpSortOpts *o, const char *const *rels, int n, UpSorted *
         }
     }
 
+    /* 1b. audiobooks' files - after the videos: a show's or film's folder keeps what's in it, an .m4a or .mp3
+           there too (a theme song, a soundtrack: placed with that folder in 3). An .m4a or .mp3 in a book's
+           folder is named after it, and a part of that book when others are there too (an .m4b is a whole
+           book, named by itself). */
+    size_t *blen = xcalloc((size_t)n + 1, sizeof *blen);
+    uint64_t *bh = xcalloc((size_t)n + 1, sizeof *bh);
+    for (int i = 0; i < n; i++) {
+        if (out[i].kind != UPK_BOOK) continue;
+        if (!str_iends(rels[i], ".m4b") && map_of(s, rels[i], false)) {
+            out[i].kind = UPK_AUDIO;
+            continue;
+        }
+        blen[i] = sort_book(s, &out[i], rels[i]);
+        if (blen[i] && !str_iends(rels[i], ".m4b")) bh[i] = hash64(rels[i], blen[i]);
+        lead[i] = true;
+    }
+    for (int i = 0; i < n; i++) {
+        if (!bh[i]) continue;
+        for (int k = 0; k < n && !out[i].part; k++) out[i].part = k != i && bh[k] == bh[i];
+        const char *seg = rels[i]; /* (the book's folder: the last part of rels[i][0..blen)) */
+        for (const char *q = rels[i]; q < rels[i] + blen[i]; q++)
+            if (*q == '/') seg = q + 1;
+        str_ncopy(out[i].title, sizeof out[i].title, seg, (size_t)(rels[i] + blen[i] - seg));
+    }
+    free(bh);
+    free(blen);
+
     /* 2. what goes with a video placed by its name: its subtitles, pictures, copy, a trailer named after it
-          (folders compared by a hash first: thousands of files, each against every video) */
+          (folders compared by a hash first: thousands of files, each against every video) - and with an
+          audiobook's file, the pictures named after it */
     uint64_t *dirh = xcalloc((size_t)n + 1, sizeof *dirh);
     for (int i = 0; i < n; i++) {
         const char *slash = rels[i] ? strrchr(rels[i], '/') : NULL;
@@ -598,7 +692,8 @@ void upload_sort(const UpSortOpts *o, const char *const *rels, int n, UpSorted *
         int best = -1;
         size_t best_len = 0;
         for (int k = 0; k < n; k++)
-            if (lead[k] && dirh[k] == dirh[i] && goes_with(rels[i], rels[k]) && media_stem_len(rels[k]) >= best_len) {
+            if (lead[k] && dirh[k] == dirh[i] && (out[k].kind != UPK_BOOK || u->kind == UPK_PIC) &&
+                goes_with(rels[i], rels[k]) && media_stem_len(rels[k]) >= best_len) {
                 best = k;
                 best_len = media_stem_len(rels[k]);
             }
@@ -618,13 +713,14 @@ void upload_sort(const UpSortOpts *o, const char *const *rels, int n, UpSorted *
         else u->kind = UPK_EXTRA;
     }
 
-    /* 3. the rest: into the folder a show's or film's own folder went to; else, for a disc rip of a named
+    /* 3. the rest: into the folder a show's or film's own folder went to (pictures and subtitles: or an
+          audiobook's; audio in a show's or film's folder always has one); else, for a disc rip of a named
           show, below the show's folder; with ?series=, everything into that series' folder */
     for (int i = 0; i < n; i++) {
         UpSorted *u = &out[i];
         const char *rel = rels[i];
         if (!rel || !u->kept || u->kind == UPK_JUNK || u->kind == UPK_ASK) continue;
-        const DirMap *m = map_of(s, rel);
+        const DirMap *m = map_of(s, rel, u->kind == UPK_PIC || u->kind == UPK_SUB);
         Parts p;
         split(rel, &p);
         int sp = show_part(&p);

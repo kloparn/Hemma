@@ -1,4 +1,4 @@
-/* modules/media/upload.h — admins add videos to the library from a browser.
+/* modules/media/upload.h — admins add videos (and, 1.6, audiobooks) to the library from a browser.
  * Module-internal (upload.c); media.c wires the page, endpoint, action and tick. */
 #ifndef HEMMA_MEDIA_UPLOAD_H
 #define HEMMA_MEDIA_UPLOAD_H
@@ -35,10 +35,10 @@ void upload_test_pace_window(int ms); /* tests: how long the processing speed is
 /* ------------------------------------------------------------------ sorting (upload_sort.c)
    Hemma sorts an upload by the files' names (owner, 2026-10-21): an episode goes into
    <series folder>/<Show>/Season N/, a film into <movies folder>/<Title (Year)>/ - into the folders
-   the library already has for that show or film, next to what's there. The preview and the plan
-   both ask upload_sort(), so they always agree. */
+   the library already has for that show or film, next to what's there - and an audiobook's files into
+   <books folder>/<their path>. The preview and the plan both ask upload_sort(), so they always agree. */
 typedef enum {
-    UPK_JUNK = 'j',    /* not a video, subtitle or picture (or a name a disk can't store) */
+    UPK_JUNK = 'j',    /* not a video, subtitle, picture or audio file (or a name a disk can't store) */
     UPK_EPISODE = 'e', /* a numbered episode: <show>/<season folder>/<its name> */
     UPK_DISC = 'd',    /* an episode known only by its folders (a disc rip): its path below the show folder */
     UPK_ASK = 'q',     /* an episode of a series nobody named: it goes as it was chosen */
@@ -47,18 +47,21 @@ typedef enum {
     UPK_OTHER = 'o',   /* a video that's neither an episode nor a film */
     UPK_SUB = 's',     /* subtitles */
     UPK_PIC = 'p',     /* a picture (a poster) */
+    UPK_BOOK = 'b',    /* an audiobook's file (1.6: .m4b .m4a .mp3): <books folder>/<its path> */
+    UPK_AUDIO = 'a',   /* an .m4a/.mp3 in a show's or film's own folder (a theme song, a soundtrack): goes along */
 } UpKind;
 
 typedef struct {
     char dest[400];   /* where it goes, below the library folder ('/' separators) */
     char kind;        /* UpKind */
-    char title[128];  /* the show or film (for subtitles and pictures: the video's, "" = none) */
+    char title[128];  /* the show, film or audiobook (subtitles and pictures: their video's or book's, "" = none) */
     char ep_title[96];
     int year, season, episode, episode_end, disc;
     uint64_t show;    /* episodes: the name Hemma found, as a key (upload_show_key) - renames go by it */
     char found[128];  /* ... and that name as found in the files */
     bool known;       /* the library has this show or film already: it goes into that folder */
     bool kept;        /* goes as it was chosen (nothing told Hemma where else) */
+    bool part;        /* an audiobook's .m4a/.mp3 among others in its book's folder (an .m4b is a whole book) */
 } UpSorted;
 
 typedef struct {

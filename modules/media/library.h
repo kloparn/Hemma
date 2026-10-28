@@ -20,7 +20,9 @@
 /* MF_NFO (1.4): a Kodi/Jellyfin ".nfo" - a series' tvshow.nfo, a film's "<its name>.nfo" or movie.nfo (an
    episode's own is never indexed). Only its genres are read, at the scan, kept in name.title as written and
    joined by '|' ("Comedy|Animation"): media_nfo_genres(); cats.c makes them categories. */
-enum { MF_VIDEO = 'v', MF_SUB = 's', MF_IMAGE = 'i', MF_NFO = 'n' };
+/* MF_AUDIO (1.6): an audiobook's file or one of its parts (mediainfo.h media_is_book_file) - its tags in
+   MediaIndex.tags, the books in MediaIndex.books. */
+enum { MF_VIDEO = 'v', MF_SUB = 's', MF_IMAGE = 'i', MF_NFO = 'n', MF_AUDIO = 'a' };
 /* MediaFile.role of the titles on a ripped disc that are not episodes (see library.c), and
    of "<name>.web.mp4": the play-everywhere copy made by convert.c, hidden behind its original */
 enum { MF_MAIN = 0, MF_PLAYALL = 'a', MF_BONUS = 'b', MF_WEBCOPY = 'w' };
@@ -35,7 +37,7 @@ typedef struct {
     /* videos */
     MediaName name;   /* kind, title, year, season/episode, ep_title */
     MediaProbe probe; /* container, duration, resolution, codecs, playable + why */
-    uint64_t series;  /* episodes and series extras: their MediaSeries id */
+    uint64_t series;  /* episodes and series extras: their MediaSeries id; an audiobook's part (MF_AUDIO): its book's */
     uint64_t poster;  /* image file for this item (0 = draw a CSS poster) */
     uint64_t web;     /* its "<name>.web.mp4" copy that plays everywhere (0 = none): what gets streamed */
     uint64_t fp;      /* its content: size + the first and last 64 KB, hashed - the same file under another
@@ -80,6 +82,42 @@ typedef struct {
     char why;            /* MEDIA_LEFT_*; parts: 0 */
 } MediaLeft;
 
+/* AUDIOBOOKS (1.6; owner, 2026-10-28: "audio books library ... listen to it while the phone is locked").
+   What an audio file says about itself (modules/av/audiotags.h), read once by the scan and kept in the cache:
+   the files' own tags - not kept in every MediaFile (videos have none, and an index holds ~10,000 files). */
+typedef struct {
+    int64_t start_ms; /* in its file */
+    char title[120];
+} MediaChapter;
+
+typedef struct {
+    uint64_t file; /* its MediaFile (MF_AUDIO) */
+    char title[200], author[128], narrator[128], album[200];
+    int year, track, disc;
+    int64_t cover_off, cover_len; /* a picture inside the file (cover_len 0 = none): /media/cover/<file> */
+    char cover_type[16];          /* "image/jpeg", "image/png" */
+    char *desc;                   /* its description, NULL = none */
+    MediaChapter *ch;             /* its chapters (NULL = none) */
+    int nch;
+} MediaTags;
+
+/* A book: an .m4b (or a single .m4a/.mp3) of its own, or - a folder of .mp3/.m4a parts ("01.mp3", "02.mp3",
+   CD1/CD2 folders) - every part in one folder, in order. Its id is its first part's file id: progress rows are by
+   file id (media_watch), so a book's is its first part's row with the place in the whole book. */
+typedef struct {
+    uint64_t id;
+    char title[200], author[128], narrator[128];
+    int year;
+    char series[128]; /* the folder holding it and other books ("Harry Potter Full-Cast Audio Editions"); "" = none */
+    int number;       /* its place there: the number in front of its name ("1 Harry Potter ..."), 0 = none */
+    int root;
+    uint64_t poster;     /* a picture file for it (MF_IMAGE): "<its name>.jpg", or cover/folder.jpg with it alone */
+    uint64_t cover;      /* else a part with a picture inside (MediaTags.cover_len), 0 = none: draw one */
+    int first, count;    /* its parts: MediaIndex.book_parts[first .. first + count), indices into files, in order */
+    int64_t duration_ms; /* all its parts */
+    int64_t newest;      /* mtime of its newest part */
+} MediaBook;
+
 typedef struct {
     char roots[MEDIA_MAX_ROOTS][300];
     int nroots;
@@ -95,6 +133,11 @@ typedef struct {
     int *extras, nextras;     /* play-all titles and bonus clips of ripped series: series, season, disc, title */
     MediaSeries *series;      /* A-Z */
     int nseries;
+    MediaTags *tags;  /* of every MF_AUDIO file, sorted by file id */
+    int ntags;
+    MediaBook *books; /* by their series (else title), number, title */
+    int nbooks;
+    int *book_parts;  /* see MediaBook.first */
     int64_t scanned_at; /* when the scan that produced this index finished (0 = loaded from cache) */
     int scan_ms, probed;
 } MediaIndex;
@@ -108,6 +151,14 @@ const MediaFile *media_episode(const MediaSeries *s, int i); /* i-th episode in 
 const MediaFile *media_neighbour(const MediaFile *ep, int dir); /* next (+1) / previous (-1) episode */
 const MediaFile *media_playable(const MediaFile *f); /* the file to stream: its .web.mp4 copy when there is one */
 const char *media_nfo_genres(uint64_t nfo);          /* an MF_NFO's genres, '|' between ("" = none, or no such file) */
+/* audiobooks (1.6) */
+const MediaTags *media_tags(uint64_t file);           /* an MF_AUDIO file's tags (NULL = none) */
+const MediaBook *media_book(uint64_t id);             /* by its id (its first part's) */
+const MediaFile *media_book_part(const MediaBook *b, int i); /* its i-th part */
+/* Made from the index's audio files and their tags (booklist.c), on whichever thread built the index; and the
+   index's tags let go. */
+void media_books_build(MediaIndex *ix);
+void media_tags_free(MediaTags *t, int n);
 bool media_is_web_copy(const char *rel);              /* "...name.web.mp4" */
 /* "...name.playall.mkv": just the first MB of a disc's play-all title (upload.c sends that instead
    of the whole thing). Its header says how long the disc is - all the library needs to tell the

@@ -1,11 +1,11 @@
 # Every night: libFuzzer over the video code for about three hours (issue #50) - the converter parses
 # files nobody controls (a library's MKVs, torrents included), on the Pi, in the process that serves the
 # whole household. The push workflow's 90 s only skims; hours reach the rare corners (Dolby Digital
-# Plus's tools, unusual MKV layouts, a picture size that changes part-way) - and the picture subtitles
-# (Blu-ray PGS, DVD VobSub) Hemma reads out of the same files.
+# Plus's tools, unusual MKV layouts, a picture size that changes part-way) - the picture subtitles
+# (Blu-ray PGS, DVD VobSub) Hemma reads out of the same files, and the tags of audiobooks (MP4 boxes, MP3 ID3).
 #
-# Six targets side by side, each on its own runner with four processes (tools/ci/fuzz.sh): the whole
-# conversion (conv) and six parts alone, far faster per input (mkv, ac3, dts, mpeg2, pgs, vobsub). What each
+# Eight targets side by side, each on its own runner with four processes (tools/ci/fuzz.sh): the whole
+# conversion (conv) and seven parts alone, far faster per input (mkv, ac3, dts, mpeg2, pgs, vobsub, tags). What each
 # found so far is kept between nights (a cache), so every night starts where the last one stopped. A
 # finding fails the job - GitHub mails whoever last edited this schedule - and the files that do it are
 # kept with the run: replay one with build/fuzz-<target> <file> (or, on Windows, tools/convfuzz.c's
@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [conv, mkv, ac3, dts, mpeg2, pgs, vobsub]
+        target: [conv, mkv, ac3, dts, mpeg2, pgs, vobsub, tags]
     runs-on: ubuntu-latest
     timeout-minutes: 200
     env:

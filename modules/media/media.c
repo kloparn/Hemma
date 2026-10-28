@@ -514,6 +514,7 @@ int media_in_progress(const Ctx *c, const MediaFile **out, int max) {
         const MediaWatch *w = tbl_at(&T_media_watch, i);
         uint64_t id = 0;
         if (w->person != v || w->done || w->pos < 10 || !media_parse_id(w->item, &id) || !media_file(id) ||
+            media_file(id)->type != MF_VIDEO || /* (an audiobook's: Continue listening - 1.6) */
             !media_kids_ok(c, media_file(id))) /* (a child's: not what's marked - issue #44) */
             continue;
         if (n == max && keep[n - 1]->updated >= w->updated) continue;
@@ -563,7 +564,7 @@ void media_lib_head(Ctx *c, Buf *b, const char *active, const char *title, const
     if (is_admin(c) && !str_eq(active, "tv") && media_roots(roots, MEDIA_MAX_ROOTS) > 0) {
         buf_puts(b, "<a class=\"btn primary media-add\" href=\"/media/upload\">");
         ui_icon(b, "plus");
-        H(b, "<span>%s</span></a>", T("Add videos"));
+        H(b, "<span>%s</span></a>", str_eq(active, "books") ? T("Add audiobooks") : T("Add videos"));
     }
     H(b, "<a class=\"icon-btn\" href=\"/media/settings\" title=\"%s\" aria-label=\"%s\">", T("Library settings"),
       T("Library settings"));
@@ -571,11 +572,12 @@ void media_lib_head(Ctx *c, Buf *b, const char *active, const char *title, const
     buf_puts(b, "</a>");
     ui_head_end(b);
     static const char *const tabs[][3] = {{"home", "/media", N_("Home")},          {"movies", "/media/movies", N_("Movies")},
-                                          {"series", "/media/series", N_("Series")}, {"tv", "/tv", N_("Live TV")},
-                                          {"browse", "/media/browse", N_("Folders")}};
+                                          {"series", "/media/series", N_("Series")}, {"books", "/media/books", N_("Audiobooks")},
+                                          {"tv", "/tv", N_("Live TV")},              {"browse", "/media/browse", N_("Folders")}};
     buf_puts(b, "<div class=\"toolbar media-tools\"><nav class=\"seg media-tabs\">");
     for (int i = 0; i < countof(tabs); i++) {
         if (str_eq(tabs[i][0], "tv") && !module_find("tv")) continue; /* built without channels */
+        if (str_eq(tabs[i][0], "books") && !media_lib_for(c)->nbooks && !str_eq(active, "books")) continue; /* (none yet) */
         bool on = str_eq(active, tabs[i][0]);
         H(b, "<a href=\"%s\"%r>%s</a>", tabs[i][1], on ? " class=\"on\" aria-current=\"page\"" : "", T(tabs[i][2]));
     }
@@ -767,6 +769,12 @@ static bool library_empty_states(Ctx *c, Buf *b) {
         H(b, "<p class=\"media-center\"><a class=\"btn primary\" href=\"/media/settings\">%s</a></p>", T("Choose folders"));
         return true;
     }
+    if (ix->nrecent == 0 && ix->nbooks) { /* (1.6: a library of audiobooks only) */
+        media_books_shelf(c, b);
+        ui_empty(b, "🎧", T("No videos yet"), T("Your audiobooks are under Audiobooks."));
+        H(b, "<p class=\"media-center\"><a class=\"btn primary\" href=\"/media/books\">%s</a></p>", T("Audiobooks"));
+        return true;
+    }
     if (ix->nrecent == 0) {
         if (media_scanning())
             ui_empty(b, "🔎", T("Looking through your library…"), T("Movies and series show up here as soon as the scan "
@@ -850,7 +858,7 @@ static int title_rank(const Query *q, const char *title) {
 }
 
 typedef struct {
-    int rank, i; /* i: a series' index, or a file's */
+    int rank, i; /* i: a series' index, a file's, or an audiobook's */
     const char *title;
 } Hit;
 
@@ -874,12 +882,15 @@ static void hay_of(Buf *h, const char *a, const char *b2, const char *c2) {
 }
 
 /* One group of results: a heading with how many, the best `max` of them. */
-static void hits_group(Ctx *c, Buf *b, const MediaIndex *ix, const char *head, Hit *h, int n, int max, bool series) {
+enum { HITS_VIDEO, HITS_SERIES, HITS_BOOK }; /* (Hit.i: a file's index, a series', an audiobook's) */
+static void hits_group(Ctx *c, Buf *b, const MediaIndex *ix, const char *head, Hit *h, int n, int max, int kind) {
     if (!n) return;
     qsort(h, (size_t)n, sizeof *h, hit_order);
-    H(b, "<section class=\"media-found\"><h2>%s <small>%d</small></h2><div class=\"media-grid\">", head, n);
+    H(b, "<section class=\"media-found\"><h2>%s <small>%d</small></h2><div class=\"media-grid%r\">", head, n,
+      kind == HITS_BOOK ? " media-grid-sq" : "");
     for (int i = 0; i < n && i < max; i++) {
-        if (series) series_card(c, b, &ix->series[h[i].i]);
+        if (kind == HITS_SERIES) series_card(c, b, &ix->series[h[i].i]);
+        else if (kind == HITS_BOOK) media_book_card(c, b, &ix->books[h[i].i]);
         else video_card(c, b, &ix->files[h[i].i]);
     }
     buf_puts(b, "</div>");
@@ -943,16 +954,36 @@ static void search_results(Ctx *c, Buf *b, const char *qtext) {
             ho[no++] = (Hit){title_rank(&q, t), i, f->name.title};
         }
     }
-    hits_group(c, b, ix, T("Series"), hs, ns, 24, true);
-    hits_group(c, b, ix, T("Movies"), hf, nf, 24, false);
-    hits_group(c, b, ix, T("Episodes"), he, ne, 30, false);
-    hits_group(c, b, ix, T("Other videos"), ho, no, 12, false);
-    if (!ns && !nf && !ne && !no)
+    /* audiobooks (1.6): by title, author, narrator, series */
+    Hit *hb = xmalloc((size_t)(ix->nbooks + 1) * sizeof *hb);
+    int nb = 0;
+    for (int i = 0; i < ix->nbooks && !q.episode; i++) {
+        const MediaBook *bk = &ix->books[i];
+        buf_reset(&extra);
+        buf_printf(&extra, "%s %s", bk->narrator, bk->series);
+        hay_of(&hay, bk->title, bk->author, buf_cstr(&extra));
+        if (!all_words(&q, buf_cstr(&hay))) continue;
+        fold_copy(t, sizeof t, bk->title);
+        hb[nb++] = (Hit){title_rank(&q, t), i, bk->title};
+    }
+    hits_group(c, b, ix, T("Series"), hs, ns, 24, HITS_SERIES);
+    hits_group(c, b, ix, T("Movies"), hf, nf, 24, HITS_VIDEO);
+    hits_group(c, b, ix, T("Episodes"), he, ne, 30, HITS_VIDEO);
+    hits_group(c, b, ix, T("Audiobooks"), hb, nb, 24, HITS_BOOK);
+    hits_group(c, b, ix, T("Other videos"), ho, no, 12, HITS_VIDEO);
+    if (!ns && !nf && !ne && !no && !nb)
         ui_empty(b, "🤷", T("Nothing matches"),
                  T("Try another word — titles, episode names and numbers, categories and folders are searched."));
     buf_free(&hay);
     buf_free(&extra);
-    free(hs), free(hf), free(he), free(ho);
+    free(hs), free(hf), free(he), free(ho), free(hb);
+}
+
+bool media_search_shown(Ctx *c, Buf *b) {
+    const char *q = query(c);
+    if (!*q) return false;
+    search_results(c, b, q);
+    return true;
 }
 
 /* ------------------------------------------------- lists: categories, order, what's shown (1.4) */
@@ -1098,6 +1129,7 @@ static void page_home(Ctx *c, Buf *b) {
         for (int i = 0; i < ngoing; i++) going_card(c, b, going[i], false);
         shelf_end(b);
     }
+    media_books_shelf(c, b); /* (1.6: Continue listening) */
     /* what the channels air right now: tv's row, found by id (tv links media, never the other way) */
     const Block *onnow = block_find("tv.onnow", NULL);
     Buf row = {0};
@@ -1232,8 +1264,8 @@ static void category_page(Ctx *c, Buf *b, const char *cat) {
     H(b, "<a class=\"media-back\" href=\"/media\">");
     ui_icon(b, "left");
     H(b, "%s</a><h2 class=\"media-cat-h\">%s</h2>", T("Watch"), media_cat_label(cat));
-    hits_group(c, b, ix, T("Series"), hs, ns, 1000, true);
-    hits_group(c, b, ix, T("Movies"), hf, nf, 1000, false);
+    hits_group(c, b, ix, T("Series"), hs, ns, 1000, HITS_SERIES);
+    hits_group(c, b, ix, T("Movies"), hf, nf, 1000, HITS_VIDEO);
     if (!ns && !nf) ui_empty(b, "🏷️", T("Nothing in this category yet"), NULL);
     free(hs), free(hf);
 }
@@ -2222,6 +2254,8 @@ static void page(Ctx *c, Buf *b) {
     else if (str_starts(p, "/series/")) page_series(c, b, p + 8);
     else if (str_eq(p, "/browse")) page_browse(c, b);
     else if (str_starts(p, "/watch/")) page_watch(c, b, p + 7);
+    else if (str_eq(p, "/books")) media_books_page(c, b);
+    else if (str_starts(p, "/book/")) media_book_page(c, b, p + 6);
     else if (str_eq(p, "/settings")) page_settings(c, b);
     else if (str_eq(p, "/upload")) upload_page(c, b);
     else {
@@ -2360,7 +2394,8 @@ static void act_watched(Ctx *c, Fields *f) {
     }
     bool done = fields_int(f, "done", 1) != 0;
     media_watch_set_done(v, id, done, c->now);
-    ctx_ok(c, "%s", done ? T("Marked as watched") : T("Marked as not watched"));
+    if (mf->type == MF_AUDIO) ctx_ok(c, "%s", done ? T("Marked as finished") : T("Marked as not finished")); /* (a book) */
+    else ctx_ok(c, "%s", done ? T("Marked as watched") : T("Marked as not watched"));
 }
 
 static void act_rescan(Ctx *c, Fields *f) {
@@ -2504,11 +2539,13 @@ static void act_forget(Ctx *c, Fields *f) {
         tbl_del(&T_media_watch, w->id);
     }
     const MediaFile *v = media_file(id);
+    const MediaBook *bk = v && v->type == MF_AUDIO ? media_book(v->series) : NULL; /* (an audiobook: 1.6) */
     char what[300];
     if (v && v->name.kind == MEDIA_EPISODE)
         snprintf(what, sizeof what, "%s S%02dE%02d", v->name.title, v->name.season, v->name.episode);
     else if (v) media_title(v, what, sizeof what);
-    if (v) ctx_ok(c, T("Removed %s from Continue watching"), what);
+    if (bk) ctx_ok(c, T("Removed %s from Continue listening"), bk->title);
+    else if (v) ctx_ok(c, T("Removed %s from Continue watching"), what);
     else ctx_ok(c, "%s", T("Removed it from Continue watching"));
 }
 

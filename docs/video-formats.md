@@ -87,3 +87,16 @@ day ([why](decisions/0006-formats-grow-with-fuzzing.md)).
 
 Put them next to the video, named after it: `Film (2020).en.srt`, `Show S01E02.sv.forced.srt`.
 Hemma reads `.srt`, `.vtt`, `.sup`, and `.idx` with its `.sub`.
+
+## Audiobooks
+
+Audiobooks play as they are: nothing is converted.
+
+| The file | Hemma |
+|---|---|
+| **M4B** (AAC sound in an MP4, the usual audiobook file) | A book of its own, wherever it is in the library. Its title, author, narrator, cover and chapters come from the file |
+| **M4A**, **MP3** | Inside a folder called *Audiobooks* (or *Audio books*, *Ljudböcker*, *Audiolibros*, *Hörbücher*): each folder of them is one book, its files the parts in order, `CD1`/`CD2` folders included. One lying loose in *Audiobooks* is a book of its own. Elsewhere (a show's `theme.mp3`, a film's soundtrack) Hemma leaves them alone |
+
+Chapters come from the file: an M4B's chapter list, or an MP3's ID3 chapters. A book in several files
+has each file as a chapter. **Not yet:** Audible's own `.aa`/`.aax` files (they're locked to Audible's
+apps), FLAC and Ogg audiobooks.

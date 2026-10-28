@@ -34,6 +34,11 @@
  * its .idx is in the same upload (alone, a .sub is MicroDVD text: refused). The pair is sorted together
  * and sent both or neither, the .sub first (the library takes a .sub only beside its .idx).
  *
+ * AUDIOBOOKS (1.6): .m4b .m4a .mp3 go as they are - never converted, never a dupe or a companion of a video -
+ * into the library folder's books folder (upload_sort.c); resuming, room and one upload at a time as for any file.
+ * An .m4a or .mp3 in a show's or a film's own folder (a theme song, a soundtrack) is no audiobook: it goes
+ * along with that folder.
+ *
  * web/wire.js drives it (form[data-upload]): one plan, then one PUT per file.
  * Files are written as "<name>.hemma-part" (MEDIA_PART_SUFFIX) and renamed when complete, so the library
  * never sees half a file and a dropped upload resumes where it stopped. Bytes
@@ -96,7 +101,7 @@ typedef struct {
     bool extra;   /* a copy added next to its original ("also send originals"): dropped when it can't be made */
     bool dupe;    /* skipped: the library has this episode or film under another name */
     bool on_server; /* skipped midway: the server's converter makes this copy (answered like a sent file) */
-    bool out;     /* skipped before it had a place: not a video, subtitle or picture, a bad name ... (the preview) */
+    bool out;     /* skipped before it had a place: a file the library doesn't take, a bad name ... (the preview) */
     int64_t orig; /* the original's size (copies) */
     char ext[8];  /* the original's extension, to fall back to its name */
     /* SUBTITLES ONLY (1.3): a video that stays behind - the library has it (dupe), or its copy goes instead -
@@ -397,7 +402,8 @@ static bool rehome(Batch *b, UpFile *f, const char *video_rel, const char *lib, 
 static void skip_companions(Batch *b, bool dry) {
     for (int i = 0; i < b->nfiles; i++) {
         UpFile *f = &b->files[i];
-        if (f->state != UP_QUEUED || media_is_video_ext(f->rel)) continue;
+        /* (an audiobook's file is never a video's: it goes on its own) */
+        if (f->state != UP_QUEUED || media_is_video_ext(f->rel) || media_is_audio_ext(f->rel)) continue;
         UpFile *with = NULL;
         bool kept = false;
         for (int k = 0; k < b->nfiles && !kept; k++) {
@@ -1060,8 +1066,9 @@ static Batch *plan_make(Ctx *c, const PlanIn *in, bool dry, char *err, size_t ca
         }
         /* (a VobSub's .sub only with its .idx in this upload - upload_sort says so; alone it's MicroDVD text) */
         bool vobsub = media_is_vobsub_data(f->rel) && srt[i].kind == UPK_SUB;
-        if (!media_is_video_ext(f->rel) && !media_is_sub_ext(f->rel) && !media_is_image_ext(f->rel) && !vobsub) {
-            why_set(f, N_("not a video, subtitle or poster"));
+        if (!media_is_video_ext(f->rel) && !media_is_sub_ext(f->rel) && !media_is_image_ext(f->rel) && !vobsub &&
+            !media_is_audio_ext(f->rel)) {
+            why_set(f, N_("not a video, subtitle, poster or audiobook"));
             continue;
         }
         f->out = false;
@@ -2165,13 +2172,14 @@ typedef struct {
     char title[128], ep[96];
     int year, season, episode, episode_end, disc, pct;
     bool kept;      /* sorting, but nothing said where it goes: as it was chosen */
+    bool part;      /* an audiobook's file among others of its book (UpSorted.part) */
     char why[160];  /* FATE_SKIP: the reason (packed English); FATE_COPY: the original's name */
 } PvRow;
 
 typedef struct {
     char dir[400];   /* where its files go, below the library folder ("" = the library folder itself) */
     bool out, fresh, kept; /* the files with no place / a folder that isn't there yet / some go as chosen */
-    int files, eps, films, subs, pics, others, skipped;
+    int files, eps, films, subs, pics, others, books, audio, skipped;
     int64_t bytes;
     int row0, nrows, more;
 } PvGroup;
@@ -2282,6 +2290,7 @@ static void pv_row(Preview *p, PvGroup *g, const PlanIn *in, const UpSorted *s, 
     r->episode_end = s->episode_end;
     r->disc = s->disc;
     r->kept = p->sorted && s->kept && !in->series;
+    r->part = s->part;
     if (f->subs) { /* stays behind, its subtitles go (subtitles_only) */
         r->fate = FATE_SUBS;
         str_copy(r->why, sizeof r->why, f->why);
@@ -2381,6 +2390,8 @@ static Preview *pv_build(Ctx *c, const PlanIn *in, int all) {
             g->subs += s->kind == UPK_SUB;
             g->pics += s->kind == UPK_PIC;
             g->others += s->kind == UPK_OTHER || s->kind == UPK_EXTRA;
+            g->books += s->kind == UPK_BOOK;
+            g->audio += s->kind == UPK_AUDIO;
             g->kept |= p->sorted && !in->series && s->kept && s->kind != UPK_JUNK && !f->out;
         }
         if (g != &spill && g->nrows < PV_GROUP_ROWS && p->nrows < PV_ROWS) pv_row(p, g, in, s, f);
@@ -2490,6 +2501,11 @@ static void pv_what(Buf *b, const PvRow *r) { /* what Hemma thinks the file is *
         if (r->title[0]) H(b, r->kind == UPK_SUB ? T("Subtitles for %s") : T("A picture for %s"), buf_cstr(&l));
         else H(b, "%s", r->kind == UPK_SUB ? T("Subtitles") : T("A picture"));
         break;
+    case UPK_BOOK: H(b, "%s", r->part ? T("Part of an audiobook") : T("An audiobook")); break;
+    case UPK_AUDIO: /* (a theme song, a soundtrack: its show's or film's) */
+        pv_label(&l, r);
+        if (r->title[0]) H(b, T("Goes with %s"), buf_cstr(&l));
+        break;
     default: break;
     }
     buf_free(&l);
@@ -2524,6 +2540,8 @@ static void pv_group_sum(Buf *b, const PvGroup *g) { /* "3 episodes, 1 subtitle 
     pv_part(b, &parts, g->subs, TN(g->subs, "%d subtitle file", "%d subtitle files"));
     pv_part(b, &parts, g->pics, TN(g->pics, "%d picture", "%d pictures"));
     pv_part(b, &parts, g->others, TN(g->others, "%d other video", "%d other videos"));
+    pv_part(b, &parts, g->books, TN(g->books, "%d audiobook file", "%d audiobook files"));
+    pv_part(b, &parts, g->audio, TN(g->audio, "%d audio file", "%d audio files"));
     pv_part(b, &parts, g->skipped, T("%d skipped"));
     if (g->bytes) {
         char size[24];
@@ -2760,10 +2778,15 @@ static void sent_name(const UpFile *f, char *out, size_t cap, bool whole) {
     else str_copy(out, cap, name);
 }
 
-/* What it is: "Family Guy · S04E12 · Breaking Out Is Hard to Do", "Kill Bill (2003) · part 2", else its name */
+/* What it is: "Family Guy · S04E12 · Breaking Out Is Hard to Do", "Kill Bill (2003) · part 2", else its name (an
+   audiobook's file always: "01.mp3", with its folder below) */
 static void row_label(Buf *b, const UpFile *f) {
     char rel[420];
     sent_name(f, rel, sizeof rel, true);
+    if (media_is_audio_ext(rel)) {
+        H(b, "%s", base_name(rel));
+        return;
+    }
     MediaName n;
     media_parse_name(rel, &n);
     if (n.kind == MEDIA_EPISODE && n.episode > 0 && n.title[0]) {
@@ -3043,7 +3066,8 @@ void upload_page(Ctx *c, Buf *b) {
     else buf_puts(b, "<a class=\"media-back\" href=\"/media\">"); /* (Add videos sits in Watch's header) */
     ui_icon(b, "left");
     H(b, "%s</a>", ser ? ser->title : T("Watch"));
-    ui_head(b, ser ? T("Add episodes") : T("Add videos"), T("Send movies and series from this device to the library"));
+    ui_head(b, ser ? T("Add episodes") : T("Add videos"),
+            T("Send movies, series and audiobooks from this device to the library"));
     ui_head_end(b);
     if (!is_admin(c)) {
         ui_empty(b, "🔒", T("Admins only"), NULL);
@@ -3092,13 +3116,13 @@ void upload_page(Ctx *c, Buf *b) {
       "<div class=\"media-up-drop\" id=\"media-up-drop\" data-drop>%r<p class=\"media-up-drop-t\">%s</p>"
       "<p class=\"media-up-drop-tap\">%s</p><p class=\"muted media-small\">%s</p><div class=\"media-up-pick\">"
       "<label class=\"btn primary\">%s<input type=\"file\" name=\"files\" multiple class=\"sr-only\" "
-      "accept=\"video/*,.mkv,.avi,.m2ts,.ts,.srt,.vtt,.sup,.idx,.sub,.jpg,.jpeg,.png,.webp\"></label>"
-      "<label class=\"btn media-up-folder\">%s<input type=\"file\" name=\"folder\" webkitdirectory multiple "
+      "accept=\"video/*,.mkv,.avi,.m2ts,.ts,.srt,.vtt,.sup,.idx,.sub,.jpg,.jpeg,.png,.webp,.m4b,.m4a,.mp3,audio/*\">"
+      "</label><label class=\"btn media-up-folder\">%s<input type=\"file\" name=\"folder\" webkitdirectory multiple "
       "class=\"sr-only\"></label></div></div>",
-      UPLOAD_ICON, T("Drop videos or a whole folder here"), T("Choose videos from this device"),
+      UPLOAD_ICON, T("Drop videos, audiobooks or a whole folder here"), T("Choose videos from this device"),
       ser ? T("Hemma reads each file's name first, and nothing is sent before you press Start.")
-          : T("Hemma sorts them by their names - series into Series, films into Movies - and shows you where each "
-              "one goes before anything is sent."),
+          : T("Hemma sorts them by their names - series into Series, films into Movies, audiobooks into Audiobooks - "
+              "and shows you where each one goes before anything is sent."),
       T("Choose videos"), T("Choose a folder"));
 
     /* 2. what Start will do with them */

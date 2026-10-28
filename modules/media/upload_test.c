@@ -937,7 +937,7 @@ TEST(upload_saves_picture_subtitles_next_to_the_copy) {
              &r, batch);
     CHECK_HAS(body_of(&r), "\"todo\":[[0,0],[2,0],[1,0]]");
     CHECK_HAS(body_of(&r), "\"skipped\":1");
-    CHECK_HAS(th_page(adam_id, "/media/upload"), "D/z.sub</code> — not a video, subtitle or poster");
+    CHECK_HAS(th_page(adam_id, "/media/upload"), "D/z.sub</code> — not a video, subtitle, poster or audiobook");
     /* both or neither: a different .sub has the name - the .idx stays behind too ... */
     put_file(root, "Up/E/w.en.sub", "someone else's", 14);
     plan_for(adam, "{\"root\":\"0\",\"into\":\"Up\",\"files\":[[\"E/w.mkv\",10],[\"E/w.en.idx\",5],[\"E/w.en.sub\",7]]}", &r,
@@ -1443,7 +1443,8 @@ TEST(upload_page_previews_where_everything_goes_and_start_does_that) {
     CHECK_HAS(page, "<small>Subtitles for Show · S01E02</small></div><span class=\"badge\">Sent as it is</span>");
     CHECK_HAS(page, "<small>New · S02E01</small></div><span class=\"badge ok\">Converted here first</span>");
     CHECK_HAS(page, "<span>Left out</span>");
-    CHECK_HAS(page, "<small>not a video, subtitle or poster</small></div><span class=\"badge warn\">Skipped</span>");
+    CHECK_HAS(page, "<small>not a video, subtitle, poster or audiobook</small></div>"
+                    "<span class=\"badge warn\">Skipped</span>");
     /* an episode of no series it can name: asked for, and it goes as chosen until then */
     CHECK_HAS(page, "<details class=\"media-up-names\" id=\"media-up-names\" open><summary>Which series are these episodes from?");
     CHECK_HAS(page, "<span>1 episode Hemma can't place</span><input name=\"to.");
@@ -1526,6 +1527,86 @@ TEST(upload_page_previews_where_everything_goes_and_start_does_that) {
     page = th_page(adam_id, "/media/upload");
     CHECK_HAS(page, "<small>Show · S01E02 · Second · it&#39;s already there</small>");
     CHECK_HAS(page, "0 files to send · 6 skipped</p>");
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    th_halt();
+}
+
+/* ------------------------------------------------------------------ audiobooks (1.6) */
+
+TEST(upload_sends_audiobooks_into_the_books_folder) {
+    th_boot();
+    auth_configure("upload-salt", 1000);
+    int adam_id = make_user("Adam", "adam", "pw-adam-123", ROLE_ADMIN);
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    setting_set("media.roots", root);
+
+    /* the preview: a book in parts with its cover, a book in one file, what's still no audiobook, and a show's
+       theme song (it goes with the show) */
+    const char *files = "[[\"Book/CD1/01.mp3\",3000],[\"Book/CD1/02.mp3\",2000],[\"Book/cover.jpg\",300],"
+                        "[\"Loose.m4b\",2097152],[\"Loose.flac\",10],"
+                        "[\"Garden Show/Season 1/Garden.Show.S01E01.mp4\",10],"
+                        "[\"Garden Show/theme.mp3\",20]]";
+    preview_of(adam_id, "sort=1&root=0&conv=1", files);
+    const char *page = th_page(adam_id, "/media/upload");
+    CHECK_HAS(page, "<p class=\"media-up-sum\" data-say>6 files to send · ");
+    CHECK(!strstr(page, "to convert here first")); /* (never converted) */
+    CHECK_HAS(page, "<span>Audiobooks <i>/</i> Book <i>/</i> CD1</span><small class=\"badge\">New folder</small>");
+    CHECK_HAS(page, "2 audiobook files · ");
+    CHECK_HAS(page, "<span class=\"media-up-name\">01.mp3</span><small>Part of an audiobook</small></div>"
+                    "<span class=\"badge\">Sent as it is</span>");
+    CHECK_HAS(page, "<span class=\"media-up-name\">cover.jpg</span><small>A picture for Book</small>");
+    CHECK_HAS(page, "<span class=\"media-up-name\">Loose.m4b</span><small>An audiobook</small>");
+    CHECK_HAS(page, "<span class=\"media-up-name\">Loose.flac</span>"
+                    "<small>not a video, subtitle, poster or audiobook</small>");
+    CHECK_HAS(page, ".webp,.m4b,.m4a,.mp3,audio/*\">");
+    CHECK_HAS(page, "audiobooks into Audiobooks");
+    CHECK_HAS(page, "<span>Series <i>/</i> Garden Show</span><small class=\"badge\">New folder</small></h3>"
+                    "<p class=\"muted media-small\">1 audio file · ");
+    CHECK_HAS(page, "<span class=\"media-up-name\">theme.mp3</span><small>Goes with Garden Show</small>");
+    upload_test_preview(adam_id, NULL);
+
+    /* Start: the plan (with the converter on: still plain entries) puts them where the preview said */
+    CHECK(server_listen("127.0.0.1", 0));
+    g_port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], batch[17], url[100], plan[600];
+    sign_in("adam", "pw-adam-123", adam, sizeof adam);
+    Buf r = {0};
+    snprintf(plan, sizeof plan, "{\"sort\":\"1\",\"root\":\"0\",\"conv\":\"1\",\"files\":%s}", files);
+    plan_for(adam, plan, &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[[0,0],[1,0],[2,0],[3,0],[5,0],[6,0]]");
+    CHECK_HAS(body_of(&r), "\"skipped\":1");
+    size_t m4b_n = 2u << 20; /* (bigger than a buffered body: it streams to disk) */
+    char *m4b = xmalloc(m4b_n);
+    for (size_t i = 0; i < m4b_n; i++) m4b[i] = (char)(i * 7 + (i >> 11));
+    snprintf(url, sizeof url, "/media/upload/%s/3?at=0", batch);
+    call("PUT", url, adam, NULL, m4b, m4b_n, m4b_n, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    char final[1024];
+    snprintf(final, sizeof final, "%s/Audiobooks/Loose.m4b", root);
+    CHECK(same_file(final, m4b, m4b_n));
+    free(m4b);
+    /* the card while the rest is to come: the file by its name, and below it where it went */
+    page = th_page(adam_id, "/media/upload");
+    CHECK(card_row(page, batch, 3, "Saved") != NULL);
+    CHECK_HAS(page, "<b>Loose.m4b</b><small>Audiobooks</small>");
+    char *mp3 = xcalloc(1, 3000);
+    snprintf(url, sizeof url, "/media/upload/%s/0?at=0", batch);
+    call("PUT", url, adam, NULL, mp3, 3000, 3000, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    free(mp3);
+    CHECK(exists(root, "Audiobooks/Book/CD1/01.mp3"));
+    snprintf(url, sizeof url, "/media/upload/%s/6?at=0", batch);
+    call("PUT", url, adam, NULL, "theme song: 20 bytes", 20, 20, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    CHECK(exists(root, "Series/Garden Show/theme.mp3"));
+    CHECK(!exists(root, "Book"));
     server_stop();
     for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
     CHECK(g_done);

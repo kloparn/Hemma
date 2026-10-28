@@ -45,6 +45,11 @@ Your movie and series drive as a little cinema.
 - **Live TV** ("90s TV"): channels that play your shows non-stop on a shared clock, with a TV guide.
 - **Downloads** for grown-ups: a video, or a whole season as one .zip, to watch away from home.
   Downloads slow down while someone is watching.
+- **Audiobooks** (the Audiobooks tab, once you have some): `.m4b` files, or folders of `.mp3` files inside a
+  folder called *Audiobooks*. Each book shows its cover, author, narrator and chapters, and plays in a
+  player made for listening: 15 seconds back, 30 forward, chapter by chapter, at the speed you like, with a
+  sleep timer. It keeps playing with the phone locked, and the lock screen shows the book and the chapter.
+  Everyone's place in each book is kept, like a film's. Books in one folder are a series, in order.
 
 For admins:
 
@@ -54,6 +59,7 @@ For admins:
   An upload picks up where it stopped if the connection drops, never idles while something is ready
   to go, and skips episodes and films you already have - sending just the subtitles they carry when
   the library's copy has none. Its card shows what's being processed, uploaded and saved, and how fast.
+  Audiobooks go into the library's *Audiobooks* folder.
 - **Looking after the library.** Remove an episode, a season, a series or a film for good, rename a
   series, fix a title or an episode's number (Hemma renames the files), see what takes the most room,
   and mark folders *Not for children*.

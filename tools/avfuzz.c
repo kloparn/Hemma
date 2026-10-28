@@ -1,4 +1,4 @@
-/* tools/avfuzz.c — six fuzz targets that each reach one part of modules/av directly, many times
+/* tools/avfuzz.c — seven fuzz targets that each reach one part of modules/av directly, many times
  * faster than tools/convfuzz.c's whole conversion (which encodes every picture it decodes), so the
  * nightly run (.github/workflows/fuzz.yml) goes deeper into each (issue #50). Pick one when building:
  *
@@ -10,29 +10,35 @@
  *                    made a PNG (png.c)
  *   -DAVFUZZ_VOBSUB  DVD picture subtitles: the input's bytes up to its first NUL are the .idx text, the rest
  *                    the .sub; opened, every cue drawn and made a PNG
+ *   -DAVFUZZ_TAGS    an audio file's tags (modules/av/audiotags.c): an MP4's boxes or an MP3's ID3 tags and
+ *                    frames read, every string and chapter looked at
  *
  * For mkv, ac3, dts and mpeg2 the first byte of an input chooses the target's options (a layout, a chunk size,
- * a reset part-way), so the fuzzer explores those too. Seeds: `HEMMA_FUZZ_SEEDS=build/fuzz-seeds
- * HEMMA_FUZZ_RAW=build/fuzz-raw build/test conv_fuzz_seeds` - the MKVs for mkv (as for convfuzz),
- * build/fuzz-raw/ac3, .../dts and .../mpeg2; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test subpic_fuzz_seeds` -
- * build/fuzz-raw/pgs and .../vobsub.
+ * a reset part-way), for tags the file's name (none, x.mp3, x.m4b, book.MP3), so the fuzzer explores those too.
+ * Seeds: `HEMMA_FUZZ_SEEDS=build/fuzz-seeds HEMMA_FUZZ_RAW=build/fuzz-raw build/test conv_fuzz_seeds` - the MKVs
+ * for mkv (as for convfuzz), build/fuzz-raw/ac3, .../dts and .../mpeg2; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test
+ * subpic_fuzz_seeds` - build/fuzz-raw/pgs and .../vobsub; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test
+ * audiotags_fuzz_seeds` - build/fuzz-raw/tags.
  *
  *   clang -g -O1 -std=gnu11 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
  *         -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION -DAVFUZZ_AC3 tools/avfuzz.c modules/av/ac3.c -lm -o build/fuzz-ac3
- *   (mkv: modules/av/mkv.c; dts: modules/av/dts.c; mpeg2: modules/av/mpeg2.c; pgs, vobsub: modules/av/subpic.c modules/av/png.c)
+ *   (mkv: modules/av/mkv.c; dts: modules/av/dts.c; mpeg2: modules/av/mpeg2.c; pgs, vobsub: modules/av/subpic.c
+ *    modules/av/png.c; tags: modules/av/audiotags.c)
  *   build/fuzz-ac3 -max_total_time=60 build/fuzz-corpus-ac3 build/fuzz-raw/ac3
  *
  * A finding is a sanitizer report (out of bounds, use after free, undefined behaviour, a leak) or a
  * hang. Every byte a decoder hands back is read here, so a frame or picture pointing past its buffer
  * shows up as one; the subtitle targets also abort when a promise of subpic.h is broken (a cue off its
- * frame, out of order, a pixel past its colour count). */
+ * frame, out of order, a pixel past its colour count), and tags when one of audiotags.h is (text that isn't
+ * valid UTF-8 or holds control characters, chapters out of order, a cover past the file's end or not a
+ * JPEG/PNG there). */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
-#if defined(AVFUZZ_MKV) + defined(AVFUZZ_AC3) + defined(AVFUZZ_DTS) + defined(AVFUZZ_MPEG2) + defined(AVFUZZ_PGS) +         defined(AVFUZZ_VOBSUB) != 1
-#error "build with exactly one of -DAVFUZZ_MKV, -DAVFUZZ_AC3, -DAVFUZZ_DTS, -DAVFUZZ_MPEG2, -DAVFUZZ_PGS, -DAVFUZZ_VOBSUB"
+#if defined(AVFUZZ_MKV) + defined(AVFUZZ_AC3) + defined(AVFUZZ_DTS) + defined(AVFUZZ_MPEG2) + defined(AVFUZZ_PGS) +         defined(AVFUZZ_VOBSUB) + defined(AVFUZZ_TAGS) != 1
+#error "build with exactly one of -DAVFUZZ_MKV, -DAVFUZZ_AC3, -DAVFUZZ_DTS, -DAVFUZZ_MPEG2, -DAVFUZZ_PGS, -DAVFUZZ_VOBSUB, -DAVFUZZ_TAGS"
 #endif
 
 static volatile uint32_t g_sink; /* what was read: kept, so no read is optimised away */
@@ -285,6 +291,82 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) {
     }
     every_cue(s);
     subpic_close(s);
+    return 0;
+}
+#endif
+
+#ifdef AVFUZZ_TAGS
+#include "../modules/av/audiotags.h"
+
+#include <stdlib.h>
+
+typedef struct {
+    const uint8_t *p;
+    size_t n;
+} TagIn;
+
+static bool tag_read(void *ctx, int64_t off, void *dst, size_t n) {
+    const TagIn *in = ctx;
+    if (off < 0 || (uint64_t)off > in->n || n > in->n - (size_t)off) return false;
+    if (n) memcpy(dst, in->p + off, n);
+    return true;
+}
+
+/* A string as audiotags.h promises: ends inside its array, valid UTF-8, no control characters (but a
+   description's line breaks), no blank at either end - aborts otherwise */
+static void text_ok(const char *s, size_t cap, bool lines) {
+    size_t n = 0;
+    while (n < cap && s[n]) n++;
+    if (n == cap || (n && (s[0] == ' ' || s[0] == '\n' || s[n - 1] == ' ' || s[n - 1] == '\n'))) abort();
+    for (size_t i = 0; i < n;) {
+        uint8_t b = (uint8_t)s[i];
+        size_t k = b < 0x80 ? 0 : b >= 0xC2 && b <= 0xDF ? 1 : b >= 0xE0 && b <= 0xEF ? 2 : b >= 0xF0 && b <= 0xF4 ? 3 : 9;
+        if ((b < 0x20 && !(lines && b == '\n')) || b == 0x7F || k == 9 || n - i <= k) abort();
+        uint32_t cp = k ? b & (0x3Fu >> k) : b;
+        for (size_t j = 1; j <= k; j++) {
+            if (((uint8_t)s[i + j] & 0xC0) != 0x80) abort();
+            cp = cp << 6 | ((uint8_t)s[i + j] & 0x3Fu);
+        }
+        if ((k == 2 && cp < 0x800) || (k == 3 && (cp < 0x10000 || cp > 0x10FFFF)) || (cp >= 0xD800 && cp < 0xE000) ||
+            (cp >= 0x80 && cp < 0xA0))
+            abort();
+        i += k + 1;
+    }
+    touch((const uint8_t *)s, n);
+}
+
+int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) {
+    static const char *const HINTS[4] = {NULL, "x.mp3", "x.m4b", "book.MP3"};
+    if (n < 1) return 0;
+    TagIn in = {d + 1, n - 1};
+    AtReader r = {&in, (int64_t)in.n, tag_read};
+    AudioTags t;
+    bool ok = audio_tags_read(&r, HINTS[d[0] & 3], &t);
+    if (ok != (t.format[0] != 0)) abort();
+    text_ok(t.format, sizeof t.format, false), text_ok(t.codec, sizeof t.codec, false);
+    text_ok(t.title, sizeof t.title, false), text_ok(t.artist, sizeof t.artist, false);
+    text_ok(t.album_artist, sizeof t.album_artist, false), text_ok(t.album, sizeof t.album, false);
+    text_ok(t.narrator, sizeof t.narrator, false), text_ok(t.genre, sizeof t.genre, false);
+    text_ok(t.cover_type, sizeof t.cover_type, false);
+    if (t.description) {
+        if (!t.description[0]) abort();
+        text_ok(t.description, AT_DESC_MAX, true);
+    }
+    if (t.duration_ms < 0 || t.channels < 0 || t.sample_rate < 0 || t.year < 0 || t.year > 9999) abort();
+    if (t.nchapters < 0 || t.nchapters > AT_MAX_CHAPTERS || !t.nchapters != !t.chapters) abort();
+    for (int i = 0; i < t.nchapters; i++) {
+        if (t.chapters[i].start_ms < 0 || (i && t.chapters[i].start_ms < t.chapters[i - 1].start_ms)) abort();
+        text_ok(t.chapters[i].title, sizeof t.chapters[i].title, false);
+    }
+    if (t.cover_len) { /* its place: in the file, and a JPEG's or PNG's first bytes there */
+        const uint8_t *c = in.p + t.cover_off;
+        bool jpeg = !strcmp(t.cover_type, "image/jpeg"), png = !strcmp(t.cover_type, "image/png");
+        if (t.cover_len < 0 || t.cover_off < 0 || t.cover_off > r.size - t.cover_len || (!jpeg && !png) ||
+            (jpeg && (t.cover_len < 2 || c[0] != 0xFF || c[1] != 0xD8)) ||
+            (png && (t.cover_len < 4 || c[0] != 0x89 || c[1] != 'P')))
+            abort();
+    } else if (t.cover_off || t.cover_type[0]) abort();
+    audio_tags_free(&t);
     return 0;
 }
 #endif

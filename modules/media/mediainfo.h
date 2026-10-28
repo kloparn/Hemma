@@ -85,6 +85,15 @@ const char *media_mime(const char *container);    /* "video/mp4", "video/webm", 
 bool media_is_video_ext(const char *name);        /* .mp4 .m4v .mkv .webm .mov .avi .ts .m2ts .mts .wmv .mpg .mpeg */
 bool media_is_sub_ext(const char *name);          /* .srt .vtt .sup .idx (a VobSub's .sub: media_is_vobsub_data) */
 bool media_is_image_ext(const char *name);        /* .jpg .jpeg .png .webp (posters, folder art) */
+/* AUDIOBOOKS (1.6): .m4b .m4a .mp3 - what they come as (every browser plays AAC in MP4, and MP3) */
+bool media_is_audio_ext(const char *name);
+/* A folder whose name says it holds audiobooks: "Audiobooks", "Audio books", "Ljudböcker", "Audiolibros",
+   "Hörbücher" ... (any case; '_', '.', '-' as spaces) */
+bool media_is_books_folder(const char *name);
+/* An audio file the library takes as (part of) an audiobook: an .m4b anywhere; an .m4a or .mp3 only below a
+   books folder (media_is_books_folder - any folder above it, or the library folder itself: root_name, its own
+   name, NULL/"" = unknown) - so a show's theme.mp3 or a film's soundtrack stays out. rel: below the library folder. */
+bool media_is_book_file(const char *root_name, const char *rel);
 const char *media_playable_label(Playable p);     /* "Plays in browsers", "May not play everywhere", ... (English: T() it) */
 void media_fmt_duration(int64_t ms, char *out, size_t cap); /* "1 h 42 min", "42 min", "45 s", "" */
 

@@ -33,7 +33,7 @@ screen shows it straight away.
 Your films and series, sorted into seasons and categories, with subtitles, and everyone's own
 "continue where you stopped". It works on phones, laptops and the TV, where you pick who's watching
 with the remote. There's even Live TV: channels that play your shows around the clock, like TV in
-the 90s.
+the 90s. And your audiobooks, by chapter, that keep playing with the phone locked.
 
 <p align="center">
   <img src="docs/img/tv.webp" alt="Hemma on a TV: Continue watching and On TV rows with film posters" width="820">

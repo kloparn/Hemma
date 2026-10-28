@@ -1,6 +1,6 @@
 /* Where an upload's files go (upload_sort.c): episodes into <Series>/<Show>/Season N, films into
  * <Movies>/<Title (Year)>, next to what the library already has; subtitles and pictures with their
- * video; disc rips keep their folders; the rest stays as chosen. */
+ * video; disc rips keep their folders; audiobooks into <Audiobooks>/<their path>; the rest stays as chosen. */
 #include "../../tests/harness.h"
 #include "upload.h"
 
@@ -138,6 +138,145 @@ TEST(upload_sorts_into_a_library_folder_named_like_its_own) {
     s = sort_these(empty, sp, 2, 0, NULL, 0);
     CHECK_STR(s[0].dest, "Series/Show/Specials/Show S00E02.mkv");
     CHECK_STR(s[1].dest, "Series/Doctor Who/Specials/Doctor.Who.S00E01.mkv");
+    free(s);
+    th_halt();
+}
+
+/* Audiobooks (1.6): into the library folder's books folder by the path they were chosen with (below a books
+   folder among their folders), their covers along; shows and films in the same upload as ever - an .mp3 in their
+   own folders (a theme song, a soundtrack) goes along with them. */
+TEST(upload_sorts_audiobooks_into_the_books_folder) {
+    th_boot();
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    static const char *const rels[] = {
+        /* 0-2: a book a file, and their folder's cover */
+        "Harry Potter Full-Cast Audio Editions/1 Harry Potter and the Philosopher's Stone.m4b",
+        "Harry Potter Full-Cast Audio Editions/2 Harry Potter and the Chamber of Secrets.m4b",
+        "Harry Potter Full-Cast Audio Editions/cover.jpg",
+        "Book/CD1/01.mp3",                                 /* 3: one book in parts */
+        "Book/CD1/02.mp3",                                 /* 4 */
+        "Book/CD2/01.mp3",                                 /* 5 */
+        "Book/cover.jpg",                                  /* 6: above its CDs */
+        "Loose.m4b",                                       /* 7: no folder */
+        "Loose.jpg",                                       /* 8: named after it */
+        "Ljudböcker/Astrid/Bröderna Lejonhjärta/01.mp3",   /* 9: below a books folder */
+        "Ljudböcker/Astrid/Bröderna Lejonhjärta/cd.jpg",   /* 10 */
+        "Media/Audiobooks/Alone/Alone.mp3",                /* 11: one deeper */
+        "New Show/Season 1/New.Show.S01E01.mkv",           /* 12: a show ... */
+        "New Show/poster.jpg",                             /* 13: ... its poster */
+        "New Show/theme.mp3",                              /* 14: an mp3 there: the show's */
+        "Arrival (2016)/Arrival.2016.mkv",                 /* 15: a film */
+        "Arrival (2016)/poster.jpg",                       /* 16 */
+        "Arrival (2016)/Soundtrack/01 - Main Theme.mp3",   /* 17: the film's */
+        "Book/notes.txt",                                  /* 18: not for the library */
+        "New Show/Making of the show.m4b",                 /* 19: an .m4b is a book wherever it is */
+    };
+    UpSorted *s = sort_these(root, rels, (int)countof(rels), 0, NULL, 0);
+    CHECK_STR(s[0].dest, "Audiobooks/Harry Potter Full-Cast Audio Editions/"
+                         "1 Harry Potter and the Philosopher's Stone.m4b");
+    CHECK_INT(s[0].kind, UPK_BOOK);
+    CHECK(!s[0].kept);
+    CHECK(!s[0].part); /* (an .m4b is a whole book) */
+    CHECK_STR(s[0].title, "1 Harry Potter and the Philosopher's Stone");
+    CHECK_STR(s[1].dest, "Audiobooks/Harry Potter Full-Cast Audio Editions/"
+                         "2 Harry Potter and the Chamber of Secrets.m4b");
+    CHECK_STR(s[2].dest, "Audiobooks/Harry Potter Full-Cast Audio Editions/cover.jpg");
+    CHECK_INT(s[2].kind, UPK_PIC);
+    CHECK_STR(s[2].title, "Harry Potter Full-Cast Audio Editions");
+    CHECK_STR(s[3].dest, "Audiobooks/Book/CD1/01.mp3");
+    CHECK(s[3].part);
+    CHECK_STR(s[3].title, "Book");
+    CHECK_STR(s[4].dest, "Audiobooks/Book/CD1/02.mp3");
+    CHECK_STR(s[5].dest, "Audiobooks/Book/CD2/01.mp3");
+    CHECK(s[5].part);
+    CHECK_STR(s[6].dest, "Audiobooks/Book/cover.jpg");
+    CHECK_STR(s[6].title, "Book");
+    CHECK(!s[6].kept);
+    CHECK_STR(s[7].dest, "Audiobooks/Loose.m4b");
+    CHECK(!s[7].part);
+    CHECK_STR(s[7].title, "Loose");
+    CHECK_STR(s[8].dest, "Audiobooks/Loose.jpg");
+    CHECK_STR(s[8].title, "Loose");
+    CHECK_STR(s[9].dest, "Audiobooks/Astrid/Bröderna Lejonhjärta/01.mp3");
+    CHECK(!s[9].part); /* (the only file of its book) */
+    CHECK_STR(s[9].title, "Bröderna Lejonhjärta");
+    CHECK_STR(s[10].dest, "Audiobooks/Astrid/Bröderna Lejonhjärta/cd.jpg");
+    CHECK_STR(s[10].title, "Bröderna Lejonhjärta");
+    CHECK_STR(s[11].dest, "Audiobooks/Alone/Alone.mp3");
+    CHECK_STR(s[12].dest, "Series/New Show/Season 1/New.Show.S01E01.mkv");
+    CHECK_STR(s[13].dest, "Series/New Show/poster.jpg"); /* (the show's folder keeps what's in it) */
+    CHECK_STR(s[14].dest, "Series/New Show/theme.mp3");
+    CHECK_INT(s[14].kind, UPK_AUDIO);
+    CHECK_STR(s[14].title, "New Show");
+    CHECK(!s[14].kept);
+    CHECK_STR(s[15].dest, "Movies/Arrival (2016)/Arrival.2016.mkv");
+    CHECK_STR(s[16].dest, "Movies/Arrival (2016)/poster.jpg");
+    CHECK_STR(s[17].dest, "Movies/Arrival (2016)/Soundtrack/01 - Main Theme.mp3");
+    CHECK_INT(s[17].kind, UPK_AUDIO);
+    CHECK_STR(s[17].title, "Arrival");
+    CHECK_INT(s[18].kind, UPK_JUNK);
+    CHECK_STR(s[19].dest, "Audiobooks/New Show/Making of the show.m4b");
+    CHECK_INT(s[19].kind, UPK_BOOK);
+    free(s);
+
+    /* "Add episodes" on a series' page: everything into its folder - but an audiobook into the books folder (a
+       theme song in the episodes' show folder goes along with them) */
+    put_file(root, "Series/Show/Season 1/Show.S01E01.mkv");
+    setting_set("media.roots", root);
+    media_scan_sync();
+    CHECK_INT(media_lib()->nseries, 1);
+    static const char *const more[] = {"x.S01E02.mkv",      "Some Book.m4b",                  "Some Book.jpg",
+                                       "Whatever/clip.jpg", "Whatever/Season 1/x.S01E03.mkv", "Whatever/theme.mp3"};
+    s = sort_these(root, more, 6, media_lib()->series[0].id, NULL, 0);
+    CHECK_STR(s[0].dest, "Series/Show/Season 1/x.S01E02.mkv");
+    CHECK_STR(s[1].dest, "Audiobooks/Some Book.m4b");
+    CHECK_INT(s[1].kind, UPK_BOOK);
+    CHECK_STR(s[2].dest, "Audiobooks/Some Book.jpg");
+    CHECK_STR(s[3].dest, "Series/Show/clip.jpg");
+    CHECK_STR(s[4].dest, "Series/Show/Season 1/x.S01E03.mkv");
+    CHECK_STR(s[5].dest, "Series/Show/theme.mp3");
+    CHECK_INT(s[5].kind, UPK_AUDIO);
+    free(s);
+    th_halt();
+}
+
+/* The books folder as the library folder spells it: its own "Ljudböcker" (the first by name of two), none yet:
+   "Audiobooks"; a library folder that IS one takes the books straight in. */
+TEST(upload_sorts_audiobooks_into_the_library_folders_own_books_folder) {
+    th_boot();
+    char base[512], sv[600], both[600], lower[600], books[600];
+    str_copy(base, sizeof base, test_tmpdir());
+    snprintf(sv, sizeof sv, "%s/sv", base);
+    snprintf(both, sizeof both, "%s/both", base);
+    snprintf(lower, sizeof lower, "%s/lower", base);
+    snprintf(books, sizeof books, "%s/Ljudböcker", base);
+    put_file(sv, "Ljudböcker/Old Book/01.mp3");
+    put_file(sv, "Series/.keep");
+    put_file(both, "Ljudböcker/.keep");
+    put_file(both, "Audiobooks/.keep");
+    put_file(lower, "audio books/.keep");
+    dir_make(books);
+    static const char *const rels[] = {"Book/CD1/01.mp3", "Ljudböcker/Astrid/Mio/02.mp3", "Loose.m4b",
+                                       "Show S01E01.mkv"};
+    UpSorted *s = sort_these(sv, rels, 4, 0, NULL, 0);
+    CHECK_STR(s[0].dest, "Ljudböcker/Book/CD1/01.mp3");
+    CHECK_STR(s[1].dest, "Ljudböcker/Astrid/Mio/02.mp3");
+    CHECK_STR(s[2].dest, "Ljudböcker/Loose.m4b");
+    CHECK_STR(s[3].dest, "Series/Show/Season 1/Show S01E01.mkv");
+    free(s);
+    s = sort_these(both, rels, 4, 0, NULL, 0);
+    CHECK_STR(s[0].dest, "Audiobooks/Book/CD1/01.mp3");
+    CHECK_STR(s[1].dest, "Audiobooks/Astrid/Mio/02.mp3");
+    free(s);
+    s = sort_these(lower, rels, 4, 0, NULL, 0);
+    CHECK_STR(s[2].dest, "audio books/Loose.m4b");
+    free(s);
+    s = sort_these(books, rels, 4, 0, NULL, 0); /* the library folder is a books folder */
+    CHECK_STR(s[0].dest, "Book/CD1/01.mp3");
+    CHECK_STR(s[1].dest, "Astrid/Mio/02.mp3");
+    CHECK_STR(s[2].dest, "Loose.m4b");
+    CHECK_STR(s[3].dest, "Series/Show/Season 1/Show S01E01.mkv");
     free(s);
     th_halt();
 }

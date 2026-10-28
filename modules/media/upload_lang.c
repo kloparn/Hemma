@@ -7,9 +7,9 @@ static const Tr TR[] = {
     {"Add videos", "Lägg till videor", "Añadir vídeos"},
     {"Library", "Bibliotek", "Biblioteca"},
     {"Library settings", "Biblioteksinställningar", "Ajustes de la biblioteca"},
-    {"Send movies and series from this device to the library",
-     "Skicka filmer och serier från den här enheten till biblioteket",
-     "Envía películas y series desde este dispositivo a la biblioteca"},
+    {"Send movies, series and audiobooks from this device to the library",
+     "Skicka filmer, serier och ljudböcker från den här enheten till biblioteket",
+     "Envía películas, series y audiolibros desde este dispositivo a la biblioteca"},
     {"Admins only", "Bara för administratörer", "Solo para administradores"},
     {"Ask %r to add videos to the library.", "Be %r att lägga till videor i biblioteket.",
      "Pide a %r que añada vídeos a la biblioteca."},
@@ -67,17 +67,18 @@ static const Tr TR[] = {
      "Allt hamnar i mappen för <b>%s</b> - varje avsnitt i sin säsong, vad filnamnen än säger om serien.",
      "Todo va a la carpeta de <b>%s</b> - cada episodio a su temporada, digan lo que digan los nombres de los archivos "
      "sobre la serie."},
-    {"Drop videos or a whole folder here", "Släpp videor eller en hel mapp här", "Suelta aquí vídeos o una carpeta entera"},
+    {"Drop videos, audiobooks or a whole folder here", "Släpp videor, ljudböcker eller en hel mapp här",
+     "Suelta aquí vídeos, audiolibros o una carpeta entera"},
     {"Choose videos from this device", "Välj videor från den här enheten", "Elige vídeos de este dispositivo"},
     {"Hemma reads each file's name first, and nothing is sent before you press Start.",
      "Hemma läser först varje fils namn, och inget skickas förrän du trycker på Starta.",
      "Hemma lee primero el nombre de cada archivo, y no se envía nada hasta que pulses Empezar."},
-    {"Hemma sorts them by their names - series into Series, films into Movies - and shows you where each one goes "
-     "before anything is sent.",
-     "Hemma sorterar dem efter namnen - serier i Series, filmer i Movies - och visar var var och en hamnar innan något "
-     "skickas.",
-     "Hemma los ordena por sus nombres - las series en Series, las películas en Movies - y te muestra adónde va cada "
-     "uno antes de enviar nada."},
+    {"Hemma sorts them by their names - series into Series, films into Movies, audiobooks into Audiobooks - and "
+     "shows you where each one goes before anything is sent.",
+     "Hemma sorterar dem efter namnen - serier i Series, filmer i Movies, ljudböcker i Audiobooks - och visar var var "
+     "och en hamnar innan något skickas.",
+     "Hemma los ordena por sus nombres - las series en Series, las películas en Movies, los audiolibros en Audiobooks "
+     "- y te muestra adónde va cada uno antes de enviar nada."},
     {"Choose videos", "Välj videor", "Elegir vídeos"},
     {"Choose a folder", "Välj en mapp", "Elegir una carpeta"},
     {"More options", "Fler val", "Más opciones"},
@@ -132,6 +133,10 @@ static const Tr TR[] = {
     {"%d pictures", "%d bilder", "%d imágenes"},
     {"%d other video", "%d annan video", "%d otro vídeo"},
     {"%d other videos", "%d andra videor", "%d otros vídeos"},
+    {"%d audiobook file", "%d ljudboksfil", "%d archivo de audiolibro"},
+    {"%d audiobook files", "%d ljudboksfiler", "%d archivos de audiolibro"},
+    {"%d audio file", "%d ljudfil", "%d archivo de audio"},
+    {"%d audio files", "%d ljudfiler", "%d archivos de audio"},
     {"…and %d more folder", "…och %d mapp till", "…y %d carpeta más"},
     {"…and %d more folders", "…och %d mappar till", "…y %d carpetas más"},
     /* what Hemma thinks a file is */
@@ -147,6 +152,9 @@ static const Tr TR[] = {
     {"Subtitles for %s", "Undertexter till %s", "Subtítulos de %s"},
     {"A picture for %s", "En bild till %s", "Una imagen para %s"},
     {"A picture", "En bild", "Una imagen"},
+    {"An audiobook", "En ljudbok", "Un audiolibro"},
+    {"Part of an audiobook", "Del av en ljudbok", "Parte de un audiolibro"},
+    {"Goes with %s", "Följer med %s", "Va con %s"},
     {"the copy of %s, made on this device", "kopian av %s, gjord på den här enheten",
      "la copia de %s, hecha en este dispositivo"},
     /* ... and what happens to it */
@@ -260,7 +268,8 @@ static const Tr TR[] = {
      "su nombre tiene caracteres que un disco no puede guardar"},
     {"the path is too long", "sökvägen är för lång", "la ruta es demasiado larga"},
     {"a system file", "en systemfil", "un archivo del sistema"},
-    {"not a video, subtitle or poster", "inte en video, undertext eller affisch", "no es un vídeo, subtítulo ni póster"},
+    {"not a video, subtitle, poster or audiobook", "inte en video, undertext, affisch eller ljudbok",
+     "no es un vídeo, subtítulo, póster ni audiolibro"},
     {"it's on the list twice", "den finns två gånger i listan", "está dos veces en la lista"},
     {"another upload is sending it right now", "en annan uppladdning skickar den just nu",
      "otra subida lo está enviando ahora mismo"},
