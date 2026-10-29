@@ -193,7 +193,7 @@ int64_t mp4_moov_bound(int64_t samples, int64_t chunks) {
     return 8192 + samples * 24 + chunks * 20;
 }
 
-static bool is_video(int codec) { return codec == MP4_H264 || codec == MP4_HEVC; }
+static bool is_video(int codec) { return codec == MP4_H264 || codec == MP4_HEVC || codec == MP4_AV1; }
 
 /* 'hvc1' says every parameter set is in the hvcC (14496-15 8.4.1): its VPS/SPS/PPS arrays get
    array_completeness = 1, as Apple's players expect. A record that doesn't parse stays as it is. */
@@ -230,7 +230,7 @@ bool mp4_set_config(Mp4 *m, int track, const uint8_t *config, size_t n) {
 }
 
 int mp4_add_track(Mp4 *m, const Mp4Track *tr) {
-    if (m->begun || m->ntrk == MP4_MAX_TRACKS || !tr->timescale || tr->codec < MP4_H264 || tr->codec > MP4_HEVC) return -1;
+    if (m->begun || m->ntrk == MP4_MAX_TRACKS || !tr->timescale || tr->codec < MP4_H264 || tr->codec > MP4_AV1) return -1;
     int i = m->ntrk;
     Trk *t = &m->trk[i];
     memset(t, 0, sizeof *t);
@@ -246,13 +246,15 @@ int mp4_add_track(Mp4 *m, const Mp4Track *tr) {
     return i;
 }
 
-static void ftyp(Bb *b, bool fragmented) {
+static void ftyp(const Mp4 *m, Bb *b) {
     size_t at = box(b, "ftyp");
     put_bytes(b, "isom", 4);
     put32(b, 0x200);
     put_bytes(b, "isom", 4);
-    put_bytes(b, fragmented ? "iso6" : "iso2", 4);
-    put_bytes(b, "avc1", 4);
+    put_bytes(b, m->flags & MP4_FRAGMENTED ? "iso6" : "iso2", 4);
+    bool av1 = false;
+    for (int i = 0; i < m->ntrk; i++) av1 |= m->trk[i].t.codec == MP4_AV1;
+    put_bytes(b, av1 ? "av01" : "avc1", 4); /* (AV1 in ISOBMFF: a file with AV1 lists the 'av01' brand) */
     put_bytes(b, "mp41", 4);
     end(b, at);
 }
@@ -263,7 +265,7 @@ bool mp4_begin(Mp4 *m) {
     if (m->begun || !m->ntrk) return false;
     m->begun = true;
     Bb b = {0};
-    ftyp(&b, m->flags & MP4_FRAGMENTED);
+    ftyp(m, &b);
     if (m->flags & MP4_FRAGMENTED) {
         moov(m, &b, false);
         bool ok = !b.oom && emit(m, b.p, b.len);
@@ -376,9 +378,10 @@ static void sample_entry(Bb *b, const Trk *t) {
     size_t e;
     switch (t->t.codec) {
     case MP4_H264:
-    case MP4_HEVC: {
-        bool hevc = t->t.codec == MP4_HEVC;
-        e = box(b, hevc ? "hvc1" : "avc1");
+    case MP4_HEVC:
+    case MP4_AV1: {
+        int k = t->t.codec == MP4_HEVC ? 1 : t->t.codec == MP4_AV1 ? 2 : 0;
+        e = box(b, (const char *[]){"avc1", "hvc1", "av01"}[k]);
         put_zero(b, 6);
         put16(b, 1);
         put_zero(b, 16);
@@ -392,7 +395,7 @@ static void sample_entry(Bb *b, const Trk *t) {
         put_bytes(b, name, 32);
         put16(b, 0x0018);
         put16(b, 0xFFFF);
-        size_t c = box(b, hevc ? "hvcC" : "avcC");
+        size_t c = box(b, (const char *[]){"avcC", "hvcC", "av1C"}[k]);
         put_bytes(b, t->cfg, t->cfg_len);
         end(b, c);
         if (t->t.sar_num > 0 && t->t.sar_den > 0) {

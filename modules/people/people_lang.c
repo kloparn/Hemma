@@ -367,6 +367,18 @@ static const Tr TR[] = {
      "Una app para móviles Android: encuentra Hemma en casa por sí sola, mantiene tu sesión iniciada y reproduce "
      "audiolibros con el móvil bloqueado."},
     {"Get the app for Android", "Hämta appen för Android", "Descargar la app para Android"},
+    /* Home's card for a browser on Android (2.1) */
+    {"Hemma has an app for your phone", "Hemma finns som app för din mobil", "Hemma tiene una app para tu móvil"},
+    {"You're using Hemma in the browser. The app finds Hemma at home by itself, keeps you signed in and plays "
+     "audiobooks with the phone locked.",
+     "Du använder Hemma i webbläsaren. Appen hittar Hemma hemma av sig själv, håller dig inloggad och spelar "
+     "ljudböcker med mobilen låst.",
+     "Estás usando Hemma en el navegador. La app encuentra Hemma en casa por sí sola, mantiene tu sesión iniciada y "
+     "reproduce audiolibros con el móvil bloqueado."},
+    {"Get the app", "Hämta appen", "Descargar la app"},
+    {"Not now", "Inte nu", "Ahora no"},
+    {"The app stays under Household → Your account.", "Appen finns kvar under Hushåll → Ditt konto.",
+     "La app sigue en Hogar → Tu cuenta."},
     {"Open the file once it's downloaded. Android asks whether your browser may install apps: allow it, this once. "
      "The app only ever talks to Hemma on your home network.",
      "Öppna filen när den har laddats ner. Android frågar om webbläsaren får installera appar: tillåt det, den här "

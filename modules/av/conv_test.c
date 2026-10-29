@@ -538,16 +538,90 @@ TEST(conv_copies_hevc_for_safari) {
     free(in.p), free(out.p);
 }
 
+/* 2.1 (owner, 2026-10-29: an AV1 upload "went up as it was" - "make this viable also as a convert"): AV1 (web
+   releases, "AV1-WoKE") isn't decoded either, but every Chrome, Edge and Firefox plays it in an MP4, and Safari
+   does on devices with AV1 - never in an MKV. 'av01' with MKV's own record as its av1C; a temporal delimiter
+   leading a block is dropped (MP4 samples have none); keyframes only where the file says so. */
+TEST(conv_copies_av1) {
+    static const uint8_t av1c[] = {0x81, 0x08, 0x0C, 0x00, 0x0A, 0x0B, 0x00, 0x00, 0x00, 0x2D, 0x4C, /* + a sequence */
+                                   0xFF, 0xB3, 0xDF, 0xFF, 0x96, 0x04};                            /* header OBU */
+    W in;
+    Tracks t = {"V_AV1", av1c, sizeof av1c, 64, 48, NULL, NULL, 0};
+    size_t seg = start_file(&in, &t, 1000);
+    size_t cl = w_open(&in, 0x1F43B675);
+    w_uint(&in, 0xE7, 0);
+    uint8_t frame[40];
+    for (int k = 0; k < 10; k++) {
+        bool td = k % 2 == 0; /* every other block still carries its temporal delimiter */
+        size_t n = 0;
+        if (td) frame[n++] = 0x12, frame[n++] = 0;
+        frame[n++] = 0x32, frame[n++] = 30; /* an OBU_FRAME, 30 bytes */
+        for (int i = 0; i < 30; i++) frame[n++] = (uint8_t)(k * 16 + i);
+        w_simple(&in, 1, frame_ms(k), k == 0 || k == 6, frame, n);
+    }
+    w_close(&in, cl);
+    w_close(&in, seg);
+
+    W out;
+    AvConvJob j = {0};
+    Seen s;
+    CHECK(run(&in, &out, &j, &s));
+    CHECK_STR(j.what, "AV1 copied");
+    int n[2];
+    counts(&out, n);
+    CHECK_INT(n[0], 10);
+    CHECK(!memcmp(out.p + 4, "ftyp", 4) && !memcmp(out.p + 24, "av01", 4)); /* its compatible brands say AV1 */
+    size_t moov = box(&out, "moov");
+    CHECK(moov != 0);
+    const uint8_t *m = out.p + moov, *end = m + be32(m);
+    const uint8_t *entry = NULL, *cfg = NULL, *stss = NULL, *stsz = NULL;
+    bool other = false;
+    for (const uint8_t *q = m; q + 4 <= end; q++) {
+        if (!entry && !memcmp(q, "av01", 4)) entry = q;
+        if (!cfg && !memcmp(q, "av1C", 4)) cfg = q - 4;
+        if (!stss && !memcmp(q, "stss", 4)) stss = q - 4;
+        if (!stsz && !memcmp(q, "stsz", 4)) stsz = q - 4;
+        other |= !memcmp(q, "avc1", 4) || !memcmp(q, "hvc1", 4) || !memcmp(q, "ctts", 4); /* (no reordering in AV1) */
+    }
+    CHECK(entry && cfg && stss && stsz && !other);
+    if (cfg) {
+        CHECK_INT((int)be32(cfg), 8 + (int)sizeof av1c);
+        CHECK(!memcmp(cfg + 8, av1c, sizeof av1c)); /* the record as MKV had it */
+    }
+    if (stss) { /* the two keyframes: samples 1 and 7 */
+        CHECK_INT((int)be32(stss + 12), 2);
+        CHECK_INT((int)be32(stss + 16), 1);
+        CHECK_INT((int)be32(stss + 20), 7);
+    }
+    if (stsz) { /* every sample 32 bytes: the delimiters gone */
+        CHECK_INT((int)be32(stsz + 16), 10);
+        for (int i = 0; i < 10; i++) CHECK_INT((int)be32(stsz + 20 + 4 * i), 32);
+    }
+    size_t mdat = box(&out, "mdat"); /* the first sample: the frame OBU, as it was */
+    CHECK(mdat && (out.p[mdat + 8] == 0x32 || out.p[mdat + 16] == 0x32));
+    free(in.p), free(out.p);
+
+    /* no record (Matroska requires one, an MP4 needs it): said, nothing written */
+    t.vpriv = NULL, t.vpriv_len = 0;
+    seg = start_file(&in, &t, 1000);
+    w_close(&in, seg);
+    CHECK(!run(&in, &out, &j, &s));
+    CHECK(j.unsupported);
+    CHECK_HAS(j.err, "Its AV1 picture has no settings record");
+    CHECK_INT((int)out.len, 0);
+    free(in.p), free(out.p);
+}
+
 TEST(conv_says_what_it_cannot_convert) {
     W in, out;
     AvConvJob j = {0};
     Seen s;
-    Tracks av1 = {"V_AV1", NULL, 0, 64, 48, NULL, NULL, 0};
-    size_t seg = start_file(&in, &av1, 1000);
+    Tracks vp9 = {"V_VP9", NULL, 0, 64, 48, NULL, NULL, 0};
+    size_t seg = start_file(&in, &vp9, 1000);
     w_close(&in, seg);
     CHECK(!run(&in, &out, &j, &s));
     CHECK(j.unsupported);
-    CHECK_HAS(j.err, "Its picture is AV1");
+    CHECK_HAS(j.err, "Its picture is VP9");
     CHECK_INT((int)out.len, 0); /* nothing written */
     free(in.p), free(out.p);
 
@@ -1515,7 +1589,7 @@ TEST(conv_keeps_wild_timestamps_and_lengths_in_check) {
         }
 }
 
-/* 1.2: a file the converter refuses for what it holds (an AV1 picture, TrueHD sound) still gives its subtitles,
+/* 1.2: a file the converter refuses for what it holds (a VP9 picture, TrueHD sound) still gives its subtitles,
    read once more on their own and timed on the copy's clock (from the first picture, whatever its codec).
    Not when asked to skip that (the browser: the original goes to the server, which takes them itself); a
    real error (stopped) gives none. */
@@ -1524,7 +1598,7 @@ TEST(conv_takes_subtitles_from_a_file_it_refuses) {
     static const char head[] = "size: 720x480\n";
     for (int sound = 0; sound < 2; sound++) {
         W in;
-        Tracks t = {sound ? "V_MPEG2" : "V_AV1", NULL, 0, 48, 32, sound ? "A_TRUEHD" : NULL, NULL, 0,
+        Tracks t = {sound ? "V_MPEG2" : "V_VP9", NULL, 0, 48, 32, sound ? "A_TRUEHD" : NULL, NULL, 0,
                     {{"S_TEXT/UTF8", "swe", NULL, false},
                      {"S_HDMV/PGS", "eng", NULL, false},
                      {"S_VOBSUB", "eng", NULL, false, head, sizeof head - 1},
@@ -1537,8 +1611,8 @@ TEST(conv_takes_subtitles_from_a_file_it_refuses) {
                 w_simple(&in, 1, 300 + frame_ms(k), true, pic, mpeg2_picture(pic, k));
                 w_simple(&in, 2, 300 + k * 32, true, "\x7F\xFE\x80\x01", 4);
             } else {
-                const uint8_t av1[8] = {0x12, 0, 0x0A, (uint8_t)k};
-                w_simple(&in, 1, 300 + frame_ms(k), k == 0, av1, sizeof av1);
+                const uint8_t vp9[8] = {0x82, 0x49, 0x83, (uint8_t)k};
+                w_simple(&in, 1, 300 + frame_ms(k), k == 0, vp9, sizeof vp9);
             }
         }
         w_group(&in, 3, 1300, 1000, "Hej", 3);
@@ -1555,7 +1629,7 @@ TEST(conv_takes_subtitles_from_a_file_it_refuses) {
             Seen s;
             CHECK(!run(&in, &out, &j, &s));
             CHECK(j.unsupported);
-            CHECK_HAS(j.err, sound ? "Its sound is Dolby TrueHD" : "Its picture is AV1"); /* the refusal stays the reason */
+            CHECK_HAS(j.err, sound ? "Its sound is Dolby TrueHD" : "Its picture is VP9"); /* the refusal stays the reason */
             CHECK_INT((int)out.len, 0);
             CHECK_INT(j.nsubs, how ? 0 : 4);
             if (!how) {
@@ -1580,7 +1654,7 @@ TEST(conv_takes_subtitles_from_a_file_it_refuses) {
         Seen s;
         CHECK(!run(&in, &out, &j, &s));
         CHECK(j.unsupported);
-        CHECK_HAS(j.err, sound ? "Its sound is Dolby TrueHD" : "Its picture is AV1");
+        CHECK_HAS(j.err, sound ? "Its sound is Dolby TrueHD" : "Its picture is VP9");
         CHECK_INT(j.nsubs, 0);
         free(in.p), free(out.p);
     }
@@ -1863,7 +1937,7 @@ TEST(conv_fuzz_seeds) {
                                    0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
     char took[64][40]; /* every CodecID a seed carries: each format the converter takes needs one (below) */
     int ntook = 0;
-    for (int seed = 0; seed < 14; seed++) {
+    for (int seed = 0; seed < 15; seed++) {
         uint8_t avcc[256], asc[2];
         size_t avcc_len = 0;
         Tracks mp2 = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0}, t = mp2;
@@ -1873,19 +1947,19 @@ TEST(conv_fuzz_seeds) {
         W in, out;
         switch (seed) {
         case 11:   /* H.264 with every subtitle kind a conversion carries: WebVTT, PGS (.sup), VobSub (.idx/.sub) */
-        case 12: { /* refused (an AV1 picture) - its subtitles taken alone: SRT, PGS, VobSub with header stripping */
+        case 12: { /* refused (a VP9 picture) - its subtitles taken alone: SRT, PGS, VobSub with header stripping */
             static const char head[] = "size: 720x480\npalette: 000000, f0f0f0, cccccc, 999999, 3333fa, 1111bb, fa3333, 7b1a1a, "
                                        "3333fa, 1111bb, fa3333, 7b1a1a, 33fa33, 0b7b0b, ffffff, 000000\n";
             static const uint8_t strip[1] = {0x01};
             static uint8_t set[1024], spu[2][2600];
-            name = seed == 11 ? "h264-webvtt-pgs-vobsub.mkv" : "av1-refused-srt-pgs-vobsub.mkv";
+            name = seed == 11 ? "h264-webvtt-pgs-vobsub.mkv" : "vp9-refused-srt-pgs-vobsub.mkv";
             if (seed == 11) add_h264(&v, 12, avcc, &avcc_len);
             else
                 for (int k = 0; k < 12; k++) {
-                    const uint8_t av1[8] = {0x12, 0, 0x0A, (uint8_t)k};
-                    s_add(&v, av1, sizeof av1, frame_ms(k), k == 0);
+                    const uint8_t vp9[8] = {0x82, 0x49, 0x83, (uint8_t)k};
+                    s_add(&v, vp9, sizeof vp9, frame_ms(k), k == 0);
                 }
-            t = (Tracks){seed == 11 ? "V_MPEG4/ISO/AVC" : "V_AV1", seed == 11 ? avcc : NULL, avcc_len, 64, 48, NULL, NULL, 0,
+            t = (Tracks){seed == 11 ? "V_MPEG4/ISO/AVC" : "V_VP9", seed == 11 ? avcc : NULL, avcc_len, 64, 48, NULL, NULL, 0,
                          {{seed == 11 ? "S_TEXT/WEBVTT" : "S_TEXT/UTF8", "eng", NULL, false},
                           {"S_HDMV/PGS", "eng", "English", false},
                           {"S_VOBSUB", "fre", NULL, true, head, sizeof head - 1, seed == 12 ? strip : NULL, 1}}};
@@ -1956,6 +2030,24 @@ TEST(conv_fuzz_seeds) {
             add_dts(&a, 38, true);
             t = (Tracks){"V_MPEG4/ISO/AVC", avcc, avcc_len, 64, 48, "A_DTS", NULL, 0};
             break;
+        case 14: { /* AV1 (2.1): copied, never decoded - its record, temporal delimiters on some blocks; Dolby Digital
+                      Plus beside it made AAC (an AV1 file used to be refused whole, its sound with it) */
+            static const uint8_t av1c[] = {0x81, 0x00, 0x0C, 0x00, 0x0A, 0x05, 0x00, 0x00, 0x00, 0x24, 0x9F};
+            name = "av1-eac3.mkv";
+            uint8_t frame[24] = {0x32, 22};
+            for (int k = 0; k < 12; k++) {
+                frame[2] = (uint8_t)k;
+                if (k % 3) s_add(&v, frame, sizeof frame, frame_ms(k), k % 6 == 0);
+                else {
+                    uint8_t td[26] = {0x12, 0};
+                    memcpy(td + 2, frame, sizeof frame);
+                    s_add(&v, td, sizeof td, frame_ms(k), k % 6 == 0);
+                }
+            }
+            for (int f = 0; f < 8; f++) s_add(&a, eac3 + (size_t)f * 384, 384, f * 16, true);
+            t = (Tracks){"V_AV1", av1c, sizeof av1c, 64, 48, "A_EAC3", NULL, 0};
+            break;
+        }
         case 0:
             name = "mpeg2-aac.mkv";
             add_mpeg2(&v, 0, 30, 48, 32, false, 0, false);

@@ -864,7 +864,9 @@ static void judge_in(MediaProbe *o, bool parsed, bool tr) {
         if (!webm && !mkv) {
             pv = PLAY_MAYBE;
             const char *name = !strcmp(vc, "av1") ? "AV1" : !strcmp(vc, "vp9") ? "VP9" : "VP8";
-            if (ct[0]) snprintf(wv, sizeof wv, W(tr, N_("%s in %s doesn't play everywhere")), name, ct);
+            if (!strcmp(vc, "av1") && !strcmp(ct, "mp4")) /* (what the converter makes of an AV1 MKV, 2.1) */
+                set_str(wv, sizeof wv, W(tr, N_("AV1 needs a newer device (Chrome, Edge, Firefox; the newest Apple devices)")));
+            else if (ct[0]) snprintf(wv, sizeof wv, W(tr, N_("%s in %s doesn't play everywhere")), name, ct);
             else snprintf(wv, sizeof wv, W(tr, N_("%s in this container doesn't play everywhere")), name);
         }
     } else {

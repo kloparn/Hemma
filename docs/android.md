@@ -15,7 +15,8 @@ It only ever connects to Hemma on your home network. Away from home it waits unt
 The app comes from your own Hemma, not from a store:
 
 1. On the Android phone, open Hemma in the browser and sign in.
-2. **Household → Your account → Hemma on your phone → Get the app for Android.**
+2. **Get the app** on the card at the top of Home (*Hemma has an app for your phone*). If you picked *Not now*,
+   it's always under **Household → Your account → Hemma on your phone → Get the app for Android.**
 3. Open the downloaded file. Android asks whether the browser may install apps: allow it, this once.
    It may also say the app is from an unknown developer (it isn't from the Play Store): choose
    **Install anyway**.

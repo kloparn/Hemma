@@ -40,8 +40,8 @@ Your movie and series drive as a little cinema.
 - **Remembers where you stopped**, for each person.
 - **Plays everywhere.** Hemma converts videos a browser can't play (DVD rips, Dolby sound that Chrome
   plays silently, DTS sound no browser plays) into a copy that does, keeping the file's subtitles as
-  .srt files, and puts HEVC films into a file Safari on iPhone, iPad and Mac can play
-  ([which videos](video-formats.md)).
+  .srt files, and puts HEVC films into a file Safari on iPhone, iPad and Mac can play - and AV1 ones into
+  one the newest Apple devices play too ([which videos](video-formats.md)).
 - **Live TV** ("90s TV"): channels that play your shows non-stop on a shared clock, with a TV guide.
 - **Downloads** for grown-ups: a video, or a whole season as one .zip, to watch away from home.
   Downloads slow down while someone is watching.
@@ -106,7 +106,8 @@ account ([setting one up](accounts.md#a-tablet-on-the-wall)).
 - Someone moving out keeps their history, or it's all erased - Hemma says what will happen first.
 - Everyone's own privacy: on the wall, on the TV, who's home, what they're doing.
 - Your home's name, and the link that puts your calendar on your phone.
-- **The Hemma app for Android**, from your own Hemma (Your account → *Get the app for Android*): it finds
+- **The Hemma app for Android**, from your own Hemma (Home offers it in an Android phone's browser; also Your
+  account → *Get the app for Android*): it finds
   Hemma on the home Wi-Fi by itself, keeps you signed in, and plays audiobooks with the lock screen's
   controls. It connects to nothing but Hemma at home. [The Android app](android.md).
 

@@ -208,3 +208,23 @@ test('an MKV with DTS sound is converted here as well', async ({ page }) => {
   await expect(page.locator('.media-up')).not.toContainText('sent as it is');
   expect(fs.existsSync(path.join(dir, 'Dtsshow S01E01.mkv'))).toBe(false);
 });
+
+// 2.1: an AV1 picture is copied into the MP4 (it went up as it was before, "the converter can't change yet"), and
+// the Dolby Digital Plus beside it is made AAC.
+test('an MKV with an AV1 picture is converted here too', async ({ page }) => {
+  const from = path.join(WORK, 'mkv-up', 'Avshow S01E01.mkv');
+  fs.mkdirSync(path.dirname(from), { recursive: true });
+  fs.copyFileSync(path.join(WORK, 'mkv', 'av1-eac3.mkv'), from);
+  await page.goto('/media/upload');
+  test.skip(!(await page.locator('form[data-wasm]').count()), 'this Hemma has no converter for browsers (av.wasm)');
+  await page.locator('input[name=files]').setInputFiles(from);
+  await expect(page.locator('.media-up-group', { hasText: 'Avshow' })).toContainText('Avshow · S01E01');
+  await page.locator('#media-up-start').click();
+  const dir = path.join(LIBRARY, 'Series', 'Avshow', 'Season 1'), copy = path.join(dir, 'Avshow S01E01.web.mp4');
+  await expect.poll(() => fs.existsSync(copy), { message: 'the copy arrives', timeout: 30_000 }).toBe(true);
+  await expect(page.locator('.media-up h3')).toContainText('Finished · 1 file sent');
+  await expect(page.locator('.media-up')).not.toContainText('sent as it is');
+  expect(fs.existsSync(path.join(dir, 'Avshow S01E01.mkv'))).toBe(false);
+  const mp4 = fs.readFileSync(copy).toString('latin1');
+  for (const box of ['av01', 'av1C', 'mp4a']) expect(mp4).toContain(box); /* (AV1 copied, the sound made AAC) */
+});

@@ -653,7 +653,14 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  (av/deint, chosen by sampling 4 windows) and re-encoded; H.264 copied; HEVC copied as 'hvc1'
                  (hvcC arrays marked complete - what Safari needs; no HEVC decoder here, so it plays on Apple
                  devices and browsers with HEVC hardware, not everywhere; Convert says "play in Safari too", the watch page
-                 badge "Plays on newer devices");
+                 badge "Plays on newer devices"); AV1 copied as 'av01' (2.1; owner, 2026-10-29: an AV1 upload went up as
+                 it was - "make this viable also as a convert"): av1C = MKV's CodecPrivate (the AV1CodecConfigurationRecord;
+                 none = refused, saying so), a temporal delimiter leading a block dropped, the 'av01' brand in ftyp; no AV1
+                 decoder (a big one, and slow), so it plays in Chrome/Edge/Firefox, Android and most newer TVs, and in
+                 Safari only on Apple's AV1 devices (iPhone 15 Pro+, M3+) - the badge "Plays on newer devices" as HEVC's,
+                 the player's trouble line its own, Convert "Make it play on more devices" (or "Fix the sound"). Checked on a
+                 real 10-bit 1080p AV1 + AC-3 film (2 h 28 min): every packet as the original's, ffmpeg decodes it, Chrome
+                 plays it;
                  AC-3 / E-AC-3 (Dolby Digital Plus) and DTS (1.3: the core, 5.1 -> Lo/Ro) -> AAC at the track's own rate (48, 44.1 or 32 kHz - TV rips are 44.1; 1.1.2; E-AC-3 half rates refused; a frame at another rate than the file says = unsupported); AAC copied; the file's subtitles next to the ORIGINAL - also
                  after an `unsupported` refusal (1.2) - by convert_save_subs/convert_save_sub(video, AvConvSub,
                  ConvertSubs*): text .srt, PGS .sup, VobSub .sub + .idx (the pair or nothing, .idx last), media/subs.c
@@ -1919,6 +1926,14 @@ Hemma app for Android (apps/android, docs/decisions/0011, docs/android.md): Hemm
 the home Wi-Fi by itself (GET /hemma.json, Avahi's _hemma._tcp), home network only, the lock screen's controls for
 audiobooks, served by Hemma itself (Your account -> Get the app for Android). An iPhone app needs a Mac with Xcode and
 Apple's paid programme to share it (a free Apple ID installs on one's own iPhone for 7 days): not now.
+2.1.0 (branch fix/make-another-converter-possible; owner, 2026-10-29: "Its picture is AV1, which the converter can't
+change yet" - "make this viable also as a convert") = AV1 MKVs converted (the picture copied into an MP4 as HEVC is,
+Dolby/DTS beside it made AAC), in the uploading browser and by Convert; and (owner: "Noticed you are in the web,
+download the app instead!") Home offers the app to a browser on Android - people.c's widget (widget_order 2), shown
+while the app is built in, the session's agent says Android and isn't the app, the person has no session from the app
+and hasn't pressed Not now (people.app_hint -> pref people.app_hint "off"); never to a display account. CI's actions on
+Node 24 (mlugg/setup-zig has none yet). A developer's own build signs the app with their dev key, which won't install
+over the release-signed app: a build for a Hemma whose phones have the released app leaves it out (HEMMA_SKIP_MODULES=app).
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
@@ -1941,4 +1956,4 @@ on the wall (ticking the shopping list - needs .display actions), more wall bloc
 MKV→MP4 remux on the fly for Safari/iPhone (planned as 1.2, owner 2026-10-21: a "virtual MP4" over the MKV,
 Dolby passed through for Apple devices; live AC-3 -> AAC after), "Open in VLC" links, router integration, DLNA, API tokens for
 scripts, "tune in" on the TV's browser via a QR code, more video formats as files need them (HEVC decoding,
-Xvid/MP3, TrueHD - each with its fuzz seed: docs/decisions/0006).
+AV1 decoding for older Apple devices, Xvid/MP3, TrueHD - each with its fuzz seed: docs/decisions/0006).

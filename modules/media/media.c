@@ -238,6 +238,9 @@ void media_controls(const Ctx *c, Buf *b, const MediaFile *f, bool tv) {
     UiPlayer p = {.box = "media-box", .video = "media-video", .key = key, .seconds = (int)(ms / 1000), .subs = subs, .tv = tv};
     if (str_eq(pf->probe.vcodec, "hevc")) /* (an HEVC copy plays where the device decodes HEVC - not every TV's browser) */
         p.trouble = T("This video is HEVC (x265), which this browser can't play. Most phones, computers and iPads can.");
+    else if (str_eq(pf->probe.vcodec, "av1")) /* (and an AV1 one where it decodes AV1: Apple's only on the newest) */
+        p.trouble = T("This video is AV1, which this browser can't play. Chrome, Edge, Firefox and Android phones can, and "
+                      "the newest iPhones and Macs.");
     p.nsubs = sub_choices(c, f, choice, MEDIA_MAX_SUBS);
     for (int i = 0; i < p.nsubs; i++) {
         const SubChoice *s = &choice[i];
@@ -1804,14 +1807,17 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     static const char *const cls[] = {"", "ok", "warn", "bad"};
     const MediaFile *pf = media_playable(f); /* the play-everywhere copy, when there is one */
     Playable pl = pf->probe.playable;
-    /* an HEVC copy is as far as Hemma goes (no HEVC decoder): say where it plays, not just "may not" */
-    bool hevc = pl == PLAY_MAYBE && str_eq(pf->probe.vcodec, "hevc") && !str_eq(pf->probe.container, "mkv");
+    /* an HEVC or AV1 copy is as far as Hemma goes (no decoder for either): say where it plays, not just "may not" */
+    bool newer = pl == PLAY_MAYBE && !str_eq(pf->probe.container, "mkv"), av1 = newer && str_eq(pf->probe.vcodec, "av1");
+    newer = av1 || (newer && str_eq(pf->probe.vcodec, "hevc"));
     H(b, "<div class=\"media-playable\"><span class=\"badge %s\">%s</span>", cls[CLAMP((int)pl, 0, 3)],
-      hevc ? T("Plays on newer devices") : T(media_playable_label(pl)));
-    if (hevc)
+      newer ? T("Plays on newer devices") : T(media_playable_label(pl)));
+    if (newer)
         H(b, "<span class=\"muted\">%s%s%s</span>", pf != f ? T("Converted copy") : "", pf != f ? " · " : "",
-          T("HEVC video: Safari on iPhone, iPad and Mac, and Chrome or Edge on most computers and phones from the last "
-            "few years"));
+          av1 ? T("AV1 video: Chrome, Edge and Firefox on computers and phones, most TVs from the last few years, and "
+                  "the newest iPhones, iPads and Macs")
+              : T("HEVC video: Safari on iPhone, iPad and Mac, and Chrome or Edge on most computers and phones from the "
+                  "last few years"));
     else if (pf != f) H(b, "<span class=\"muted\">%s</span>", T("Converted copy"));
     else if (pl != PLAY_YES && pf->probe.why[0]) {
         char why[200];
@@ -1832,7 +1838,7 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
             H(b, "<p class=\"muted\">%s</p>", T("Being made playable everywhere - see the library settings."));
         else if (is_admin(c)) {
             bool hevc = str_eq(f->probe.vcodec, "hevc"), dolby = str_eq(f->probe.acodec, "ac3") || str_eq(f->probe.acodec, "eac3");
-            bool dts = str_eq(f->probe.acodec, "dts");
+            bool dts = str_eq(f->probe.acodec, "dts"), av1 = str_eq(f->probe.vcodec, "av1"); /* (both copied: no decoder) */
             H(b, "<p class=\"muted\">%s</p>",
               hevc && dts ? T("Its DTS sound plays in no browser, and Safari can't open MKV files: a copy with AAC sound fixes "
                               "both - quick, the picture isn't re-encoded. HEVC still needs a device that can decode it (most "
@@ -1842,13 +1848,25 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
                                 "that can decode it (most from the last few years).")
               : hevc ? T("Safari (iPhone, iPad, Mac) can't open MKV files: a new container fixes that - quick, the picture "
                          "isn't re-encoded. HEVC still needs a device that can decode it (most from the last few years).")
+              : av1 && dts ? T("Its DTS sound plays in no browser, and Safari can't open MKV files: a copy with AAC sound fixes "
+                               "both - quick, the picture isn't re-encoded. AV1 still needs a device that can decode it "
+                               "(Chrome, Edge and Firefox can; of Apple's, only the newest).")
+              : av1 && dolby ? T("Its Dolby sound plays silently in Chrome and Firefox, and Safari can't open MKV files: a copy "
+                                 "with AAC sound fixes both - quick, the picture isn't re-encoded. AV1 still needs a device "
+                                 "that can decode it (Chrome, Edge and Firefox can; of Apple's, only the newest).")
+              : av1 ? T("Safari (iPhone, iPad, Mac) can't open MKV files: a new container fixes that - quick, the picture "
+                        "isn't re-encoded. AV1 still needs a device that can decode it (Chrome, Edge and Firefox can; of "
+                        "Apple's, only the newest).")
               : need == CONV_REMUX ? T("A new container makes this play on iPhones and every TV too - quick, nothing is "
                                        "re-encoded.")
                                    : T("Hemma can convert this once into a copy that plays on every browser, iPhone and TV."));
             char hex[17];
             media_id_hex(f->id, hex);
             ui_act(b, "media.convert", "btn",
-                   hevc && (dolby || dts) ? T("Fix the sound") : hevc ? T("Make it play in Safari too") : T("Make it play everywhere"),
+                   (hevc || av1) && (dolby || dts) ? T("Fix the sound")
+                   : hevc                          ? T("Make it play in Safari too")
+                   : av1                           ? T("Make it play on more devices")
+                                                   : T("Make it play everywhere"),
                    "id", hex, NULL);
         } else {
             buf_puts(b, "<p class=\"muted\">");
@@ -2236,12 +2254,12 @@ static void page_settings(Ctx *c, Buf *b) {
     H(b, "<details class=\"media-formats\"><summary>%s</summary><ul class=\"media-tips\">", T("Which formats are which"));
     H(b, "<li><span>%r</span></li>", T("<b>Plays in browsers:</b> MP4 or WebM with H.264/VP9 video and AAC/MP3/Opus sound."));
     H(b, "<li><span>%r</span></li>",
-      T("<b>May not play everywhere:</b> MKV, HEVC, or Dolby sound (Dolby Digital and Digital Plus: AC-3, E-AC-3) — fine "
-        "in Chrome/Edge or Safari, not all of them; Dolby sound plays silently in Chrome and Firefox. An HEVC film "
-        "converted here (<i>Plays on newer devices</i>) plays in Safari and on most devices from the last few years."));
+      T("<b>May not play everywhere:</b> MKV, HEVC, AV1, or Dolby sound (Dolby Digital and Digital Plus: AC-3, E-AC-3) — "
+        "fine in Chrome/Edge or Safari, not all of them; Dolby sound plays silently in Chrome and Firefox. An HEVC or AV1 "
+        "video converted here (<i>Plays on newer devices</i>) plays on most devices from the last few years."));
     H(b, "<li><span>%r</span></li></ul></details>",
-      T("<b>Needs conversion:</b> MPEG-2 (DVD rips), AVI/XviD, DTS sound. Hemma converts MKV files with MPEG-2, H.264 or "
-        "HEVC video and Dolby, DTS or AAC sound itself, and keeps their subtitles next to them."));
+      T("<b>Needs conversion:</b> MPEG-2 (DVD rips), AVI/XviD, DTS sound. Hemma converts MKV files with MPEG-2, H.264, "
+        "HEVC or AV1 video and Dolby, DTS or AAC sound itself, and keeps their subtitles next to them."));
     ui_card_end(b);
     buf_puts(b, "</div>");
     media_drives_dialog(c, b); /* (?format=<disk>) */

@@ -974,7 +974,7 @@ static bool mp4_put_at(void *ctx, int64_t off, const void *p, size_t n) {
     return fseek(f, 0, SEEK_END) == 0 && ok;
 }
 
-static void put_video(const char *rel, bool hevc, int seconds) {
+static void put_video_as(const char *rel, int codec, int seconds) {
     char path[1024], dir[1024];
     snprintf(path, sizeof path, "%s/%s", g_root, rel);
     str_copy(dir, sizeof dir, path);
@@ -983,8 +983,9 @@ static void put_video(const char *rel, bool hevc, int seconds) {
     FILE *f = file_open(path, "wb");
     Mp4Out out = {f, mp4_put, mp4_put_at};
     Mp4 *m = mp4_new(&out, 0, 4096);
-    static const uint8_t cfg[] = {1, 0x42, 0, 0x1E, 0xFF, 0xE0, 0};
-    Mp4Track t = {.codec = hevc ? MP4_HEVC : MP4_H264, .timescale = 1000, .config = cfg, .config_len = sizeof cfg,
+    static const uint8_t cfg[] = {1, 0x42, 0, 0x1E, 0xFF, 0xE0, 0}, av1c[] = {0x81, 0x08, 0x0C, 0x00};
+    bool av1 = codec == MP4_AV1;
+    Mp4Track t = {.codec = codec, .timescale = 1000, .config = av1 ? av1c : cfg, .config_len = av1 ? sizeof av1c : sizeof cfg,
                   .width = 64, .height = 48};
     mp4_add_track(m, &t);
     mp4_begin(m);
@@ -994,6 +995,8 @@ static void put_video(const char *rel, bool hevc, int seconds) {
     mp4_free(m);
     fclose(f);
 }
+
+static void put_video(const char *rel, bool hevc, int seconds) { put_video_as(rel, hevc ? MP4_HEVC : MP4_H264, seconds); }
 
 static int subs_of(uint64_t video) {
     const MediaIndex *ix = media_lib();
@@ -1070,6 +1073,20 @@ TEST(media_keeps_only_the_most_compatible_version) {
         /* the file's codecs by the names people know, folded away (issue #62: "MP4 · H264 · AAC") */
         CHECK_HAS(page, "<details class=\"media-tech\"><summary>File details</summary><span>MP4 file · HEVC (H.265) "
                         "video</span></details>");
+    }
+    /* and an AV1 one (2.1) - Chrome, Edge, Firefox and the newest Apple devices; the player says so if it can't */
+    put_video_as("Movies/Avo (2007)/Avo (2007).mp4", MP4_AV1, 60);
+    put_video_as("Movies/Avo (2007)/Avo (2007).web.mp4", MP4_AV1, 60);
+    media_scan_sync();
+    const MediaFile *avo = find("Avo (2007).mp4");
+    CHECK(avo != NULL);
+    if (avo) {
+        CHECK_STR(avo->probe.vcodec, "av1");
+        page = th_page(adam, url("/media/watch/%s", avo->id));
+        CHECK_HAS(page, ">Plays on newer devices</span>");
+        CHECK_HAS(page, "Converted copy · AV1 video: Chrome, Edge and Firefox on computers and phones");
+        CHECK_HAS(page, "This video is AV1, which this browser can&#39;t play.");
+        CHECK_HAS(page, "<span>MP4 file · AV1 video</span>");
     }
 
     /* the setting, and what it does right after a conversion: the copy file itself is checked */

@@ -4,6 +4,39 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.1.0 (2026-10-29)
+
+AV1 videos get a copy too, and Hemma on an Android phone's browser offers the app.
+
+### New
+
+- **The app, offered where you'll see it:** opening Hemma in the browser on an Android phone, Home starts with a
+  card - *Hemma has an app for your phone* - with *Get the app* and *Not now*. It isn't shown inside the app, once
+  you've signed in from the app, after *Not now* (the app stays under Household → Your account), on computers, or on
+  a display account's screen.
+- **AV1 videos are converted:** an MKV with an AV1 picture (web releases, "AV1" in the name) used to go up as it
+  was, with "Its picture is AV1, which the converter can't change yet". Hemma now copies its picture into an MP4,
+  as it does with HEVC: quick, nothing re-encoded, so an episode takes seconds, on a Raspberry Pi too. The copy
+  plays in Chrome, Edge and Firefox, on Android phones and in the Hemma app, on most TVs from the last few years,
+  and on the newest iPhones, iPads and Macs (Safari plays AV1 only on Apple's devices with an AV1 chip: iPhone 15
+  Pro and later, Macs and iPads with M3 or later). The video's page says *Plays on newer devices*.
+- **The sound of an AV1 video is fixed too:** Dolby (AC-3, E-AC-3) or DTS sound beside an AV1 picture is made AAC.
+  Before, the whole file was refused, its silent sound with it.
+- Uploads convert AV1 MKVs in the browser, and **Watch → Library settings → Convert** offers the ones already in
+  the library.
+
+### For developers
+
+- modules/av: `MP4_AV1` in the MP4 writer ('av01' + 'av1C', the file's `av01` brand), and `V_AV1` in
+  `AV_CONV_CODECS` as a copy: MKV's CodecPrivate is the AV1CodecConfigurationRecord the MP4 needs (a file without
+  one is refused, saying so); a temporal delimiter leading a block is dropped. A new fuzz seed, `av1-eac3.mkv`; the
+  refused-picture seed is VP9 now (`vp9-refused-srt-pgs-vobsub.mkv`).
+- modules/people: a Home card (`widget`, order 2) for a session whose browser is on Android (Session.agent) and not
+  the app, while the app is built in; `people.app_hint` sets the pref `people.app_hint` = "off"; a person with any
+  session from the app isn't asked.
+- GitHub Actions on Node 24 (Node 20 is going away): checkout v7, cache v6, upload-artifact v7, download-artifact v8,
+  setup-java v6, setup-node v7. `mlugg/setup-zig` has no Node 24 version yet; GitHub runs it on Node 24 meanwhile.
+
 ## 2.0.0 (2026-10-28)
 
 Hemma gets an app: Hemma for Android finds Hemma on the home network by itself.
