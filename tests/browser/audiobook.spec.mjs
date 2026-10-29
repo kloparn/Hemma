@@ -116,6 +116,38 @@ test('a book playing when another page comes keeps its place', async ({ page }) 
   expect(Number(await audio(page).getAttribute('data-resume'))).toBeGreaterThanOrEqual(22);
 });
 
+test('in the Android app, the app is told what plays and its lock-screen buttons work the book', async ({ page }) => {
+  /* (2.0: apps/android's WebView gives the page window.HemmaApp; PlayerService calls window.hemmaAction back) */
+  await page.addInitScript(() => {
+    window.appSaid = [];
+    window.HemmaApp = { media: (json) => window.appSaid.push(JSON.parse(json)) };
+  });
+  const href = await bookPage(page, 'Test Story');
+  const a = audio(page);
+  await loaded(a);
+  await a.evaluate((m) => { m.muted = true; m.currentTime = 2; return m.play(); });
+  const last = () => page.evaluate(() => window.appSaid[window.appSaid.length - 1] || {});
+  await expect.poll(async () => (await last()).state).toBe('playing');
+  const now = await last();
+  expect(now.album).toBe('Test Story');
+  expect(now.artist).toBe('Ann Author');
+  expect(Math.abs(now.duration - 40)).toBeLessThanOrEqual(1); /* (the page's data-length: whole seconds) */
+  expect(now.art).toBe(await a.evaluate((m) => (m.dataset.art ? new URL(m.dataset.art, location.href).href : '')));
+  await page.evaluate(() => window.hemmaAction('pause'));
+  await expect.poll(() => a.evaluate((m) => m.paused)).toBe(true);
+  await expect.poll(async () => (await last()).state).toBe('paused');
+  await page.evaluate(() => window.hemmaAction('seekto', 30));
+  await expect.poll(() => bookAt(a)).toBeGreaterThan(29.5);
+  await page.evaluate(() => window.hemmaAction('seekbackward'));
+  await expect.poll(() => bookAt(a)).toBeLessThan(16);
+  await page.evaluate(() => window.hemmaAction('play'));
+  await expect.poll(() => a.evaluate((m) => !m.paused)).toBe(true);
+  await page.locator('a[href="/media/books"]:visible').first().click(); /* another page: the app lets go */
+  await expect.poll(async () => (await last()).state).toBe('none');
+  await page.evaluate(() => window.hemmaAction('play'));
+  expect(href).toMatch(/^\/media\/book\//);
+});
+
 test('a page going out of sight sends the place as a plain POST', async ({ page }) => {
   await bookPage(page, 'Test Story');
   const a = audio(page);

@@ -53,6 +53,12 @@ wire.js also holds the two things only a browser can do: the video player (its c
 resuming, Live TV's "now", the next episode) and the upload client. It is linted and tested in a
 real browser (`tests/browser`); everything else stays in C.
 
+The Android app (`apps/android`, 2.0) is a thin window onto those same pages: it finds Hemma on the
+home network (`GET /hemma.json`, Avahi's `_hemma._tcp`), connects to nothing else, and adds only what a
+WebView can't do - the lock screen's controls for audiobooks, the file picker, downloads. Plain Java,
+no libraries, built into the program and served by Hemma itself
+([decision 0011](docs/decisions/0011-an-android-app-as-a-thin-window.md)).
+
 ## Modules
 
 Each feature is a folder under `modules/` that registers itself (`MODULE(...)`): book, plan,
@@ -102,6 +108,7 @@ browser's - and tests fail when a text lacks a translation.
 | `modules/<id>/` | One folder per feature, with its tests (`*_test.c`) and translations (`*_lang.c`) |
 | `modules/av/` | The video codecs: a pure C library, no dependencies (it also builds for WebAssembly) |
 | `web/` | `wire.js`, the upload converter's Worker, the core stylesheet |
+| `apps/android/` | The Android app (Java, its own build script) |
 | `tests/` | The test runner and harness (C); `tests/browser` (Playwright, CI only) |
 | `tools/` | Developer tools, fuzz targets, the CI and release scripts, the Raspberry Pi image |
 | `deploy/` | systemd units, the installer, the root helpers |

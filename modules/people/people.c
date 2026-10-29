@@ -513,6 +513,28 @@ static void account_card(Ctx *c, Buf *b) {
     ui_card_end(b);
 }
 
+/* 2.0: the Android app, served by this Hemma itself (core: /static/hemma.apk, built in when the build found Android's
+   tools) - not shown inside the app, nor to a display account */
+static void app_card(Ctx *c, Buf *b) {
+    long long size = app_static_size("/hemma.apk");
+    if (size < 0 || c->me->role == ROLE_DISPLAY || session_in_app(c->sess)) return;
+    char kb[24];
+    snprintf(kb, sizeof kb, "%lld KB", (size + 1023) / 1024);
+    ui_card(b, T("Hemma on your phone"), NULL, NULL);
+    H(b, "<p>%s</p>",
+      T("An app for Android phones: it finds Hemma at home by itself, keeps you signed in and plays audiobooks with the "
+        "phone locked."));
+    H(b,
+      "<div class=\"people-actions\"><a class=\"btn primary\" id=\"people-app\" href=\"/static/hemma.apk?v=%s\" "
+      "download=\"Hemma.apk\">%s</a><span class=\"muted small\">%s</span></div>",
+      app_asset_version(), T("Get the app for Android"), kb);
+    H(b, "<p class=\"muted small\">%s</p><p class=\"muted small\">%s</p>",
+      T("Open the file once it's downloaded. Android asks whether your browser may install apps: allow it, this once. "
+        "The app only ever talks to Hemma on your home network."),
+      T("On an iPhone: open Hemma in Safari, tap Share, then Add to Home Screen."));
+    ui_card_end(b);
+}
+
 /* Issue #46: the language Hemma speaks to you - Automatic (the browser's), or one of ours, each named in itself.
    A display account can't send forms: an admin picks its language in its Edit dialog. */
 static void lang_card(Ctx *c, Buf *b) {
@@ -633,11 +655,13 @@ static void page(Ctx *c, Buf *b) {
     } else {
         account_card(c, b);
         lang_card(c, b);
+        app_card(c, b);
     }
     buf_puts(b, "</div><div>");
     if (!guest) {
         account_card(c, b);
         lang_card(c, b);
+        app_card(c, b);
     }
     privacy_card(c, b);
     if (c->me->pass[0] && c->me->role != ROLE_DISPLAY && !guest) calendar_card(c, b);

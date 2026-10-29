@@ -28,6 +28,10 @@ Runs on a Raspberry Pi in production; developed on Windows 11 with `zig cc`.
   keep are listed under "the player" below and each has a browser test. No other app logic
   goes in JS. Uploads run Hemma's C converter compiled to WebAssembly (`av.wasm`, fed by
   the tiny Worker `web/conv.js`) - still C, just running on the sending device.
+  THE ONE EXCEPTION: `apps/android/` (2.0; owner, 2026-10-28: "a web-app pretty much, only allow local
+  connection ... it tries to find the local-network of the hemma application"; docs/decisions/0011) - plain
+  Java, a thin window (WebView) onto Hemma's own pages that adds only what a WebView can't do. No household
+  logic there either.
 - **Server-driven UI**: C renders HTML; changes are pushed as DOM morphs over
   WebSocket to every open screen. Pages also work without JS (links + POST forms).
 - **Fast and light**: single-threaded event loop, small static binary for the Pi.
@@ -70,7 +74,8 @@ Runs on a Raspberry Pi in production; developed on Windows 11 with `zig cc`.
 - **Every PR raises the version** (the VERSION file: MAJOR.MINOR.PATCH, digits only - semver.org; owner,
   2026-10-19: "easy to find") and gets its own CHANGELOG.md section
   (owner, 2026-10-12): **patch** = fixes only, **minor** = something new or changed, **major** = a big
-  breaking change in how things work. Bump it in the PR itself, not after the merge. The section is headed
+  breaking change in how things work - or a milestone the owner names (1.0.0; 2.0.0 = the Android app, owner
+  2026-10-28: "a nice new soft-launch where an app is available"). Bump it in the PR itself, not after the merge. The section is headed
   "## X.Y.Z (<day>)" (the day the PR is made). MERGING RELEASES IT (issues #19, #52; owner, 2026-10-19: "an
   action that reacts to the version ups"; a separate .version file was weighed and left out - HEMMA_VERSION
   stays the one place - then the owner asked for it in a file of its own, following a standard: VERSION): .github/workflows/release.yml on a push to main touching VERSION or CHANGELOG.md
@@ -229,7 +234,12 @@ core/            framework with a stable API for modules
                  app_addresses() (LAN IP + <hostname>.local only when lan_mdns_announced(); the listen setting read
                  by plat.c listen_addr() like the listener: ""/"*"/0.0.0.0 = all, "localhost" = 127.0.0.1 - issue #99),
                  app_local_only() (127.x/localhost: System, Screens and the banner ask it), public `GET /healthz` -> "200 ok" (after
-                 the Host guard, nothing else in it), the startup banner (where to open it, setup code
+                 the Host guard, nothing else in it), public `GET /hemma.json` (2.0, after the Host guard; what the Android
+                 app looks for) -> {"hemma": version, "id": app_instance() = setting core.instance, 16 hex made once at
+                 app_boot, "name": the household's (the sign-in page shows it anyway)}; app_static_size(path) = a
+                 built-in /static file's size, -1 = none (app_test_static in tests: the people card asks it for
+                 /hemma.apk); session_in_app(s) = signed in from the app (its UA says "HemmaApp/": Session.agent
+                 "The Hemma app on Android"), the startup banner (where to open it, setup code
                  hint, where the log is). HEMMA_VERSION = hemma_version() and HEMMA_VERSION_FULL =
                  hemma_version_full() (+ the commit) in core/version.c: build.ps1/Makefile read the VERSION file
                  (refused unless MAJOR.MINOR.PATCH) and pass -DHEMMA_VER=<it> + -DHEMMA_COMMIT=<sha>[-dirty]
@@ -1069,6 +1079,36 @@ tools/image/     THE RASPBERRY PI IMAGE (issue #71): build.sh BUNDLE OUT (no roo
                  retries at the next start). Base facts (2026-10 trixie Lite): no SSH host keys
                  (regenerate_ssh_host_keys), machine-id "uninitialized", avahi + cloud-init (Imager's settings)
                  + ntfs-3g + exfatprogs present, no unattended-upgrades/acl/python3-dbus/python3-distro-info.
+apps/android/    THE HEMMA APP FOR ANDROID (2.0; docs/decisions/0011, docs/android.md): plain Java on the platform's own APIs,
+                 NO libraries, NO Gradle - build.sh (Linux/macOS, `make app`) and build.ps1 Build-App (`./build.ps1 app`) run
+                 javac (-source 8, bootclasspath android.jar + build-tools' core-lambda-stubs.jar), aapt2, d8, aapt add
+                 (classes.dex), zipalign, apksigner: ~40 KB. minSdk 26, targetSdk 36, package io.github.kloparn.hemma,
+                 versionCode MAJOR*10000+MINOR*100+PATCH of VERSION. Built automatically when ANDROID_HOME (else Android
+                 Studio's %LOCALAPPDATA%\Android\Sdk) and a JDK (JAVA_HOME, else Android Studio's jbr) are found, and
+                 EMBEDDED in the program as /static/hemma.apk (like av.wasm; SKIP=app / HEMMA_SKIP_MODULES=app leave it
+                 out); in CI only with the release key. KEY: HEMMA_APP_KEYSTORE (PKCS12) + HEMMA_APP_KEY_PASSWORD = the
+                 release key (an update installs only over an app signed with the same key); else ~/.hemma/hemma-app-
+                 dev.p12 made once (password hemma-dev) and the app is debuggable (--debug-mode: chrome://inspect, or adb
+                 forward tcp:9229 localabstract:webview_devtools_remote_<pid> + /json). Files: Net.java (pure Java: which
+                 addresses are the home network - 10/8 172.16/12 192.168/16 169.254/16 127/8, fe80::/10 fc00::/7 ::1, never
+                 100.64/10 -, home names: one label or .local .lan .home .home.arpa .internal, the Wi-Fi's addresses
+                 nearest first (/24, at most /22), a typed address, /hemma.json parsed) + test/NetTest.java (run by both
+                 builds with a JDK alone); Finder.java (NSD "_hemma._tcp" and asking every address on ports 80/8080 at
+                 once, 48 threads, 700 ms; every answer checked: /hemma.json from a private address; one report per id);
+                 MainActivity.java (the WebView - JS, DOM storage, autoplay, UA + " HemmaApp/<version>", cookies kept;
+                 other origins open in the browser; the finder panel built in code; prefs base/id/name: the same Hemma
+                 found again at a new address by its id; file chooser ACTION_GET_CONTENT */*; downloads via DownloadManager
+                 with the cookie; full screen = onShowCustomView; Back = history, then moveTaskToBack; edge to edge with
+                 insets as padding; window.HemmaApp = Bridge {media(json), version()}, only on Hemma's own pages; the
+                 page's onPause only while no book plays); PlayerService.java (foreground service, type mediaPlayback,
+                 while a book is loaded: MediaSession + MediaStyle notification - cover (fetched with the cookie, <= 512
+                 px), chapter, author, book; play/pause, skip = chapters, rewind/ff + custom actions 15/30 s, seek; a
+                 partial wake lock while playing; "none" or the task swiped away ends it). ANDROID 17 asks for
+                 ACCESS_LOCAL_NETWORK ("find, connect to ... nearby devices") - without it no connection to the home
+                 network gets through (seen on a Pixel 10, 2026-10-28: AppOps "Operation not started ... ACCESS_LOCAL_NETWORK");
+                 the app asks at the first look, again from Look again, then sends to the app's settings page; an app in
+                 the back of a locked phone has no network either - it looks again when it comes to the front.
+                 Strings in res/values{,-sv,-es}. The app's name in a release: Hemma.
 tests/browser/   CI-ONLY Node (owner, 2026-10-21: "The CI can use node"; nothing ships): Playwright in Google
                  Chrome (the bundled Chromium can't play H.264/AAC) against a real Hemma - server.mjs makes a fresh
                  folder under the OS temp (hemma-browser-tests), test clips by `build/test av_test_clips` with
@@ -1094,7 +1134,10 @@ tests/browser/   CI-ONLY Node (owner, 2026-10-21: "The CI can use node"; nothing
 tools/ci/local.sh  CI's Linux jobs locally: test | asan | fuzz [S] [conv|mkv|ac3|dts|mpeg2|pgs|vobsub], on a fresh copy of the tree (stdin tar,
                  --tar FILE, or this checkout) in /dev/shm, each job's build/ kept for the next run (only
                  what changed compiles); never deletes. Windows: ./build.ps1 ci [job] (WSL; $env:HEMMA_WSL)
-deploy/          hemma-disks (issue #74; sh, root, -> /usr/local/sbin): `sudo hemma-disks` [use UUID | format sdX | forget
+deploy/          avahi-hemma.service (2.0): install-pi.sh writes it to /etc/avahi/services/hemma.service (Hemma's port for
+                 @PORT@, then reloads avahi-daemon) when /etc/avahi/services exists - "_hemma._tcp", TXT path=/hemma.json:
+                 how the Android app's NSD finds Hemma; bundles carry it (bundle.sh units).
+                 hemma-disks (issue #74; sh, root, -> /usr/local/sbin): `sudo hemma-disks` [use UUID | format sdX | forget
                  UUID]; --from-hemma = hemma-disks.service (root oneshot, NO namespace options: a mount made in a
                  service's own mount namespace would vanish with it) on hemma-disks.path (PathModified
                  /var/lib/hemma/disks/request). Checks everything again with lsblk/blkid/findmnt: never the disk under
@@ -1180,6 +1223,7 @@ build*/ data/ .env   generated / runtime / secrets (gitignored)
 ./build.ps1 pi | pi32    # static Linux binaries for the Raspberry Pi (aarch64 | armv6), ~2.2 MB
 ./build.ps1 linux        # static x86-64 Linux (pi/pi32 also run on any ARM Linux)
 ./build.ps1 mac          # macOS 11+: build/hemma-mac-arm64 + hemma-mac-x64 (cross-compiled, not yet run on a Mac)
+./build.ps1 app          # the Android app -> build/hemma.apk (apps/android; any build embeds it when the tools are here)
 ```
 - `$env:HEMMA_SKIP_MODULES="media,tv"` leaves module folders out (someone else's work in progress).
   media needs av and tv needs media: skipping one skips the ones that depend on it.
@@ -1638,7 +1682,13 @@ LOCK SCREEN (owner: "listen to it while the phone is locked"): the Media Session
 works on plain http), set while it plays: metadata {title = the chapter, artist = data-author, album = data-title,
 artwork = data-art}, handlers play/pause/stop/seekbackward 15/seekforward 30/seekto/previoustrack/nexttrack
 (chapters), setPositionState every 4 s. Taken off the page (another page came), it lets go of the lock screen, its
-handlers (sessionDrop) and the stream. Keys: Space/K, Left -15, Right +30, Escape closes a menu ·
+handlers (sessionDrop) and the stream. Keys: Space/K, Left -15, Right +30, Escape closes a menu. IN THE ANDROID APP
+(2.0): window.HemmaApp (apps/android MainActivity.Bridge) - a WebView shows no Media Session on the lock screen, so
+appTell() sends HemmaApp.media(JSON {state playing|paused|none, title, artist, album, art (absolute), duration,
+position, rate}) at every play/pause/chapter change and every 4 s (sessionPlace), "none" from sessionDrop; the app's
+buttons call window.hemmaAction(what, seconds) -> lockActs (the same handlers as the Media Session's: play pause stop
+seekbackward seekforward seekto previoustrack nexttrack). lockBook replaces the old ms._book. Held by
+audiobook.spec.mjs ("in the Android app") ·
 LETTING GO (1.6; owner, 2026-10-28: a paused South Park episode played on from Watch and Add videos with the
 keyboard's play key / the OS's media controls): every wired video/audio is in `wired`; settle() ends with letGo() -
 one no longer on the page is paused if it plays (its pause handler reports, then drops src + load()), else drops
@@ -1863,7 +1913,12 @@ library ... listen to it while the phone is locked"; a minor version: nothing br
 folders of .mp3/.m4a under an Audiobooks folder (av/audiotags.c reads their tags, chapters and covers), Watch's
 Audiobooks tab, a book's page with a listening player (15/30 s, chapters, speed, sleep timer, parts in one element),
 the lock screen through the Media Session API, progress that survives a locked phone, downloads and uploads of books.
-Owner's idea for later (not 1.6): an Android app (sideloaded, unsigned) that connects locally without the browser.
+2.0.0 (branch p-o-c/app; owner, 2026-10-28: "a web-app pretty much, only allow local connection ... it tries to find the
+local-network of the hemma application", "a 2.0 deploy ... a nice new soft-launch where an app is available") = the
+Hemma app for Android (apps/android, docs/decisions/0011, docs/android.md): Hemma's pages in a window of its own, found on
+the home Wi-Fi by itself (GET /hemma.json, Avahi's _hemma._tcp), home network only, the lock screen's controls for
+audiobooks, served by Hemma itself (Your account -> Get the app for Android). An iPhone app needs a Mac with Xcode and
+Apple's paid programme to share it (a free Apple ID installs on one's own iPhone for 7 days): not now.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling

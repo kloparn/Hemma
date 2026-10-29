@@ -6,6 +6,7 @@ static const Tr TR[] = {
     {"%s (moved out)", "%s (flyttat)", "%s (se ha mudado)"},
     {"%s on %s", "%s på %s", "%s en %s"},
     {"A browser on %s", "En webbläsare på %s", "Un navegador en %s"},
+    {"The Hemma app on %s", "Hemma-appen på %s", "La app de Hemma en %s"},
     {"A browser", "En webbläsare", "Un navegador"},
 
     /* Undo */

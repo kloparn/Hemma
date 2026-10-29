@@ -2324,15 +2324,32 @@
     for (const a of document.querySelectorAll('audio[data-book]')) if (a._book && a._sleepAt) lsSync(a);
   }, 1000);
 
-  // The lock screen: what plays (the chapter as its title), and its buttons - once per book element, when it plays
+  // The lock screen: what plays (the chapter as its title), and its buttons - once per book element, when it plays.
+  // THE APP (2.0): the Hemma app for Android gives its pages window.HemmaApp - a WebView shows nothing of the Media
+  // Session on the lock screen, so the app has its own (apps/android PlayerService): it's told what plays
+  // (HemmaApp.media(json): state playing | paused | none, title, artist, album, art, duration, position, rate - at
+  // every change and every 4 s) and its buttons come back through window.hemmaAction(what, seconds), the same
+  // actions as the Media Session's.
+  const hemmaApp = window.HemmaApp && typeof window.HemmaApp.media === 'function' ? window.HemmaApp : null;
+  let lockBook = null;
+  const lockActs = {};
+  window.hemmaAction = (what, arg) => { const f = lockBook && lockActs[what]; if (f) f(typeof arg === 'number' ? { seekTime: arg } : {}); };
+  function appTell(a, state) {
+    if (!hemmaApp) return;
+    const art = a.dataset.art ? new URL(a.dataset.art, location.href).href : '';
+    try {
+      hemmaApp.media(JSON.stringify(state === 'none' ? { state } : {
+        state, title: a._chapter || a.dataset.title || '', artist: a.dataset.author || '', album: a.dataset.title || '', art,
+        duration: a._len || 0, position: Math.min(bookAt(a), a._len || Infinity), rate: a.playbackRate || 1,
+      }));
+    } catch (_) {}
+  }
   function session(a, now) {
-    if (!('mediaSession' in navigator) || !now) return;
-    const ms = navigator.mediaSession;
-    if (a.paused) { ms.playbackState = 'paused'; return; }
-    ms.playbackState = 'playing';
-    if (ms._book !== a) {
-      ms._book = a;
-      const on = (what, fn) => { try { ms.setActionHandler(what, fn); } catch (_) {} };
+    if (!now) return;
+    const ms = 'mediaSession' in navigator ? navigator.mediaSession : null;
+    if (lockBook !== a) {
+      lockBook = a;
+      const on = (what, fn) => { lockActs[what] = fn; try { if (ms) ms.setActionHandler(what, fn); } catch (_) {} };
       on('play', () => a.play().catch(() => {}));
       on('pause', () => a.pause());
       on('stop', () => a.pause());
@@ -2342,34 +2359,42 @@
       on('previoustrack', () => chapterGo(a, -1));
       on('nexttrack', () => chapterGo(a, 1));
     }
+    if (ms) ms.playbackState = a.paused ? 'paused' : 'playing';
+    a._metaFor = null; /* (the app hears every change of state) */
     sessionMeta(a);
   }
   // (a book taken off the page: the lock screen forgets it, and its buttons go - they'd play it on, unseen)
   function sessionDrop(a) {
+    if (lockBook !== a) return;
+    lockBook = null;
+    for (const k of Object.keys(lockActs)) delete lockActs[k];
+    appTell(a, 'none');
     const ms = 'mediaSession' in navigator ? navigator.mediaSession : null;
-    if (!ms || ms._book !== a) return;
-    ms._book = null;
+    if (!ms) return;
     ms.metadata = null;
     ms.playbackState = 'none';
     for (const what of ['play', 'pause', 'stop', 'seekbackward', 'seekforward', 'seekto', 'previoustrack', 'nexttrack'])
       try { ms.setActionHandler(what, null); } catch (_) {}
   }
   function sessionMeta(a) {
-    const ms = navigator.mediaSession, title = a._chapter || a.dataset.title || '';
-    if (!ms || ms._book !== a || !window.MediaMetadata || a._metaFor === title) return;
+    const ms = 'mediaSession' in navigator ? navigator.mediaSession : null, title = a._chapter || a.dataset.title || '';
+    if (lockBook !== a || a._metaFor === title) return;
     a._metaFor = title;
+    appTell(a, a.paused ? 'paused' : 'playing');
+    if (!ms || !window.MediaMetadata) return;
     const art = a.dataset.art ? [{ src: new URL(a.dataset.art, location.href).href }] : [];
     try {
       ms.metadata = new MediaMetadata({ title, artist: a.dataset.author || '', album: a.dataset.title || '', artwork: art });
     } catch (_) {}
   }
   function sessionPlace(a) {
-    const ms = 'mediaSession' in navigator ? navigator.mediaSession : null;
-    if (!ms || ms._book !== a) return;
+    if (lockBook !== a) return;
     sessionMeta(a);
-    const now = Date.now();
-    if (now - (a._placed || 0) < 4000 || !(a._len > 0) || !ms.setPositionState) return;
+    const now = Date.now(), ms = 'mediaSession' in navigator ? navigator.mediaSession : null;
+    if (now - (a._placed || 0) < 4000 || !(a._len > 0)) return;
     a._placed = now;
+    appTell(a, a.paused ? 'paused' : 'playing');
+    if (!ms || !ms.setPositionState) return;
     try { ms.setPositionState({ duration: a._len, playbackRate: a.playbackRate || 1, position: Math.min(bookAt(a), a._len) }); } catch (_) {}
   }
 

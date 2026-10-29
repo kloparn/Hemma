@@ -6,7 +6,9 @@
 #   make test            build and run every *_test.c, one process per core (tests/parallel.sh)
 #   make test T="http"   only tests whose name or file contains "http", in one process
 #   make run             run on 127.0.0.1:8080 with web/ served live from disk
-#   make SKIP="tv"       leave module folders out (media needs av and tv needs media: they go too)
+#   make SKIP="tv"       leave module folders out (media needs av and tv needs media: they go too);
+#                        SKIP="app" leaves the Android app out
+#   make app             the Android app alone (apps/android/build.sh) -> build/hemma.apk
 #   sudo make install    Linux with systemd: /opt/hemma + the service (see deploy/, docs/linux.md)
 #                        (a Mac uses deploy/local.hemma.plist instead: docs/macos.md)
 
@@ -77,14 +79,36 @@ build/av.wasm: $(WASM_SRC) $(wildcard modules/av/*.h) build/.dir
 	$(WASM_CC) $(WARN) -mexec-model=reactor -msimd128 -O2 -DNDEBUG -s -Wl,-z,stack-size=8388608 \
 	  -Imodules/av -o $@ $(WASM_SRC)
 
+# The Hemma app for Android (apps/android, 2.0), served as /static/hemma.apk: built in when Android's tools are
+# here - ANDROID_HOME (or ANDROID_SDK_ROOT) and a JDK's javac - by apps/android/build.sh (its header: the key).
+# In CI only with the release key (HEMMA_APP_KEYSTORE): a key made up there would make later versions refuse to
+# install over it. `make app` builds it anyway (a check: build/hemma.apk, not built in).
+ANDROID_SDK := $(or $(ANDROID_HOME),$(ANDROID_SDK_ROOT))
+APP_SRC     := $(shell find apps/android -type f 2>/dev/null)
+ifneq ($(ANDROID_SDK),)
+ifneq ($(shell command -v javac 2>/dev/null || ls "$(JAVA_HOME)/bin/javac" 2>/dev/null),)
+ifeq ($(filter app,$(SKIP)),)
+ifneq ($(if $(CI),$(HEMMA_APP_KEYSTORE),yes),)
+APK := build/hemma.apk
+endif
+endif
+endif
+endif
+
+build/hemma.apk: $(APP_SRC) VERSION build/.dir
+	sh apps/android/build.sh build/app $@
+
+app:
+	sh apps/android/build.sh build/app build/hemma.apk
+
 # Each text file and av.wasm also goes in gzipped ("/app.css.gz"), for browsers that accept it.
 GZ_SRC := $(filter %.css %.js %.svg %.webmanifest,$(WEB)) build/app.css $(WASM)
 
-build/assets.c: build/embed build/app.css $(WEB) $(WASM)
+build/assets.c: build/embed build/app.css $(WEB) $(WASM) $(APK)
 	mkdir -p build/gz
 	twins=""; if command -v gzip >/dev/null 2>&1; then for f in $(GZ_SRC); do n=$$(basename "$$f"); \
 	  gzip -9nc "$$f" > "build/gz/$$n.gz" && twins="$$twins /$$n.gz=build/gz/$$n.gz"; done; fi; \
-	build/embed $@ web $(WEB) /app.css=build/app.css $(if $(WASM),/av.wasm=$(WASM)) $$twins
+	build/embed $@ web $(WEB) /app.css=build/app.css $(if $(WASM),/av.wasm=$(WASM)) $(if $(APK),/hemma.apk=$(APK)) $$twins
 
 build/obj/sqlite.flags: FORCE | build/.dir
 	@echo '$(CC) $(SQLITE_FLAGS)' | cmp -s - $@ || echo '$(CC) $(SQLITE_FLAGS)' > $@
@@ -150,4 +174,4 @@ install:
 clean:
 	rm -rf build
 
-.PHONY: all test run install clean FORCE
+.PHONY: all test run install clean app FORCE

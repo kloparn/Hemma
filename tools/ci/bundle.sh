@@ -63,7 +63,7 @@ It keeps the program it replaces as /opt/hemma/hemma.prev (going back: docs/rasp
 Later updates: sudo hemma-upgrade (installed with it), or System -> Updates in Hemma.'
 units="deploy/install-pi.sh deploy/hemma.service deploy/hemma-setup.service deploy/hemma-setup.path
        deploy/hemma-upgrade deploy/hemma-update.service deploy/hemma-update.path
-       deploy/hemma-disks deploy/hemma-disks.service deploy/hemma-disks.path"
+       deploy/hemma-disks deploy/hemma-disks.service deploy/hemma-disks.path deploy/avahi-hemma.service"
 # shellcheck disable=SC2086 # (the list splits on purpose)
 pack hemma-pi64 hemma-pi64 "$(echo "$pi" | sed 's/PROG/hemma-pi64/g')" $units
 # shellcheck disable=SC2086
@@ -85,9 +85,25 @@ if [ "${HEMMA_IMAGE:-}" = 1 ]; then
     img=hemma-$ver-pi.img.xz
     [ -f "$out/$img" ] || { echo "the image wasn't made"; exit 1; }
 fi
-# shellcheck disable=SC2086 # ($img: one name or none)
-(cd "$out" && sha256sum -- *.tar.gz $img > SHA256SUMS)
+# the Android app (2.0; apps/android): when the build made it (signed with the project's app key: release.yml) -
+# the same app every program in the release serves (Your account -> Get the app for Android)
+apk=""
+if [ -f "$in/hemma.apk" ]; then
+    apk=hemma-android.apk
+    cp "$in/hemma.apk" "$out/$apk"
+fi
+# shellcheck disable=SC2086 # ($img, $apk: one name or none)
+(cd "$out" && sha256sum -- *.tar.gz $img $apk > SHA256SUMS)
 sign "$out"
+apk_row="" apk_note=""
+if [ -n "$apk" ]; then
+    apk_row="| An Android phone: the Hemma app | \`$apk\` |"
+    apk_note="
+**The Android app:** your Hemma offers it itself (Household → Your account → *Get the app for Android*),
+or take \`$apk\` here. It finds Hemma on your home Wi-Fi by itself and plays audiobooks with the phone
+locked; [docs/android.md]($repo/blob/v$ver/docs/android.md) tells more.
+"
+fi
 
 # the image's line in the downloads table and how to use it (only when it was made)
 image_row="" image_note=""
@@ -102,6 +118,9 @@ release has an image: an older one is taken away when a new release comes out.
 "
 fi
 
+# (the image's and the app's rows, without a blank line between: that would end the table)
+more_rows=$(printf '%s\n%s\n' "$image_row" "$apk_row" | sed '/^$/d')
+
 # the notes: what changed, then the downloads
 {
     cat "$work/changes.md"
@@ -115,8 +134,8 @@ fi
 | Raspberry Pi, 32-bit OS (every Pi) | \`hemma-pi32.tar.gz\` |
 | Linux PC or server (x86-64) | \`hemma-linux-x64.tar.gz\` |
 | Mac with Apple silicon / Intel | \`hemma-mac-arm64.tar.gz\` / \`hemma-mac-x64.tar.gz\` |
-$image_row
-$image_note
+$more_rows
+$image_note$apk_note
 **On a Pi:**
 \`\`\`sh
 wget $repo/releases/download/v$ver/hemma-pi64.tar.gz

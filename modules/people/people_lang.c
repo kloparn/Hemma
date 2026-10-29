@@ -357,5 +357,24 @@ static const Tr TR[] = {
     {"Every booking goes in your calendar", "Alla bokningar hamnar i din kalender", "Todas las reservas van a tu calendario"},
     {"Only your own bookings go in your calendar", "Bara dina egna bokningar hamnar i din kalender",
      "Solo tus propias reservas van a tu calendario"},
+
+    /* the Android app (2.0) */
+    {"Hemma on your phone", "Hemma i mobilen", "Hemma en tu móvil"},
+    {"An app for Android phones: it finds Hemma at home by itself, keeps you signed in and plays audiobooks with the "
+     "phone locked.",
+     "En app för Android-mobiler: den hittar Hemma hemma av sig själv, håller dig inloggad och spelar ljudböcker med "
+     "mobilen låst.",
+     "Una app para móviles Android: encuentra Hemma en casa por sí sola, mantiene tu sesión iniciada y reproduce "
+     "audiolibros con el móvil bloqueado."},
+    {"Get the app for Android", "Hämta appen för Android", "Descargar la app para Android"},
+    {"Open the file once it's downloaded. Android asks whether your browser may install apps: allow it, this once. "
+     "The app only ever talks to Hemma on your home network.",
+     "Öppna filen när den har laddats ner. Android frågar om webbläsaren får installera appar: tillåt det, den här "
+     "gången. Appen pratar bara med Hemma i ditt hemnätverk.",
+     "Abre el archivo cuando se haya descargado. Android pregunta si tu navegador puede instalar apps: permítelo, esta "
+     "vez. La app solo habla con Hemma en tu red de casa."},
+    {"On an iPhone: open Hemma in Safari, tap Share, then Add to Home Screen.",
+     "På en iPhone: öppna Hemma i Safari, tryck på Dela och sedan Lägg till på hemskärmen.",
+     "En un iPhone: abre Hemma en Safari, toca Compartir y luego Añadir a pantalla de inicio."},
 };
 TRANSLATIONS(people, TR)

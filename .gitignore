@@ -13,7 +13,9 @@ build-*/
 *.pdb
 *.ilk
 *.wasm
-hemma
+*.apk
+# (the program at the top only: apps/android's Java package is a folder called hemma too)
+/hemma
 hemma-pi*
 /nul
 

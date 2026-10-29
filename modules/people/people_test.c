@@ -38,6 +38,21 @@ TEST(people_admin_adds_people_with_and_without_sign_in) {
     th_halt();
 }
 
+/* 2.0: "Hemma on your phone" - the Android app this Hemma serves itself, when the build had Android's tools */
+TEST(people_offer_the_android_app_when_it_is_built_in) {
+    boot();
+    int adam = admin("Adam", "adam");
+    app_test_static("/hemma.apk", -1);
+    CHECK(!strstr(th_page(adam, "/people"), "people-app"));
+    app_test_static("/hemma.apk", 41000);
+    const char *html = th_page(adam, "/people");
+    CHECK_HAS(html, "Hemma on your phone");
+    CHECK_HAS(html, "href=\"/static/hemma.apk?v=");
+    CHECK_HAS(html, "download=\"Hemma.apk\">Get the app for Android</a>");
+    CHECK_HAS(html, "41 KB");
+    th_halt();
+}
+
 TEST(people_members_can_only_edit_themselves) {
     boot();
     int adam = admin("Adam", "adam");

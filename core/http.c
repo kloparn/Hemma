@@ -454,6 +454,7 @@ const char *http_mime(const char *name) {
         {".webmanifest", "application/manifest+json"},
         {".woff2", "font/woff2"},
         {".wasm", "application/wasm"},
+        {".apk", "application/vnd.android.package-archive"},
     };
     const char *dot = name ? strrchr(name, '.') : NULL;
     for (int i = 0; dot && i < countof(t); i++)
