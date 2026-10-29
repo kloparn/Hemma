@@ -535,6 +535,44 @@ static void app_card(Ctx *c, Buf *b) {
     ui_card_end(b);
 }
 
+/* 2.1: Home offers the app to a browser on Android (owner, 2026-10-29: "Noticed you are in the web, download the app
+   instead!" - not tucked away under Your account) until "Not now" (PREF_APP_HINT), or once the person has signed in
+   from the app anywhere. Session.agent is the core's summary of the browser, "Chrome on Android" (packed: its names
+   kept as they are). */
+#define PREF_APP_HINT "people.app_hint"
+
+static bool uses_the_app(int person) {
+    for (int i = 0; i < tbl_count(&T_session); i++) {
+        const Session *s = tbl_at(&T_session, i);
+        if (s->person == person && session_in_app(s)) return true;
+    }
+    return false;
+}
+
+static void widget(Ctx *c, Buf *b, int where) {
+    if (where != WIDGET_HOME || !c->me || c->me->role == ROLE_DISPLAY || !c->sess || session_in_app(c->sess)) return;
+    if (!strstr(c->sess->agent, "Android") || app_static_size("/hemma.apk") < 0) return;
+    if (str_eq(pref(c->me->id, PREF_APP_HINT, ""), "off") || uses_the_app(c->me->id)) return;
+    H(b, "<section class=\"card\" id=\"people-apphint\"><header class=\"card-h\"><h2>%s</h2></header><p>%s</p>",
+      T("Hemma has an app for your phone"),
+      T("You're using Hemma in the browser. The app finds Hemma at home by itself, keeps you signed in and plays "
+        "audiobooks with the phone locked."));
+    H(b,
+      "<div class=\"people-actions\"><a class=\"btn primary\" href=\"/static/hemma.apk?v=%s\" download=\"Hemma.apk\">"
+      "%s</a>",
+      app_asset_version(), T("Get the app"));
+    ui_act(b, "people.app_hint", "btn", T("Not now"), NULL, NULL, NULL);
+    H(b, "</div><p class=\"muted small\">%s</p></section>",
+      T("Open the file once it's downloaded. Android asks whether your browser may install apps: allow it, this once. "
+        "The app only ever talks to Hemma on your home network."));
+}
+
+static void act_app_hint(Ctx *c, Fields *f) {
+    (void)f;
+    pref_set(c->me->id, PREF_APP_HINT, "off");
+    ctx_ok(c, "%s", T("The app stays under Household → Your account."));
+}
+
 /* Issue #46: the language Hemma speaks to you - Automatic (the browser's), or one of ours, each named in itself.
    A display account can't send forms: an admin picks its language in its Edit dialog. */
 static void lang_card(Ctx *c, Buf *b) {
@@ -1056,6 +1094,7 @@ static const Action actions[] = {
     {"people.codes_saved", act_codes_saved, .may = ACT_CHILD},
     {"people.signout_others", act_signout_others, .may = ACT_ALL},
     {"people.signout", act_signout},
+    {"people.app_hint", act_app_hint, .may = ACT_ALL},
     {"household.save", act_household},
     {0},
 };
@@ -1081,5 +1120,7 @@ static const Module people = {
     .actions = actions,
     .http = http,
     .rezone = rezone,
+    .widget = widget,
+    .widget_order = 2, /* (2.1: the app for an Android phone's browser - near the top, after System's) */
 };
 MODULE(people)

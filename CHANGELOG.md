@@ -6,10 +6,14 @@ commit it was built from). Downloads, from 0.14.0 on:
 
 ## 2.1.0 (2026-10-29)
 
-AV1 videos get a copy too.
+AV1 videos get a copy too, and Hemma on an Android phone's browser offers the app.
 
 ### New
 
+- **The app, offered where you'll see it:** opening Hemma in the browser on an Android phone, Home starts with a
+  card - *Hemma has an app for your phone* - with *Get the app* and *Not now*. It isn't shown inside the app, once
+  you've signed in from the app, after *Not now* (the app stays under Household → Your account), on computers, or on
+  a display account's screen.
 - **AV1 videos are converted:** an MKV with an AV1 picture (web releases, "AV1" in the name) used to go up as it
   was, with "Its picture is AV1, which the converter can't change yet". Hemma now copies its picture into an MP4,
   as it does with HEVC: quick, nothing re-encoded, so an episode takes seconds, on a Raspberry Pi too. The copy
@@ -27,6 +31,9 @@ AV1 videos get a copy too.
   `AV_CONV_CODECS` as a copy: MKV's CodecPrivate is the AV1CodecConfigurationRecord the MP4 needs (a file without
   one is refused, saying so); a temporal delimiter leading a block is dropped. A new fuzz seed, `av1-eac3.mkv`; the
   refused-picture seed is VP9 now (`vp9-refused-srt-pgs-vobsub.mkv`).
+- modules/people: a Home card (`widget`, order 2) for a session whose browser is on Android (Session.agent) and not
+  the app, while the app is built in; `people.app_hint` sets the pref `people.app_hint` = "off"; a person with any
+  session from the app isn't asked.
 - GitHub Actions on Node 24 (Node 20 is going away): checkout v7, cache v6, upload-artifact v7, download-artifact v8,
   setup-java v6, setup-node v7. `mlugg/setup-zig` has no Node 24 version yet; GitHub runs it on Node 24 meanwhile.
 

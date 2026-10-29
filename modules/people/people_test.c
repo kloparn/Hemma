@@ -53,6 +53,67 @@ TEST(people_offer_the_android_app_when_it_is_built_in) {
     th_halt();
 }
 
+/* Home as seen from a browser that says `ua` (a session made the way a sign-in makes one: the core's summary of it) */
+static const char *home_from(int person, const char *ua) {
+    static Buf page;
+    char sid[33];
+    if (!session_create(person, false, ua, sid)) return "";
+    const Session *made = NULL;
+    for (int i = 0; i < tbl_count(&T_session); i++) {
+        const Session *s = tbl_at(&T_session, i);
+        if (s->person == person) made = s;
+    }
+    Ctx c;
+    app_ctx(&c, person, "/");
+    str_copy(c.sess->agent, sizeof c.sess->agent, made ? made->agent : "");
+    buf_reset(&page);
+    app_render(&c, &page);
+    app_ctx_free(&c);
+    return buf_cstr(&page);
+}
+
+/* 2.1: Home offers the app to a browser on Android - not on a computer, not inside the app, not to a display account,
+   not after "Not now", not once the person has the app, not when it isn't built in */
+TEST(people_offer_the_app_on_an_android_phones_home) {
+    static const char ANDROID[] = "Mozilla/5.0 (Linux; Android 17; Pixel 10) AppleWebKit/537.36 (KHTML, like Gecko) "
+                                  "Chrome/156.0.0.0 Mobile Safari/537.36",
+                      WINDOWS[] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                                  "Chrome/156.0.0.0 Safari/537.36";
+    char in_app[300];
+    snprintf(in_app, sizeof in_app, "%s; wv HemmaApp/2.1.0", ANDROID);
+    boot();
+    int adam = admin("Adam", "adam");
+    int eva = th_person("Eva");
+    app_test_static("/hemma.apk", -1);
+    CHECK(!strstr(home_from(adam, ANDROID), "people-apphint")); /* (no app built in) */
+    app_test_static("/hemma.apk", 41000);
+    const char *html = home_from(adam, ANDROID);
+    CHECK_HAS(html, "<section class=\"card\" id=\"people-apphint\"><header class=\"card-h\"><h2>Hemma has an app for "
+                    "your phone</h2>");
+    CHECK_HAS(html, "You&#39;re using Hemma in the browser.");
+    CHECK_HAS(html, "href=\"/static/hemma.apk?v=");
+    CHECK_HAS(html, "download=\"Hemma.apk\">Get the app</a>");
+    CHECK_HAS(html, "data-a=\"people.app_hint\"");
+    const char *latest = strstr(html, "<h2>Latest</h2>");
+    CHECK(latest && strstr(html, "people-apphint") < latest); /* (near the top: before Latest) */
+    CHECK(!strstr(home_from(adam, WINDOWS), "people-apphint"));
+    Person d = *person_get(eva);
+    d.role = ROLE_DISPLAY;
+    tbl_put(&T_person, &d);
+    CHECK(!strstr(home_from(eva, ANDROID), "people-apphint")); /* a wall tablet on Android isn't asked */
+
+    ThResult r = th_act(adam, "people.app_hint", "");
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "Household → Your account");
+    CHECK(!strstr(home_from(adam, ANDROID), "people-apphint"));
+    CHECK(strstr(th_page(adam, "/people"), "people-app")); /* (still there) */
+    pref_set(adam, "people.app_hint", "");
+    CHECK(strstr(home_from(adam, ANDROID), "people-apphint"));
+    CHECK(!strstr(home_from(adam, in_app), "people-apphint")); /* inside the app: it's there already */
+    CHECK(!strstr(home_from(adam, ANDROID), "people-apphint")); /* signed in from the app: the browser stops asking */
+    th_halt();
+}
+
 TEST(people_members_can_only_edit_themselves) {
     boot();
     int adam = admin("Adam", "adam");

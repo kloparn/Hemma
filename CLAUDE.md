@@ -1928,7 +1928,12 @@ audiobooks, served by Hemma itself (Your account -> Get the app for Android). An
 Apple's paid programme to share it (a free Apple ID installs on one's own iPhone for 7 days): not now.
 2.1.0 (branch fix/make-another-converter-possible; owner, 2026-10-29: "Its picture is AV1, which the converter can't
 change yet" - "make this viable also as a convert") = AV1 MKVs converted (the picture copied into an MP4 as HEVC is,
-Dolby/DTS beside it made AAC), in the uploading browser and by Convert.
+Dolby/DTS beside it made AAC), in the uploading browser and by Convert; and (owner: "Noticed you are in the web,
+download the app instead!") Home offers the app to a browser on Android - people.c's widget (widget_order 2), shown
+while the app is built in, the session's agent says Android and isn't the app, the person has no session from the app
+and hasn't pressed Not now (people.app_hint -> pref people.app_hint "off"); never to a display account. CI's actions on
+Node 24 (mlugg/setup-zig has none yet). A developer's own build signs the app with their dev key, which won't install
+over the release-signed app: a build for a Hemma whose phones have the released app leaves it out (HEMMA_SKIP_MODULES=app).
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
