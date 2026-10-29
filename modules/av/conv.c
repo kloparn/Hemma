@@ -1,4 +1,4 @@
-/* modules/av/conv.c — MKV -> MP4 that plays everywhere (HEVC: on Apple devices and newer browsers). See conv.h. */
+/* modules/av/conv.c — MKV -> MP4 that plays everywhere (HEVC and AV1: on the devices that decode them). See conv.h. */
 #include "conv.h"
 
 #include <stdio.h>
@@ -50,7 +50,7 @@ typedef struct {
     Mkv *mkv;
     const MkvTrack *vt, *at;
     bool vcode, acode; /* re-encode (true) or copy (false) */
-    bool hevc;         /* copying HEVC rather than H.264 */
+    int vcopy;         /* a copied picture's MP4 codec: MP4_H264, MP4_HEVC or MP4_AV1 */
     int64_t v0, a0;    /* first video / audio pts (ns) */
     int64_t duration;  /* ns, 0 = unknown */
     Mp4 *mp4;
@@ -117,6 +117,7 @@ const AvCodec AV_CONV_CODECS[] = {
     {"V_MPEG1", MKV_VIDEO, AV_DECODE, false},
     {"V_MPEG4/ISO/AVC", MKV_VIDEO, AV_COPY, false},
     {"V_MPEGH/ISO/HEVC", MKV_VIDEO, AV_COPY, false}, /* (as 'hvc1': Safari plays it in MP4, never in MKV) */
+    {"V_AV1", MKV_VIDEO, AV_COPY, false},            /* (as 'av01': the same for Safari on devices with AV1) */
     {"A_AAC", MKV_AUDIO, AV_COPY, true},
     {"A_AC3", MKV_AUDIO, AV_DECODE, false},
     {"A_EAC3", MKV_AUDIO, AV_DECODE, false},
@@ -266,12 +267,16 @@ static bool decoded(Conv *c) {
     return !c->failed;
 }
 
-/* ---- video: copy (H.264 or HEVC in MKV) ---- */
+/* ---- video: copy (H.264, HEVC or AV1 in MKV) ---- */
 
 static int cmp_i64(const void *a, const void *b) {
     int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
     return x < y ? -1 : x > y;
 }
+
+/* An AV1CodecConfigurationRecord (MKV's CodecPrivate for V_AV1 is one, as an MP4's av1C): marker 1 + version 1,
+   then profile/level, tier/depth/chroma, the delay byte, the configOBUs. */
+static bool av1c_ok(const uint8_t *p, size_t n) { return n >= 4 && p[0] == 0x81; }
 
 static bool copy_video(Conv *c, const MkvFrame *fr) {
     if (c->vi >= c->nvpts) return true; /* more frames than the first pass saw: ignore the tail */
@@ -280,7 +285,12 @@ static bool copy_video(Conv *c, const MkvFrame *fr) {
     int64_t next = i + 1 < c->nvpts ? c->dts[i + 1] : dts + (c->vt->default_duration ? c->vt->default_duration : NS / 25);
     uint32_t dur = (uint32_t)CMAX(1, ticks(next - dts, 90000));
     int32_t cts = (int32_t)ticks(pts - dts + c->vshift, 90000);
-    return put_sample(c, c->vtrack, fr->data, fr->size, dur, cts, fr->key);
+    const uint8_t *p = fr->data;
+    size_t n = fr->size;
+    /* AV1: a temporal delimiter OBU (type 2, a size field of 0) leading a block goes - an MP4 sample mustn't have it,
+       and Matroska says the same, but not every muxer listened */
+    if (c->vcopy == MP4_AV1 && n > 2 && p[0] == 0x12 && p[1] == 0) p += 2, n -= 2;
+    return put_sample(c, c->vtrack, p, n, dur, cts, fr->key);
 }
 
 /* ---- audio ---- */
@@ -944,7 +954,7 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         memcpy(c->dts, c->vpts, (size_t)c->nvpts * sizeof *c->dts);
         qsort(c->dts, (size_t)c->nvpts, sizeof *c->dts, cmp_i64);
         for (int i = 0; i < c->nvpts; i++) c->vshift = CMAX(c->vshift, c->dts[i] - c->vpts[i]);
-        vt.codec = c->hevc ? MP4_HEVC : MP4_H264;
+        vt.codec = c->vcopy;
         vt.timescale = 90000;
         vt.config = c->vt->priv;
         vt.config_len = c->vt->priv_len;
@@ -953,7 +963,7 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         if (c->vt->disp_width && c->vt->disp_height && c->vt->disp_unit == 0)
             sar_of(c->vt->width, c->vt->height, c->vt->disp_width, c->vt->disp_height, &vt.sar_num, &vt.sar_den);
         vt.start = ticks(c->vshift, 90000); /* the first picture at movie time 0 */
-        snprintf(c->j->what, sizeof c->j->what, c->hevc ? "HEVC copied" : "H.264 copied");
+        snprintf(c->j->what, sizeof c->j->what, c->vcopy == MP4_HEVC ? "HEVC copied" : c->vcopy == MP4_AV1 ? "AV1 copied" : "H.264 copied");
     }
     snprintf(vt.lang, sizeof vt.lang, "und");
     c->vtrack = mp4_add_track(c->mp4, &vt);
@@ -1115,7 +1125,10 @@ bool av_convert(AvConvJob *j) {
     else if (!vk || vk->type != MKV_VIDEO)
         unsupported(c, "Its picture is %s, which the converter can't change yet", codec_words(c->vt->codec));
     else if (vk->how == AV_DECODE) c->vcode = true; /* MPEG-2 / MPEG-1 */
-    else c->hevc = !strcmp(vk->id, "V_MPEGH/ISO/HEVC"); /* copied: Safari plays it in MP4, never in MKV */
+    else if (!strcmp(vk->id, "V_AV1") && !av1c_ok(c->vt->priv, c->vt->priv_len)) /* (Matroska requires it; an MP4 needs it) */
+        unsupported(c, "Its AV1 picture has no settings record (CodecPrivate) in the file", NULL);
+    else /* copied: Safari plays HEVC (and AV1, where the device decodes it) in an MP4, never in an MKV */
+        c->vcopy = !strcmp(vk->id, "V_MPEGH/ISO/HEVC") ? MP4_HEVC : !strcmp(vk->id, "V_AV1") ? MP4_AV1 : MP4_H264;
     if (!c->failed && first_audio && !c->at) { /* sound, but none we can convert: say why for the first */
         if (first_audio->compressed) unsupported(c, "The sound is compressed or encrypted inside the file", NULL);
         else if (dolby(first_audio->codec) || is_dts(first_audio->codec))

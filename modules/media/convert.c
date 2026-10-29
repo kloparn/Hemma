@@ -1,8 +1,8 @@
 /* modules/media/convert.c — "play everywhere": convert a video once into an MP4
  * that every browser, iPhone, iPad, TV and Chromecast plays.
  *
- * The conversion itself is av/conv.c (MPEG-2 -> H.264, AC-3 -> AAC, H.264 and
- * AAC copied) - the same code the uploading browser runs as WebAssembly. Here:
+ * The conversion itself is av/conv.c (MPEG-2 -> H.264, AC-3 -> AAC, H.264, HEVC,
+ * AV1 and AAC copied) - the same code the uploading browser runs as WebAssembly. Here:
  * files. The result is "<name>.web.mp4" next to the original, written as
  * "<name>.web.mp4.conv.part" (never an upload's resumable "<name>.web.mp4.part") and renamed
  * when complete - never over a file that is there; the library pairs the two and streams the
@@ -39,9 +39,11 @@ ConvertNeed convert_need(const MediaFile *f) {
     if (str_eq(p->vcodec, "mpeg2") && (aac || ac3)) return CONV_TRANSCODE;
     if (str_eq(p->vcodec, "h264") && ac3) return CONV_TRANSCODE; /* picture copied, sound re-encoded */
     if (str_eq(p->vcodec, "h264") && aac) return CONV_REMUX;
-    /* HEVC stays HEVC (no decoder here): moved into an MP4, which Safari - iPhone, iPad, Mac - plays */
-    if (str_eq(p->vcodec, "hevc") && ac3) return CONV_TRANSCODE;
-    if (str_eq(p->vcodec, "hevc") && aac) return CONV_REMUX;
+    /* HEVC stays HEVC and AV1 AV1 (no decoder here): moved into an MP4, which Safari - iPhone, iPad, Mac - plays
+       (AV1 only on the newest), never an MKV */
+    bool kept = str_eq(p->vcodec, "hevc") || str_eq(p->vcodec, "av1");
+    if (kept && ac3) return CONV_TRANSCODE;
+    if (kept && aac) return CONV_REMUX;
     return CONV_NONE;
 }
 

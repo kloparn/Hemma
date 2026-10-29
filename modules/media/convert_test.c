@@ -38,7 +38,13 @@ TEST(convert_knows_what_each_file_needs) {
     CHECK_INT(convert_need(&f), CONV_TRANSCODE);
     f = video("mkv", "hevc", "dts"); /* (1.3: DTS sound is made AAC too) */
     CHECK_INT(convert_need(&f), CONV_TRANSCODE);
-    f = video("mkv", "av1", "aac");
+    f = video("mkv", "av1", "aac"); /* (2.1: AV1 is copied too, as HEVC is) */
+    CHECK_INT(convert_need(&f), CONV_REMUX);
+    f = video("mkv", "av1", "eac3");
+    CHECK_INT(convert_need(&f), CONV_TRANSCODE);
+    f = video("webm", "av1", "opus"); /* plays in the browsers as it is: nothing to do (Opus isn't converted) */
+    CHECK_INT(convert_need(&f), CONV_NONE);
+    f = video("mkv", "vp9", "aac");
     CHECK_INT(convert_need(&f), CONV_NONE);
     f = video("mkv", "h264", "dts");
     CHECK_INT(convert_need(&f), CONV_TRANSCODE);
@@ -439,30 +445,34 @@ TEST(convert_saves_every_kind_of_subtitle_and_numbers_the_second) {
     CHECK(!there(root, "Other.sv.idx") && file_is(root, "Other.sv.sub", "{1}{2}text"));
 }
 
-/* HEMMA_TEST_CONVERT=<an .mkv>: convert its first 30 s (HEMMA_TEST_CONVERT_S: another length) and check
-   what came out (its text subtitles land next to it as .srt: point it at a copy, not at a household's
-   original). */
+/* HEMMA_TEST_CONVERT=<an .mkv>: convert its first 30 s (HEMMA_TEST_CONVERT_S: another length; 0 = all of it) and
+   check what came out (its text subtitles land next to it as .srt: point it at a copy, not at a household's
+   original). HEMMA_TEST_CONVERT_OUT=<file.mp4> keeps the copy there to play (else it goes with the test's folder). */
 TEST(convert_real_file_when_given) {
     const char *src = plat_getenv("HEMMA_TEST_CONVERT");
     if (!src || !*src) return;
-    const char *len = plat_getenv("HEMMA_TEST_CONVERT_S");
-    int secs = len && atoi(len) > 0 ? atoi(len) : 30;
+    const char *len = plat_getenv("HEMMA_TEST_CONVERT_S"), *keep = plat_getenv("HEMMA_TEST_CONVERT_OUT");
+    int secs = len && *len ? atoi(len) : 30;
     ConvertJob j;
     memset(&j, 0, sizeof j);
     str_copy(j.src, sizeof j.src, src);
-    snprintf(j.dst, sizeof j.dst, "%s/out.web.mp4", test_tmpdir());
+    if (keep && *keep) str_copy(j.dst, sizeof j.dst, keep);
+    else snprintf(j.dst, sizeof j.dst, "%s/out.web.mp4", test_tmpdir());
     j.limit_ns = secs * 1000000000LL;
     int64_t t0 = now_ms();
     bool ok = convert_file(&j);
     if (!ok) test_fail(__FILE__, __LINE__, "convert failed: %s", j.err);
     CHECK(ok);
-    MediaProbe p;
+    MediaProbe p, in;
     CHECK(media_probe_file(j.dst, &p));
+    CHECK(media_probe_file(src, &in));
     CHECK_STR(p.container, "mp4");
-    CHECK(str_eq(p.vcodec, "h264") || str_eq(p.vcodec, "hevc")); /* (HEVC is copied) */
+    CHECK(str_eq(p.vcodec, "h264") || str_eq(p.vcodec, "hevc") || str_eq(p.vcodec, "av1")); /* (HEVC and AV1 are copied) */
     CHECK_STR(p.acodec, "aac");
     CHECK_INT(p.playable, str_eq(p.vcodec, "h264") ? PLAY_YES : PLAY_MAYBE);
-    CHECK(p.duration_ms > secs * 1000LL - 2000 && p.duration_ms < secs * 1000LL + 2000);
-    fprintf(stderr, "    converted %d s in %lld ms: %s, %lld KB, %dx%d, %d subtitle track(s) saved -> %s\n", secs,
-            (long long)(now_ms() - t0), j.what, (long long)(j.out_bytes >> 10), p.width, p.height, j.subs, j.dst);
+    int64_t want = secs > 0 ? secs * 1000LL : in.duration_ms;
+    CHECK(p.duration_ms > want - 2000 && p.duration_ms < want + 2000);
+    fprintf(stderr, "    converted %lld s in %lld ms: %s, %lld KB, %dx%d, %d subtitle track(s) saved -> %s\n",
+            (long long)(p.duration_ms / 1000), (long long)(now_ms() - t0), j.what, (long long)(j.out_bytes >> 10), p.width,
+            p.height, j.subs, j.dst);
 }

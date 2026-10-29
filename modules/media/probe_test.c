@@ -221,6 +221,29 @@ TEST(probe_mp4_hevc_and_dolby_is_maybe) {
     CHECK_HAS(old.why, "HEVC");
 }
 
+/* 2.1: an AV1 MP4 (what the converter makes of an AV1 MKV) says which devices play it; an AV1 MKV is the
+   container's trouble, a WebM plays */
+TEST(probe_mp4_av1_is_for_newer_devices) {
+    Buf b = {0};
+    make_mp4(&b, &(Mp4Opts){.vfourcc = "av01", .oti = 0x40});
+    MediaProbe p = probe_buf(&b, "x.mp4");
+    CHECK_STR(p.vcodec, "av1");
+    CHECK_INT(p.playable, PLAY_MAYBE);
+    CHECK_STR(p.why, "AV1 needs a newer device (Chrome, Edge, Firefox; the newest Apple devices)");
+    buf_free(&b);
+    MediaProbe mkv = {.playable = PLAY_MAYBE};
+    str_copy(mkv.container, sizeof mkv.container, "mkv");
+    str_copy(mkv.vcodec, sizeof mkv.vcodec, "av1");
+    str_copy(mkv.acodec, sizeof mkv.acodec, "aac");
+    media_probe_judge(&mkv);
+    CHECK_INT(mkv.playable, PLAY_MAYBE);
+    CHECK_HAS(mkv.why, "MKV plays in Chrome/Edge");
+    str_copy(mkv.container, sizeof mkv.container, "webm");
+    str_copy(mkv.acodec, sizeof mkv.acodec, "opus");
+    media_probe_judge(&mkv);
+    CHECK_INT(mkv.playable, PLAY_YES);
+}
+
 TEST(probe_mp4_esds_object_types) {
     Buf b = {0};
     make_mp4(&b, &(Mp4Opts){.oti = 0x6B});

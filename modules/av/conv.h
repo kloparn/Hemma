@@ -4,6 +4,7 @@
  *   MPEG-2 / MPEG-1 (DVD rips) -> mpeg2 -> deint -> h264enc  \
  *   H.264                      -> copied as it is             >  mp4 (faststart)
  *   HEVC (x265 films)          -> copied as 'hvc1'           /   (plays in Safari; other browsers need HEVC hardware)
+ *   AV1 (web releases)         -> copied as 'av01'          /    (Chrome, Edge, Firefox; Safari where the device has AV1)
  *   Dolby AC-3 / E-AC-3 (DD+)  -> ac3 (stereo) -> aac         /
  *   AAC                        -> copied
  *   text subtitles (SRT, ASS,  -> SubRip texts handed back (want_subs): the caller saves them as
@@ -12,7 +13,7 @@
  *   PGS, DVD VobSub               as mkvextract writes them: VLC, mpv and Plex read them, Hemma's
  *                                 player draws them (browsers can't)
  *   Subtitles are timed on the copy's clock (0 = the file's first picture), so they fit the copy and the
- *   original alike. They also come out of a file the converter refuses (`unsupported`: AV1, DTS ...),
+ *   original alike. They also come out of a file the converter refuses (`unsupported`: VP9, TrueHD ...),
  *   and av_subtitles() takes them alone, for a video that is never converted.
  *
  * Frames stream through: memory stays a few MB whatever the file size (plus

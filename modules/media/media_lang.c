@@ -178,6 +178,12 @@ static const Tr TR[] = {
     {"This video is HEVC (x265), which this browser can't play. Most phones, computers and iPads can.",
      "Den här videon är HEVC (x265), som den här webbläsaren inte kan spela. De flesta telefoner, datorer och iPads kan.",
      "Este vídeo es HEVC (x265), que este navegador no puede reproducir. La mayoría de móviles, ordenadores e iPads sí."},
+    {"This video is AV1, which this browser can't play. Chrome, Edge, Firefox and Android phones can, and the newest "
+     "iPhones and Macs.",
+     "Den här videon är AV1, som den här webbläsaren inte kan spela. Chrome, Edge, Firefox och Android-telefoner kan, "
+     "liksom de nyaste iPhone- och Mac-modellerna.",
+     "Este vídeo es AV1, que este navegador no puede reproducir. Chrome, Edge, Firefox y los móviles Android sí, y "
+     "también los iPhone y Mac más nuevos."},
     {"Next episode in <span data-count>%d</span> s", "Nästa avsnitt om <span data-count>%d</span> s",
      "Siguiente episodio en <span data-count>%d</span> s"},
     {"Play now", "Spela nu", "Reproducir ahora"},
@@ -202,6 +208,12 @@ static const Tr TR[] = {
      "senaste åren",
      "Vídeo HEVC: Safari en iPhone, iPad y Mac, y Chrome o Edge en la mayoría de ordenadores y móviles de los últimos "
      "años"},
+    {"AV1 video: Chrome, Edge and Firefox on computers and phones, most TVs from the last few years, and the newest "
+     "iPhones, iPads and Macs",
+     "AV1-video: Chrome, Edge och Firefox på datorer och telefoner, de flesta TV-apparater från de senaste åren och de "
+     "nyaste iPhone-, iPad- och Mac-modellerna",
+     "Vídeo AV1: Chrome, Edge y Firefox en ordenadores y móviles, la mayoría de las teles de los últimos años y los "
+     "iPhone, iPad y Mac más nuevos"},
     {"File details", "Fildetaljer", "Detalles del archivo"},
     {"%s file", "Fil: %s", "Archivo: %s"},
     {"%s video", "Video: %s", "Vídeo: %s"},
@@ -232,6 +244,32 @@ static const Tr TR[] = {
      "HEVC behöver fortfarande en enhet som kan avkoda det (de flesta från de senaste åren).",
      "Safari (iPhone, iPad, Mac) no puede abrir archivos MKV: un contenedor nuevo lo arregla - rápido, la imagen no se "
      "recodifica. HEVC sigue necesitando un dispositivo que pueda decodificarlo (la mayoría de los últimos años)."},
+    {"Its DTS sound plays in no browser, and Safari can't open MKV files: a copy with AAC sound fixes both - quick, the "
+     "picture isn't re-encoded. AV1 still needs a device that can decode it (Chrome, Edge and Firefox can; of Apple's, "
+     "only the newest).",
+     "DTS-ljudet spelas inte i någon webbläsare, och Safari kan inte öppna MKV-filer: en kopia med AAC-ljud fixar båda "
+     "- snabbt, bilden kodas inte om. AV1 behöver fortfarande en enhet som kan avkoda det (Chrome, Edge och Firefox kan; "
+     "av Apples bara de nyaste).",
+     "Su sonido DTS no se oye en ningún navegador, y Safari no puede abrir archivos MKV: una copia con sonido AAC "
+     "arregla las dos cosas - rápido, la imagen no se recodifica. AV1 sigue necesitando un dispositivo que pueda "
+     "decodificarlo (Chrome, Edge y Firefox pueden; de los de Apple, solo los más nuevos)."},
+    {"Its Dolby sound plays silently in Chrome and Firefox, and Safari can't open MKV files: a copy with AAC sound "
+     "fixes both - quick, the picture isn't re-encoded. AV1 still needs a device that can decode it (Chrome, Edge and "
+     "Firefox can; of Apple's, only the newest).",
+     "Dolby-ljudet blir tyst i Chrome och Firefox, och Safari kan inte öppna MKV-filer: en kopia med AAC-ljud fixar "
+     "båda - snabbt, bilden kodas inte om. AV1 behöver fortfarande en enhet som kan avkoda det (Chrome, Edge och "
+     "Firefox kan; av Apples bara de nyaste).",
+     "Su sonido Dolby no se oye en Chrome ni en Firefox, y Safari no puede abrir archivos MKV: una copia con sonido "
+     "AAC arregla las dos cosas - rápido, la imagen no se recodifica. AV1 sigue necesitando un dispositivo que pueda "
+     "decodificarlo (Chrome, Edge y Firefox pueden; de los de Apple, solo los más nuevos)."},
+    {"Safari (iPhone, iPad, Mac) can't open MKV files: a new container fixes that - quick, the picture isn't "
+     "re-encoded. AV1 still needs a device that can decode it (Chrome, Edge and Firefox can; of Apple's, only the "
+     "newest).",
+     "Safari (iPhone, iPad, Mac) kan inte öppna MKV-filer: en ny behållare fixar det - snabbt, bilden kodas inte om. "
+     "AV1 behöver fortfarande en enhet som kan avkoda det (Chrome, Edge och Firefox kan; av Apples bara de nyaste).",
+     "Safari (iPhone, iPad, Mac) no puede abrir archivos MKV: un contenedor nuevo lo arregla - rápido, la imagen no se "
+     "recodifica. AV1 sigue necesitando un dispositivo que pueda decodificarlo (Chrome, Edge y Firefox pueden; de los "
+     "de Apple, solo los más nuevos)."},
     {"A new container makes this play on iPhones and every TV too - quick, nothing is re-encoded.",
      "En ny behållare gör att den spelas på iPhones och alla TV-apparater också - snabbt, inget kodas om.",
      "Un contenedor nuevo hace que se reproduzca también en iPhones y en cualquier tele - rápido, no se recodifica "
@@ -241,6 +279,7 @@ static const Tr TR[] = {
      "Hemma puede convertirlo una vez en una copia que se reproduce en cualquier navegador, iPhone y tele."},
     {"Fix the sound", "Fixa ljudet", "Arreglar el sonido"},
     {"Make it play in Safari too", "Få den att spelas i Safari också", "Hacer que se reproduzca también en Safari"},
+    {"Make it play on more devices", "Få den att spelas på fler enheter", "Hacer que se reproduzca en más dispositivos"},
     {"Make it play everywhere", "Få den att spelas överallt", "Hacer que se reproduzca en todas partes"},
     {"Hemma can make a copy of this that plays everywhere: ask %r.",
      "Hemma kan göra en kopia av den som spelas överallt: fråga %r.",
@@ -407,22 +446,23 @@ static const Tr TR[] = {
     {"<b>Plays in browsers:</b> MP4 or WebM with H.264/VP9 video and AAC/MP3/Opus sound.",
      "<b>Spelas i webbläsare:</b> MP4 eller WebM med H.264/VP9-video och AAC/MP3/Opus-ljud.",
      "<b>Se reproduce en navegadores:</b> MP4 o WebM con vídeo H.264/VP9 y sonido AAC/MP3/Opus."},
-    {"<b>May not play everywhere:</b> MKV, HEVC, or Dolby sound (Dolby Digital and Digital Plus: AC-3, E-AC-3) — fine "
-     "in Chrome/Edge or Safari, not all of them; Dolby sound plays silently in Chrome and Firefox. An HEVC film "
-     "converted here (<i>Plays on newer devices</i>) plays in Safari and on most devices from the last few years.",
-     "<b>Spelas kanske inte överallt:</b> MKV, HEVC eller Dolby-ljud (Dolby Digital och Digital Plus: AC-3, E-AC-3) — "
-     "fungerar i Chrome/Edge eller Safari, inte i alla; Dolby-ljud blir tyst i Chrome och Firefox. En HEVC-film som "
-     "konverterats här (<i>Spelas på nyare enheter</i>) spelas i Safari och på de flesta enheter från de senaste åren.",
-     "<b>Puede que no se reproduzca en todas partes:</b> MKV, HEVC o sonido Dolby (Dolby Digital y Digital Plus: AC-3, "
-     "E-AC-3) — funciona en Chrome/Edge o Safari, no en todos; el sonido Dolby no se oye en Chrome ni en Firefox. Una "
-     "película HEVC convertida aquí (<i>Se reproduce en dispositivos más nuevos</i>) se reproduce en Safari y en la "
-     "mayoría de dispositivos de los últimos años."},
-    {"<b>Needs conversion:</b> MPEG-2 (DVD rips), AVI/XviD, DTS sound. Hemma converts MKV files with MPEG-2, H.264 or "
-     "HEVC video and Dolby, DTS or AAC sound itself, and keeps their subtitles next to them.",
+    {"<b>May not play everywhere:</b> MKV, HEVC, AV1, or Dolby sound (Dolby Digital and Digital Plus: AC-3, E-AC-3) — "
+     "fine in Chrome/Edge or Safari, not all of them; Dolby sound plays silently in Chrome and Firefox. An HEVC or AV1 "
+     "video converted here (<i>Plays on newer devices</i>) plays on most devices from the last few years.",
+     "<b>Spelas kanske inte överallt:</b> MKV, HEVC, AV1 eller Dolby-ljud (Dolby Digital och Digital Plus: AC-3, "
+     "E-AC-3) — fungerar i Chrome/Edge eller Safari, inte i alla; Dolby-ljud blir tyst i Chrome och Firefox. En HEVC- "
+     "eller AV1-video som konverterats här (<i>Spelas på nyare enheter</i>) spelas på de flesta enheter från de "
+     "senaste åren.",
+     "<b>Puede que no se reproduzca en todas partes:</b> MKV, HEVC, AV1 o sonido Dolby (Dolby Digital y Digital Plus: "
+     "AC-3, E-AC-3) — funciona en Chrome/Edge o Safari, no en todos; el sonido Dolby no se oye en Chrome ni en Firefox. "
+     "Un vídeo HEVC o AV1 convertido aquí (<i>Se reproduce en dispositivos más nuevos</i>) se reproduce en la mayoría "
+     "de dispositivos de los últimos años."},
+    {"<b>Needs conversion:</b> MPEG-2 (DVD rips), AVI/XviD, DTS sound. Hemma converts MKV files with MPEG-2, H.264, "
+     "HEVC or AV1 video and Dolby, DTS or AAC sound itself, and keeps their subtitles next to them.",
      "<b>Behöver konverteras:</b> MPEG-2 (DVD-rippar), AVI/XviD, DTS-ljud. Hemma konverterar själv MKV-filer med "
-     "MPEG-2-, H.264- eller HEVC-video och Dolby-, DTS- eller AAC-ljud, och sparar deras undertexter bredvid dem.",
+     "MPEG-2-, H.264-, HEVC- eller AV1-video och Dolby-, DTS- eller AAC-ljud, och sparar deras undertexter bredvid dem.",
      "<b>Necesita conversión:</b> MPEG-2 (ripeos de DVD), AVI/XviD, sonido DTS. Hemma convierte por sí mismo archivos "
-     "MKV con vídeo MPEG-2, H.264 o HEVC y sonido Dolby, DTS o AAC, y guarda sus subtítulos a su lado."},
+     "MKV con vídeo MPEG-2, H.264, HEVC o AV1 y sonido Dolby, DTS o AAC, y guarda sus subtítulos a su lado."},
     {"Nothing here", "Här finns inget", "Aquí no hay nada"},
     {"That page doesn't exist.", "Den sidan finns inte.", "Esa página no existe."},
 
@@ -620,6 +660,9 @@ static const Tr TR[] = {
     {"unrecognised file format", "okänt filformat", "formato de archivo desconocido"},
     {"HEVC needs hardware support (Safari/Edge, some Chrome)", "HEVC kräver hårdvarustöd (Safari/Edge, viss Chrome)",
      "HEVC necesita soporte de hardware (Safari/Edge, algún Chrome)"},
+    {"AV1 needs a newer device (Chrome, Edge, Firefox; the newest Apple devices)",
+     "AV1 kräver en nyare enhet (Chrome, Edge, Firefox; de nyaste från Apple)",
+     "AV1 necesita un dispositivo más nuevo (Chrome, Edge, Firefox; los Apple más nuevos)"},
     {"%s in %s doesn't play everywhere", "%s i %s spelas inte överallt", "%s en %s no se reproduce en todas partes"},
     {"%s in this container doesn't play everywhere", "%s i den här behållaren spelas inte överallt",
      "%s en este contenedor no se reproduce en todas partes"},

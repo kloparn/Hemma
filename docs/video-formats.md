@@ -10,7 +10,7 @@ Most other videos Hemma can turn into one. It makes a copy next to the original,
 |---|---|
 | **MP4**, M4V or MOV with H.264 and AAC (or MP3) sound | Everything |
 | **WebM** (VP8, VP9 or AV1 picture, Opus or Vorbis sound) | Most browsers |
-| **MKV** with H.264, AV1 or VP9, and AAC, Opus, MP3 or FLAC sound | Chrome and Edge, not Safari or iPhone. For H.264 with AAC, Hemma makes an MP4 copy that plays everywhere. It takes seconds, since nothing is re-encoded |
+| **MKV** with H.264, AV1 or VP9, and AAC, Opus, MP3 or FLAC sound | Chrome and Edge, not Safari or iPhone. For H.264 or AV1 with AAC, Hemma makes an MP4 copy (the H.264 one plays everywhere). It takes seconds, since nothing is re-encoded |
 
 ## What Hemma converts
 
@@ -20,6 +20,7 @@ Hemma converts **MKV** and **WebM** files. Each part of the file is handled on i
 |---|---|
 | H.264 (x264, AVC) | Copied as it is |
 | HEVC (x265, H.265), 8- or 10-bit | Copied as it is, into an MP4. Plays on Apple devices (Safari) and on phones, computers and TVs that decode HEVC themselves. The video's page says *Plays on newer devices* |
+| AV1, 8- or 10-bit | Copied as it is, into an MP4. Plays in Chrome, Edge and Firefox, on Android phones and most TVs from the last few years, and in Safari on Apple's newest devices (iPhone 15 Pro and later, Macs and iPads with M3 or later). The video's page says *Plays on newer devices* |
 | MPEG-2 (DVD rips), MPEG-1 | Made into H.264, with the interlacing (the DVD's combed lines) fixed |
 
 | Sound | In the copy |
@@ -61,7 +62,8 @@ What the usual words in a release's name mean for Hemma:
 |---|---|---|
 | x264, H.264, AVC | The picture | Plays everywhere |
 | x265, HEVC, H.265, 10bit | The picture | Copied: plays on newer devices |
-| AV1, VP9 | The picture | Plays in Chrome and Edge as it is, not converted |
+| AV1 | The picture | Copied: plays on newer devices |
+| VP9 | The picture | Plays in Chrome and Edge as it is, not converted |
 | XviD, DivX | The picture | Not yet |
 | AAC | The sound | Plays everywhere |
 | DD, DD5.1, AC3 | Dolby Digital | Made AAC |
@@ -76,7 +78,8 @@ What the usual words in a release's name mean for Hemma:
   MKV and WebM only. A `.ts`, `.m2ts`, `.mpg` or `.vob` usually holds H.264 or MPEG-2 with Dolby or
   DTS sound: put it into an MKV first (a free tool such as MKVToolNix does that quickly, without
   losing quality) and Hemma converts it.
-- **XviD and DivX** (MPEG-4 Part 2), **VC-1** and **WMV** pictures.
+- **XviD and DivX** (MPEG-4 Part 2), **VC-1**, **VP9** and **WMV** pictures, and AV1 made into H.264 (for older
+  iPhones, iPads and Macs: Hemma copies AV1, it doesn't decode it).
 - **Dolby TrueHD** and uncompressed (PCM) sound, when the file has no other track.
 
 Such a video still goes into the library as it is and plays wherever the browser can play it. Its
