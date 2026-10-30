@@ -4,8 +4,8 @@
 # Plus's tools, unusual MKV layouts, a picture size that changes part-way) - the picture subtitles
 # (Blu-ray PGS, DVD VobSub) Hemma reads out of the same files, and the tags of audiobooks (MP4 boxes, MP3 ID3).
 #
-# Eight targets side by side, each on its own runner with four processes (tools/ci/fuzz.sh): the whole
-# conversion (conv) and seven parts alone, far faster per input (mkv, ac3, dts, mpeg2, pgs, vobsub, tags). What each
+# Nine targets side by side, each on its own runner with four processes (tools/ci/fuzz.sh): the whole
+# conversion (conv) and eight parts alone, far faster per input (mkv, mp4, ac3, dts, mpeg2, pgs, vobsub, tags). What each
 # found so far is kept between nights (a cache), so every night starts where the last one stopped. A
 # finding fails the job - GitHub mails whoever last edited this schedule - and the files that do it are
 # kept with the run: replay one with build/fuzz-<target> <file> (or, on Windows, tools/convfuzz.c's
@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [conv, mkv, ac3, dts, mpeg2, pgs, vobsub, tags]
+        target: [conv, mkv, mp4, ac3, dts, mpeg2, pgs, vobsub, tags]
     runs-on: ubuntu-latest
     timeout-minutes: 200
     env:

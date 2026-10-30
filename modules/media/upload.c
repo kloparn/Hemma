@@ -99,6 +99,7 @@ typedef struct {
     int src;      /* the browser's file this comes from: its own index, or the original's for an added copy */
     int conv, pm; /* CV_*; the browser's progress converting it, 0..1000 */
     bool extra;   /* a copy added next to its original ("also send originals"): dropped when it can't be made */
+    bool plays;   /* CV_ORIGINAL because it plays everywhere as it is (2.5: an MP4 the converter needn't touch): not "sent as it is" */
     bool dupe;    /* skipped: the library has this episode or film under another name */
     bool on_server; /* skipped midway: the server's converter makes this copy (answered like a sent file) */
     bool out;     /* skipped before it had a place: a file the library doesn't take, a bad name ... (the preview) */
@@ -466,6 +467,12 @@ static void vobsub_pairs(Batch *b) {
 
 static bool original_video(const UpFile *f) { return f->size > 0 && media_is_video_ext(f->rel) && !media_is_web_copy(f->rel); }
 
+/* An MP4 or MOV (2.5: the converter reads them too - one with Dolby sound gets a copy, one that plays doesn't) */
+static bool is_mp4_name(const char *rel) {
+    return !media_is_web_copy(rel) && (str_iends(rel, ".mp4") || str_iends(rel, ".m4v") || str_iends(rel, ".mov"));
+}
+static bool ext_mp4(const char *ext) { return str_ieq(ext, "mp4") || str_ieq(ext, "m4v") || str_ieq(ext, "mov"); }
+
 static void play_alls(Batch *b, bool dry) {
     int *parts = xcalloc((size_t)b->nfiles + 1, sizeof *parts); /* decided first: sizes change below */
     for (int i = 0; i < b->nfiles; i++) {
@@ -717,7 +724,8 @@ static void subtitles_only(Batch *b, bool conv) {
    the copy is an added entry next to the original. */
 static bool convertible(const Batch *b, const UpFile *f, char *copy, size_t cap) {
     if (f->state != UP_QUEUED || f->head || f->conv || !original_video(f)) return false;
-    if (!str_iends(f->rel, ".mkv") && !str_iends(f->rel, ".webm")) return false; /* the demuxer we have */
+    /* the demuxers we have: Matroska, and (2.5) MP4/MOV - an MP4 that plays as it is comes back as it is, quietly */
+    if (!str_iends(f->rel, ".mkv") && !str_iends(f->rel, ".webm") && !is_mp4_name(f->rel)) return false;
     convert_web_path(f->rel, copy, cap);
     return strlen(copy) <= 380 && !listed(b, copy); /* a copy among the chosen files goes as it is */
 }
@@ -2042,7 +2050,7 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
         return;
     }
     long long pm = fields_int(&q, "pm", -1), size = fields_int(&q, "size", -1), fed = fields_int(&q, "fed", -1);
-    bool original = str_eq(fields_str(&q, "original"), "1");
+    bool original = str_eq(fields_str(&q, "original"), "1"), plays = str_eq(fields_str(&q, "plays"), "1"); /* (2.5) */
     char why[96], msg[400]; /* (why: the browser's converter's words - shown as they came) */
     str_copy(why, sizeof why, fields_str(&q, "why"));
     fields_free(&q);
@@ -2129,7 +2137,9 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
             f->conv = CV_ORIGINAL;
             f->saved = resume_point(b, f);
             b->total += f->size - f->saved;
-            if (why[0]) why_set(f, "%s", why); /* (the browser's words: data) */
+            f->plays = plays && is_mp4_name(rel); /* (it plays everywhere as it is: nothing to say) */
+            if (f->plays) f->why[0] = '\0';
+            else if (why[0]) why_set(f, "%s", why); /* (the browser's words: data) */
             else why_set(f, N_("the converter couldn't read it"));
             buf_printf(&out, "{\"at\":%lld}", (long long)f->saved);
         }
@@ -2196,7 +2206,7 @@ bool upload_http(Ctx *c, Conn *conn, HttpReq *r) {
 #define PV_NAMES 16
 #define PV_LIVE "media.up"
 
-enum { FATE_SEND = 1, FATE_CONVERT, FATE_RESUME, FATE_HEAD, FATE_SKIP, FATE_COPY, FATE_SUBS };
+enum { FATE_SEND = 1, FATE_CONVERT, FATE_RESUME, FATE_HEAD, FATE_SKIP, FATE_COPY, FATE_SUBS, FATE_MAYBE };
 
 typedef struct {
     char name[200]; /* the file as chosen (a copy made here: the copy's name) */
@@ -2352,8 +2362,8 @@ static void pv_row(Preview *p, PvGroup *g, const PlanIn *in, const UpSorted *s, 
     } else if (f->extra) {
         r->fate = FATE_COPY;
         str_copy(r->why, sizeof r->why, base_name(in->paths[f->src]));
-    } else if (f->conv == CV_WAIT) {
-        r->fate = FATE_CONVERT;
+    } else if (f->conv == CV_WAIT) { /* (an MP4: only the browser knows, once it has read it, whether its sound needs it) */
+        r->fate = ext_mp4(f->ext) ? FATE_MAYBE : FATE_CONVERT;
     } else if (f->head) {
         r->fate = FATE_HEAD;
     } else if (f->saved > 0 && f->size > 0) {
@@ -2468,7 +2478,7 @@ static Preview *pv_build(Ctx *c, const PlanIn *in, int all) {
         if (skip) g->skipped++, p->skipped++;
         else if (f->subs) p->subs++;
         else g->bytes += size, p->bytes += size, p->files++;
-        p->conv += !skip && f->conv == CV_WAIT && !f->extra;
+        p->conv += !skip && f->conv == CV_WAIT && !f->extra && !ext_mp4(f->ext); /* (an MP4: converted only if it needs it) */
         if (!f->extra) {
             g->eps += s->kind == UPK_EPISODE || s->kind == UPK_DISC || s->kind == UPK_ASK;
             g->films += s->kind == UPK_FILM;
@@ -2599,6 +2609,7 @@ static void pv_what(Buf *b, const PvRow *r) { /* what Hemma thinks the file is *
 static void pv_fate(Buf *b, const PvRow *r) {
     switch (r->fate) {
     case FATE_CONVERT: H(b, "<span class=\"badge ok\">%s</span>", T("Converted here first")); break;
+    case FATE_MAYBE: H(b, "<span class=\"badge ok\">%s</span>", T("Converted here if needed")); break;
     case FATE_RESUME:
         buf_puts(b, "<span class=\"badge\">");
         H(b, T("Continues: %d%% sent"), r->pct);
@@ -3007,7 +3018,7 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
         const UpFile *f = &u->files[i];
         copies += f->conv != CV_NONE;
         pending += f->conv == CV_WAIT && f->state == UP_QUEUED;
-        as_is += f->conv == CV_ORIGINAL;
+        as_is += f->conv == CV_ORIGINAL && !f->plays;
         heads += f->head && f->state != UP_SKIPPED;
         todo += f->subs; /* (only its subtitles: a file of the upload too, done once they're sent) */
         done += f->subs && !subs_due(f);
@@ -3113,7 +3124,7 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
     if (as_is) { /* said out loud, not only in the list below: such a video may play silent or not at all */
         const UpFile *first = NULL;
         for (int i = 0; i < u->nfiles && !first; i++)
-            if (u->files[i].conv == CV_ORIGINAL) first = &u->files[i];
+            if (u->files[i].conv == CV_ORIGINAL && !u->files[i].plays) first = &u->files[i];
         H(b, "<p class=\"notice media-up-asis\" id=\"media-up-asis-%X\">", u->id);
         H(b,
           TN(as_is,
@@ -3145,7 +3156,7 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
             if (f->state == UP_SKIPPED || f->state == UP_FAILED)
                 H(b, "<li%r><code class=\"media-code\">%s</code> — %s</li>", f->state == UP_FAILED ? " class=\"bad\"" : "",
                   f->rel, why_of(f, why, sizeof why));
-            else if (f->conv == CV_ORIGINAL) {
+            else if (f->conv == CV_ORIGINAL && !f->plays) {
                 H(b, "<li><code class=\"media-code\">%s</code> — ", f->rel);
                 H(b, T("sent as it is: %s"), why_of(f, why, sizeof why));
                 buf_puts(b, "</li>");

@@ -13,6 +13,7 @@
 #include "dts.h"
 #include "dts_testenc.h"
 #include "h264enc.h"
+#include "mp4.h"
 
 /* ------------------------------------------------------------ bytes in memory */
 
@@ -709,7 +710,7 @@ TEST(conv_says_what_it_cannot_convert) {
     w_put(&in, "RIFF....AVI LIST", 16);
     CHECK(!run(&in, &out, &j, &s));
     CHECK(j.unsupported);
-    CHECK_HAS(j.err, "Not a readable MKV file");
+    CHECK_HAS(j.err, "Not a readable MKV or MP4 file");
     free(in.p), free(out.p);
 }
 
@@ -2171,7 +2172,7 @@ TEST(conv_subtitles_alone_time_like_a_conversion) {
     w_put(&in, "RIFF....AVI LIST", 16);
     CHECK(!run_subs(&in, &none, &j, &s));
     CHECK(j.unsupported);
-    CHECK_HAS(j.err, "Not a readable MKV file");
+    CHECK_HAS(j.err, "Not a readable MKV or MP4 file");
     free(in.p), free(none.p);
 }
 
@@ -2327,7 +2328,7 @@ TEST(conv_fuzz_seeds) {
                                    0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
     char took[64][40]; /* every CodecID a seed carries: each format the converter takes needs one (below) */
     int ntook = 0;
-    for (int seed = 0; seed < 17; seed++) {
+    for (int seed = 0; seed < 18; seed++) {
         uint8_t avcc[256], asc[2];
         size_t avcc_len = 0;
         Tracks mp2 = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0}, t = mp2;
@@ -2436,6 +2437,29 @@ TEST(conv_fuzz_seeds) {
             }
             for (int f = 0; f < 8; f++) s_add(&a, eac3 + (size_t)f * 384, 384, f * 16, true);
             t = (Tracks){"V_AV1", av1c, sizeof av1c, 64, 48, "A_EAC3", NULL, 0};
+            break;
+        }
+        case 17: { /* an MP4 in (2.5: the owner's DuckTales) - H.264 + Dolby, read by mkv.h's MP4 side, the sound made AAC */
+            name = "h264-ac3.mp4";
+            memset(&in, 0, sizeof in); /* (mux() starts it anew for the others: here mp4.c writes into it) */
+            add_h264(&v, 12, avcc, &avcc_len);
+            uint8_t dac3[3];
+            CHECK(mp4_dac3(ac3, 768, dac3));
+            Mp4Out mo = {&in, mem_write, mem_write_at};
+            Mp4 *m4 = mp4_new(&mo, 0, 1 << 16);
+            Mp4Track mv = {.codec = MP4_H264, .timescale = 1000, .config = avcc, .config_len = avcc_len, .width = 64, .height = 48};
+            Mp4Track ma = {.codec = MP4_AC3, .timescale = 48000, .config = dac3, .config_len = 3, .channels = 2, .sample_rate = 48000};
+            int tv = mp4_add_track(m4, &mv), ta = mp4_add_track(m4, &ma);
+            bool w4 = tv >= 0 && ta >= 0 && mp4_begin(m4);
+            for (int k = 0; w4 && k < v.n; k++) {
+                int next = k + 1 < v.n ? v.ms[k + 1] : v.ms[k] + 33;
+                w4 = mp4_sample(m4, tv, v.data.p + v.at[k], v.at[k + 1] - v.at[k], (uint32_t)(next - v.ms[k]), 0, v.key[k]);
+                if (w4 && k % 3 == 0) w4 = mp4_sample(m4, ta, ac3 + (size_t)(k / 3 % 4) * 768, 768, 1536, 0, true);
+            }
+            CHECK(w4 && mp4_finish(m4));
+            mp4_free(m4);
+            t = (Tracks){"V_MPEG4/ISO/AVC", avcc, avcc_len, 64, 48, "A_AC3", NULL, 0};
+            built = true;
             break;
         }
         case 16: { /* MP3 copied (2.5): MPEG-1 frames, one block holding two */

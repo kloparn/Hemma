@@ -6,10 +6,16 @@ commit it was built from). Downloads, from 0.14.0 on:
 
 ## 2.5.0 (2026-10-30)
 
-MP3 sound gets a copy too.
+MP3 sound gets a copy too, and so do MP4s with Dolby sound.
 
 ### New
 
+- **MP4s with Dolby or DTS sound are converted:** an MP4 or MOV with Dolby Digital (AC-3), Dolby Digital Plus or DTS
+  sound - DVD rips such as the owner's DuckTales, 101 episodes - played its picture silently in Chrome and Firefox,
+  and Hemma's converter read only MKV files. It reads MP4 and MOV now: the picture is copied, the sound made AAC. An
+  MP4 that already plays everywhere (H.264 with AAC or MP3) is left as it is - while uploading too, quietly; the
+  preview says *Converted here if needed*. **Watch → Library settings → Convert** offers the ones already in the
+  library.
 - **Videos with MP3 sound are converted:** an MKV with MP3 sound (small x264 encodes - 35 of the owner's 54 Disney
   films) went up as it was, "Its sound is MP3, which the converter can't change yet". The copy now takes the MP3 as it
   is into the MP4 - nothing re-encoded, so it takes seconds - where every browser, iPhone, iPad and TV plays it (in an
@@ -27,6 +33,14 @@ MP3 sound gets a copy too.
   no DecoderSpecificInfo); `A_MPEG/L3` in `AV_CONV_CODECS` as a copy - each frame its own sample (mp3_frame_size splits a
   block holding several), 1152 or 576 samples long. A new fuzz seed, `h264-mp3.mkv`. media/convert.c: H.264/HEVC/AV1
   with MP3 is a remux.
+- modules/av: an MP4/MOV reader behind mkv.h's API (mkv_mp4.h: mkv_open knows an MP4 by its first box; codecs named
+  in Matroska's terms, so the converter takes them unchanged - avc1/hvc1/av01, mp4a by object type, ac-3, ec-3, dts;
+  tx3g subtitles as text; chapter and text tracks left out; times from ctts and the edit list; fragmented files
+  refused). `AvConvJob.as_is`: an MP4 whose picture and sound play everywhere (H.264, `hvc1` HEVC or AV1 with AAC or
+  MP3) is left as it is - `conv_run` says 3, conv.js `{plays}`, and the upload sends the original with `?plays=1`, not
+  "sent as it is". A copied picture's times are rounded to the nearest 90 kHz tick, not each frame's length down (an
+  MP4 at 1/24000 s ran 0.24 s short per episode). A new fuzz target, `mp4` (nightly too), and the seed `h264-ac3.mp4`.
+  media/convert.c: an MP4/MOV with Dolby or DTS sound is a transcode; the upload plan sends MP4s through the converter.
 
 ## 2.4.0 (2026-10-30)
 

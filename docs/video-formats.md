@@ -9,12 +9,14 @@ Most other videos Hemma can turn into one. It makes a copy next to the original,
 | The file | Plays on |
 |---|---|
 | **MP4**, M4V or MOV with H.264 and AAC (or MP3) sound | Everything |
+| **MP4** or MOV with Dolby (AC-3, E-AC-3) or DTS sound | Safari, Edge and most TVs; silent in Chrome and Firefox. Hemma makes a copy with AAC sound (2.5) - the picture is copied, so it takes a minute or two |
 | **WebM** (VP8, VP9 or AV1 picture, Opus or Vorbis sound) | Most browsers |
 | **MKV** with H.264, AV1 or VP9, and AAC, Opus, MP3 or FLAC sound | Chrome and Edge, not Safari or iPhone. For H.264 or AV1 with AAC or MP3, Hemma makes an MP4 copy (the H.264 one plays everywhere). It takes seconds, since nothing is re-encoded |
 
 ## What Hemma converts
 
-Hemma converts **MKV** and **WebM** files. Each part of the file is handled on its own:
+Hemma converts **MKV** and **WebM** files, and **MP4** and **MOV** files whose sound needs it (2.5). Each part
+of the file is handled on its own:
 
 | Picture | In the copy |
 |---|---|
@@ -81,7 +83,7 @@ What the usual words in a release's name mean for Hemma:
 ## Not yet
 
 - **AVI, WMV, MPEG-TS (`.ts`, `.m2ts`) and MPEG-PS (`.mpg`, `.vob`) files.** Hemma's converter reads
-  MKV and WebM only. A `.ts`, `.m2ts`, `.mpg` or `.vob` usually holds H.264 or MPEG-2 with Dolby or
+  MKV, WebM, MP4 and MOV. A `.ts`, `.m2ts`, `.mpg` or `.vob` usually holds H.264 or MPEG-2 with Dolby or
   DTS sound: put it into an MKV first (a free tool such as MKVToolNix does that quickly, without
   losing quality) and Hemma converts it.
 - **XviD and DivX** (MPEG-4 Part 2), **VC-1**, **VP9** and **WMV** pictures, and AV1 made into H.264 (for older

@@ -1,4 +1,4 @@
-/* modules/av/conv.h — the "play everywhere" converter: one MKV in, one MP4 out
+/* modules/av/conv.h — the "play everywhere" converter: one MKV (or, 2.5, an MP4/MOV) in, one MP4 out
  * that every browser, iPhone, iPad, TV and Chromecast plays.
  *
  *   MPEG-2 / MPEG-1 (DVD rips) -> mpeg2 -> deint -> h264enc  \
@@ -8,6 +8,9 @@
  *   Dolby AC-3 / E-AC-3 (DD+)  -> ac3 (stereo) -> aac         /
  *   DTS (the core)             -> dts (stereo) -> aac        /
  *   AAC                        -> copied                    /   every sound track, each its own (AV_CONV_MAX_AUDIO)
+ *   MP3 (2.5)                  -> copied                   /
+ *   An MP4/MOV input (2.5) is read the same way (mkv.h opens it) - and one that plays everywhere already (H.264,
+ *   HEVC as hvc1 or AV1, every sound AAC or MP3) makes nothing: as_is.
  *   text subtitles (SRT, ASS,  -> SubRip texts handed back (want_subs): the caller saves them as
  *   WebVTT)                       "<name>.<language>.srt" next to the video, where the library finds them
  *   picture subtitles: Blu-ray -> the bytes of a .sup file (PGS) / of an .idx + .sub pair (VobSub),
@@ -110,6 +113,8 @@ typedef struct {
     char what[120];        /* what was done: "DVD video (film, 23.976 fps) → H.264 · Dolby Digital → AAC" */
     int64_t out_bytes;
     bool unsupported;      /* failed because of what the file holds (a codec we don't convert yet), not an error */
+    bool as_is;            /* 2.5: nothing made - the input (an MP4/MOV) plays everywhere as it is: H.264, HEVC as hvc1 or AV1,
+                              every sound AAC or MP3 (err says so; unsupported stays false) */
     AvConvSub subs[AV_CONV_MAX_SUBS]; /* with want_subs, after a success or an `unsupported` refusal: the
                                          subtitle tracks in file order (empty ones left out) */
     int nsubs;

@@ -17,6 +17,7 @@
  *   hemma.progress(permille)      0..1000
  * and calls _initialize(), then conv_run(size, quality, audio_kbps):
  *   1 = done, 0 = failed, 2 = the file holds something we can't convert (send the original);
+ *   3 = (2.5) an MP4/MOV that plays everywhere as it is: nothing made, send the original - without a word;
  *   conv_err() says why (UTF-8, NUL-terminated).
  * After a 1, the file's subtitle tracks: conv_subs() of them, each with conv_sub_kind(i) (0 = text,
  *   1 = PGS, 2 = VobSub), conv_sub_lang(i), conv_sub_name(i) (NUL-terminated) and conv_sub_forced(i);
@@ -157,7 +158,7 @@ EXPORT("conv_run") int conv_run(double size, int quality, int audio_kbps) {
     if (ok) return 1;
     av_convert_free(&g_job);
     if (!g_job.err[0]) strcpy(g_job.err, "Couldn't hand the copy to the page");
-    return g_job.unsupported ? 2 : 0;
+    return g_job.as_is ? 3 : g_job.unsupported ? 2 : 0;
 }
 
 /* Only the subtitles (1.3: a video the library has already gives the subtitles it lacks): 1 = read (conv_subs()
