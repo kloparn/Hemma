@@ -4,6 +4,30 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.5.0 (2026-10-30)
+
+MP3 sound gets a copy too.
+
+### New
+
+- **Videos with MP3 sound are converted:** an MKV with MP3 sound (small x264 encodes - 35 of the owner's 54 Disney
+  films) went up as it was, "Its sound is MP3, which the converter can't change yet". The copy now takes the MP3 as it
+  is into the MP4 - nothing re-encoded, so it takes seconds - where every browser, iPhone, iPad and TV plays it (in an
+  MKV only Chrome and Edge did). MP3 at half rates (24 kHz) too. Uploads convert them in the browser; **Watch → Library
+  settings → Convert** offers the ones already in the library.
+
+### Fixed
+
+- The words for sound the converter can't take yet no longer say "browsers play it silently" for sound that browsers
+  play (Opus, Vorbis, FLAC): only TrueHD's do.
+
+### For developers
+
+- modules/av: `MP4_MP3` in the MP4 writer ('mp4a' + esds, object type 0x6B for MPEG-1, 0x69 for MPEG-2's half rates,
+  no DecoderSpecificInfo); `A_MPEG/L3` in `AV_CONV_CODECS` as a copy - each frame its own sample (mp3_frame_size splits a
+  block holding several), 1152 or 576 samples long. A new fuzz seed, `h264-mp3.mkv`. media/convert.c: H.264/HEVC/AV1
+  with MP3 is a remux.
+
 ## 2.4.0 (2026-10-30)
 
 Films get their year: Hemma asks for it while uploading, and knows a film without one when it sees it.

@@ -468,7 +468,7 @@ TEST(convert_real_file_when_given) {
     CHECK(media_probe_file(src, &in));
     CHECK_STR(p.container, "mp4");
     CHECK(str_eq(p.vcodec, "h264") || str_eq(p.vcodec, "hevc") || str_eq(p.vcodec, "av1")); /* (HEVC and AV1 are copied) */
-    CHECK_STR(p.acodec, "aac");
+    CHECK(str_eq(p.acodec, "aac") || (str_eq(p.acodec, "mp3") && str_eq(in.acodec, "mp3"))); /* (2.5: MP3 is copied) */
     CHECK_INT(p.playable, str_eq(p.vcodec, "h264") ? PLAY_YES : PLAY_MAYBE);
     int64_t want = secs > 0 ? secs * 1000LL : in.duration_ms;
     CHECK(p.duration_ms > want - 2000 && p.duration_ms < want + 2000);

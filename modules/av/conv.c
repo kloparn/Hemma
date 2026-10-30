@@ -51,7 +51,9 @@ static void sar_of(int w, int h, int dar_n, int dar_d, int *sw, int *sh) {
 /* One sound track kept (2.2: every one the converter takes, AV_CONV_MAX_AUDIO). */
 struct ConvAudio {
     const MkvTrack *t;
-    bool code;     /* Dolby or DTS decoded and made AAC (false: AAC copied) */
+    bool code;     /* Dolby or DTS decoded and made AAC (false: AAC or MP3 copied) */
+    bool mp3;      /* MP3 copied (2.5): each block's frames one sample each */
+    uint32_t fdur; /* a frame's samples in the MP4: AAC 1024, MP3 1152 (MPEG-1) or 576 (MPEG-2's half rates) */
     bool dead;     /* dropped part-way (lose): fed no more, left out of the moov */
     int track;     /* its MP4 track */
     int rate;      /* coded: the track's rate - 48000, 44100 or 32000 - and so the AAC's */
@@ -143,6 +145,7 @@ const AvCodec AV_CONV_CODECS[] = {
     {"A_AC3", MKV_AUDIO, AV_DECODE, false},
     {"A_EAC3", MKV_AUDIO, AV_DECODE, false},
     {"A_DTS", MKV_AUDIO, AV_DECODE, false}, /* (the core: DTS-HD's extra substream is left alone) */
+    {"A_MPEG/L3", MKV_AUDIO, AV_COPY, false}, /* (2.5: MP3 copied - every browser plays it in an MP4, an MKV only Chrome's) */
     {"S_TEXT/UTF8", MKV_SUBTITLE, AV_TEXT, false},
     {"S_TEXT/ASS", MKV_SUBTITLE, AV_TEXT, false},
     {"S_TEXT/SSA", MKV_SUBTITLE, AV_TEXT, false},
@@ -243,7 +246,7 @@ static bool put_sample(Conv *c, int track, const void *p, size_t n, uint32_t dur
 static bool write_run(Conv *c, struct ConvAudio *a) {
     size_t at = 0;
     for (int i = 0; i < a->nrunf && !c->failed; i++) {
-        if (!mp4_sample(c->mp4, a->track, a->run + at, a->rsize[i], AAC_FRAME, 0, true))
+        if (!mp4_sample(c->mp4, a->track, a->run + at, a->rsize[i], a->fdur, 0, true))
             fail(c, "Couldn't write the new file (disk full?)", NULL);
         at += a->rsize[i];
     }
@@ -257,7 +260,7 @@ static bool put_audio(Conv *c, struct ConvAudio *a, const void *p, size_t n) {
     if (a->dead) return true;
     if (++a->n > c->amax) return too_many(c, false);
     if (c->naud < 2) {
-        if (!mp4_sample(c->mp4, a->track, p, n, AAC_FRAME, 0, true)) return fail(c, "Couldn't write the new file (disk full?)", NULL);
+        if (!mp4_sample(c->mp4, a->track, p, n, a->fdur, 0, true)) return fail(c, "Couldn't write the new file (disk full?)", NULL);
         return true;
     }
     if (n > 0xFFFFFFFFu) return fail(c, "Couldn't write the new file (disk full?)", NULL);
@@ -271,6 +274,32 @@ static bool put_audio(Conv *c, struct ConvAudio *a, const void *p, size_t n) {
     a->nrun += n;
     a->rsize[a->nrunf++] = (uint32_t)n;
     return a->nrunf < AUDIO_RUN || write_run(c, a);
+}
+
+/* An MPEG audio Layer III frame's size from its header (ISO 11172-3, 13818-3 and MPEG-2.5's 8-12 kHz): 0 = not one
+   (Layer I/II, free format, reserved values). */
+static size_t mp3_frame_size(const uint8_t *p, size_t n) {
+    if (n < 4 || p[0] != 0xFF || (p[1] & 0xE0) != 0xE0) return 0;
+    int ver = p[1] >> 3 & 3, layer = p[1] >> 1 & 3, bi = p[2] >> 4, si = p[2] >> 2 & 3, pad = p[2] >> 1 & 1;
+    if (ver == 1 || layer != 1 || bi == 0 || bi == 15 || si == 3) return 0;
+    static const int KBPS1[] = {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320},
+                     KBPS2[] = {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160}, RATES[] = {44100, 48000, 32000};
+    int rate = RATES[si] >> (ver == 3 ? 0 : ver == 2 ? 1 : 2), kbps = ver == 3 ? KBPS1[bi] : KBPS2[bi];
+    return (size_t)((ver == 3 ? 144 : 72) * kbps * 1000 / rate + pad);
+}
+
+/* An MP3 block copied: each frame in it its own sample (a muxer may put several in one block); what doesn't start
+   with a frame header goes as it is - a decoder skips it, and the time stays. */
+static bool copy_mp3(Conv *c, struct ConvAudio *a, const MkvFrame *fr) {
+    const uint8_t *p = fr->data;
+    size_t left = fr->size;
+    while (left > 0 && !c->failed && !a->dead) {
+        size_t n = mp3_frame_size(p, left);
+        if (!n || n > left) n = left;
+        put_audio(c, a, p, n);
+        p += n, left -= n;
+    }
+    return !c->failed;
 }
 
 /* A sound that can't go on (coded in a way the decoder can't follow, at another rate than the file says, mostly
@@ -1051,13 +1080,14 @@ static bool setup_audio(Conv *c, struct ConvAudio *a, bool is_def) {
         if (lead < 0) a->skip = ticks(-lead, a->rate);
         words = dts ? " · DTS → AAC" : strcmp(a->t->codec, "A_EAC3") ? " · Dolby Digital → AAC" : " · Dolby Digital Plus → AAC";
     } else {
-        at.config = a->t->priv;
-        at.config_len = a->t->priv_len;
+        at.codec = a->mp3 ? MP4_MP3 : MP4_AAC;
+        at.config = a->mp3 ? NULL : a->t->priv; /* (MP3: no setup data - its frames carry it) */
+        at.config_len = a->mp3 ? 0 : a->t->priv_len;
         at.channels = a->t->channels ? a->t->channels : 2;
-        at.sample_rate = a->t->rate > 0 ? (int)a->t->rate : 48000;
+        at.sample_rate = a->t->rate > 0 ? (int)a->t->rate : a->mp3 ? 44100 : 48000;
         at.timescale = (uint32_t)at.sample_rate;
         if (lead < 0) at.start = ticks(-lead, at.timescale);
-        words = " · AAC copied";
+        words = a->mp3 ? " · MP3 copied" : " · AAC copied";
     }
     if (lead > 0) at.delay = ticks(lead, at.timescale);
     if (is_def) append(c->j->what, sizeof c->j->what, words);
@@ -1161,6 +1191,7 @@ static bool main_pass(Conv *c) {
         if (!a) collect(c, &fr);
         else if (a->dead) continue;
         else if (a->code) code_audio(c, a, &fr);
+        else if (a->mp3) copy_mp3(c, a, &fr);
         else put_audio(c, a, fr.data, fr.size);
     }
     if (c->failed) return false;
@@ -1213,7 +1244,7 @@ static int64_t index_room(const Conv *c, const Mpeg2Frame *first) {
     for (int k = 0; k < c->naud; k++) {
         const struct ConvAudio *s = &c->aud[k];
         double rate = s->code ? s->rate : s->t->rate <= 0 ? 48000 : s->t->rate;
-        int64_t a = CMIN((int64_t)(secs * rate / AAC_FRAME), c->amax) + 16;
+        int64_t a = CMIN((int64_t)(secs * rate / s->fdur), c->amax) + 16; /* (MP3 at 24 kHz: 576 a frame, 42 a second) */
         all += a, runs += a / AUDIO_RUN + 1;
     }
     if (c->naud < 2) { /* one sound (or none): every switch between the two tracks a chunk */
@@ -1268,6 +1299,8 @@ bool av_convert(AvConvJob *j) {
         a->a0 = a->next = MKV_NOPTS;
         a->code = dolby(a->t->codec) || is_dts(a->t->codec);
         a->rate = a->code ? dolby_rate(a->t) : 48000;
+        a->mp3 = !strcmp(a->t->codec, "A_MPEG/L3");
+        a->fdur = !a->mp3 ? AAC_FRAME : a->t->rate <= 0 || a->t->rate >= 32000 ? 1152 : 576;
     }
     const AvCodec *vk = c->vt ? av_conv_codec(c->vt->codec) : NULL;
     if (!c->vt) unsupported(c, "There's no picture to convert", NULL);
@@ -1283,8 +1316,11 @@ bool av_convert(AvConvJob *j) {
         if (first_audio->compressed) unsupported(c, "The sound is compressed or encrypted inside the file", NULL);
         else if (dolby(first_audio->codec) || is_dts(first_audio->codec))
             unsupported(c, "Can't convert %s sound that isn't at 48, 44.1 or 32 kHz yet", dolby(first_audio->codec) ? "Dolby" : "DTS");
-        else unsupported(c, "Its sound is %s, which the converter can't change yet (browsers play it silently)",
-                         codec_words(first_audio->codec));
+        else if (!strcmp(first_audio->codec, "A_TRUEHD") || !strcmp(first_audio->codec, "A_MLP"))
+            unsupported(c, "Its sound is %s, which the converter can't change yet (browsers play it silently)",
+                        codec_words(first_audio->codec));
+        else unsupported(c, "Its sound is %s, which the converter can't change yet", codec_words(first_audio->codec));
+        /* (Opus, Vorbis, FLAC ... in an MKV: Chrome and Edge play them as they are - only TrueHD is silent) */
     }
     if (j->want_subs) choose_subs(c);
 

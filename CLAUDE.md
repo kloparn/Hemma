@@ -662,7 +662,7 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  real 10-bit 1080p AV1 + AC-3 film (2 h 28 min): every packet as the original's, ffmpeg decodes it, Chrome
                  plays it;
                  EVERY sound track it can convert goes into the copy (2.2, up to 8 - "Where things stand" 2.2.0; before, only
-                 the default one); AC-3 / E-AC-3 (Dolby Digital Plus) and DTS (1.3: the core, 5.1 -> Lo/Ro) -> AAC at the track's own rate (48, 44.1 or 32 kHz - TV rips are 44.1; 1.1.2; E-AC-3 half rates refused; a frame at another rate than the file says = unsupported); AAC copied; the file's subtitles next to the ORIGINAL - also
+                 the default one); AC-3 / E-AC-3 (Dolby Digital Plus) and DTS (1.3: the core, 5.1 -> Lo/Ro) -> AAC at the track's own rate (48, 44.1 or 32 kHz - TV rips are 44.1; 1.1.2; E-AC-3 half rates refused; a frame at another rate than the file says = unsupported); AAC copied; MP3 copied (2.5: MP4_MP3, mp4a + esds object type 0x6B, or 0x69 below 32 kHz; mp3_frame_size splits a block into its frames, 1152 or 576 samples each); the file's subtitles next to the ORIGINAL - also
                  after an `unsupported` refusal (1.2) - by convert_save_subs/convert_save_sub(video, AvConvSub,
                  ConvertSubs*): text .srt, PGS .sup, VobSub .sub + .idx (the pair or nothing, .idx last), media/subs.c
                  names ("x.en.srt", "x.sv.forced.srt", "x.en.sdh.srt", "x.en.2.sup"); a second track of the same
@@ -2000,6 +2000,8 @@ apps/android (see there). Progress comes back through the plain POST /a/media.pr
 2.4.0 (branch fix/movie-identifier) = FILMS GET THEIR YEAR: the upload preview's Year boxes (almost mandatory: Start asks
 first), "These are films" for a folder, order numbers out of titles, a video of an hour or more a film, and Library
 settings' "Films without a year" (see "Media notes").
+2.5.0 (branch fix/wording-patch) = MP3 SOUND COPIED into the converter's MP4s (35 of the Disney films had H.264 + MP3 and went up
+as they were), and the "browsers play it silently" note only for TrueHD.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
@@ -2022,4 +2024,4 @@ on the wall (ticking the shopping list - needs .display actions), more wall bloc
 MKV→MP4 remux on the fly for Safari/iPhone (planned as 1.2, owner 2026-10-21: a "virtual MP4" over the MKV,
 Dolby passed through for Apple devices; live AC-3 -> AAC after), "Open in VLC" links, router integration, DLNA, API tokens for
 scripts, "tune in" on the TV's browser via a QR code, more video formats as files need them (HEVC decoding,
-AV1 decoding for older Apple devices, Xvid/MP3, TrueHD - each with its fuzz seed: docs/decisions/0006).
+AV1 decoding for older Apple devices, Xvid (MP3 sound is copied since 2.5), TrueHD - each with its fuzz seed: docs/decisions/0006).

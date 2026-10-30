@@ -21,7 +21,8 @@
  *    memory and the output may be append-only — for remuxing on the fly.
  *
  * Tracks: H.264 ('avc1' + avcC, pasp, colr), HEVC ('hvc1' + hvcC - what Safari plays), AV1 ('av01' + av1C, AV1 in
- * ISOBMFF v1.2.0: samples are temporal units without their temporal delimiter), AAC ('mp4a' + esds), FLAC
+ * ISOBMFF v1.2.0: samples are temporal units without their temporal delimiter), AAC ('mp4a' + esds), MP3 ('mp4a' + esds of
+ * object type 0x6B or 0x69, one frame a sample - 2.5), FLAC
  * ('fLaC' + dfLa) and AC-3 ('ac-3' + dac3, for Safari). Samples are given in
  * decode order with a duration and a composition offset (pts - dts) in the
  * track's own timescale; interleave tracks by time (chunks form as tracks
@@ -49,10 +50,10 @@ typedef struct {
     bool (*write_at)(void *ctx, int64_t off, const void *p, size_t n); /* overwrite earlier bytes (NULL: can't) */
 } Mp4Out;
 
-enum { MP4_H264 = 1, MP4_AAC, MP4_FLAC, MP4_AC3, MP4_HEVC, MP4_AV1 };
+enum { MP4_H264 = 1, MP4_AAC, MP4_FLAC, MP4_AC3, MP4_HEVC, MP4_AV1, MP4_MP3 };
 
 typedef struct {
-    int codec;          /* MP4_H264, MP4_HEVC, MP4_AV1, MP4_AAC, MP4_FLAC or MP4_AC3 */
+    int codec;          /* MP4_H264, MP4_HEVC, MP4_AV1, MP4_AAC, MP4_MP3 (2.5: no config), MP4_FLAC or MP4_AC3 */
     uint32_t timescale; /* ticks per second: 30000 for 29.97 fps video, the sample rate for audio */
     /* avcC / hvcC record (HEVCDecoderConfigurationRecord, as MKV keeps it) / av1C record (AV1CodecConfigurationRecord,
        MKV's CodecPrivate too) / AudioSpecificConfig / FLAC STREAMINFO (34 bytes) / dac3 payload (3 bytes) */

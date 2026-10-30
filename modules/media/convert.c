@@ -34,7 +34,9 @@ ConvertNeed convert_need(const MediaFile *f) {
     if (!f || f->type != MF_VIDEO || f->web || f->role == MF_WEBCOPY) return CONV_NONE;
     const MediaProbe *p = &f->probe;
     if (!container_is(p, "mkv", "webm")) return CONV_NONE; /* the demuxer we have */
-    bool aac = !p->acodec[0] || str_eq(p->acodec, "aac"), ac3 = str_eq(p->acodec, "ac3") || str_eq(p->acodec, "eac3") ||
+    /* (sound copied as it is: AAC, and - 2.5 - MP3, which every browser plays in an MP4 but only Chrome's in an MKV) */
+    bool aac = !p->acodec[0] || str_eq(p->acodec, "aac") || str_eq(p->acodec, "mp3"),
+         ac3 = str_eq(p->acodec, "ac3") || str_eq(p->acodec, "eac3") ||
                                                              str_eq(p->acodec, "dts"); /* (sound decoded and made AAC) */
     if (str_eq(p->vcodec, "mpeg2") && (aac || ac3)) return CONV_TRANSCODE;
     if (str_eq(p->vcodec, "h264") && ac3) return CONV_TRANSCODE; /* picture copied, sound re-encoded */
