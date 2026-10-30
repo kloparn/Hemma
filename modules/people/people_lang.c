@@ -360,12 +360,32 @@ static const Tr TR[] = {
 
     /* the Android app (2.0) */
     {"Hemma on your phone", "Hemma i mobilen", "Hemma en tu móvil"},
-    {"An app for Android phones: it finds Hemma at home by itself, keeps you signed in and plays audiobooks with the "
-     "phone locked.",
-     "En app för Android-mobiler: den hittar Hemma hemma av sig själv, håller dig inloggad och spelar ljudböcker med "
-     "mobilen låst.",
-     "Una app para móviles Android: encuentra Hemma en casa por sí sola, mantiene tu sesión iniciada y reproduce "
-     "audiolibros con el móvil bloqueado."},
+    /* what the app does (2.3) */
+    {"Hemma has an app for Android phones. Besides Hemma itself, it:",
+     "Hemma finns som app för Android-mobiler. Förutom Hemma självt:", "Hemma tiene una app para móviles Android. Además de Hemma, la app:"},
+    {"Finds Hemma at home by itself - no address to type.", "Hittar Hemma hemma av sig själv - ingen adress att skriva.",
+     "Encuentra Hemma en casa por sí sola, sin escribir ninguna dirección."},
+    {"Keeps you signed in, and opens straight to Hemma.", "Håller dig inloggad och öppnar direkt till Hemma.",
+     "Mantiene tu sesión iniciada y abre Hemma directamente."},
+    {"Plays audiobooks with the phone locked, with the book and the chapter on the lock screen.",
+     "Spelar ljudböcker med mobilen låst, med boken och kapitlet på låsskärmen.",
+     "Reproduce audiolibros con el móvil bloqueado, con el libro y el capítulo en la pantalla de bloqueo."},
+    {"Saves videos and audiobooks for offline: on a trip, on the train, wherever there's no Hemma.",
+     "Sparar videor och ljudböcker offline: på resan, på tåget, där det inte finns något Hemma.",
+     "Guarda vídeos y audiolibros sin conexión: de viaje, en el tren, donde no haya Hemma."},
+    {"Talks only to Hemma on your home network - nothing else, nowhere else.",
+     "Pratar bara med Hemma i ditt hemnätverk - inget annat, ingen annanstans.",
+     "Solo habla con Hemma en la red de tu casa: con nada más, en ningún otro sitio."},
+    {"The Hemma app", "Hemma-appen", "La app de Hemma"},
+    {"You're using Hemma's app for Android. Besides Hemma itself, it:", "Du använder Hemmas app för Android. Förutom Hemma självt:",
+     "Estás usando la app de Hemma para Android. Además de Hemma, la app:"},
+    {"Saved for offline", "Sparat offline", "Guardado sin conexión"},
+    {"Save something with Save for offline on its page in Watch. A new Hemma brings a new app: Get the app for Android "
+     "in a phone's browser installs it over this one.",
+     "Spara något med Spara offline på dess sida i Titta. Ett nytt Hemma har med sig en ny app: Hämta appen för Android i "
+     "mobilens webbläsare installerar den över den här.",
+     "Guarda algo con Guardar sin conexión en su página de Ver. Un Hemma nuevo trae una app nueva: Descargar la app para "
+     "Android en el navegador del móvil la instala sobre esta."},
     {"Get the app for Android", "Hämta appen för Android", "Descargar la app para Android"},
     /* Home's card for a browser on Android (2.1) */
     {"Hemma has an app for your phone", "Hemma finns som app för din mobil", "Hemma tiene una app para tu móvil"},

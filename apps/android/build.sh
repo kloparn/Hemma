@@ -26,9 +26,11 @@ rm -rf "$OUT" 2>/dev/null || true
 mkdir -p "$OUT/test" "$OUT/gen" "$OUT/classes"
 SRC=$(find "$HERE/src" -name '*.java' | sort)
 
-# 1. the address rules, with a JDK alone
-"${JBIN}javac" -d "$OUT/test" "$HERE/src/io/github/kloparn/hemma/Net.java" "$HERE/test/NetTest.java"
+# 1. the address rules and what's saved for offline (2.3), with a JDK alone
+"${JBIN}javac" -encoding UTF-8 -d "$OUT/test" "$HERE/src/io/github/kloparn/hemma/Net.java" "$HERE/test/NetTest.java" \
+    "$HERE/src/io/github/kloparn/hemma/Saved.java" "$HERE/test/SavedTest.java"
 "${JBIN}java" -cp "$OUT/test" NetTest
+"${JBIN}java" -cp "$OUT/test" SavedTest
 
 # 2. the key
 if [ -n "${HEMMA_APP_KEYSTORE:-}" ]; then

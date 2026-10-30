@@ -110,8 +110,9 @@ account ([setting one up](accounts.md#a-tablet-on-the-wall)).
 - Your home's name, and the link that puts your calendar on your phone.
 - **The Hemma app for Android**, from your own Hemma (Home offers it in an Android phone's browser; also Your
   account → *Get the app for Android*): it finds
-  Hemma on the home Wi-Fi by itself, keeps you signed in, and plays audiobooks with the lock screen's
-  controls. It connects to nothing but Hemma at home. [The Android app](android.md).
+  Hemma on the home Wi-Fi by itself, keeps you signed in, plays audiobooks with the lock screen's
+  controls, and saves videos and audiobooks for offline - for a trip, the train, anywhere without Hemma.
+  It connects to nothing but Hemma at home. [The Android app](android.md).
 
 More in [Accounts](accounts.md).
 

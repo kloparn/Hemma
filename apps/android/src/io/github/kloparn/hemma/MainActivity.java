@@ -5,7 +5,10 @@
  *   - the lock screen and the notification's media controls for an audiobook (PlayerService), told by wire.js
  *     through window.HemmaApp.media() and calling back window.hemmaAction();
  *   - files to upload (the system's picker), downloads (Android's download manager, with the sign-in's cookie),
- *     a video's full screen, the Back key walking back through Hemma's pages. */
+ *     a video's full screen, the Back key walking back through Hemma's pages;
+ *   - OFFLINE (2.3): Hemma's pages link hemma-app:save?m=<manifest> (Save for offline - Hemma decides who sees it)
+ *     and hemma-app:offline (the Offline screen); the panel offers the Offline screen when Hemma can't be reached,
+ *     and reaching Hemma sends it the places reached offline and lets half-saved things go on. */
 package io.github.kloparn.hemma;
 
 import android.app.Activity;
@@ -67,6 +70,7 @@ public final class MainActivity extends Activity {
     private ProgressBar spinner;
     private LinearLayout list;
     private EditText typed;
+    private Button offline; /* the panel's "Offline (N)": what's saved, when Hemma can't be reached (2.3) */
     private Finder finder;
     private String base;     /* the Hemma in use: "http://192.168.1.50" */
     private String hemmaId;  /* its id (GET /hemma.json): found again at a new address */
@@ -132,6 +136,11 @@ public final class MainActivity extends Activity {
         status.setPadding(dp(12), 0, 0, 0);
         row.addView(status, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         box.addView(row);
+        offline = new Button(this);
+        offline.setAllCaps(false);
+        offline.setOnClickListener(v -> startActivity(new Intent(this, OfflineActivity.class)));
+        offline.setVisibility(View.GONE);
+        box.addView(offline, wrap());
         list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         box.addView(list);
@@ -184,6 +193,9 @@ public final class MainActivity extends Activity {
         panel.setVisibility(View.VISIBLE);
         status.setText(say);
         spinner.setVisibility(busy ? View.VISIBLE : View.GONE);
+        int n = Offline.count(this);
+        offline.setVisibility(n > 0 ? View.VISIBLE : View.GONE);
+        if (n > 0) offline.setText(getString(R.string.offline_n, n));
     }
 
     /* ------------------------------------------------------------------ finding Hemma */
@@ -191,7 +203,7 @@ public final class MainActivity extends Activity {
     /* Android 17 on: no connection to the home network gets through without "devices on your local network" - the
        first look asks; a "no" asked again from Look again, or - once Android stops asking - its settings page */
     private static final String LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK";
-    private static final int ASK_LOCAL = 2;
+    private static final int ASK_LOCAL = 2, ASK_NOTIFY = 3;
 
     private boolean mayReachHome() {
         return Build.VERSION.SDK_INT < 37 || checkSelfPermission(LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED;
@@ -319,6 +331,32 @@ public final class MainActivity extends Activity {
         if (page != null) web.loadUrl(at + page);
         else if (same) web.reload();
         else web.loadUrl(at + "/");
+        home();
+    }
+
+    /* Hemma reached (2.3): the places reached offline go to it, and what was left half-saved goes on */
+    private void home() {
+        String agent = web.getSettings().getUserAgentString(), at = base;
+        new Thread(() -> Offline.sync(getApplicationContext(), at, agent), "hemma-sync").start();
+        OfflineService.resume(this);
+    }
+
+    /* hemma-app:save?m=<manifest> and hemma-app:offline, from Hemma's own pages (2.3) - anything else of that kind
+       is nothing; a save only ever of a manifest path on the Hemma the app knows (Saved.savePath) */
+    private void appLink(Uri u) {
+        String what = u.getEncodedSchemeSpecificPart();
+        if ("offline".equals(what)) {
+            startActivity(new Intent(this, OfflineActivity.class));
+            return;
+        }
+        String path = Saved.savePath(what);
+        if (path == null || base == null) return;
+        /* Android 13 on shows the saving's progress notification only with leave to: asked at the first save (no
+           answer changes the saving itself - the Offline screen shows how far it has got either way) */
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, ASK_NOTIFY);
+        OfflineService.save(this, path);
+        Toast.makeText(this, R.string.saving_start, Toast.LENGTH_SHORT).show();
     }
 
     /* "Open the app instead!" (2.2): Home in the phone's browser links hemma://open/<path>. Only a path of Hemma's own
@@ -366,6 +404,11 @@ public final class MainActivity extends Activity {
         web.setWebViewClient(new WebViewClient() {
             @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
                 if (ours(r.getUrl())) return false;
+                if ("hemma-app".equals(r.getUrl().getScheme())) { /* (2.3: only from Hemma's own page) */
+                    String page = v.getUrl();
+                    if (page != null && ours(Uri.parse(page))) appLink(r.getUrl());
+                    return true;
+                }
                 try { /* not Hemma: the phone's browser */
                     startActivity(new Intent(Intent.ACTION_VIEW, r.getUrl()));
                 } catch (ActivityNotFoundException ignored) {
@@ -502,7 +545,8 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         if (finder != null) finder.stop();
-        if (PlayerService.instance != null) PlayerService.instance.finish();
+        /* (the page's book goes with the page; a saved one plays on - BookActivity, the notification) */
+        if (PlayerService.instance != null && PlayerService.instance.localId() == null) PlayerService.instance.finish();
         web.destroy();
         super.onDestroy();
     }

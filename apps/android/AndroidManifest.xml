@@ -12,6 +12,8 @@
     <!-- an audiobook playing with the phone locked: a media notification, the CPU and the Wi-Fi kept awake -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- saving videos and books for offline (2.3): a foreground service with its progress in the notifications -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
@@ -48,5 +50,18 @@
             android:name=".PlayerService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <!-- offline (2.3): the saved things, a saved video playing (turned with the phone), a saved book; and the saving -->
+        <activity android:name=".OfflineActivity" android:exported="false" />
+        <activity
+            android:name=".WatchActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+        <activity android:name=".BookActivity" android:exported="false" android:launchMode="singleTop" />
+        <service
+            android:name=".OfflineService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

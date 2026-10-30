@@ -515,15 +515,34 @@ static void account_card(Ctx *c, Buf *b) {
 
 /* 2.0: the Android app, served by this Hemma itself (core: /static/hemma.apk, built in when the build found Android's
    tools) - not shown inside the app, nor to a display account */
+/* What the app does (2.3; owner: "add more information about the app") - the same list in the browser and in the app */
+static void app_what(Buf *b) {
+    H(b, "<ul class=\"people-app-what\"><li>%s</li><li>%s</li><li>%s</li><li>%s</li><li>%s</li></ul>",
+      T("Finds Hemma at home by itself - no address to type."), T("Keeps you signed in, and opens straight to Hemma."),
+      T("Plays audiobooks with the phone locked, with the book and the chapter on the lock screen."),
+      T("Saves videos and audiobooks for offline: on a trip, on the train, wherever there's no Hemma."),
+      T("Talks only to Hemma on your home network - nothing else, nowhere else."));
+}
+
 static void app_card(Ctx *c, Buf *b) {
     long long size = app_static_size("/hemma.apk");
-    if (size < 0 || c->me->role == ROLE_DISPLAY || session_in_app(c->sess)) return;
+    if (size < 0 || c->me->role == ROLE_DISPLAY) return;
+    if (session_in_app(c->sess)) { /* in the app: what it does, and where its saved videos are */
+        ui_card(b, T("The Hemma app"), NULL, NULL);
+        H(b, "<p>%s</p>", T("You're using Hemma's app for Android. Besides Hemma itself, it:"));
+        app_what(b);
+        H(b, "<div class=\"people-actions\"><a class=\"btn\" href=\"hemma-app:offline\">%s</a></div>", T("Saved for offline"));
+        H(b, "<p class=\"muted small\">%s</p>",
+          T("Save something with Save for offline on its page in Watch. A new Hemma brings a new app: Get the app for "
+            "Android in a phone's browser installs it over this one."));
+        ui_card_end(b);
+        return;
+    }
     char kb[24];
     snprintf(kb, sizeof kb, "%lld KB", (size + 1023) / 1024);
     ui_card(b, T("Hemma on your phone"), NULL, NULL);
-    H(b, "<p>%s</p>",
-      T("An app for Android phones: it finds Hemma at home by itself, keeps you signed in and plays audiobooks with the "
-        "phone locked."));
+    H(b, "<p>%s</p>", T("Hemma has an app for Android phones. Besides Hemma itself, it:"));
+    app_what(b);
     H(b,
       "<div class=\"people-actions\"><a class=\"btn primary\" id=\"people-app\" href=\"/static/hemma.apk?v=%s\" "
       "download=\"Hemma.apk\">%s</a><span class=\"muted small\">%s</span></div>",
