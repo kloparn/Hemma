@@ -4,7 +4,8 @@
  *   HEMMA_TEST_CLIPS=<folder> build/test av_test_clips
  *
  * writes a library under <folder>/library (a series of two 100-second episodes - long enough for the
- * "next episode" card, which wants three times its 30 seconds - and a 40-second film; 1.6: audiobooks - a
+ * "next episode" card, which wants three times its 30 seconds - and a 40-second film; 2.2: a 40-second film
+ * in two languages, "Two Voices (2024)", its sounds as a converted copy has them; 1.6: audiobooks - a
  * 40-second .m4b with three chapters, its index after its sound as some are, and a book in two .m4a parts),
  * one clip to upload under <folder>/upload, and picture subtitles (Blu-ray .sup files) in <folder>/sidecars
  * - outside the library: the test that wants them puts them beside the episodes. Without the variable
@@ -51,28 +52,60 @@ static bool sink_write_at(void *ctx, int64_t off, const void *p, size_t n) {
     return s->ok;
 }
 
+/* 2.2: a sound's AAC frames held and written 48 at a time - one chunk each, as the converter writes a file with
+   several sounds */
+#define RUN 48
+typedef struct {
+    Buf data;
+    uint32_t size[RUN];
+    int n;
+} Run;
+
+static bool run_out(Mp4 *m, int track, Run *r) {
+    bool ok = true;
+    size_t at = 0;
+    for (int i = 0; i < r->n && ok; at += r->size[i++]) ok = mp4_sample(m, track, r->data.p + at, r->size[i], AAC_FRAME, 0, true);
+    r->n = 0;
+    buf_reset(&r->data);
+    return ok;
+}
+
+static bool hold(Mp4 *m, int track, Run *r, const uint8_t *au, int n) {
+    buf_put(&r->data, au, (size_t)n);
+    r->size[r->n++] = (uint32_t)n;
+    return r->n < RUN || run_out(m, track, r);
+}
+
 /* `seconds` of a moving picture (its colours turn once a second) and a tone (its pitch says which
-   clip it is), as H.264 + AAC in a faststart MP4. */
-static bool clip(Sink *s, int seconds, int pitch) {
+   clip it is), as H.264 + AAC in a faststart MP4. pitch2 > 0 (2.2): a film in two languages as a converted
+   copy has them - a second sound at that pitch, "English" (eng, the default) then "Svenska" (swe, off), each
+   its own track, their frames in runs of 48. */
+static bool clip(Sink *s, int seconds, int pitch, int pitch2) {
     H264Params hp = {.width = W, .height = H, .fps_num = FPS, .fps_den = 1, .keyint = FPS, .annexb = false};
     H264Enc *e = h264enc_new(&hp);
     AacConfig ac = {48000, 2, 96000, 0, 0};
     char err[100];
-    AacEnc *a = aac_open(&ac, err, sizeof err);
-    if (!e || !a) return false;
+    AacEnc *a = aac_open(&ac, err, sizeof err), *a2 = pitch2 > 0 ? aac_open(&ac, err, sizeof err) : NULL;
+    if (!e || !a || (pitch2 > 0 && !a2)) return false;
     uint8_t avcc[256], asc[2];
     size_t avcc_len = h264enc_avcc(e, avcc, sizeof avcc);
     aac_specific_config(a, asc);
-    int frames = seconds * FPS, blocks = seconds * 48000 / AAC_FRAME + 2;
+    int frames = seconds * FPS, blocks = seconds * 48000 / AAC_FRAME + 2, sounds = a2 ? 2 : 1;
     Mp4Out out = {s, sink_write, sink_write_at};
-    Mp4 *m = mp4_new(&out, 0, mp4_moov_bound(frames + blocks + 8, frames + blocks + 8));
+    Mp4 *m = mp4_new(&out, 0, mp4_moov_bound(frames + sounds * blocks + 8, frames + sounds * blocks + 8));
     Mp4Track vt = {.codec = MP4_H264, .timescale = FPS, .config = avcc, .config_len = avcc_len, .width = W, .height = H};
     Mp4Track at = {.codec = MP4_AAC, .timescale = 48000, .config = asc, .config_len = 2, .channels = 2,
                    .sample_rate = 48000, .avg_bitrate = 96000, .max_bitrate = 96000, .start = AAC_PRIMING};
-    int vtrack = mp4_add_track(m, &vt), atrack = mp4_add_track(m, &at);
-    bool ok = vtrack >= 0 && atrack >= 0 && mp4_begin(m);
-    static uint8_t y[W * H], u[W / 2 * H / 2], v[W / 2 * H / 2], au[AAC_MAX_AU];
+    Mp4Track at2 = at;
+    if (a2) {
+        memcpy(at.lang, "eng", 4), at.name = "English";
+        memcpy(at2.lang, "swe", 4), at2.name = "Svenska", at2.off = true;
+    }
+    int vtrack = mp4_add_track(m, &vt), atrack = mp4_add_track(m, &at), atrack2 = a2 ? mp4_add_track(m, &at2) : -1;
+    bool ok = vtrack >= 0 && atrack >= 0 && (!a2 || atrack2 >= 0) && mp4_begin(m);
+    static uint8_t y[W * H], u[W / 2 * H / 2], v[W / 2 * H / 2], au[AAC_MAX_AU], au2[AAC_MAX_AU];
     static float pcm[AAC_FRAME * 2];
+    Run r1 = {{0}}, r2 = {{0}};
     int f = 0, b = 0;
     bool flushing = false;
     while (ok && (f < frames || !flushing)) {
@@ -87,24 +120,36 @@ static bool clip(Sink *s, int seconds, int pitch) {
             f++;
             continue;
         }
-        int got;
+        int got, got2 = 0;
         if (b < blocks) {
             for (int i = 0; i < AAC_FRAME; i++)
                 pcm[2 * i] = pcm[2 * i + 1] = 0.2f * (float)sin(2 * 3.14159265 * pitch * (b * AAC_FRAME + i) / 48000.0);
             got = aac_encode(a, pcm, au, AAC_MAX_AU);
+            for (int i = 0; a2 && i < AAC_FRAME; i++)
+                pcm[2 * i] = pcm[2 * i + 1] = 0.2f * (float)sin(2 * 3.14159265 * pitch2 * (b * AAC_FRAME + i) / 48000.0);
+            if (a2) got2 = aac_encode(a2, pcm, au2, AAC_MAX_AU);
             b++;
         } else {
             flushing = true;
             got = aac_flush(a, au, AAC_MAX_AU);
-            if (got <= 0) continue;
+            if (a2) got2 = aac_flush(a2, au2, AAC_MAX_AU);
+            if (got <= 0 && got2 <= 0) continue;
         }
-        if (got > 0) ok = mp4_sample(m, atrack, au, (size_t)got, AAC_FRAME, 0, true);
-        ok = ok && got >= 0;
+        if (!a2) {
+            if (got > 0) ok = mp4_sample(m, atrack, au, (size_t)got, AAC_FRAME, 0, true);
+        } else {
+            if (got > 0) ok = hold(m, atrack, &r1, au, got);
+            if (got2 > 0) ok = ok && hold(m, atrack2, &r2, au2, got2);
+        }
+        ok = ok && got >= 0 && got2 >= 0;
     }
+    if (a2) ok = ok && run_out(m, atrack, &r1) && run_out(m, atrack2, &r2);
     ok = ok && mp4_finish(m) && s->ok;
     mp4_free(m);
     h264enc_free(e);
     aac_close(a);
+    if (a2) aac_close(a2);
+    buf_free(&r1.data), buf_free(&r2.data);
     return ok;
 }
 
@@ -234,7 +279,7 @@ static bool book_file(const char *dir, const char *rel, int seconds, int pitch, 
     return ok;
 }
 
-static bool clip_file(const char *dir, const char *rel, int seconds, int pitch) {
+static bool clip_file(const char *dir, const char *rel, int seconds, int pitch, int pitch2) {
     char path[600], folder[600];
     snprintf(path, sizeof path, "%s/%s", dir, rel);
     snprintf(folder, sizeof folder, "%s", path);
@@ -243,15 +288,28 @@ static bool clip_file(const char *dir, const char *rel, int seconds, int pitch) 
     if (!dir_make(folder)) return false;
     Sink s = {.f = fopen(path, "wb"), .ok = true};
     if (!s.f) return false;
-    bool ok = clip(&s, seconds, pitch);
+    bool ok = clip(&s, seconds, pitch, pitch2);
     return fclose(s.f) == 0 && ok;
 }
 
 TEST(av_test_clips) {
     const char *dir = getenv("HEMMA_TEST_CLIPS");
     if (!dir || !*dir) { /* the suite: one clip in memory, a whole MP4 */
+        Sink two = {.ok = true}; /* 2.2: two sounds - three traks, the names in their hdlr boxes */
+        CHECK(clip(&two, 2, 495, 990));
+        int traks = 0;
+        bool eng = false, swe = false;
+        for (size_t at = 0; at + 8 <= two.mem.len; at++) {
+            traks += !memcmp(two.mem.p + at, "trak", 4);
+            eng |= !memcmp(two.mem.p + at, "English", 8);
+            swe |= !memcmp(two.mem.p + at, "Svenska", 8);
+        }
+        CHECK_INT(traks, 3);
+        CHECK(eng && swe);
+        buf_free(&two.mem);
+
         Sink s = {.ok = true};
-        CHECK(clip(&s, 2, 440));
+        CHECK(clip(&s, 2, 440, 0));
         CHECK(s.mem.len > 1000);
         /* top-level boxes back to back: ftyp, then the index (moov) before the media (mdat) */
         const uint8_t *p = (const uint8_t *)s.mem.p;
@@ -310,9 +368,10 @@ TEST(av_test_clips) {
     snprintf(lib, sizeof lib, "%s/library", dir);
     snprintf(up, sizeof up, "%s/upload", dir);
     snprintf(sides, sizeof sides, "%s/sidecars", dir);
-    CHECK(clip_file(lib, "Series/Testshow/Season 1/Testshow S01E01.mp4", 100, 440));
-    CHECK(clip_file(lib, "Series/Testshow/Season 1/Testshow S01E02.mp4", 100, 550));
-    CHECK(clip_file(lib, "Movies/Clip (2020)/Clip (2020).mp4", 40, 660));
+    CHECK(clip_file(lib, "Series/Testshow/Season 1/Testshow S01E01.mp4", 100, 440, 0));
+    CHECK(clip_file(lib, "Series/Testshow/Season 1/Testshow S01E02.mp4", 100, 550, 0));
+    CHECK(clip_file(lib, "Movies/Clip (2020)/Clip (2020).mp4", 40, 660, 0));
+    CHECK(clip_file(lib, "Movies/Two Voices (2024)/Two Voices (2024).mp4", 40, 495, 990)); /* 2.2: English, Svenska */
     static const AtTestChapter story[] = {{0, "Opening"}, {16000, "Chapter 1 - The Middle"}, {30000, "Chapter 2 - The End"}};
     CHECK(book_file(lib, "Audiobooks/Test Story.m4b", 40, 330,
                     (AtTestM4b){.title = "Test Story", .artist = "Ann Author", .narrator = "Nora Narrator", .year = 2026,
@@ -321,7 +380,7 @@ TEST(av_test_clips) {
                     (AtTestM4b){.title = "Part One", .album = "Parted Book", .artist = "Ann Author", .track = 1}));
     CHECK(book_file(lib, "Audiobooks/Parted Book/02 - Part Two.m4a", 6, 550,
                     (AtTestM4b){.title = "Part Two", .album = "Parted Book", .artist = "Ann Author", .track = 2}));
-    CHECK(clip_file(up, "Upload test (2021).mp4", 4, 330));
+    CHECK(clip_file(up, "Upload test (2021).mp4", 4, 330, 0));
     CHECK(dir_make(sides));
     for (int s = 0; s < (int)countof(SUPS); s++) {
         Buf sup = {0};

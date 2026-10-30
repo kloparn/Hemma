@@ -369,6 +369,19 @@ static const Tr TR[] = {
     {"Get the app for Android", "Hämta appen för Android", "Descargar la app para Android"},
     /* Home's card for a browser on Android (2.1) */
     {"Hemma has an app for your phone", "Hemma finns som app för din mobil", "Hemma tiene una app para tu móvil"},
+    {"Open the app instead!", "Öppna appen i stället!", "¡Abre la app en su lugar!"},
+    {"You're using Hemma in the browser, and you've signed in from the Hemma app before. The app keeps you signed in "
+     "and plays audiobooks with the phone locked.",
+     "Du använder Hemma i webbläsaren, och du har loggat in från Hemma-appen förut. Appen håller dig inloggad och "
+     "spelar ljudböcker med mobilen låst.",
+     "Estás usando Hemma en el navegador, y ya has iniciado sesión desde la app de Hemma. La app mantiene tu sesión "
+     "y reproduce audiolibros con el móvil bloqueado."},
+    {"Open the app", "Öppna appen", "Abrir la app"},
+    {"Not on this phone, or an app from before Hemma 2.2? The button gets the app instead: open the file to install it.",
+     "Inte på den här mobilen, eller en app från före Hemma 2.2? Knappen hämtar appen i stället: öppna filen för att "
+     "installera den.",
+     "¿No está en este móvil, o es una app anterior a Hemma 2.2? El botón descarga la app: abre el archivo para "
+     "instalarla."},
     {"You're using Hemma in the browser. The app finds Hemma at home by itself, keeps you signed in and plays "
      "audiobooks with the phone locked.",
      "Du använder Hemma i webbläsaren. Appen hittar Hemma hemma av sig själv, håller dig inloggad och spelar "

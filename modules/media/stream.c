@@ -1,7 +1,10 @@
 /* modules/media/stream.c — HTTP endpoints for the media module:
  *
  *   /media/file/<id>      the video itself, with Range support (seeking); ?download=1 = as a download - and an
- *                         audiobook's file (1.6) the same way
+ *                         audiobook's file (1.6) the same way. An MP4 with 2+ sound tracks (2.2) is sent as an MP4
+ *                         holding one of them (?a=<n>, else the file's default - mediainfo.h media_view), built
+ *                         on the stream's thread and kept for the next ranges (MEDIA_VIEW_CACHE); a download is
+ *                         the whole file, every sound in it
  *   /media/cover/<id>     the picture inside an audiobook's file (1.6)
  *   /media/zip/<series>   a season (?s=<season>) or the whole series as one .zip (download.h); an audiobook of
  *                         parts by its id the same way (1.6)
@@ -42,14 +45,18 @@ static atomic_int g_zips;      /* zips among them */
 static atomic_int g_fake_zips, g_fake_watching; /* tests */
 static atomic_int g_pace_cap; /* tests: bytes a second, 0 = MEDIA_DOWNLOAD_SLOW (an int: a Pi 1 has no 64-bit atomics) */
 
+static void views_drop(void);
+
 int media_streams_active(void) { return atomic_load(&g_active); }
 void media_stream_stop(void) {
     atomic_store(&g_stopping, true);
     media_subpic_drop();
+    views_drop();
 }
 void media_stream_resume(void) {
     atomic_store(&g_stopping, false);
     media_subpic_drop();
+    views_drop();
 }
 int media_downloads_active(void) { return atomic_load(&g_downloads); }
 int media_zips_active(void) { return atomic_load(&g_zips); }
@@ -157,9 +164,9 @@ static bool send_paced(sock_t s, const char *p, size_t n, int stall_ms, Pace *pc
     return true;
 }
 
-/* Read + send through one fixed buffer (Windows, or where sendfile can't). */
-static void send_by_copy(sock_t s, FILE *f, int64_t from, int64_t left, int stall_ms, Pace *pc) {
-    if (!file_seek(f, from)) return;
+/* Read + send through one fixed buffer (Windows, or where sendfile can't). true = all of it went. */
+static bool send_by_copy(sock_t s, FILE *f, int64_t from, int64_t left, int stall_ms, Pace *pc) {
+    if (!file_seek(f, from)) return false;
     char *buf = xmalloc(CHUNK);
     while (left > 0) {
         size_t want = left < CHUNK ? (size_t)left : CHUNK;
@@ -168,21 +175,19 @@ static void send_by_copy(sock_t s, FILE *f, int64_t from, int64_t left, int stal
         left -= (int64_t)got;
     }
     free(buf);
+    return left <= 0;
 }
 
 /* Zero-copy on Linux (the Pi): the kernel moves pages from the disk cache
-   straight to the socket - no copy through us, no buffer, almost no CPU. */
-static void send_range(sock_t s, FILE *f, int64_t from, int64_t left, int stall_ms, Pace *pc) {
+   straight to the socket - no copy through us, no buffer, almost no CPU. true = all of it went. */
+static bool send_range(sock_t s, FILE *f, int64_t from, int64_t left, int stall_ms, Pace *pc) {
     int waited = 0;
     while (left > 0) {
-        if (atomic_load(&g_stopping)) return;
+        if (atomic_load(&g_stopping)) return false;
         size_t want = (size_t)(left < (1 << 30) ? left : (1 << 30));
-        if (!pace(pc, &want)) return;
+        if (!pace(pc, &want)) return false;
         long k = file_sendfile(s, f, from, want);
-        if (k == -2) { /* not available here */
-            send_by_copy(s, f, from, left, stall_ms, pc);
-            return;
-        }
+        if (k == -2) return send_by_copy(s, f, from, left, stall_ms, pc); /* not available here */
         if (k > 0) {
             from += k;
             left -= k;
@@ -190,12 +195,13 @@ static void send_range(sock_t s, FILE *f, int64_t from, int64_t left, int stall_
             waited = 0;
             continue;
         }
-        if (k < 0) return; /* the browser moved on, or the file shrank */
+        if (k < 0) return false; /* the browser moved on, or the file shrank */
         pollfd_t pf = {.fd = s, .events = POLLOUT};
         int rc = plat_poll(&pf, 1, 1000);
-        if (rc < 0 || (rc > 0 && (pf.revents & (POLLERR | POLLHUP | POLLNVAL)))) return;
-        if (rc == 0 && (waited += 1000) >= stall_ms) return; /* paused player / vanished client */
+        if (rc < 0 || (rc > 0 && (pf.revents & (POLLERR | POLLHUP | POLLNVAL)))) return false;
+        if (rc == 0 && (waited += 1000) >= stall_ms) return false; /* paused player / vanished client */
     }
+    return true;
 }
 
 static void stream_run(sock_t s, const char *path, int64_t from, int64_t len, const char *head, size_t head_len,
@@ -240,6 +246,219 @@ static void stream_thread(void *arg) {
     free_on_loop(j);
 }
 
+/* ------------------------------------------------- one sound of many (2.2) */
+
+/* Views kept for the ranges that follow (a browser asks for many while it plays): by the file's id, size and mtime
+   and the sound asked for. Built and freed on stream threads only - never on the event loop - each by whoever
+   holds it last (users). A file that gets no view is remembered too (VIEW_BAD), so it's read and logged once. */
+#define MEDIA_VIEW_CACHE 4
+#define VIEW_BAD 16
+
+typedef struct {
+    uint64_t id;
+    int64_t size, mtime;
+    int sound;
+    MediaView *v;
+    int users;
+    bool dead; /* out of the cache: freed by its last user */
+    uint64_t used;
+} ViewEnt;
+
+static ViewEnt *g_views[MEDIA_VIEW_CACHE];
+static struct {
+    uint64_t id;
+    int64_t size, mtime;
+} g_view_bad[VIEW_BAD];
+static int g_view_nbad;
+static uint64_t g_view_seq;
+static Lock g_viewl = LOCK_INIT;
+static atomic_int g_view_builds;
+
+int media_view_test_builds(void) { return atomic_load(&g_view_builds); } /* tests: views made since the start */
+
+static void view_ent_free(ViewEnt *e) {
+    if (!e) return;
+    media_view_free(e->v);
+    free(e);
+}
+
+static void views_drop(void) {
+    lock_take(&g_viewl);
+    ViewEnt *gone[MEDIA_VIEW_CACHE] = {0};
+    for (int i = 0; i < MEDIA_VIEW_CACHE; i++) {
+        ViewEnt *e = g_views[i];
+        g_views[i] = NULL;
+        if (e && e->users) e->dead = true;
+        else gone[i] = e;
+    }
+    g_view_nbad = 0;
+    atomic_store(&g_view_builds, 0);
+    lock_give(&g_viewl);
+    for (int i = 0; i < MEDIA_VIEW_CACHE; i++) view_ent_free(gone[i]);
+}
+
+typedef struct {
+    sock_t s;
+    char path[1024];
+    uint64_t id;
+    int64_t size, mtime;
+    int sound;           /* asked for: 0, 1 ...; -1 = the file's default */
+    char range[128];     /* the Range header ("" = none) */
+    bool head_only;
+    const char *ctype, *cache; /* (static strings) */
+    Buf head;            /* answers to earlier pipelined requests (the event loop's), sent first */
+} ViewJob;
+
+static bool file_at(void *ctx, int64_t off, void *dst, size_t n) { return file_pread(ctx, off, dst, n); }
+
+static ViewEnt *view_find(const ViewJob *j) { /* (g_viewl held) */
+    for (int i = 0; i < MEDIA_VIEW_CACHE; i++) {
+        ViewEnt *e = g_views[i];
+        if (e && e->id == j->id && e->size == j->size && e->mtime == j->mtime && e->sound == j->sound) {
+            e->users++;
+            e->used = ++g_view_seq;
+            return e;
+        }
+    }
+    return NULL;
+}
+
+/* The view this job asks for: the cache's, else made now from f. NULL = none can be made (the whole file goes). */
+static ViewEnt *view_get(const ViewJob *j, FILE *f) {
+    lock_take(&g_viewl);
+    ViewEnt *e = view_find(j);
+    bool bad = false;
+    for (int i = 0; i < g_view_nbad && !e && !bad; i++)
+        bad = g_view_bad[i].id == j->id && g_view_bad[i].size == j->size && g_view_bad[i].mtime == j->mtime;
+    lock_give(&g_viewl);
+    if (e || bad) return e;
+
+    char err[120] = "";
+    MediaReader r = {f, j->size, file_at};
+    MediaView *v = media_view_new(&r, j->sound, err, sizeof err);
+    atomic_fetch_add(&g_view_builds, 1);
+    ViewEnt *mine = v ? xcalloc(1, sizeof *mine) : NULL, *evict = NULL;
+    lock_take(&g_viewl);
+    if (!v) {
+        if (g_view_nbad == VIEW_BAD) g_view_nbad = 0; /* (the oldest go: tried again, logged again) */
+        g_view_bad[g_view_nbad].id = j->id;
+        g_view_bad[g_view_nbad].size = j->size;
+        g_view_bad[g_view_nbad].mtime = j->mtime;
+        g_view_nbad++;
+        lock_give(&g_viewl);
+        log_warn("media: %s goes out with every sound track in it: no view of one (%s)", j->path, err);
+        return NULL;
+    }
+    if ((e = view_find(j))) { /* another stream made it meanwhile */
+        lock_give(&g_viewl);
+        media_view_free(v);
+        free(mine);
+        return e;
+    }
+    *mine = (ViewEnt){j->id, j->size, j->mtime, j->sound, v, 1, false, ++g_view_seq};
+    int slot = -1;
+    for (int i = 0; i < MEDIA_VIEW_CACHE && slot < 0; i++)
+        if (!g_views[i]) slot = i;
+    bool full = slot < 0;
+    for (int i = 0; full && i < MEDIA_VIEW_CACHE; i++) /* else the one used longest ago that nobody holds */
+        if (!g_views[i]->users && (slot < 0 || g_views[i]->used < g_views[slot]->used)) slot = i;
+    if (slot < 0) mine->dead = true; /* every one in use: this one isn't kept */
+    else evict = g_views[slot], g_views[slot] = mine;
+    lock_give(&g_viewl);
+    view_ent_free(evict);
+    return mine;
+}
+
+static void view_put(ViewEnt *e) {
+    if (!e) return;
+    lock_take(&g_viewl);
+    bool last = --e->users == 0 && e->dead;
+    lock_give(&g_viewl);
+    if (last) view_ent_free(e);
+}
+
+/* A view's bytes [from, from + left): its header from memory, the rest straight from the file */
+static bool send_view(sock_t s, FILE *f, const MediaView *v, int64_t from, int64_t left) {
+    MediaViewPart pt;
+    while (left > 0 && media_view_part(v, from, &pt)) {
+        int64_t k = pt.len < left ? pt.len : left;
+        if (pt.mem ? !send_all(s, (const char *)pt.mem, (size_t)k) : !send_range(s, f, pt.file_off, k, STALL_MS, NULL))
+            return false;
+        from += k;
+        left -= k;
+    }
+    return left <= 0;
+}
+
+static void view_thread(void *arg) {
+    ViewJob *j = arg;
+    FILE *f = file_open(j->path, "rb");
+    ViewEnt *e = f ? view_get(j, f) : NULL;
+    int64_t total = e ? media_view_size(e->v) : j->size;
+    MediaRange rg = media_range(j->range[0] ? j->range : NULL, total);
+    Buf head = {0};
+    media_range_head(&head, &rg, total, j->ctype, j->cache);
+    sock_nonblock(j->s, true);
+    bool ok = send_all(j->s, j->head.p, j->head.len) && send_all(j->s, head.p, head.len);
+    if (ok && f && !j->head_only && rg.status != 416 && rg.len > 0) {
+        if (e) send_view(j->s, f, e->v, rg.from, rg.len);
+        else send_range(j->s, f, rg.from, rg.len, STALL_MS, NULL);
+    }
+    view_put(e);
+    if (f) fclose(f);
+    buf_free(&head);
+    sock_shutdown_write(j->s);
+    sock_close(j->s);
+    count_job(JOB_WATCH, -1);
+    buf_free_on_loop(&j->head); /* (the event loop's: base.h free_on_loop) */
+    free_on_loop(j);
+}
+
+/* An MP4 with several sounds: everything - even the head of a HEAD request, whose length is the view's - is
+   worked out on a thread (the view may need its moov read: megabytes, from a USB disk). */
+static bool serve_view(Conn *conn, HttpReq *r, const char *path, uint64_t id, int64_t size, int64_t mtime, int sound,
+                       const char *ctype, const char *cache) {
+    if (atomic_load(&g_active) >= MAX_STREAMS) {
+        conn_reply(conn, 503, "text/plain; charset=utf-8", "busy, try again\n", 16, "Retry-After: 2\r\n");
+        return true;
+    }
+    ViewJob *j = xcalloc(1, sizeof *j);
+    str_copy(j->path, sizeof j->path, path);
+    j->id = id;
+    j->size = size;
+    j->mtime = mtime;
+    j->sound = sound;
+    const char *rh = http_header(r, "Range");
+    if (rh && strlen(rh) < sizeof j->range) str_copy(j->range, sizeof j->range, rh);
+    j->head_only = str_eq(r->method, "HEAD");
+    j->ctype = ctype;
+    j->cache = cache;
+    count_job(JOB_WATCH, +1);
+    Detached d;
+    conn_detach(conn, r, &d);
+    j->s = d.fd;
+    j->head = d.unsent;
+    buf_free(&d.body);
+    if (!thread_spawn(view_thread, j)) {
+        count_job(JOB_WATCH, -1);
+        sock_close(j->s);
+        buf_free(&j->head);
+        free(j);
+    }
+    return true;
+}
+
+/* ?a=<n>: the sound asked for (0 .. MEDIA_MAX_SOUNDS * 8); anything else -1 = the file's default */
+static int sound_asked(const char *a) {
+    if (!a || !*a || strlen(a) > 2) return -1;
+    int n = 0;
+    for (const char *p = a; *p; p++) {
+        if (*p < '0' || *p > '9') return -1;
+        n = n * 10 + (*p - '0');
+    }
+    return n;
+}
+
 /* ------------------------------------------------------------ endpoints */
 
 static void plain(Conn *conn, int status, const char *msg) {
@@ -266,21 +485,21 @@ static bool get_only(Conn *conn, HttpReq *r) {
     return false;
 }
 
-/* dl: the Content-Disposition line of a download (NULL = an ordinary request) */
-static bool serve_file(Conn *conn, HttpReq *r, const char *idhex, char want, const char *dl) {
+/* dl: the Content-Disposition line of a download (NULL = an ordinary request); sound: ?a= (sound_asked) */
+static bool serve_file(Conn *conn, HttpReq *r, const char *idhex, char want, const char *dl, int sound) {
     if (!get_only(conn, r)) return true;
     uint64_t id = 0;
     const MediaFile *f = media_parse_id(idhex, &id) ? media_file(id) : NULL;
     if (f && want == MF_VIDEO) f = media_playable(f); /* its play-everywhere copy, when converted */
     if (f && want == MF_VIDEO && f->type == MF_AUDIO) want = MF_AUDIO; /* (an audiobook's part: the same address) */
     char path[1024];
-    int64_t size = 0;
+    int64_t size = 0, mtime = 0;
     bool dir = false;
     if (!f || f->type != want) {
         plain(conn, 404, "not in the library\n");
         return true;
     }
-    if (!media_full_path(f, path, sizeof path) || !path_stat(path, &size, NULL, &dir) || dir) {
+    if (!media_full_path(f, path, sizeof path) || !path_stat(path, &size, &mtime, &dir) || dir) {
         plain(conn, 404, "the file has gone - rescan the library?\n");
         return true;
     }
@@ -293,6 +512,10 @@ static bool serve_file(Conn *conn, HttpReq *r, const char *idhex, char want, con
     const char *cache = want != MF_IMAGE                ? "no-cache"
                         : strstr(r->query, "v=") ? "private, max-age=31536000, immutable"
                                                   : "private, max-age=86400";
+    /* several sounds in an MP4 (2.2): one of them, unless it's a download (which takes them all) */
+    if (want == MF_VIDEO && !dl && f->probe.nsounds >= 2 &&
+        (str_eq(f->probe.container, "mp4") || str_eq(f->probe.container, "mov")))
+        return serve_view(conn, r, path, f->id, size, mtime, sound, ctype, cache);
     return serve_bytes(conn, r, path, 0, size, ctype, cache, dl,
                        dl ? JOB_DOWNLOAD : want == MF_VIDEO ? JOB_WATCH : JOB_OTHER);
 }
@@ -874,7 +1097,8 @@ bool media_http(Ctx *c, Conn *conn, HttpReq *r) {
             plain(conn, 404, "not in the library\n");
             return true;
         }
-        if (!str_eq(ctx_q(c, "download"), "1")) return serve_file(conn, r, r->path + 12, MF_VIDEO, NULL);
+        if (!str_eq(ctx_q(c, "download"), "1")) /* (?a=: which sound of an MP4 with several - 2.2) */
+            return serve_file(conn, r, r->path + 12, MF_VIDEO, NULL, sound_asked(ctx_q(c, "a")));
         if (!media_grown_up(c)) { /* (the owner: downloads are for grown-ups - not children, guests or a TV) */
             say(conn, 403, T("Only grown-ups can download videos."), NULL);
             return true;
@@ -888,10 +1112,10 @@ bool media_http(Ctx *c, Conn *conn, HttpReq *r) {
             if (!str_eq(r->method, "HEAD") && !http_header(r, "Range"))
                 log_info("media: %s downloads %s", c->me->username, name);
         }
-        bool taken = serve_file(conn, r, r->path + 12, MF_VIDEO, buf_cstr(&dl));
+        bool taken = serve_file(conn, r, r->path + 12, MF_VIDEO, buf_cstr(&dl), -1);
         buf_free(&dl);
         return taken;
     }
-    if (img) return serve_file(conn, r, r->path + 11, MF_IMAGE, NULL);
+    if (img) return serve_file(conn, r, r->path + 11, MF_IMAGE, NULL, -1);
     return serve_sub(conn, r->path + 11);
 }

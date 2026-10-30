@@ -71,6 +71,7 @@ public final class MainActivity extends Activity {
     private String base;     /* the Hemma in use: "http://192.168.1.50" */
     private String hemmaId;  /* its id (GET /hemma.json): found again at a new address */
     private String hemmaName;
+    private String wanted;   /* a page a hemma://open/<path> link asked for (2.2): opened once Hemma is */
     private int foundCount;
     private boolean looking; /* a Finder is asking around */
     private String onlyFound;
@@ -86,6 +87,7 @@ public final class MainActivity extends Activity {
         base = prefs.getString("base", null);
         hemmaId = prefs.getString("id", null);
         hemmaName = prefs.getString("name", null);
+        wanted = pageOf(getIntent());
         build();
         if (base != null) reconnect(null);
         else look(null); /* (asks for the home network first, where Android wants that: look()) */
@@ -312,8 +314,32 @@ public final class MainActivity extends Activity {
         prefs.edit().putString("base", at).putString("id", info.id).putString("name", info.name).apply();
         panel.setVisibility(View.GONE);
         web.setVisibility(View.VISIBLE);
-        if (same) web.reload();
+        String page = wanted;
+        wanted = null;
+        if (page != null) web.loadUrl(at + page);
+        else if (same) web.reload();
         else web.loadUrl(at + "/");
+    }
+
+    /* "Open the app instead!" (2.2): Home in the phone's browser links hemma://open/<path>. Only a path of Hemma's own
+       - "/", "/media/watch/..." - never an address: the app opens nothing but the Hemma it found. null = none. */
+    static String pageOf(Intent i) {
+        Uri u = i != null ? i.getData() : null;
+        if (u == null || !"hemma".equals(u.getScheme()) || !"open".equals(u.getHost())) return null;
+        String p = u.getEncodedPath();
+        if (p == null || p.isEmpty()) p = "/";
+        if (!p.startsWith("/") || p.startsWith("//") || p.contains("\\")) return null;
+        String q = u.getEncodedQuery();
+        return q != null ? p + "?" + q : p;
+    }
+
+    @Override protected void onNewIntent(Intent i) { /* (singleTask: the app was open already) */
+        super.onNewIntent(i);
+        setIntent(i);
+        String page = pageOf(i);
+        if (page == null) return;
+        if (base != null && web.getVisibility() == View.VISIBLE) web.loadUrl(base + page);
+        else wanted = page; /* (still looking: open() takes it) */
     }
 
     /* ------------------------------------------------------------------ the pages */

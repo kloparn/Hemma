@@ -122,6 +122,8 @@ typedef struct {
     uint64_t duration;      /* ticks: sum of sample durations */
     uint64_t frag_dts;      /* fragmented: decode time where the current fragment starts */
     bool any_cts, neg_cts, all_key;
+    bool dropped; /* mp4_drop_track: left out of the moov */
+    char name[68]; /* the hdlr's name ("" = the usual one) */
 } Trk;
 
 struct Mp4 {
@@ -236,6 +238,14 @@ int mp4_add_track(Mp4 *m, const Mp4Track *tr) {
     memset(t, 0, sizeof *t);
     t->t = *tr;
     t->t.config = NULL;
+    if (tr->name && tr->name[0]) { /* its own name, cut at 64 bytes - never inside a character */
+        size_t n = strlen(tr->name);
+        if (n > 64)
+            for (n = 64; n && ((unsigned char)tr->name[n] & 0xC0) == 0x80;) n--;
+        memcpy(t->name, tr->name, n);
+        t->name[n] = '\0';
+    }
+    t->t.name = NULL;
     t->id = (uint32_t)i + 1;
     t->all_key = true;
     m->ntrk++;
@@ -287,9 +297,27 @@ bool mp4_begin(Mp4 *m) {
     return ok && emit(m, mdat, sizeof mdat);
 }
 
+bool mp4_drop_track(Mp4 *m, int track) {
+    if (!m || track < 0 || track >= m->ntrk || m->finished || m->trk[track].dropped || (m->begun && (m->flags & MP4_FRAGMENTED)))
+        return false;
+    Trk *t = &m->trk[track];
+    t->dropped = true;
+    if (is_video(t->t.codec) || t->t.off) return true;
+    int first = -1; /* the default sound went: the first one left plays by default, unless one already does */
+    for (int i = 0; i < m->ntrk; i++) {
+        const Trk *o = &m->trk[i];
+        if (o->dropped || is_video(o->t.codec)) continue;
+        if (!o->t.off) return true;
+        if (first < 0) first = i;
+    }
+    if (first >= 0) m->trk[first].t.off = false;
+    return true;
+}
+
 bool mp4_sample(Mp4 *m, int track, const void *data, size_t n, uint32_t duration, int32_t cts, bool key) {
     if (!m->begun || m->finished || m->failed || track < 0 || track >= m->ntrk || n > 0xFFFFFFFFu) return false;
     Trk *t = &m->trk[track];
+    if (t->dropped) return false;
     if (m->flags & MP4_FRAGMENTED) {
         uint32_t flags = key ? 0x02000000 : 0x01010000; /* depends on nothing / depends on others, not sync */
         FragSample fs = {(uint32_t)n, duration, flags, cts};
@@ -514,7 +542,7 @@ static void trak(Mp4 *m, Bb *b, const Trk *t, bool co64) {
     uint64_t mdur = track_movie_duration(t);
     size_t k = box(b, "trak");
     bool v1 = mdur > 0xFFFFFFFFu;
-    size_t h = fullbox(b, "tkhd", v1, 3); /* enabled, in movie */
+    size_t h = fullbox(b, "tkhd", v1, t->t.off ? 2 : 3); /* (enabled,) in movie */
     if (v1) put64(b, 0), put64(b, 0), put32(b, t->id), put32(b, 0), put64(b, mdur);
     else put32(b, 0), put32(b, 0), put32(b, t->id), put32(b, 0), put32(b, (uint32_t)mdur);
     put_zero(b, 8);
@@ -557,7 +585,7 @@ static void trak(Mp4 *m, Bb *b, const Trk *t, bool co64) {
     put32(b, 0);
     put_bytes(b, video ? "vide" : "soun", 4);
     put_zero(b, 12);
-    const char *name = video ? "VideoHandler" : "SoundHandler";
+    const char *name = t->name[0] ? t->name : video ? "VideoHandler" : "SoundHandler";
     put_bytes(b, name, strlen(name) + 1);
     end(b, d);
     size_t mi = box(b, "minf");
@@ -586,7 +614,7 @@ static void moov(Mp4 *m, Bb *b, bool co64) {
     bool frag = m->flags & MP4_FRAGMENTED;
     uint64_t dur = 0;
     for (int i = 0; i < m->ntrk && !frag; i++) {
-        uint64_t d = track_movie_duration(&m->trk[i]);
+        uint64_t d = m->trk[i].dropped ? 0 : track_movie_duration(&m->trk[i]);
         if (d > dur) dur = d;
     }
     size_t mv = box(b, "moov");
@@ -601,10 +629,12 @@ static void moov(Mp4 *m, Bb *b, bool co64) {
     put_zero(b, 24);
     put32(b, (uint32_t)m->ntrk + 1);
     end(b, h);
-    for (int i = 0; i < m->ntrk; i++) trak(m, b, &m->trk[i], co64);
+    for (int i = 0; i < m->ntrk; i++)
+        if (!m->trk[i].dropped) trak(m, b, &m->trk[i], co64);
     if (frag) {
         size_t x = box(b, "mvex");
         for (int i = 0; i < m->ntrk; i++) {
+            if (m->trk[i].dropped) continue;
             size_t t = fullbox(b, "trex", 0, 0);
             put32(b, m->trk[i].id);
             put32(b, 1);
@@ -695,7 +725,7 @@ bool mp4_finish(Mp4 *m) {
             if (!PUSH(t, stsc, r)) return !(m->failed = true);
         }
         t->chunk_samples = 0;
-        for (uint32_t c = 0; c < t->n_chunks; c++)
+        for (uint32_t c = 0; c < t->n_chunks && !t->dropped; c++)
             if ((uint64_t)t->chunks[c] > m->co64_above) co64 = true;
     }
     uint8_t size[8];

@@ -74,6 +74,16 @@ void media_tracks(const Ctx *c, Buf *b, const MediaFile *f); /* <track>s of its 
 /* A video's / a subtitle's address with its key (ctx_url_key), for src="...": a TV's video player
    fetches without the page's cookies. "/media/file/<id>?k=..." and "/media/sub/<id>.vtt?k=..." */
 void media_file_src(const Ctx *c, uint64_t id, char *out, size_t cap);
+/* SOUND LANGUAGES (2.2): a video whose playable file has 2+ sound tracks (library.h media_sounds) is addressed with the
+   one the viewer hears - "/media/file/<id>?a=<n>&k=..." (media_file_src does it; stream.c serves that sound alone):
+   their pick in that series or film (the player's Language menu: media.sound), else their sound language (pref
+   media.soundlang, "-" = each video's own; asked the first time - media_sound_question), else the file's default.
+   media_video_key = the player's data-static: "<id>" or "<id>-a<n>", so a new pick morphs the player into it. */
+void media_video_key(const Ctx *c, const MediaFile *f, char *out, size_t cap);
+/* The question "Which language do you want to watch in?" over the page (ui_modal), when f has sound in 2+ languages
+   and the viewer hasn't picked theirs; true = asked (a TV page then doesn't start the video by itself). close = the
+   address the dialog's close goes to (the page, saying asked=1). */
+bool media_sound_question(const Ctx *c, Buf *b, const MediaFile *f, const char *close);
 /* ... plus "#t=<seconds>" when at > 0: the browser starts it there by itself (a media fragment), so a resume
    point and a live channel's "now" hold without wire.js too (issue #49) */
 void media_file_src_at(const Ctx *c, uint64_t id, int64_t at, char *out, size_t cap);

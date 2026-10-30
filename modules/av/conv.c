@@ -25,6 +25,9 @@
 #define MAX_SAMPLES 2000000
 #define VIDEO_PER_S 300 /* frames: real ones top out at 240 fps (60i bobbed: 60) */
 #define AUDIO_PER_S 120 /* AAC blocks: 47 a second at 48 kHz, 100 at 96 kHz */
+/* With 2+ sound tracks each one's AAC frames go out in runs of this many (~1 s at 48 kHz), one chunk each: one
+   sample a chunk, six sounds interleaved, made ~20 MB of chunk tables in a film's moov (2.2). One sound: as ever. */
+#define AUDIO_RUN 48
 #define CMIN(a, b) ((a) < (b) ? (a) : (b))
 #define CMAX(a, b) ((a) > (b) ? (a) : (b))
 
@@ -45,17 +48,46 @@ static void sar_of(int w, int h, int dar_n, int dar_d, int *sw, int *sh) {
     if (n != d && n < 65536 && d < 65536) *sw = (int)n, *sh = (int)d;
 }
 
+/* One sound track kept (2.2: every one the converter takes, AV_CONV_MAX_AUDIO). */
+struct ConvAudio {
+    const MkvTrack *t;
+    bool code;     /* Dolby or DTS decoded and made AAC (false: AAC copied) */
+    bool dead;     /* dropped part-way (lose): fed no more, left out of the moov */
+    int track;     /* its MP4 track */
+    int rate;      /* coded: the track's rate - 48000, 44100 or 32000 - and so the AAC's */
+    int64_t a0, n; /* its first pts (ns); samples written (against amax) */
+    /* coded: Dolby (ac3) or DTS (dtsd) decoded, made AAC */
+    Ac3Dec *ac3;
+    DtsDec *dtsd;
+    AacEnc *aac;
+    float *fifo;
+    int nfifo;
+    int good, bad;        /* frames decoded / not */
+    int frame;            /* samples in the last frame (Dolby 1536 - E-AC-3 may send 256, 512 or 768 -; DTS 512 mostly) */
+    int64_t next, skip;   /* expected pts of the next frame (ns); samples to drop at the start */
+    /* 2+ sounds: frames held until AUDIO_RUN of them go out as one chunk */
+    uint8_t *run;
+    size_t nrun, crun;
+    uint32_t rsize[AUDIO_RUN];
+    int nrunf;
+};
+
 typedef struct {
     AvConvJob *j;
     Mkv *mkv;
-    const MkvTrack *vt, *at;
-    bool vcode, acode; /* re-encode (true) or copy (false) */
+    const MkvTrack *vt;
+    bool vcode;        /* re-encode (true) or copy (false) */
     int vcopy;         /* a copied picture's MP4 codec: MP4_H264, MP4_HEVC or MP4_AV1 */
-    int64_t v0, a0;    /* first video / audio pts (ns) */
+    int64_t v0;        /* first video pts (ns) */
     int64_t duration;  /* ns, 0 = unknown */
     Mp4 *mp4;
-    int vtrack, atrack;
-    int64_t nv, na, vmax, amax; /* samples written per track, and the most allowed (cap_for) */
+    int vtrack;
+    int64_t nv, vmax, amax; /* pictures written, the most allowed - and the most for each sound track (cap_for) */
+    /* sound: every track we can convert, in the file's order */
+    struct ConvAudio aud[AV_CONV_MAX_AUDIO];
+    int naud, alive, def; /* kept, still fed, the default one (aud[def]: tkhd-enabled) */
+    float *pcm;           /* a decoded frame, every channel (one for all: off the stack) */
+    uint8_t au[AAC_MAX_AU];
     /* video re-encode */
     Mpeg2 *dec;
     Deint *di;
@@ -70,17 +102,6 @@ typedef struct {
     int64_t *vpts; /* every video pts in file order (decode order) */
     int nvpts, vi;
     int64_t *dts, vshift; /* sorted pts = decode times; shift keeps composition offsets >= 0 */
-    /* audio: Dolby (ac3) or DTS (dtsd) decoded and made AAC */
-    Ac3Dec *ac3;
-    DtsDec *dtsd;
-    AacEnc *aac;
-    float *fifo, *pcm;
-    int nfifo;
-    int a_good, a_bad; /* frames decoded / not */
-    int a_frame;       /* samples in the last frame (Dolby 1536 - E-AC-3 may send 256, 512 or 768 -; DTS 512 mostly) */
-    int arate;         /* the track's rate - 48000, 44100 or 32000 - and so the AAC's */
-    int64_t a_next, skip; /* expected pts of the next frame (ns); samples to drop at the start */
-    uint8_t au[AAC_MAX_AU];
     /* subtitles (j->want_subs, av_subtitles): text gathered as SRT, pictures as the files players read */
     struct ConvSub {
         const MkvTrack *t;
@@ -211,12 +232,56 @@ static bool too_many(Conv *c, bool video) {
     return unsupported(c, "The file has far too many %s for its length (damaged?)", video ? "pictures" : "sound blocks");
 }
 
-/* Every sample goes out through here, counted against its track's bound. */
+/* Every picture goes out through here, counted against the bound. */
 static bool put_sample(Conv *c, int track, const void *p, size_t n, uint32_t dur, int32_t cts, bool key) {
-    bool video = track == c->vtrack;
-    int64_t *count = video ? &c->nv : &c->na;
-    if (++*count > (video ? c->vmax : c->amax)) return too_many(c, video);
+    if (++c->nv > c->vmax) return too_many(c, true);
     if (!mp4_sample(c->mp4, track, p, n, dur, cts, key)) return fail(c, "Couldn't write the new file (disk full?)", NULL);
+    return true;
+}
+
+/* A sound's held frames, written one after another: one chunk */
+static bool write_run(Conv *c, struct ConvAudio *a) {
+    size_t at = 0;
+    for (int i = 0; i < a->nrunf && !c->failed; i++) {
+        if (!mp4_sample(c->mp4, a->track, a->run + at, a->rsize[i], AAC_FRAME, 0, true))
+            fail(c, "Couldn't write the new file (disk full?)", NULL);
+        at += a->rsize[i];
+    }
+    a->nrunf = 0, a->nrun = 0;
+    return !c->failed;
+}
+
+/* Every AAC frame of a sound goes out through here, counted against its bound: at once with one sound, else
+   held for a run (AUDIO_RUN). */
+static bool put_audio(Conv *c, struct ConvAudio *a, const void *p, size_t n) {
+    if (a->dead) return true;
+    if (++a->n > c->amax) return too_many(c, false);
+    if (c->naud < 2) {
+        if (!mp4_sample(c->mp4, a->track, p, n, AAC_FRAME, 0, true)) return fail(c, "Couldn't write the new file (disk full?)", NULL);
+        return true;
+    }
+    if (n > 0xFFFFFFFFu) return fail(c, "Couldn't write the new file (disk full?)", NULL);
+    if (a->nrun + n > a->crun) {
+        size_t cap = CMAX(a->crun * 2, CMAX(a->nrun + n, (size_t)65536));
+        uint8_t *q = realloc(a->run, cap);
+        if (!q) return fail(c, "Out of memory", NULL);
+        a->run = q, a->crun = cap;
+    }
+    memcpy(a->run + a->nrun, p, n);
+    a->nrun += n;
+    a->rsize[a->nrunf++] = (uint32_t)n;
+    return a->nrunf < AUDIO_RUN || write_run(c, a);
+}
+
+/* A sound that can't go on (coded in a way the decoder can't follow, at another rate than the file says, mostly
+   undecodable): dropped while another lives - left out of the moov, its frames so far left in the mdat - else the
+   whole file is refused in these words, as with one sound. True = the conversion goes on. */
+static bool lose(Conv *c, struct ConvAudio *a, const char *fmt, const char *arg) {
+    if (c->alive <= 1) return unsupported(c, fmt, arg);
+    a->dead = true;
+    a->nrunf = 0, a->nrun = 0;
+    c->alive--;
+    if (!mp4_drop_track(c->mp4, a->track)) return fail(c, "The MP4 writer refused a track", NULL);
     return true;
 }
 
@@ -295,78 +360,79 @@ static bool copy_video(Conv *c, const MkvFrame *fr) {
 
 /* ---- audio ---- */
 
-static bool push_pcm(Conv *c, const float *pcm, int frames) {
-    while (frames > 0 && c->skip > 0) { /* audio that starts before the picture */
-        pcm += 2, frames--, c->skip--;
+static bool push_pcm(Conv *c, struct ConvAudio *a, const float *pcm, int frames) {
+    while (frames > 0 && a->skip > 0) { /* audio that starts before the picture */
+        pcm += 2, frames--, a->skip--;
     }
     if (frames <= 0) return true;
-    memcpy(c->fifo + c->nfifo * 2, pcm, (size_t)frames * 2 * sizeof *pcm);
-    c->nfifo += frames;
-    while (c->nfifo >= AAC_FRAME) {
-        int n = aac_encode(c->aac, c->fifo, c->au, (int)sizeof c->au);
+    memcpy(a->fifo + a->nfifo * 2, pcm, (size_t)frames * 2 * sizeof *pcm);
+    a->nfifo += frames;
+    while (a->nfifo >= AAC_FRAME) {
+        int n = aac_encode(a->aac, a->fifo, c->au, (int)sizeof c->au);
         if (n < 0) return fail(c, "The AAC encoder stopped", NULL);
-        if (n > 0 && !put_sample(c, c->atrack, c->au, (size_t)n, AAC_FRAME, 0, true)) return false;
-        c->nfifo -= AAC_FRAME;
-        memmove(c->fifo, c->fifo + AAC_FRAME * 2, (size_t)c->nfifo * 2 * sizeof *c->fifo);
+        if (n > 0 && !put_audio(c, a, c->au, (size_t)n)) return false;
+        a->nfifo -= AAC_FRAME;
+        memmove(a->fifo, a->fifo + AAC_FRAME * 2, (size_t)a->nfifo * 2 * sizeof *a->fifo);
     }
     return true;
 }
 
 /* One DTS core frame of a block (a DTS-HD stream's extension substream follows it: left alone). The
-   frame's samples, 0 = no frame here (the rest of the block isn't one), -1 = refused (c->failed). */
-static int code_dts(Conv *c, const uint8_t *p, size_t left, int *size) {
+   frame's samples, 0 = no frame here (the rest of the block isn't one), -1 = refused (the track lost, or
+   c->failed). */
+static int code_dts(Conv *c, struct ConvAudio *a, const uint8_t *p, size_t left, int *size) {
     static const float silence[MAX_AFRAME * 2];
     *size = left >= DTS_HEADER_BYTES ? dts_frame_size(p, left) : 0;
     if (*size <= 0 || (size_t)*size > left) return 0;
     int ch = 0;
-    DtsInfo in = {.samples = c->a_frame};
-    int rc = dts_decode(c->dtsd, p, (size_t)*size, c->pcm, &ch, &in);
-    if (rc == DTS_ERR_UNSUPPORTED) return unsupported(c, "Its sound is %s coded in a way the converter can't decode yet", "DTS"), -1;
-    if (rc == DTS_OK && in.sample_rate != c->arate) return unsupported(c, "Its %s sound isn't at the rate the file says", "DTS"), -1;
-    int n = in.samples > 0 && in.samples <= MAX_AFRAME ? in.samples : c->a_frame;
-    c->a_frame = n;
-    if (rc == DTS_OK && ch == 2) push_pcm(c, c->pcm, n), c->a_good++;
-    else push_pcm(c, silence, n), c->a_bad++; /* damaged: silence keeps the timing */
+    DtsInfo in = {.samples = a->frame};
+    int rc = dts_decode(a->dtsd, p, (size_t)*size, c->pcm, &ch, &in);
+    if (rc == DTS_ERR_UNSUPPORTED) return lose(c, a, "Its sound is %s coded in a way the converter can't decode yet", "DTS"), -1;
+    if (rc == DTS_OK && in.sample_rate != a->rate) return lose(c, a, "Its %s sound isn't at the rate the file says", "DTS"), -1;
+    int n = in.samples > 0 && in.samples <= MAX_AFRAME ? in.samples : a->frame;
+    a->frame = n;
+    if (rc == DTS_OK && ch == 2) push_pcm(c, a, c->pcm, n), a->good++;
+    else push_pcm(c, a, silence, n), a->bad++; /* damaged: silence keeps the timing */
     return n;
 }
 
-static bool code_audio(Conv *c, const MkvFrame *fr) {
+static bool code_audio(Conv *c, struct ConvAudio *a, const MkvFrame *fr) {
     static const float silence[MAX_AFRAME * 2];
-    const int64_t frame_ns = (int64_t)c->a_frame * NS / c->arate;
-    if (fr->pts != MKV_NOPTS && c->a_next != MKV_NOPTS && fr->pts > c->a_next + frame_ns / 2) {
+    const int64_t frame_ns = (int64_t)a->frame * NS / a->rate;
+    if (fr->pts != MKV_NOPTS && a->next != MKV_NOPTS && fr->pts > a->next + frame_ns / 2) {
         /* a hole in the sound (damaged disc): fill it with silence so the picture stays in sync */
-        int64_t gap = CMIN((fr->pts - c->a_next + frame_ns / 2) / frame_ns, 10 * NS / frame_ns); /* <= ~10 s: a bigger jump is a broken timestamp, not a hole */
-        for (int64_t g = 0; g < gap && !c->failed; g++) push_pcm(c, silence, c->a_frame);
+        int64_t gap = CMIN((fr->pts - a->next + frame_ns / 2) / frame_ns, 10 * NS / frame_ns); /* <= ~10 s: a bigger jump is a broken timestamp, not a hole */
+        for (int64_t g = 0; g < gap && !c->failed; g++) push_pcm(c, a, silence, a->frame);
     }
     const uint8_t *p = fr->data;
     size_t left = fr->size;
     int64_t samples = 0; /* the sound this block held (an E-AC-3 block may hold extra-channel frames: no time) */
-    while (c->dtsd && !c->failed) {
-        int size = 0, n = code_dts(c, p, left, &size);
+    while (a->dtsd && !c->failed && !a->dead) {
+        int size = 0, n = code_dts(c, a, p, left, &size);
         if (n <= 0) break;
         p += size, left -= (size_t)size, samples += n;
     }
-    while (c->ac3 && left >= AC3_HEADER_BYTES && !c->failed) {
+    while (a->ac3 && left >= AC3_HEADER_BYTES && !c->failed && !a->dead) {
         int size = ac3_frame_size(p, left);
         if (size <= 0 || (size_t)size > left) break;
         int ch = 0;
-        Ac3Info in = {.samples = c->a_frame};
-        int rc = ac3_decode(c->ac3, p, (size_t)size, c->pcm, &ch, &in);
+        Ac3Info in = {.samples = a->frame};
+        int rc = ac3_decode(a->ac3, p, (size_t)size, c->pcm, &ch, &in);
         p += size, left -= (size_t)size;
         if (rc == AC3_SKIP) continue;
         if (rc == AC3_ERR_UNSUPPORTED)
-            return unsupported(c, "Its sound is %s coded in a way the converter can't decode yet", in.eac3 ? "Dolby Digital Plus" : "Dolby");
-        if (rc == AC3_OK && in.sample_rate != c->arate) /* the file said another rate: the copy would play too fast or slow */
-            return unsupported(c, "Its %s sound isn't at the rate the file says", in.eac3 ? "Dolby Digital Plus" : "Dolby");
+            return lose(c, a, "Its sound is %s coded in a way the converter can't decode yet", in.eac3 ? "Dolby Digital Plus" : "Dolby");
+        if (rc == AC3_OK && in.sample_rate != a->rate) /* the file said another rate: the copy would play too fast or slow */
+            return lose(c, a, "Its %s sound isn't at the rate the file says", in.eac3 ? "Dolby Digital Plus" : "Dolby");
         int n = in.samples > 0 && in.samples <= AC3_SAMPLES ? in.samples : AC3_SAMPLES;
-        c->a_frame = n;
-        if (rc == AC3_OK && ch == 2) push_pcm(c, c->pcm, n), c->a_good++;
-        else push_pcm(c, silence, n), c->a_bad++; /* damaged: silence keeps the timing */
+        a->frame = n;
+        if (rc == AC3_OK && ch == 2) push_pcm(c, a, c->pcm, n), a->good++;
+        else push_pcm(c, a, silence, n), a->bad++; /* damaged: silence keeps the timing */
         samples += n;
     }
-    int64_t took = samples * NS / c->arate;
-    if (fr->pts != MKV_NOPTS) c->a_next = fr->pts + took;
-    else if (c->a_next != MKV_NOPTS) c->a_next += took;
+    int64_t took = samples * NS / a->rate;
+    if (fr->pts != MKV_NOPTS) a->next = fr->pts + took;
+    else if (a->next != MKV_NOPTS) a->next += took;
     return !c->failed;
 }
 
@@ -718,6 +784,25 @@ static void lang2(const char *lang, char out[3]) {
         if (!strcmp(l, LANG3[i][0])) memcpy(out, LANG3[i][1], 3);
 }
 
+/* A sound's language as an MP4's mdhd names it (ISO 639-2, three lower-case letters): a 3-letter Language as it is
+   ("eng", "rus"), a LanguageIETF's first part in three ("sv-SE" -> "swe", "en" -> "eng"); else "und". */
+static void lang3(const char *lang, char out[4]) {
+    char l[4] = "";
+    size_t n = strcspn(lang, "-_");
+    bool letters = n == 2 || n == 3;
+    for (size_t i = 0; i < n && letters; i++) {
+        char ch = (char)(lang[i] >= 'A' && lang[i] <= 'Z' ? lang[i] + 32 : lang[i]);
+        letters = ch >= 'a' && ch <= 'z';
+        l[i] = ch;
+    }
+    memcpy(out, letters && n == 3 ? l : "und", 4);
+    for (size_t i = 0; letters && n == 2 && i < sizeof LANG3 / sizeof LANG3[0]; i++)
+        if (!strcmp(l, LANG3[i][1])) {
+            memcpy(out, LANG3[i][0], 4);
+            break;
+        }
+}
+
 /* The .idx: the track's CodecPrivate (VobSub's own header: size, palette ...; the "# VobSub index file, v7"
    line put in front when it lacks it - players look for it), then "id: xx, index: 0" and the timestamp lines. */
 static char *vobsub_idx(const struct ConvSub *s, size_t *len) {
@@ -844,6 +929,23 @@ static bool restart_decoder(Conv *c) {
     return true;
 }
 
+/* A block of a kept sound with a time: its first one is where that sound starts */
+static void note_a0(Conv *c, const MkvFrame *fr) {
+    for (int k = 0; k < c->naud && fr->pts != MKV_NOPTS; k++)
+        if (fr->track == c->aud[k].t->number && c->aud[k].a0 == MKV_NOPTS) c->aud[k].a0 = fr->pts;
+}
+
+/* The opening window read on for a sound's start: the default's, however far (as ever), the others' within a
+   minute of the first picture (none by then: it starts with the picture). */
+static bool sound_unseen(const Conv *c, const MkvFrame *fr) {
+    if (!c->naud) return false;
+    if (c->aud[c->def].a0 == MKV_NOPTS) return true;
+    bool soon = fr->pts != MKV_NOPTS && c->v0 != MKV_NOPTS && fr->pts - c->v0 < 60 * NS;
+    for (int k = 0; k < c->naud && soon; k++)
+        if (c->aud[k].a0 == MKV_NOPTS) return true;
+    return false;
+}
+
 static int analyze_window(Conv *c, DeintStats *ds, Mpeg2Frame *first, bool *have_first, bool opening) {
     MkvFrame fr;
     int got = 0;
@@ -852,11 +954,11 @@ static int analyze_window(Conv *c, DeintStats *ds, Mpeg2Frame *first, bool *have
     ds->have_thumb = false;
     for (int r; (r = next_frame(c, &fr)) > 0;) {
         if (stopped(c)) return -1;
-        if (opening && c->at && fr.track == c->at->number && c->a0 == MKV_NOPTS && fr.pts != MKV_NOPTS) c->a0 = fr.pts;
+        if (opening) note_a0(c, &fr);
         if (fr.track != c->vt->number) continue;
         if (opening && c->v0 == MKV_NOPTS && fr.pts != MKV_NOPTS) c->v0 = fr.pts;
         if (got >= ANALYZE_FRAMES) {
-            if (opening && c->at && c->a0 == MKV_NOPTS) continue; /* still looking for the first sound */
+            if (opening && sound_unseen(c, &fr)) continue; /* still looking for the first sound */
             break;
         }
         mpeg2_decode(c->dec, fr.data, fr.size, fr.pts);
@@ -881,7 +983,7 @@ static bool survey(Conv *c, Mpeg2Frame *first, DeintStats *ds) {
         int cap = 0;
         for (int r; (r = next_frame(c, &fr)) > 0;) {
             if (stopped(c)) return fail(c, "Stopped", NULL);
-            if (c->at && fr.track == c->at->number && c->a0 == MKV_NOPTS && fr.pts != MKV_NOPTS) c->a0 = fr.pts;
+            note_a0(c, &fr);
             if (fr.track != c->vt->number) continue;
             if (c->v0 == MKV_NOPTS && fr.pts != MKV_NOPTS) c->v0 = fr.pts;
             if (fr.pts != MKV_NOPTS && c->duration > 0) /* a big film takes minutes to read on a Pi: show it */
@@ -909,8 +1011,62 @@ static bool survey(Conv *c, Mpeg2Frame *first, DeintStats *ds) {
     return true;
 }
 
+/* One kept sound's MP4 track: AAC copied, or a Dolby/DTS decoder + AAC encoder at its own rate. Its words go to
+   j->what when it's the default. */
+static bool setup_audio(Conv *c, struct ConvAudio *a, bool is_def) {
+    Mp4Track at = {0};
+    int64_t lead = a->a0 != MKV_NOPTS && c->v0 != MKV_NOPTS ? a->a0 - c->v0 : 0; /* > 0: sound starts later */
+    at.codec = MP4_AAC;
+    at.timescale = (uint32_t)a->rate;
+    at.channels = 2;
+    at.sample_rate = a->rate;
+    lang3(a->t->lang, at.lang);
+    at.name = a->t->name;
+    at.off = !is_def;
+    uint8_t asc[2];
+    const char *words;
+    if (a->code) {
+        AacConfig ac = {a->rate, 2, (c->j->audio_kbps ? c->j->audio_kbps : 160) * 1000, 0, 0};
+        char err[120] = "";
+        bool dts = is_dts(a->t->codec);
+        if (dts) a->dtsd = dts_open();
+        else a->ac3 = ac3_open();
+        a->aac = aac_open(&ac, err, sizeof err);
+        if ((!a->ac3 && !a->dtsd) || !a->aac) return fail(c, "Can't set up the sound encoder: %s", err);
+        if (a->ac3) ac3_set_layout(a->ac3, AC3_LAYOUT_STEREO);
+        if (a->dtsd) dts_set_layout(a->dtsd, DTS_LAYOUT_STEREO);
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+        if (a->ac3) ac3_set_crc_check(a->ac3, false); /* fuzzers: mutated frames reach the decoder (crafted files can carry good CRCs anyway) */
+#endif
+        aac_specific_config(a->aac, asc);
+        at.config = asc;
+        at.config_len = 2;
+        at.avg_bitrate = at.max_bitrate = (uint32_t)ac.bitrate;
+        at.start = AAC_PRIMING; /* the encoder's first 1024 samples are priming */
+        a->fifo = malloc((AAC_FRAME + MAX_AFRAME) * 2 * sizeof *a->fifo);
+        if (!c->pcm) c->pcm = malloc((size_t)MAX_AFRAME * DTS_MAX_CHANNELS * sizeof *c->pcm); /* (a frame, every channel: off the stack) */
+        if (!a->fifo || !c->pcm) return fail(c, "Out of memory", NULL);
+        a->next = MKV_NOPTS;
+        a->frame = dts ? 512 : AC3_SAMPLES;
+        if (lead < 0) a->skip = ticks(-lead, a->rate);
+        words = dts ? " · DTS → AAC" : strcmp(a->t->codec, "A_EAC3") ? " · Dolby Digital → AAC" : " · Dolby Digital Plus → AAC";
+    } else {
+        at.config = a->t->priv;
+        at.config_len = a->t->priv_len;
+        at.channels = a->t->channels ? a->t->channels : 2;
+        at.sample_rate = a->t->rate > 0 ? (int)a->t->rate : 48000;
+        at.timescale = (uint32_t)at.sample_rate;
+        if (lead < 0) at.start = ticks(-lead, at.timescale);
+        words = " · AAC copied";
+    }
+    if (lead > 0) at.delay = ticks(lead, at.timescale);
+    if (is_def) append(c->j->what, sizeof c->j->what, words);
+    a->track = mp4_add_track(c->mp4, &at);
+    return a->track >= 0 || fail(c, "The MP4 writer refused a track", NULL);
+}
+
 static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds) {
-    Mp4Track vt = {0}, at = {0};
+    Mp4Track vt = {0};
     uint8_t avcc[512];
     if (c->vcode) {
         int k = deint_kind(ds);
@@ -967,54 +1123,14 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
     }
     snprintf(vt.lang, sizeof vt.lang, "und");
     c->vtrack = mp4_add_track(c->mp4, &vt);
-
-    if (c->at) {
-        int64_t lead = c->a0 != MKV_NOPTS && c->v0 != MKV_NOPTS ? c->a0 - c->v0 : 0; /* > 0: sound starts later */
-        at.codec = MP4_AAC;
-        at.timescale = (uint32_t)c->arate;
-        at.channels = 2;
-        at.sample_rate = c->arate;
-        snprintf(at.lang, sizeof at.lang, "%s", strlen(c->at->lang) == 3 ? c->at->lang : "und");
-        uint8_t asc[2];
-        if (c->acode) {
-            AacConfig ac = {c->arate, 2, (c->j->audio_kbps ? c->j->audio_kbps : 160) * 1000, 0, 0};
-            char err[120] = "";
-            bool dts = is_dts(c->at->codec);
-            if (dts) c->dtsd = dts_open();
-            else c->ac3 = ac3_open();
-            c->aac = aac_open(&ac, err, sizeof err);
-            if ((!c->ac3 && !c->dtsd) || !c->aac) return fail(c, "Can't set up the sound encoder: %s", err);
-            if (c->ac3) ac3_set_layout(c->ac3, AC3_LAYOUT_STEREO);
-            if (c->dtsd) dts_set_layout(c->dtsd, DTS_LAYOUT_STEREO);
-#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
-            if (c->ac3) ac3_set_crc_check(c->ac3, false); /* fuzzers: mutated frames reach the decoder (crafted files can carry good CRCs anyway) */
-#endif
-            aac_specific_config(c->aac, asc);
-            at.config = asc;
-            at.config_len = 2;
-            at.avg_bitrate = at.max_bitrate = (uint32_t)ac.bitrate;
-            at.start = AAC_PRIMING; /* the encoder's first 1024 samples are priming */
-            c->fifo = malloc((AAC_FRAME + MAX_AFRAME) * 2 * sizeof *c->fifo);
-            c->pcm = malloc((size_t)MAX_AFRAME * DTS_MAX_CHANNELS * sizeof *c->pcm); /* (a frame, every channel: off the stack) */
-            if (!c->fifo || !c->pcm) return fail(c, "Out of memory", NULL);
-            c->a_next = MKV_NOPTS;
-            c->a_frame = dts ? 512 : AC3_SAMPLES;
-            if (lead < 0) c->skip = ticks(-lead, c->arate);
-            append(c->j->what, sizeof c->j->what,
-                   dts ? " · DTS → AAC" : strcmp(c->at->codec, "A_EAC3") ? " · Dolby Digital → AAC" : " · Dolby Digital Plus → AAC");
-        } else {
-            at.config = c->at->priv;
-            at.config_len = c->at->priv_len;
-            at.channels = c->at->channels ? c->at->channels : 2;
-            at.sample_rate = c->at->rate > 0 ? (int)c->at->rate : 48000;
-            at.timescale = (uint32_t)at.sample_rate;
-            if (lead < 0) at.start = ticks(-lead, at.timescale);
-            append(c->j->what, sizeof c->j->what, " · AAC copied");
-        }
-        if (lead > 0) at.delay = ticks(lead, at.timescale);
-        c->atrack = mp4_add_track(c->mp4, &at);
+    if (c->vtrack < 0) return fail(c, "The MP4 writer refused a track", NULL);
+    for (int k = 0; k < c->naud; k++) /* the sounds in the file's order, after the picture */
+        if (!setup_audio(c, &c->aud[k], k == c->def)) return false;
+    if (c->naud > 1) {
+        char more[48];
+        snprintf(more, sizeof more, c->naud == 2 ? " (+%d more sound track)" : " (+%d more sound tracks)", c->naud - 1);
+        append(c->j->what, sizeof c->j->what, more);
     }
-    if (c->vtrack < 0 || (c->at && c->atrack < 0)) return fail(c, "The MP4 writer refused a track", NULL);
     return true;
 }
 
@@ -1037,12 +1153,15 @@ static bool main_pass(Conv *c) {
                 set_progress(c, (int)CMIN(999, base + CMAX(0, (fr.pts - c->v0) * (1000 - base) / c->duration)));
             }
             if (c->j->limit_ns && fr.pts != MKV_NOPTS && c->v0 != MKV_NOPTS && fr.pts - c->v0 >= c->j->limit_ns) break;
-        } else if (c->at && fr.track == c->at->number) {
-            if (c->acode) code_audio(c, &fr);
-            else put_sample(c, c->atrack, fr.data, fr.size, AAC_FRAME, 0, true);
-        } else {
-            collect(c, &fr);
+            continue;
         }
+        struct ConvAudio *a = NULL;
+        for (int k = 0; k < c->naud && !a; k++)
+            if (fr.track == c->aud[k].t->number) a = &c->aud[k];
+        if (!a) collect(c, &fr);
+        else if (a->dead) continue;
+        else if (a->code) code_audio(c, a, &fr);
+        else put_audio(c, a, fr.data, fr.size);
     }
     if (c->failed) return false;
     if (r < 0) return fail(c, "Couldn't read the original (disk error?)", NULL);
@@ -1055,14 +1174,20 @@ static bool main_pass(Conv *c) {
         if (c->failed || (c->have_pend && !put_sample(c, c->vtrack, c->pend, c->npend, (uint32_t)c->out_den, 0, c->pend_key)))
             return false;
     }
-    if (c->acode && c->a_bad > 50 && c->a_bad > c->a_good) /* not a silent copy that claims success */
-        return unsupported(c, "Most of its %s sound couldn't be decoded (damaged?)", c->dtsd ? "DTS" : "Dolby");
-    if (c->acode) { /* the rest of the sound, padded to a whole block, then the encoder's tail */
-        static const float zero[AAC_FRAME * 2];
-        if (c->nfifo) push_pcm(c, zero, AAC_FRAME - c->nfifo);
-        for (int n; !c->failed && (n = aac_flush(c->aac, c->au, (int)sizeof c->au)) > 0;)
-            put_sample(c, c->atrack, c->au, (size_t)n, AAC_FRAME, 0, true);
+    for (int k = 0; k < c->naud && !c->failed; k++) { /* not a silent copy that claims success */
+        struct ConvAudio *a = &c->aud[k];
+        if (a->code && !a->dead && a->bad > 50 && a->bad > a->good)
+            lose(c, a, "Most of its %s sound couldn't be decoded (damaged?)", a->dtsd ? "DTS" : "Dolby");
     }
+    for (int k = 0; k < c->naud && !c->failed; k++) { /* the rest of the sound, padded to a whole block, then the encoder's tail */
+        struct ConvAudio *a = &c->aud[k];
+        if (!a->code || a->dead) continue;
+        static const float zero[AAC_FRAME * 2];
+        if (a->nfifo) push_pcm(c, a, zero, AAC_FRAME - a->nfifo);
+        for (int n; !c->failed && (n = aac_flush(a->aac, c->au, (int)sizeof c->au)) > 0;) put_audio(c, a, c->au, (size_t)n);
+    }
+    for (int k = 0; k < c->naud && !c->failed; k++) /* what the runs still hold */
+        if (!c->aud[k].dead) write_run(c, &c->aud[k]);
     return !c->failed;
 }
 
@@ -1076,22 +1201,32 @@ static bool main_pass(Conv *c) {
    deinterlacing). 5% over the stated length for rounding. Too small after all, the writer
    puts the index at the end instead: still a valid file. Never more than the tracks' bounds
    allow (cap_for), and no more pictures than a quarter of the file's bytes (each needs a start
-   code and a header, and makes at most two): a file claiming days of length gets no huge padding. */
+   code and a header, and makes at most two): a file claiming days of length gets no huge padding.
+   2+ sounds (2.2): each one's samples, and chunks from their runs - one per AUDIO_RUN frames, each splitting
+   the pictures at most once - plus a sound trak's own boxes. */
 static int64_t index_room(const Conv *c, const Mpeg2Frame *first) {
     double secs = (c->duration > 0 ? (double)c->duration / NS : 4 * 3600.0) * 1.05 + 2; /* unknown: 4 hours */
     double fps = first->rate_den > 0 ? 2.0 * first->rate_num / first->rate_den : 60;
     int64_t v = c->vcode ? CMIN((int64_t)(secs * CMIN(fps, 120)), CMIN(c->vmax, c->j->in.size / 4)) + 16
                          : (int64_t)c->nvpts + 16;
-    double rate = !c->at ? 0 : c->acode ? c->arate : c->at->rate <= 0 ? 48000 : c->at->rate;
-    int64_t a = c->at ? CMIN((int64_t)(secs * rate / AAC_FRAME), c->amax) + 16 : 0;
-    int64_t chunks = a ? 2 * CMIN(v, a) + 2 : 2;
-    return 16384 + v * (c->vcode ? 16 : 24) + a * 4 + chunks * 20;
+    int64_t all = 0, runs = 0;
+    for (int k = 0; k < c->naud; k++) {
+        const struct ConvAudio *s = &c->aud[k];
+        double rate = s->code ? s->rate : s->t->rate <= 0 ? 48000 : s->t->rate;
+        int64_t a = CMIN((int64_t)(secs * rate / AAC_FRAME), c->amax) + 16;
+        all += a, runs += a / AUDIO_RUN + 1;
+    }
+    if (c->naud < 2) { /* one sound (or none): every switch between the two tracks a chunk */
+        int64_t chunks = all ? 2 * CMIN(v, all) + 2 : 2;
+        return 16384 + v * (c->vcode ? 16 : 24) + all * 4 + chunks * 20;
+    }
+    return 16384 + v * (c->vcode ? 16 : 24) + all * 4 + (2 * runs + 2) * 20 + (int64_t)c->naud * 1024;
 }
 
 bool av_convert(AvConvJob *j) {
     Conv cv = {0}, *c = &cv;
     c->j = j;
-    c->v0 = c->a0 = MKV_NOPTS;
+    c->v0 = MKV_NOPTS;
     j->err[0] = j->what[0] = '\0';
     j->permille = 0;
     j->out_bytes = 0;
@@ -1108,17 +1243,32 @@ bool av_convert(AvConvJob *j) {
     c->vmax = cap_for(c, VIDEO_PER_S);
     c->amax = cap_for(c, AUDIO_PER_S);
     c->vt = mkv_find_track(c->mkv, MKV_VIDEO);
-    /* The sound: the first track we can convert, a default one first - a TrueHD track ahead
-       of the Dolby one shouldn't sink the whole file. */
+    /* The sound: every track we can convert, in the file's order (2.2: each language its own track) - a TrueHD
+       track ahead of the Dolby one doesn't sink the file, it's left out. The default = the first flagged so
+       (else the first); one past the 8th takes the 8th's place. */
     const MkvTrack *first_audio = NULL;
-    for (int pass = 0; pass < 2 && !c->at; pass++)
-        for (int i = 0; i < mkv_track_count(c->mkv) && !c->at; i++) {
-            const MkvTrack *t = mkv_track(c->mkv, i);
-            if (t->type != MKV_AUDIO) continue;
-            if (!first_audio) first_audio = t;
-            if ((pass == 0 && !t->is_default) || !audio_ok(t)) continue;
-            c->at = t;
+    int def = -1;
+    for (int i = 0; i < mkv_track_count(c->mkv); i++) {
+        const MkvTrack *t = mkv_track(c->mkv, i);
+        if (t->type != MKV_AUDIO) continue;
+        if (!first_audio) first_audio = t;
+        if (!audio_ok(t)) continue;
+        if (c->naud < AV_CONV_MAX_AUDIO) {
+            if (def < 0 && t->is_default) def = c->naud;
+            c->aud[c->naud++].t = t;
+        } else if (def < 0 && t->is_default) {
+            def = AV_CONV_MAX_AUDIO - 1;
+            c->aud[def].t = t;
         }
+    }
+    c->def = def < 0 ? 0 : def;
+    c->alive = c->naud;
+    for (int k = 0; k < c->naud; k++) {
+        struct ConvAudio *a = &c->aud[k];
+        a->a0 = a->next = MKV_NOPTS;
+        a->code = dolby(a->t->codec) || is_dts(a->t->codec);
+        a->rate = a->code ? dolby_rate(a->t) : 48000;
+    }
     const AvCodec *vk = c->vt ? av_conv_codec(c->vt->codec) : NULL;
     if (!c->vt) unsupported(c, "There's no picture to convert", NULL);
     else if (c->vt->compressed) unsupported(c, "The picture is compressed or encrypted inside the file", NULL);
@@ -1129,15 +1279,13 @@ bool av_convert(AvConvJob *j) {
         unsupported(c, "Its AV1 picture has no settings record (CodecPrivate) in the file", NULL);
     else /* copied: Safari plays HEVC (and AV1, where the device decodes it) in an MP4, never in an MKV */
         c->vcopy = !strcmp(vk->id, "V_MPEGH/ISO/HEVC") ? MP4_HEVC : !strcmp(vk->id, "V_AV1") ? MP4_AV1 : MP4_H264;
-    if (!c->failed && first_audio && !c->at) { /* sound, but none we can convert: say why for the first */
+    if (!c->failed && first_audio && !c->naud) { /* sound, but none we can convert: say why for the first */
         if (first_audio->compressed) unsupported(c, "The sound is compressed or encrypted inside the file", NULL);
         else if (dolby(first_audio->codec) || is_dts(first_audio->codec))
             unsupported(c, "Can't convert %s sound that isn't at 48, 44.1 or 32 kHz yet", dolby(first_audio->codec) ? "Dolby" : "DTS");
         else unsupported(c, "Its sound is %s, which the converter can't change yet (browsers play it silently)",
                          codec_words(first_audio->codec));
     }
-    if (c->at) c->acode = dolby(c->at->codec) || is_dts(c->at->codec);
-    c->arate = c->acode ? dolby_rate(c->at) : 48000;
     if (j->want_subs) choose_subs(c);
 
     Mpeg2Frame first = {0};
@@ -1167,13 +1315,17 @@ bool av_convert(AvConvJob *j) {
     if (c->dec) mpeg2_free(c->dec);
     if (c->di) deint_free(c->di);
     if (c->enc) h264enc_free(c->enc);
-    if (c->ac3) ac3_close(c->ac3);
-    if (c->dtsd) dts_close(c->dtsd);
-    if (c->aac) aac_close(c->aac);
+    for (int k = 0; k < c->naud; k++) {
+        struct ConvAudio *a = &c->aud[k];
+        if (a->ac3) ac3_close(a->ac3);
+        if (a->dtsd) dts_close(a->dtsd);
+        if (a->aac) aac_close(a->aac);
+        free(a->fifo);
+        free(a->run);
+    }
     free(c->pend);
     free(c->vpts);
     free(c->dts);
-    free(c->fifo);
     free(c->pcm);
     if (!c->failed) set_progress(c, 1000);
     return !c->failed;
@@ -1182,7 +1334,7 @@ bool av_convert(AvConvJob *j) {
 bool av_subtitles(AvConvJob *j) {
     Conv cv = {0}, *c = &cv;
     c->j = j;
-    c->v0 = c->a0 = MKV_NOPTS;
+    c->v0 = MKV_NOPTS;
     j->err[0] = j->what[0] = '\0';
     j->permille = 0;
     j->out_bytes = 0;

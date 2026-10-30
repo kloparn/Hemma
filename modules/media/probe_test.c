@@ -160,6 +160,7 @@ TEST(probe_mp4_faststart_h264_aac) {
     CHECK_INT(p.width, 1920);
     CHECK_INT(p.height, 1080);
     CHECK_INT(p.audio_channels, 2);
+    CHECK_INT(p.nsounds, 1);
     CHECK_INT(p.playable, PLAY_YES);
     CHECK_STR(p.why, "");
     buf_free(&b);
@@ -431,6 +432,7 @@ TEST(probe_mkv_h264_dts_needs_conversion) {
     CHECK_STR(p.vcodec, "h264");
     CHECK_STR(p.acodec, "dts");
     CHECK_INT(p.audio_channels, 6);
+    CHECK_INT(p.nsounds, 1);
     CHECK_INT(p.width, 1280);
     CHECK_INT(p.height, 720);
     CHECK_INT(p.playable, PLAY_NO);
@@ -487,6 +489,7 @@ TEST(probe_mkv_prefers_default_audio_track) {
     MediaProbe p = probe_buf(&b, "x.mkv");
     CHECK_STR(p.acodec, "aac");
     CHECK_INT(p.audio_channels, 2);
+    CHECK_INT(p.nsounds, 2); /* (2.2: an MP4 copy keeps both) */
     buf_free(&b);
 }
 

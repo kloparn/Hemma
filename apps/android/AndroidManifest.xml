@@ -34,6 +34,14 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- "Open the app instead!" on Home in a phone's browser (2.2): hemma://open/<a page of Hemma's> - only a
+                 path, opened on the Hemma the app already knows (MainActivity.wanted) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="hemma" android:host="open" />
+            </intent-filter>
         </activity>
 
         <service

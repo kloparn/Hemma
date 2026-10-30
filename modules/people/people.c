@@ -552,7 +552,28 @@ static bool uses_the_app(int person) {
 static void widget(Ctx *c, Buf *b, int where) {
     if (where != WIDGET_HOME || !c->me || c->me->role == ROLE_DISPLAY || !c->sess || session_in_app(c->sess)) return;
     if (!strstr(c->sess->agent, "Android") || app_static_size("/hemma.apk") < 0) return;
-    if (str_eq(pref(c->me->id, PREF_APP_HINT, ""), "off") || uses_the_app(c->me->id)) return;
+    if (str_eq(pref(c->me->id, PREF_APP_HINT, ""), "off")) return;
+    if (uses_the_app(c->me->id) && c->host[0]) {
+        /* someone with the app, in the browser (2.2; owner: "open the app instead!"): an Android intent link opens it
+           at its Home (the app's hemma://open/ filter); where no app takes it - none here, or one from before 2.2 -
+           Chrome goes to the fallback: the download, which installs over the old one */
+        char fallback[160];
+        snprintf(fallback, sizeof fallback, "http://%s/static/hemma.apk?v=%s", c->host, app_asset_version());
+        H(b, "<section class=\"card\" id=\"people-apphint\"><header class=\"card-h\"><h2>%s</h2></header><p>%s</p>",
+          T("Open the app instead!"),
+          T("You're using Hemma in the browser, and you've signed in from the Hemma app before. The app keeps you "
+            "signed in and plays audiobooks with the phone locked."));
+        H(b,
+          "<div class=\"people-actions\"><a class=\"btn primary\" href=\"intent://open/#Intent;scheme=hemma;"
+          "package=io.github.kloparn.hemma;S.browser_fallback_url=%u;end\">%s</a>",
+          fallback, T("Open the app"));
+        ui_act(b, "people.app_hint", "btn", T("Not now"), NULL, NULL, NULL);
+        H(b, "</div><p class=\"muted small\">%s</p></section>",
+          T("Not on this phone, or an app from before Hemma 2.2? The button gets the app instead: open the file to "
+            "install it."));
+        return;
+    }
+    if (uses_the_app(c->me->id)) return;
     H(b, "<section class=\"card\" id=\"people-apphint\"><header class=\"card-h\"><h2>%s</h2></header><p>%s</p>",
       T("Hemma has an app for your phone"),
       T("You're using Hemma in the browser. The app finds Hemma at home by itself, keeps you signed in and plays "

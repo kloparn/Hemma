@@ -28,6 +28,9 @@ The app looks around the Wi-Fi and opens Hemma when it finds it. If it doesn't, 
 
 A new Hemma version brings a new app: **Get the app for Android** again installs it over the old one.
 
+Once you've signed in from the app, Hemma in the phone's browser says **Open the app instead!** on Home: the
+button opens the app (from 2.2; on a phone without it, or with an older app, it downloads the app instead).
+
 No "Get the app" button? Your Hemma was built without Android's tools: the releases from 2.0 on have
 it. On an **iPhone**, there's no app: open Hemma in Safari, tap **Share**, then **Add to Home Screen** -
 audiobooks show on the lock screen there too.

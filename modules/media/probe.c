@@ -13,7 +13,7 @@
 #include <ctype.h>
 #include <sys/types.h>
 
-#define MOOV_CAP (32u << 20)
+#define MOOV_CAP (64u << 20) /* (2.2: a long film's copy with eight sound tracks has a moov of tens of MB) */
 #define MKV_EL_CAP (4u << 20)
 #define AVI_HEAD_CAP (512u << 10)
 
@@ -71,6 +71,8 @@ typedef struct {
     char codec[12];
     int channels;
     int64_t media_ms;
+    uint16_t lang;         /* mdhd's packed ISO 639-2 (0 = none) */
+    char name[sizeof ((MediaSound *)0)->name]; /* the track's own name (sound_name): "" = none */
 } Track;
 
 static bool box_next(const Span *parent, size_t *pos, char type[5], Span *payload) {
@@ -228,8 +230,57 @@ static void sample_entry(Track *t, const char *fourcc_in, Span e) {
     else fourcc_name(fourcc, t->codec, sizeof t->codec);
 }
 
+/* A track name as people may read it: UTF-8 (bytes that aren't are Latin-1), no control characters, trimmed, cut
+   whole letters short; "" for a muxer's handler name ("SoundHandler", "Core Media Audio", "GPAC ISO Audio Handler"
+   ...) - those name the program, not the track. */
+static void sound_name(const uint8_t *p, size_t n, char *out, size_t cap) {
+    char tmp[256];
+    size_t k = 0;
+    bool utf8 = utf8_valid((const char *)p, n);
+    for (size_t i = 0; i < n && k + 4 < sizeof tmp;) {
+        uint32_t cp = p[i];
+        int used = 1;
+        if (!cp) break;
+        if (utf8 && cp >= 0x80) used = utf8_decode((const char *)p + i, n - i, &cp);
+        i += (size_t)(used > 0 ? used : 1);
+        if (cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp < 0xA0)) cp = ' ';
+        k += utf8_encode(cp, tmp + k);
+    }
+    tmp[k] = '\0';
+    char *s = tmp;
+    while (*s == ' ') s++;
+    size_t len = strlen(s);
+    while (len && s[len - 1] == ' ') s[--len] = '\0';
+    static const char *const generic[] = {"Core Media Audio", "Apple Sound Media Handler", "Sound Media Handler",
+                                          "Mainconcept MP4 Sound Media Handler", "Bento4 Sound Handler", NULL};
+    bool is_generic = !len || str_iends(s, "handler");
+    for (int i = 0; generic[i] && !is_generic; i++) is_generic = str_ieq(s, generic[i]);
+    if (is_generic || !cap) {
+        if (cap) out[0] = '\0';
+        return;
+    }
+    str_ncopy(out, cap, s, utf8_clip(s, cap - 1));
+}
+
+/* A sound trak's name: its udta 'name' (what ffmpeg writes a title as) or QuickTime's '©nam', else its hdlr name
+   (a C string, or a Pascal one in old QuickTime files) - sound_name. */
+static void trak_name(Span trak, Span hdlr, char *out, size_t cap) {
+    out[0] = '\0';
+    Span udta, nm;
+    if (find_box(trak, "udta", &udta)) {
+        if (find_box(udta, "name", &nm) && nm.n) sound_name(nm.p, nm.n, out, cap);
+        else if (find_box(udta, "\xA9nam", &nm) && nm.n > 4 && be16(nm.p) <= nm.n - 4) sound_name(nm.p + 4, be16(nm.p), out, cap);
+        if (out[0]) return;
+    }
+    if (hdlr.n <= 24) return;
+    const uint8_t *s = hdlr.p + 24;
+    size_t n = hdlr.n - 24;
+    if (n >= 2 && ((size_t)s[0] + 1 == n || ((size_t)s[0] + 2 == n && !s[n - 1])) && s[0]) sound_name(s + 1, s[0], out, cap);
+    else sound_name(s, n, out, cap);
+}
+
 static void parse_trak(Span trak, Track *t) {
-    Span tkhd, mdia, mdhd, hdlr, minf, stbl, stsd;
+    Span tkhd, mdia, mdhd, hdlr = {NULL, 0}, minf, stbl, stsd;
     if (find_box(trak, "tkhd", &tkhd) && tkhd.n >= 4) {
         size_t wo = tkhd.p[0] == 1 ? 88 : 76;
         t->enabled = (tkhd.p[3] & 1) != 0;
@@ -245,10 +296,12 @@ static void parse_trak(Span trak, Track *t) {
             ts = be32(mdhd.p + 20);
             dur = be64(mdhd.p + 24);
             if (dur == UINT64_MAX) dur = 0;
+            if (mdhd.n >= 34) t->lang = be16(mdhd.p + 32);
         } else if (mdhd.p[0] == 0) {
             ts = be32(mdhd.p + 12);
             dur = be32(mdhd.p + 16);
             if (dur == 0xFFFFFFFFu) dur = 0;
+            if (mdhd.n >= 22) t->lang = be16(mdhd.p + 20);
         }
         t->media_ms = mul_div(dur, 1000, ts);
     }
@@ -257,6 +310,7 @@ static void parse_trak(Span trak, Track *t) {
         else if (!memcmp(hdlr.p + 8, "soun", 4)) t->kind = 'a';
     }
     if (!t->kind) return;
+    if (t->kind == 'a') trak_name(trak, hdlr, t->name, sizeof t->name);
     if (!find_box(mdia, "minf", &minf) || !find_box(minf, "stbl", &stbl) || !find_box(stbl, "stsd", &stsd) ||
         stsd.n < 8)
         return;
@@ -305,6 +359,7 @@ static bool parse_moov(Span moov, MediaProbe *o) {
         Track t = {0};
         parse_trak(trak, &t);
         if (t.media_ms > longest) longest = t.media_ms;
+        if (t.kind == 'a' && o->nsounds < 1000) o->nsounds++;
         Track *slot = t.kind == 'v' ? &best_v : t.kind == 'a' ? &best_a : NULL;
         if (slot && (!slot->kind || (!slot->enabled && t.enabled))) *slot = t;
     }
@@ -351,6 +406,90 @@ static bool probe_mp4(const MediaReader *r, MediaProbe *o) {
         off += (int64_t)size;
     }
     return false;
+}
+
+static bool looks_like_bmff(const uint8_t *h, size_t n);
+
+/* The moov's payload, read whole (the walk as probe_mp4's); NULL when there's none or it can't be read. */
+static uint8_t *mp4_moov(const MediaReader *r, size_t *n) {
+    int64_t off = 0;
+    for (int guard = 0; guard < 100000 && r->size >= 8 && off <= r->size - 8; guard++) {
+        uint8_t h[16];
+        if (!rd(r, off, h, 8)) break;
+        uint64_t size = be32(h);
+        int hl = 8;
+        if (size == 1) {
+            if (!rd(r, off + 8, h + 8, 8)) break;
+            size = be64(h + 8);
+            hl = 16;
+        } else if (size == 0) {
+            size = (uint64_t)(r->size - off);
+        }
+        for (int i = 4; i < 8; i++)
+            if (h[i] < 0x20 || h[i] > 0x7E) return NULL;
+        if (size < (uint64_t)hl) return NULL;
+        bool moov = !memcmp(h + 4, "moov", 4);
+        if (size > (uint64_t)(r->size - off)) {
+            if (!moov) return NULL;
+            size = (uint64_t)(r->size - off);
+        }
+        if (moov) {
+            *n = (size_t)(size - (uint64_t)hl);
+            return rd_alloc(r, off + hl, size - (uint64_t)hl, MOOV_CAP);
+        }
+        off += (int64_t)size;
+    }
+    return NULL;
+}
+
+/* mdhd's packed language (three letters of 5 bits, + 0x60 each) as two letters; "" for "und", none or a
+   QuickTime Macintosh language code (under 0x400) */
+static void lang_of(uint16_t code, char *out, size_t cap) {
+    out[0] = '\0';
+    if (code < 0x400 || code == 0x7FFF) return;
+    char l3[4] = {(char)(((code >> 10) & 31) + 0x60), (char)(((code >> 5) & 31) + 0x60), (char)((code & 31) + 0x60), 0};
+    for (int i = 0; i < 3; i++)
+        if (l3[i] < 'a' || l3[i] > 'z') return;
+    if (!strcmp(l3, "hin")) { /* (subtitles read "hi" as hearing impaired; a sound track speaks Hindi) */
+        str_copy(out, cap, "hi");
+        return;
+    }
+    MediaSubTags t;
+    media_sub_track_tags(l3, NULL, false, &t);
+    str_copy(out, cap, t.lang);
+}
+
+int media_mp4_sounds(const MediaReader *r, MediaSound *out, int max) {
+    if (!r || !r->read_at || r->size < 8) return -1;
+    uint8_t head[16];
+    if (!rd(r, 0, head, 16 <= r->size ? 16 : 8) || !looks_like_bmff(head, 8)) return -1;
+    size_t n = 0;
+    uint8_t *m = mp4_moov(r, &n);
+    if (!m) return -1;
+    Span moov = {m, n}, trak;
+    size_t pos = 0;
+    char type[5];
+    int count = 0, first_on = -1;
+    while (box_next(&moov, &pos, type, &trak)) {
+        if (memcmp(type, "trak", 4)) continue;
+        Track t = {0};
+        parse_trak(trak, &t);
+        if (t.kind != 'a') continue;
+        if (count < max && out) {
+            MediaSound *s = &out[count];
+            memset(s, 0, sizeof *s);
+            lang_of(t.lang, s->lang, sizeof s->lang);
+            str_copy(s->name, sizeof s->name, t.name);
+            str_copy(s->codec, sizeof s->codec, t.codec);
+            s->channels = t.channels;
+            if (t.enabled && first_on < 0) first_on = count;
+        }
+        count++;
+    }
+    free(m);
+    int shown = count < max ? count : max;
+    for (int i = 0; out && i < shown; i++) out[i].on = i == (first_on >= 0 ? first_on : 0);
+    return count;
 }
 
 static bool looks_like_bmff(const uint8_t *h, size_t n) {
@@ -574,6 +713,7 @@ static void mkv_info(Span s, MkvState *st) {
 }
 
 static void mkv_tracks(Span s, MkvState *st, MediaProbe *o) {
+    if (st->have_tracks) return; /* (a second Tracks element: the first counts) */
     size_t pos = 0;
     Ebml te;
     while (ebml_next(&s, &pos, &te)) {
@@ -605,6 +745,7 @@ static void mkv_tracks(Span s, MkvState *st, MediaProbe *o) {
             }
         }
         if (!enabled) continue;
+        if (type == 2 && o->nsounds < 1000) o->nsounds++;
         const char *name = mkv_codec(codec, priv);
         char fallback[12];
         if (!name) {

@@ -6,7 +6,8 @@
  *   HEVC (x265 films)          -> copied as 'hvc1'           /   (plays in Safari; other browsers need HEVC hardware)
  *   AV1 (web releases)         -> copied as 'av01'          /    (Chrome, Edge, Firefox; Safari where the device has AV1)
  *   Dolby AC-3 / E-AC-3 (DD+)  -> ac3 (stereo) -> aac         /
- *   AAC                        -> copied
+ *   DTS (the core)             -> dts (stereo) -> aac        /
+ *   AAC                        -> copied                    /   every sound track, each its own (AV_CONV_MAX_AUDIO)
  *   text subtitles (SRT, ASS,  -> SubRip texts handed back (want_subs): the caller saves them as
  *   WebVTT)                       "<name>.<language>.srt" next to the video, where the library finds them
  *   picture subtitles: Blu-ray -> the bytes of a .sup file (PGS) / of an .idx + .sub pair (VobSub),
@@ -44,6 +45,12 @@
 #include "mp4.h"
 
 #define AV_CONV_MAX_SUBS 32              /* subtitle tracks taken from one file (the first 32 it takes, in file order) */
+/* Sound tracks kept (2.2; owner, 2026-10-30: "not language locked"): every one the converter takes, in the
+   file's order, each its own MP4 trak (its language in mdhd, its name in hdlr) - the first 8, the default one
+   among them. The default (the first flagged so, else the first) is the one tkhd-enabled; the server hands a
+   viewer one of them (media_view, mediainfo.h). A track that goes undecodable part-way is dropped while another
+   lives. */
+#define AV_CONV_MAX_AUDIO 8
 
 /* Every format the converter takes, by Matroska CodecID - the one place its checks look (av_conv_codec).
    Formats grow when real files need them (owner, 2026-10-21; docs/decisions/0006): a new one goes in this

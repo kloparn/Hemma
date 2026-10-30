@@ -101,6 +101,15 @@ typedef struct {
     int nch;
 } MediaTags;
 
+/* SOUND LANGUAGES (2.2): a video's sound tracks when it has two or more (an MP4/MOV - mediainfo.h media_mp4_sounds),
+   read once by the scan and kept in the cache (a video row's tags column: sounds_pack) - like an audio file's tags,
+   not in every MediaFile. The server streams such a file one sound at a time (stream.c, media_view). */
+typedef struct {
+    uint64_t file; /* its MediaFile (an MP4/MOV video) */
+    int n;
+    MediaSound s[MEDIA_MAX_SOUNDS];
+} MediaSounds;
+
 /* A book: an .m4b (or a single .m4a/.mp3) of its own, or - a folder of .mp3/.m4a parts ("01.mp3", "02.mp3",
    CD1/CD2 folders) - every part in one folder, in order. Its id is its first part's file id: progress rows are by
    file id (media_watch), so a book's is its first part's row with the place in the whole book. */
@@ -135,6 +144,8 @@ typedef struct {
     int nseries;
     MediaTags *tags;  /* of every MF_AUDIO file, sorted by file id */
     int ntags;
+    MediaSounds *sounds; /* of every video with 2+ sound tracks, sorted by file id */
+    int nsounds;
     MediaBook *books; /* by their series (else title), number, title */
     int nbooks;
     int *book_parts;  /* see MediaBook.first */
@@ -153,6 +164,7 @@ const MediaFile *media_playable(const MediaFile *f); /* the file to stream: its 
 const char *media_nfo_genres(uint64_t nfo);          /* an MF_NFO's genres, '|' between ("" = none, or no such file) */
 /* audiobooks (1.6) */
 const MediaTags *media_tags(uint64_t file);           /* an MF_AUDIO file's tags (NULL = none) */
+const MediaSounds *media_sounds(uint64_t file);       /* a video's sound tracks when it has 2+ (2.2; NULL = one or none) */
 const MediaBook *media_book(uint64_t id);             /* by its id (its first part's) */
 const MediaFile *media_book_part(const MediaBook *b, int i); /* its i-th part */
 /* Made from the index's audio files and their tags (booklist.c), on whichever thread built the index; and the

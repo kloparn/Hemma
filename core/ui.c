@@ -70,6 +70,7 @@ static const struct {
     {"muted", "<path d=\"M4 9.5h3.5L12 5.5v13l-4.5-4H4z\"/><path d=\"m16 9.5 5 5M21 9.5l-5 5\"/>"},
     {"cc", "<rect x=\"3\" y=\"5.5\" width=\"18\" height=\"13\" rx=\"2.5\"/><path d=\"M10.6 10.2a2.3 2.3 0 1 0 0 3.6M17 "
            "10.2a2.3 2.3 0 1 0 0 3.6\"/>"},
+    {"speech", "<path d=\"M4 5h16v10.5H10.5L6 19v-3.5H4z\"/><path d=\"M8 9h8M8 12h5\"/>"},
     {"logo", "<path d=\"M4 11 12 4l8 7v8.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19.5z\"/><path d=\"M12 "
              "17.5s-3.2-1.9-3.2-4a1.7 1.7 0 0 1 3.2-.8 1.7 1.7 0 0 1 3.2.8c0 2.1-3.2 4-3.2 4z\"/>"},
 };
@@ -264,6 +265,15 @@ void ui_player(Buf *b, const UiPlayer *p) {
             if (p->subs[i].pref) buf_puts(b, " data-subpref");
             H(b, " aria-checked=\"%s\">%s</button>", p->subs[i].on ? "true" : "false", p->subs[i].label);
         }
+        buf_puts(b, "</span></span>");
+    }
+    if (p->nsounds > 1) { /* the sound's language (2.2): each item the same video with that sound - wire.js swaps it */
+        buf_puts(b, "<span class=\"pl-subs pl-snds\">");
+        pl_button(b, "snd", T("Language"), "speech", NULL);
+        buf_puts(b, "<span class=\"pl-menu\" role=\"menu\" hidden>");
+        for (int i = 0; i < p->nsounds; i++)
+            H(b, "<button type=\"button\" role=\"menuitemradio\" data-snd=\"%d\" data-src=\"%s\" aria-checked=\"%s\">%s</button>",
+              p->sounds[i].n, p->sounds[i].src, p->sounds[i].on ? "true" : "false", p->sounds[i].label);
         buf_puts(b, "</span></span>");
     }
     /* the sound: muted swaps the icon; on a live channel it also says so in words (a TV that won't

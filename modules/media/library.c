@@ -39,6 +39,7 @@ static void index_free(MediaIndex *ix) {
     free(ix->left);
     free(ix->parts);
     media_tags_free(ix->tags, ix->ntags);
+    free(ix->sounds);
     free(ix->books);
     free(ix->book_parts);
     free(ix);
@@ -181,6 +182,8 @@ typedef struct {
     struct SeriesNames *names; /* renamed series, copied for the scan's thread */
     MediaTags *tags; /* of the audio files (MediaIndex.tags) */
     int ntags, tcap;
+    MediaSounds *sounds; /* of the videos with 2+ sound tracks (MediaIndex.sounds) */
+    int nsnd, scap;
 } Scan;
 
 static void note_left(MediaLeft **list, int *n, int *all, int root, const char *rel, int64_t size, int64_t mtime,
@@ -230,6 +233,18 @@ static const MediaTags *tags_find(const MediaIndex *ix, uint64_t file) {
 }
 
 const MediaTags *media_tags(uint64_t file) { return file ? tags_find(media_lib(), file) : NULL; }
+
+static const MediaSounds *sounds_find(const MediaIndex *ix, uint64_t file) {
+    int lo = 0, hi = ix->nsounds;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (ix->sounds[mid].file < file) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo < ix->nsounds && ix->sounds[lo].file == file ? &ix->sounds[lo] : NULL;
+}
+
+const MediaSounds *media_sounds(uint64_t file) { return file ? sounds_find(media_lib(), file) : NULL; }
 
 const MediaBook *media_book(uint64_t id) {
     const MediaIndex *ix = media_lib();
@@ -445,6 +460,36 @@ static void audio_file(Scan *sc, MediaFile *f, const char *path) {
     f->fp = fingerprint(path, f->size);
 }
 
+static bool is_mp4(const MediaProbe *p) { return str_eq(p->container, "mp4") || str_eq(p->container, "mov"); }
+
+static bool fh_read_at(void *ctx, int64_t off, void *dst, size_t n) { return file_pread(ctx, off, dst, n); }
+
+/* A cached video row from before 2.2 doesn't say how many sound tracks it has (nsounds -1): an MP4 that isn't one of
+   our own copies (those had one) is probed again once - it may hold several languages. */
+static bool sounds_unknown(const MediaFile *o) { return o->probe.nsounds < 0 && is_mp4(&o->probe) && !media_is_web_copy(o->rel); }
+
+/* A video's sound tracks when it has 2+ (an MP4/MOV): the old index's when the file is unchanged, else read. */
+static void video_sounds(Scan *sc, MediaFile *f, const char *path, bool unchanged) {
+    if (!is_mp4(&f->probe) || f->probe.nsounds < 2) return;
+    if (sc->nsnd == sc->scap) sc->sounds = xrealloc(sc->sounds, (size_t)(sc->scap = sc->scap ? sc->scap * 2 : 16) * sizeof *sc->sounds);
+    MediaSounds *s = &sc->sounds[sc->nsnd];
+    const MediaSounds *o = unchanged && sc->old ? sounds_find(sc->old, f->id) : NULL;
+    if (o) {
+        *s = *o;
+        sc->nsnd++;
+        return;
+    }
+    memset(s, 0, sizeof *s);
+    s->file = f->id;
+    FILE *fh = file_open(path, "rb");
+    if (!fh) return;
+    MediaReader r = {fh, f->size, fh_read_at};
+    int n = media_mp4_sounds(&r, s->s, MEDIA_MAX_SOUNDS);
+    fclose(fh);
+    s->n = n < MEDIA_MAX_SOUNDS ? n : MEDIA_MAX_SOUNDS;
+    if (s->n >= 2) sc->nsnd++;
+}
+
 static void add_file(Scan *sc, int root, const char *rel, char type, int64_t size, int64_t mtime) {
     if (sc->n == sc->cap) {
         sc->cap = sc->cap ? sc->cap * 2 : 256;
@@ -466,7 +511,8 @@ static void add_file(Scan *sc, int root, const char *rel, char type, int64_t siz
         }
         const MediaFile *o = sc->old ? index_find(sc->old, f->id) : NULL;
         const MediaLeft *l = !o && (f->name.sample || f->name.named) ? old_left(sc, root, rel, size, mtime) : NULL;
-        if (o && o->type == MF_VIDEO && o->size == size && o->mtime == mtime) {
+        bool unchanged = o && o->type == MF_VIDEO && o->size == size && o->mtime == mtime && !sounds_unknown(o);
+        if (unchanged) {
             f->probe = o->probe;
         } else if (l) {
             f->probe.duration_ms = l->duration_ms; /* (left out last time, unchanged: as short as it was) */
@@ -485,11 +531,10 @@ static void add_file(Scan *sc, int root, const char *rel, char type, int64_t siz
             parse_name(root_name(sc->roots[root]), rel, &f->name, true);
         }
         if (o && o->type == MF_VIDEO && o->size == size && o->mtime == mtime) f->fp = o->fp;
-        if (!f->fp) { /* (new or changed - or kept from before fingerprints: read once) */
-            char path[1024];
-            join_path(sc->roots[root], rel, path, sizeof path);
-            f->fp = fingerprint(path, size);
-        }
+        char path[1024];
+        join_path(sc->roots[root], rel, path, sizeof path);
+        if (!f->fp) f->fp = fingerprint(path, size); /* (new or changed - or kept from before fingerprints: read once) */
+        video_sounds(sc, f, path, unchanged);
     } else if (type == MF_AUDIO) { /* an audiobook's: its tags, chapters and length (read again only when it changed) */
         parse_name(root_name(sc->roots[root]), rel, &f->name, false); /* (what to call it in a lost history's label) */
         char path[1024];
@@ -615,6 +660,11 @@ static int id_cmp(const void *x, const void *y) {
 
 static int tags_cmp(const void *x, const void *y) {
     const MediaTags *a = x, *b = y;
+    return a->file < b->file ? -1 : a->file > b->file;
+}
+
+static int sounds_cmp(const void *x, const void *y) {
+    const MediaSounds *a = x, *b = y;
     return a->file < b->file ? -1 : a->file > b->file;
 }
 
@@ -1303,6 +1353,13 @@ static void index_finish(MediaIndex *ix) {
     }
     ix->ntags = nt;
     media_books_build(ix);
+    /* videos' sound tracks (2.2): by file id, each once */
+    if (ix->nsounds) qsort(ix->sounds, (size_t)ix->nsounds, sizeof *ix->sounds, sounds_cmp);
+    int ns = 0;
+    for (int i = 0; i < ix->nsounds; i++)
+        if ((!ns || ix->sounds[ns - 1].file != ix->sounds[i].file) && index_find(ix, ix->sounds[i].file))
+            ix->sounds[ns++] = ix->sounds[i];
+    ix->nsounds = ns;
 }
 
 static void names_free(SeriesNames *s) {
@@ -1325,6 +1382,7 @@ static MediaIndex *scan_run(Scan *sc) {
         free(sc->left);
         free(sc->parts);
         media_tags_free(sc->tags, sc->ntags);
+        free(sc->sounds);
         names_give_back(sc->names);
         sc->names = NULL;
         return NULL;
@@ -1339,6 +1397,8 @@ static MediaIndex *scan_run(Scan *sc) {
     ix->nfiles = sc->n;
     ix->tags = sc->tags;
     ix->ntags = sc->ntags;
+    ix->sounds = sc->sounds;
+    ix->nsounds = sc->nsnd;
     ix->probed = sc->probed;
     t_names = sc->names;
     index_finish(ix);
@@ -1432,6 +1492,63 @@ static bool tags_unpack(const char *tags, const char *chap, MediaTags *t) {
     return true;
 }
 
+/* A video's sound tracks in the cache (2.2): in its row's tags column, which only audio files used - "S<SOUNDS_FORMAT>
+   \x1f<nsounds>", then per track "\x1e<lang>\x1f<name>\x1f<codec>\x1f<channels>\x1f<on>". A row without it (from before
+   2.2) is nsounds -1: unknown (sounds_unknown). */
+#define SOUNDS_FORMAT 1
+static void sounds_pack(const MediaIndex *ix, const MediaFile *f, Buf *b) {
+    if (f->probe.nsounds < 0) return;
+    buf_printf(b, "S%d\x1f%d", SOUNDS_FORMAT, f->probe.nsounds);
+    const MediaSounds *s = sounds_find(ix, f->id);
+    for (int i = 0; s && i < s->n; i++) {
+        buf_putc(b, '\x1e');
+        put_text(b, s->s[i].lang);
+        buf_putc(b, '\x1f');
+        put_text(b, s->s[i].name);
+        buf_putc(b, '\x1f');
+        put_text(b, s->s[i].codec);
+        buf_printf(b, "\x1f%d\x1f%d", s->s[i].channels, s->s[i].on ? 1 : 0);
+    }
+}
+
+/* -> f->probe.nsounds, and the tracks into s when there are 2+ (true) */
+static bool sounds_unpack(const char *p, MediaFile *f, MediaSounds *s) {
+    char num[32];
+    f->probe.nsounds = -1;
+    if (!p || p[0] != 'S') return false;
+    p++;
+    field_take(&p, '\x1f', num, sizeof num);
+    if (str_int_or(num, 0) != SOUNDS_FORMAT) return false;
+    field_take(&p, '\x1e', num, sizeof num);
+    f->probe.nsounds = (int)str_int_or(num, 0);
+    memset(s, 0, sizeof *s);
+    s->file = f->id;
+    while (*p && s->n < MEDIA_MAX_SOUNDS) {
+        MediaSound *t = &s->s[s->n++];
+        field_take(&p, '\x1f', t->lang, sizeof t->lang);
+        field_take(&p, '\x1f', t->name, sizeof t->name);
+        field_take(&p, '\x1f', t->codec, sizeof t->codec);
+        field_take(&p, '\x1f', num, sizeof num);
+        t->channels = (int)str_int_or(num, 0);
+        field_take(&p, '\x1e', num, sizeof num);
+        t->on = str_int_or(num, 0) != 0;
+    }
+    return s->n >= 2;
+}
+
+static bool sounds_same(const MediaIndex *a, const MediaIndex *b, const MediaFile *f) {
+    const MediaSounds *x = sounds_find(a, f->id), *y = sounds_find(b, f->id);
+    if (!x || !y) return x == y;
+    if (x->n != y->n) return false;
+    for (int i = 0; i < x->n; i++) {
+        const MediaSound *p = &x->s[i], *q = &y->s[i];
+        if (!str_eq(p->lang, q->lang) || !str_eq(p->name, q->name) || !str_eq(p->codec, q->codec) ||
+            p->channels != q->channels || p->on != q->on)
+            return false;
+    }
+    return true;
+}
+
 static bool tags_same(const MediaIndex *a, const MediaIndex *b, uint64_t file) {
     const MediaTags *x = tags_find(a, file), *y = tags_find(b, file);
     if (!x || !y) return x == y;
@@ -1452,7 +1569,7 @@ static void cache_load(void) {
        disagrees with a fresh scan, and parser improvements apply at once. Probes are the costly part. */
     sqlite3_stmt *st = db_prep("SELECT id, root, type, rel, size, mtime, container, duration_ms, width, height, "
                                "vcodec, acodec, channels, playable, why, fp, title, tags, chapters FROM media_file");
-    int tcap = 0;
+    int tcap = 0, scap = 0;
     while (st && sqlite3_step(st) == SQLITE_ROW) {
         char root[300], type[4];
         col_text(st, 1, root, sizeof root);
@@ -1494,6 +1611,11 @@ static void cache_load(void) {
             parse_name(root_name(ix->roots[r]), f->rel, &f->name, false);
             if (f->name.extra && !named_but_real(f)) continue; /* hidden since it was stored */
             if (f->name.sample || f->name.named) parse_name(root_name(ix->roots[r]), f->rel, &f->name, true);
+            MediaSounds s;
+            if (sounds_unpack((const char *)sqlite3_column_text(st, 17), f, &s)) { /* (2.2: its sound tracks) */
+                if (ix->nsounds == scap) ix->sounds = xrealloc(ix->sounds, (size_t)(scap = scap ? scap * 2 : 16) * sizeof *ix->sounds);
+                ix->sounds[ix->nsounds++] = s;
+            }
         }
         if (f->type == MF_AUDIO) { /* its tags (an older format's: none - the next scan reads the file again) */
             if (!media_is_book_file(root_name(ix->roots[r]), f->rel)) continue; /* (no longer one, by today's rules) */
@@ -1522,7 +1644,7 @@ static bool same_file(const MediaFile *a, const MediaFile *b) {
            str_eq(a->probe.container, b->probe.container) && str_eq(a->probe.vcodec, b->probe.vcodec) &&
            str_eq(a->probe.acodec, b->probe.acodec) && str_eq(a->probe.why, b->probe.why) &&
            a->probe.width == b->probe.width && a->probe.height == b->probe.height &&
-           a->probe.audio_channels == b->probe.audio_channels && a->fp == b->fp;
+           a->probe.audio_channels == b->probe.audio_channels && a->probe.nsounds == b->probe.nsounds && a->fp == b->fp;
 }
 
 /* Write only what changed between two indexes: a quiet library costs no disk writes. */
@@ -1534,7 +1656,7 @@ static void cache_store(const MediaIndex *old, const MediaIndex *nw) {
         const MediaFile *f = &nw->files[i];
         const MediaFile *o = index_find(old, f->id);
         if (o && old->nroots > o->root && str_eq(old->roots[o->root], nw->roots[f->root]) && same_file(o, f) &&
-            (f->type != MF_AUDIO || tags_same(old, nw, f->id)))
+            (f->type != MF_AUDIO || tags_same(old, nw, f->id)) && (f->type != MF_VIDEO || sounds_same(old, nw, f)))
             continue;
         up = db_prep("INSERT OR REPLACE INTO media_file (id, root, type, rel, size, mtime, kind, title, year, season, "
                      "episode, episode_end, ep_title, container, duration_ms, width, height, vcodec, acodec, channels, "
@@ -1568,6 +1690,7 @@ static void cache_store(const MediaIndex *old, const MediaIndex *nw) {
         Buf tags = {0}, chap = {0};
         const MediaTags *t = f->type == MF_AUDIO ? tags_find(nw, f->id) : NULL;
         if (t) tags_pack(t, &tags, &chap);
+        if (f->type == MF_VIDEO) sounds_pack(nw, f, &tags);
         sqlite3_bind_text(up, 24, buf_cstr(&tags), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(up, 25, buf_cstr(&chap), -1, SQLITE_TRANSIENT);
         buf_free(&tags);

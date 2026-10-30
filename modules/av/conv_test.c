@@ -1348,6 +1348,324 @@ TEST(conv_turns_dts_into_aac) {
     }
 }
 
+/* ------------------------------------------------- several sound tracks (2.2) */
+
+typedef struct { /* one sound of a file with several (tracks 2, 3 ...) */
+    const char *codec, *lang, *ietf, *name; /* lang / ietf / name NULL: not written */
+    const uint8_t *priv;
+    size_t priv_len;
+    int is_default; /* its FlagDefault (written always) */
+    Stream s;
+} Snd;
+
+/* an H.264 picture (track 1) and n sounds, their blocks interleaved by time in one cluster */
+static void mux_sounds(W *w, const uint8_t *avcc, size_t avcc_len, const Stream *v, const Snd *snd, int n) {
+    memset(w, 0, sizeof *w);
+    size_t e = w_open(w, 0x1A45DFA3);
+    w_uint(w, 0x4286, 1);
+    w_bin(w, 0x4282, "matroska", 8);
+    w_uint(w, 0x4287, 4);
+    w_close(w, e);
+    size_t seg = w_open(w, 0x18538067);
+    size_t info = w_open(w, 0x1549A966);
+    w_uint(w, 0x2AD7B1, 1000000);
+    w_float(w, 0x4489, v->n * 33.4);
+    w_close(w, info);
+    size_t tracks = w_open(w, 0x1654AE6B);
+    size_t tr = w_open(w, 0xAE);
+    w_uint(w, 0xD7, 1);
+    w_uint(w, 0x83, 1);
+    w_bin(w, 0x86, "V_MPEG4/ISO/AVC", 15);
+    w_bin(w, 0x63A2, avcc, avcc_len);
+    size_t vv = w_open(w, 0xE0);
+    w_uint(w, 0xB0, 64);
+    w_uint(w, 0xBA, 48);
+    w_close(w, vv);
+    w_close(w, tr);
+    for (int k = 0; k < n; k++) {
+        const Snd *s = &snd[k];
+        tr = w_open(w, 0xAE);
+        w_uint(w, 0xD7, (uint64_t)(2 + k));
+        w_uint(w, 0x83, 2);
+        w_bin(w, 0x86, s->codec, strlen(s->codec));
+        if (s->priv) w_bin(w, 0x63A2, s->priv, s->priv_len);
+        if (s->lang) w_bin(w, 0x22B59C, s->lang, strlen(s->lang));
+        if (s->ietf) w_bin(w, 0x22B59D, s->ietf, strlen(s->ietf));
+        if (s->name) w_bin(w, 0x536E, s->name, strlen(s->name));
+        w_uint(w, 0x88, (uint64_t)s->is_default);
+        size_t a = w_open(w, 0xE1);
+        w_float(w, 0xB5, 48000.0);
+        w_uint(w, 0x9F, 2);
+        w_close(w, a);
+        w_close(w, tr);
+    }
+    w_close(w, tracks);
+    size_t cl = w_open(w, 0x1F43B675);
+    w_uint(w, 0xE7, 0);
+    int at[16] = {0}, i = 0;
+    for (;;) { /* the earliest next block (the picture first on a tie) */
+        int best = -1, best_ms = 0;
+        if (i < v->n) best = 0, best_ms = v->ms[i];
+        for (int k = 0; k < n; k++)
+            if (at[k] < snd[k].s.n && (best < 0 || snd[k].s.ms[at[k]] < best_ms)) best = 1 + k, best_ms = snd[k].s.ms[at[k]];
+        if (best < 0) break;
+        if (!best) w_simple(w, 1, v->ms[i], v->key[i], s_block(v, i), s_size(v, i)), i++;
+        else {
+            const Stream *s = &snd[best - 1].s;
+            int b = at[best - 1]++;
+            w_simple(w, 1 + best, s->ms[b], s->key[b], s_block(s, b), s_size(s, b));
+        }
+    }
+    w_close(w, cl);
+    w_close(w, seg);
+}
+
+/* `frames` Dolby frames of the test tone (32 ms each) from block `from` on; rate: 48000, or 44100 for frames
+   that say another rate than the file */
+static void add_ac3(Stream *s, int from, int frames, int rate) {
+    static uint8_t ac3[64 * 1600];
+    size_t len = rate == 48000 ? ac3_test_tone(ac3, sizeof ac3, frames) : ac3_test_tone_at(ac3, sizeof ac3, frames, rate);
+    for (size_t at = 0, f = 0; at < len; f++) {
+        int n = ac3_frame_size(ac3 + at, len - at);
+        if (n <= 0) break;
+        s_add(s, ac3 + at, (size_t)n, (int)(from + f) * 32, true);
+        at += (size_t)n;
+    }
+}
+
+/* the MP4's boxes: a box's payload, its k-th child of a type, a path under it ("mdia/minf/stbl/stsz") */
+typedef struct {
+    const uint8_t *p;
+    size_t n;
+} Bx;
+
+static bool bx_child(Bx in, const char *type, int k, Bx *out) {
+    for (size_t i = 0; i + 8 <= in.n;) {
+        size_t sz = be32(in.p + i);
+        if (sz < 8 || sz > in.n - i) return false;
+        if (!memcmp(in.p + i + 4, type, 4) && k-- == 0) return *out = (Bx){in.p + i + 8, sz - 8}, true;
+        i += sz;
+    }
+    return false;
+}
+
+static bool bx_path(Bx in, const char *path, Bx *out) {
+    char seg[5] = "";
+    for (const char *s = path; *s; s += s[4] == '/' ? 5 : 4) {
+        memcpy(seg, s, 4);
+        if (!bx_child(in, seg, 0, &in)) return false;
+        if (!s[4]) break;
+    }
+    return *out = in, true;
+}
+
+/* the k-th trak of the moov */
+static bool trak_k(const W *w, int k, Bx *t) {
+    size_t moov = box(w, "moov");
+    return moov && bx_child((Bx){w->p + moov + 8, be32(w->p + moov) - 8}, "trak", k, t);
+}
+
+typedef struct {
+    uint32_t flags; /* tkhd: 3 = enabled + in movie, 2 = in movie */
+    int group;      /* its alternate group */
+    char lang[4], name[96];
+    uint32_t samples, first_run; /* stsz's count; samples in its first chunks (stsc's first entry) */
+} TrakFacts;
+
+static bool trak_facts(const W *w, int k, TrakFacts *f) {
+    memset(f, 0, sizeof *f);
+    Bx t, b;
+    if (!trak_k(w, k, &t)) return false;
+    if (bx_path(t, "tkhd", &b)) {
+        f->flags = be32(b.p) & 0xFFFFFF;
+        const uint8_t *q = b.p + (b.p[0] == 1 ? 36 : 24) + 8 + 2;
+        f->group = q[0] << 8 | q[1];
+    }
+    if (bx_path(t, "mdia/mdhd", &b)) {
+        const uint8_t *q = b.p + (b.p[0] == 1 ? 32 : 20);
+        int v = q[0] << 8 | q[1];
+        f->lang[0] = (char)(0x60 + (v >> 10 & 31)), f->lang[1] = (char)(0x60 + (v >> 5 & 31)), f->lang[2] = (char)(0x60 + (v & 31));
+    }
+    if (bx_path(t, "mdia/hdlr", &b) && b.n > 24) snprintf(f->name, sizeof f->name, "%.*s", (int)(b.n - 24), (const char *)b.p + 24);
+    if (bx_path(t, "mdia/minf/stbl/stsz", &b)) f->samples = be32(b.p + 8);
+    if (bx_path(t, "mdia/minf/stbl/stsc", &b) && be32(b.p + 4)) f->first_run = be32(b.p + 12);
+    return true;
+}
+
+/* where sample s of the k-th trak lies in the file (its size too); -1 = none */
+static int64_t trak_sample(const W *w, int k, uint32_t s, uint32_t *size) {
+    Bx t, stsz, stsc, co;
+    bool c64 = false;
+    if (!trak_k(w, k, &t) || !bx_path(t, "mdia/minf/stbl/stsz", &stsz) || !bx_path(t, "mdia/minf/stbl/stsc", &stsc)) return -1;
+    if (!bx_path(t, "mdia/minf/stbl/stco", &co)) {
+        if (!bx_path(t, "mdia/minf/stbl/co64", &co)) return -1;
+        c64 = true;
+    }
+    uint32_t runs = be32(stsc.p + 4), chunks = be32(co.p + 4), at = 0;
+    for (uint32_t c = 1; c <= chunks; c++) {
+        uint32_t per = 0;
+        for (uint32_t r = 0; r < runs; r++)
+            if (be32(stsc.p + 8 + r * 12) <= c) per = be32(stsc.p + 8 + r * 12 + 4);
+        int64_t off = c64 ? (int64_t)((uint64_t)be32(co.p + 8 + (c - 1) * 8) << 32 | be32(co.p + 12 + (c - 1) * 8))
+                          : (int64_t)be32(co.p + 8 + (c - 1) * 4);
+        for (uint32_t i = 0; i < per; i++, at++) {
+            uint32_t sz = be32(stsz.p + 12 + at * 4);
+            if (at == s) return *size = sz, off;
+            off += sz;
+        }
+    }
+    return -1;
+}
+
+/* 2.2 (owner: "not language locked"): every sound the converter takes becomes its own track, in the file's
+   order - AAC copied byte for byte, Dolby made AAC -, each with its language (an IETF tag read as one) and name,
+   only the default one enabled; what it can't take (Opus) is left out; the runs keep the chunk tables small. */
+TEST(conv_keeps_every_sound_track) {
+    static Stream v;
+    static Snd snd[5];
+    static uint8_t aus[200][AAC_MAX_AU];
+    int sizes[200];
+    uint8_t avcc[256], asc[2];
+    size_t avcc_len = 0;
+    memset(snd, 0, sizeof snd);
+    add_h264(&v, 60, avcc, &avcc_len); /* 2 s */
+    int naus = make_aac(aus, sizes, 200, 2.0, asc);
+    for (int a = 0; a < naus; a++) s_add(&snd[0].s, aus[a], (size_t)sizes[a], au_ms(a), true), s_add(&snd[3].s, aus[a], (size_t)sizes[a], au_ms(a), true);
+    add_ac3(&snd[1].s, 0, 40, 48000);
+    for (int b = 0; b < 20; b++) s_add(&snd[2].s, "opus bytes", 10, b * 20, true);
+    add_ac3(&snd[4].s, 0, 40, 48000);
+    snd[0].codec = "A_AAC", snd[0].lang = "eng", snd[0].name = "English", snd[0].priv = asc, snd[0].priv_len = 2;
+    snd[1].codec = "A_AC3", snd[1].lang = "rus", snd[1].name = "Русский дубляж", snd[1].is_default = 1;
+    snd[2].codec = "A_OPUS", snd[2].lang = "fin";
+    snd[3].codec = "A_AAC", snd[3].ietf = "sv-SE", snd[3].name = "Svenska", snd[3].priv = asc, snd[3].priv_len = 2;
+    snd[4].codec = "A_AC3", snd[4].lang = "ukr";
+    W in, out;
+    mux_sounds(&in, avcc, avcc_len, &v, snd, 5);
+    AvConvJob j = {0};
+    Seen s;
+    CHECK(run(&in, &out, &j, &s));
+    CHECK_STR(j.err, "");
+    CHECK_STR(j.what, "H.264 copied · Dolby Digital → AAC (+3 more sound tracks)");
+    CHECK(box(&out, "moov") < box(&out, "mdat")); /* the index fitted its room: it comes first */
+    static const struct {
+        uint32_t flags;
+        int group;
+        const char *lang, *name;
+    } WANT[] = {{3, 0, "und", "VideoHandler"}, {2, 1, "eng", "English"}, {3, 1, "rus", "Русский дубляж"},
+                {2, 1, "swe", "Svenska"},      {2, 1, "ukr", "SoundHandler"}};
+    TrakFacts f;
+    for (int k = 0; k < 5; k++) {
+        CHECK(trak_facts(&out, k, &f));
+        CHECK_INT((int)f.flags, (int)WANT[k].flags);
+        CHECK_INT(f.group, WANT[k].group);
+        CHECK_STR(f.lang, WANT[k].lang);
+        CHECK_STR(f.name, WANT[k].name);
+        if (k == 1 || k == 3) {
+            CHECK_INT((int)f.samples, naus);
+            CHECK_INT((int)f.first_run, 48); /* a run of ~1 s a chunk */
+        }
+        if (k == 2 || k == 4) {
+            CHECK((int)f.samples >= 60 && (int)f.samples <= 63); /* 40 x 1536 = 60 x 1024, and the tail */
+            CHECK_INT((int)f.first_run, 48);
+        }
+    }
+    CHECK(!trak_facts(&out, 5, &f)); /* (no Opus) */
+    for (int k = 1; k <= 3; k += 2) /* the copied sounds: the very same frames */
+        for (int a = 0; a < naus; a++) {
+            uint32_t size = 0;
+            int64_t off = trak_sample(&out, k, (uint32_t)a, &size);
+            CHECK(off > 0 && (int)size == sizes[a] && !memcmp(out.p + off, aus[a], size));
+        }
+    CHECK(track_bytes(&out, 2) / 60 > 40 && track_bytes(&out, 4) / 60 > 40); /* the Dolby ones: a tone, not silence */
+    free(in.p), free(out.p);
+    s_free(&v);
+    for (int k = 0; k < 5; k++) s_free(&snd[k].s);
+}
+
+/* A sound that goes undecodable part-way (here: Dolby frames at another rate than the file says) is dropped
+   while another lives - the default one too, and another takes its place; alone it refuses the file, in the
+   words it always did. */
+TEST(conv_drops_a_sound_that_goes_undecodable) {
+    static Stream v;
+    static Snd snd[2];
+    static uint8_t aus[200][AAC_MAX_AU];
+    int sizes[200];
+    uint8_t avcc[256], asc[2];
+    size_t avcc_len = 0;
+    add_h264(&v, 45, avcc, &avcc_len);
+    int naus = make_aac(aus, sizes, 200, 1.5, asc);
+    for (int def = 0; def < 3; def++) { /* the AAC the default / the Dolby the default / the Dolby alone */
+        memset(snd, 0, sizeof snd);
+        for (int a = 0; a < naus; a++) s_add(&snd[0].s, aus[a], (size_t)sizes[a], au_ms(a), true);
+        add_ac3(&snd[1].s, 0, 20, 48000);
+        add_ac3(&snd[1].s, 20, 20, 44100);
+        snd[0].codec = "A_AAC", snd[0].lang = "eng", snd[0].priv = asc, snd[0].priv_len = 2, snd[0].is_default = def == 0;
+        snd[1].codec = "A_AC3", snd[1].lang = "rus", snd[1].is_default = def >= 1;
+        W in, out;
+        if (def < 2) mux_sounds(&in, avcc, avcc_len, &v, snd, 2);
+        else mux_sounds(&in, avcc, avcc_len, &v, snd + 1, 1);
+        AvConvJob j = {0};
+        Seen s;
+        if (def == 2) {
+            CHECK(!run(&in, &out, &j, &s));
+            CHECK(j.unsupported);
+            CHECK_STR(j.err, "Its Dolby sound isn't at the rate the file says");
+        } else {
+            CHECK(run(&in, &out, &j, &s));
+            CHECK_STR(j.err, "");
+            TrakFacts f;
+            CHECK(trak_facts(&out, 1, &f));
+            CHECK_STR(f.lang, "eng");
+            CHECK_INT((int)f.flags, 3); /* the default - or, its default gone, the one left */
+            CHECK_INT((int)f.samples, naus);
+            CHECK(!trak_facts(&out, 2, &f)); /* the Dolby one left out of the index */
+        }
+        free(in.p), free(out.p);
+        for (int k = 0; k < 2; k++) s_free(&snd[k].s);
+    }
+    s_free(&v);
+}
+
+/* At most 8 sounds: the first eight in the file's order - or, when the default comes later, it takes the eighth's
+   place. */
+TEST(conv_keeps_eight_sounds) {
+    static const char *const LANGS[10] = {"eng", "swe", "nor", "dan", "fin", "ger", "fre", "spa", "ita", "dut"};
+    static Stream v;
+    static Snd snd[10];
+    static uint8_t aus[200][AAC_MAX_AU];
+    int sizes[200];
+    uint8_t avcc[256], asc[2];
+    size_t avcc_len = 0;
+    add_h264(&v, 15, avcc, &avcc_len);
+    int naus = make_aac(aus, sizes, 200, 0.5, asc);
+    for (int late = 0; late < 2; late++) {
+        memset(snd, 0, sizeof snd);
+        for (int k = 0; k < 10; k++) {
+            for (int a = 0; a < naus; a++) s_add(&snd[k].s, aus[a], (size_t)sizes[a], au_ms(a), true);
+            snd[k].codec = "A_AAC", snd[k].lang = LANGS[k], snd[k].priv = asc, snd[k].priv_len = 2;
+            snd[k].is_default = late && k == 9;
+        }
+        W in, out;
+        mux_sounds(&in, avcc, avcc_len, &v, snd, 10);
+        AvConvJob j = {0};
+        Seen s;
+        CHECK(run(&in, &out, &j, &s));
+        CHECK_HAS(j.what, "(+7 more sound tracks)");
+        TrakFacts f;
+        for (int k = 1; k <= 8; k++) {
+            CHECK(trak_facts(&out, k, &f));
+            const char *want = late && k == 8 ? "dut" : LANGS[k - 1];
+            CHECK_STR(f.lang, want);
+            CHECK_INT((int)f.flags, (late ? k == 8 : k == 1) ? 3 : 2);
+            CHECK_INT((int)f.samples, naus);
+        }
+        CHECK(!trak_facts(&out, 9, &f));
+        free(in.p), free(out.p);
+        for (int k = 0; k < 10; k++) s_free(&snd[k].s);
+    }
+    s_free(&v);
+}
+
 /* MPEG-2 coded interlaced, as most DVDs are: fields from different instants throughout are
    deinterlaced (one picture each), film telecined to 29.97 goes back to 23.976 (one picture in
    five dropped) - picked by the analysis, as for a real disc. */
@@ -1937,7 +2255,7 @@ TEST(conv_fuzz_seeds) {
                                    0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
     char took[64][40]; /* every CodecID a seed carries: each format the converter takes needs one (below) */
     int ntook = 0;
-    for (int seed = 0; seed < 15; seed++) {
+    for (int seed = 0; seed < 16; seed++) {
         uint8_t avcc[256], asc[2];
         size_t avcc_len = 0;
         Tracks mp2 = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0}, t = mp2;
@@ -2046,6 +2364,28 @@ TEST(conv_fuzz_seeds) {
             }
             for (int f = 0; f < 8; f++) s_add(&a, eac3 + (size_t)f * 384, 384, f * 16, true);
             t = (Tracks){"V_AV1", av1c, sizeof av1c, 64, 48, "A_EAC3", NULL, 0};
+            break;
+        }
+        case 15: { /* several sounds (2.2): each kept as its own track - AAC copied, Dolby, Dolby Digital Plus and DTS
+                      made AAC, an Opus left out; the default flag on the second, a language as an IETF tag */
+            static Snd snd[5];
+            memset(snd, 0, sizeof snd);
+            name = "h264-five-sounds.mkv";
+            add_h264(&v, 12, avcc, &avcc_len);
+            add_aac(&snd[0].s, 0.4, asc);
+            for (int f = 0; f < 12; f++) s_add(&snd[1].s, ac3 + f % 4 * 768, 768, f * 32, true);
+            for (int f = 0; f < 8; f++) s_add(&snd[2].s, eac3 + (size_t)f * 384, 384, f * 16, true);
+            add_dts(&snd[3].s, 38, true);
+            for (int f = 0; f < 10; f++) s_add(&snd[4].s, "opus", 4, f * 20, true);
+            snd[0].codec = "A_AAC", snd[0].lang = "eng", snd[0].name = "English", snd[0].priv = asc, snd[0].priv_len = 2;
+            snd[1].codec = "A_AC3", snd[1].lang = "rus", snd[1].name = "Русский", snd[1].is_default = 1;
+            snd[2].codec = "A_EAC3", snd[2].ietf = "uk-UA";
+            snd[3].codec = "A_DTS", snd[3].lang = "fin";
+            snd[4].codec = "A_OPUS", snd[4].lang = "swe";
+            mux_sounds(&in, avcc, avcc_len, &v, snd, 5);
+            for (int k = 0; k < 5; k++) s_free(&snd[k].s);
+            t = (Tracks){"V_MPEG4/ISO/AVC", avcc, avcc_len, 64, 48, "A_AC3", NULL, 0};
+            built = true;
             break;
         }
         case 0:
