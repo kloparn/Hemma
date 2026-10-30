@@ -62,6 +62,12 @@ typedef struct {
     bool known;       /* the library has this show or film already: it goes into that folder */
     bool kept;        /* goes as it was chosen (nothing told Hemma where else) */
     bool part;        /* an audiobook's .m4a/.mp3 among others in its book's folder (an .m4b is a whole book) */
+    /* THE YEAR OF A FILM (2.4; owner, 2026-10-30: "almost mandatory ... Otherwise it's hard to identify stuff") */
+    uint64_t film;    /* a film: its title as found, as a key (upload_show_key) - its "y.<hex>" year box goes by it */
+    bool no_year;     /* a film whose name has no year: the preview asks for it (year = the one typed, else 0) */
+    uint64_t group;   /* a video that isn't an episode or an extra: its top folder as chosen, as a key - "These are
+                         films" ("films.<hex>") reads every video in there as a film; 0 = none */
+    bool as_film;     /* a film by "These are films" (by its name it was another video) */
 } UpSorted;
 
 typedef struct {
@@ -70,10 +76,19 @@ typedef struct {
 } UpName;
 
 typedef struct {
+    uint64_t key; /* UpSorted.film */
+    int year;     /* typed on the preview */
+} UpYear;
+
+typedef struct {
     const char *root;     /* the library folder it goes into */
     uint64_t series;      /* /media/upload?series=: everything into this series' folder; 0 = by the names */
     const UpName *names;  /* series renamed on the preview */
     int nnames;
+    const UpYear *years;  /* films' years typed on the preview (2.4) */
+    int nyears;
+    const uint64_t *films; /* top folders whose videos are films ("These are films", UpSorted.group) */
+    int nfilms;
 } UpSortOpts;
 
 /* rels[i]: file i as chosen, cleaned (upload_clean_rel), or NULL (left out: a bad name). out[i] gets

@@ -61,10 +61,12 @@ For admins:
   An upload picks up where it stopped if the connection drops, never idles while something is ready
   to go, and skips episodes and films you already have - sending just the subtitles they carry when
   the library's copy has none. Its card shows what's being processed, uploaded and saved, and how fast.
+  A film without a year in its name gets a *Year* box first - the year tells The Lion King (1994) from
+  The Lion King (2019) - and a folder of films named without years can be marked *These are films*.
   Audiobooks go into the library's *Audiobooks* folder.
 - **Looking after the library.** Remove an episode, a season, a series or a film for good, rename a
-  series, fix a title or an episode's number (Hemma renames the files), see what takes the most room,
-  and mark folders *Not for children*.
+  series, fix a title or an episode's number (Hemma renames the files), see what takes the most room
+  and which films still lack a year, and mark folders *Not for children*.
 
 ### Posters
 

@@ -2160,6 +2160,37 @@ static void left_card(Ctx *c, Buf *b, const MediaIndex *ix) {
     ui_card_end(b);
 }
 
+/* Films without a year (2.4; owner, 2026-10-30: "the year of a movie to be almost mandatory ... Otherwise it's hard
+   to identify stuff"): The Lion King (1994) or (2019)? Each links its watch page's Fix title (manage.c: renames it to
+   "<Title> (<Year>)" on the disk). */
+#define NOYEAR_SHOWN 20
+static void noyear_card(Ctx *c, Buf *b, const MediaIndex *ix) {
+    if (!is_admin(c)) return;
+    int n = 0;
+    for (int i = 0; i < ix->nmovies; i++) n += !ix->files[ix->movies[i]].name.year;
+    if (!n) return;
+    ui_card(b, T("Films without a year"), NULL, NULL);
+    buf_puts(b, "<p class=\"muted\">");
+    H(b,
+      TN(n, "%d film has no year in its name. The year tells films apart - The Lion King (1994) from The Lion King "
+            "(2019) - and finds its categories: add it with Fix title.",
+         "%d films have no year in their names. The year tells films apart - The Lion King (1994) from The Lion King "
+         "(2019) - and finds their categories: add it with Fix title."),
+      n);
+    buf_puts(b, "</p><ul class=\"rows media-noyear\">");
+    for (int i = 0, shown = 0; i < ix->nmovies && shown < NOYEAR_SHOWN; i++) {
+        const MediaFile *f = &ix->files[ix->movies[i]];
+        if (f->name.year) continue;
+        shown++;
+        H(b, "<li class=\"row\" id=\"media-noyear-%X\"><div class=\"row-main\"><b>%s</b><small class=\"muted\">%s</small>"
+             "</div><a class=\"btn\" href=\"/media/watch/%X?fix=1\">%s</a></li>",
+          f->id, f->name.title, f->rel, f->id, T("Fix title"));
+    }
+    if (n > NOYEAR_SHOWN) more_row(b, "<li class=\"row muted\">", n - NOYEAR_SHOWN);
+    buf_puts(b, "</ul>");
+    ui_card_end(b);
+}
+
 /* Uploads that never finished (issue #40): their ".part" files stayed for good, as big as a film,
    and nothing in Hemma showed them. Listed once nobody has touched them for MEDIA_PART_DAYS. */
 static void parts_card(Ctx *c, Buf *b, const MediaIndex *ix) {
@@ -2388,6 +2419,7 @@ static void page_settings(Ctx *c, Buf *b) {
     if (is_admin(c)) rescanners_form(b);
     ui_card_end(b);
     left_card(c, b, ix);
+    noyear_card(c, b, ix);
     parts_card(c, b, ix);
     history_card(c, b);
     media_manage_room_card(c, b); /* (admins: What takes room - manage.c) */

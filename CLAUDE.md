@@ -1841,7 +1841,17 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
   split on '-'), "Season 1-2", "Seasons 1-9" (SEASONS_WORDS) - "The.Simpsons.S01-S31.1080p" names "The
   Simpsons"; such a folder is never a season folder.
   Movies vs series: episode markers / season folders -> series; "Title (Year)" -> movie; folders named
-  Series/Serier/TV Shows/Anime or Movies/Films/Filmer or Home videos/Family/DCIM lean the guess.
+  Series/Serier/TV Shows/Anime or Movies/Films/Filmer or Home videos/Family/DCIM lean the guess. 2.4 (owner, 2026-10-30:
+  a "Disney" folder of 54 films named without years came out as other videos; "the year of a movie to be almost
+  mandatory"): library.c makes ANOTHER video of 60+ minutes a film (not an extra, a disc rip's title or a play-all; home
+  videos folders still win - at the scan and from the cache); names.c drops a collection's ORDER NUMBER from a film's title
+  ("1  Aladdin" two spaces, "1. The Rescuers", "1.5. The Lion King (Hakuna Matata)", "2 - Title" -> MediaName.order in
+  tenths) but keeps one with one plain space ("101 Dalmatians", "300 Rise of an Empire"), glued to a dot ("2.Fast.2.Furious")
+  or of four digits ("2001 A Space Odyssey"); episode rules come first. The upload preview gives every film without a year
+  a box `y.<upload_show_key(title as found)>` (1880..next year; from fields and the JSON plan) -> <movies>/<Title (Year)>/
+  <its own name>, and while some are empty the form's data-confirm asks "N films have no year. Upload them anyway?"; a top
+  folder of the chosen files with other videos gets "These are films" (`films.<hex of the folder>` = 1: sorted as films).
+  Library settings (admins): "Films without a year (N)", up to 20 with Manage's Fix title.
 - Streaming is direct play (bytes as stored, Range requests, worker thread per stream, `sendfile`
   zero-copy on Linux). Browsers can't decode MPEG-2 (the owner's DVD seasons) and Chrome/Firefox
   not AC-3, E-AC-3 or DTS (they play the picture silently; DTS nothing plays): that's what modules/av is for (owner wants it
@@ -1987,6 +1997,9 @@ on TV pages: hemma-app:save?m=<manifest, %-encoded> ("Save for offline" after Do
 "Save season for offline" in the season toolbar - which children now get in the app, holding only that) and
 hemma-app:offline (Watch's header; people.c's "The Hemma app" card in the app: "Saved for offline"). The app's side:
 apps/android (see there). Progress comes back through the plain POST /a/media.progress (same origin, the cookie).
+2.4.0 (branch fix/movie-identifier) = FILMS GET THEIR YEAR: the upload preview's Year boxes (almost mandatory: Start asks
+first), "These are films" for a folder, order numbers out of titles, a video of an hour or more a film, and Library
+settings' "Films without a year" (see "Media notes").
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling

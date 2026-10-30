@@ -718,5 +718,19 @@ static const Tr TR[] = {
     {"For videos with sound in several languages. A video without yours plays in its own.",
      "För videor med ljud på flera språk. En video utan ditt spelas på sitt eget.",
      "Para vídeos con sonido en varios idiomas. Un vídeo sin el tuyo se reproduce en el suyo."},
+    /* films without a year (2.4) */
+    {"Films without a year", "Filmer utan år", "Películas sin año"},
+    {"%d film has no year in its name. The year tells films apart - The Lion King (1994) from The Lion King (2019) - "
+     "and finds its categories: add it with Fix title.",
+     "%d film har inget år i namnet. Året skiljer filmer åt - Lejonkungen (1994) från Lejonkungen (2019) - och hittar "
+     "dess kategorier: lägg till det med Rätta titeln.",
+     "%d película no tiene año en su nombre. El año distingue las películas - El rey león (1994) de El rey león "
+     "(2019) - y encuentra sus categorías: añádelo con Corregir título."},
+    {"%d films have no year in their names. The year tells films apart - The Lion King (1994) from The Lion King "
+     "(2019) - and finds their categories: add it with Fix title.",
+     "%d filmer har inget år i namnet. Året skiljer filmer åt - Lejonkungen (1994) från Lejonkungen (2019) - och "
+     "hittar deras kategorier: lägg till det med Rätta titeln.",
+     "%d películas no tienen año en su nombre. El año distingue las películas - El rey león (1994) de El rey león "
+     "(2019) - y encuentra sus categorías: añádelo con Corregir título."},
 };
 TRANSLATIONS(media, TR)

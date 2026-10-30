@@ -228,3 +228,28 @@ test('an MKV with an AV1 picture is converted here too', async ({ page }) => {
   const mp4 = fs.readFileSync(copy).toString('latin1');
   for (const box of ['av01', 'av1C', 'mp4a']) expect(mp4).toContain(box); /* (AV1 copied, the sound made AAC) */
 });
+
+// 2.4 (owner: "the year of a movie to be almost mandatory"): a film without a year gets a box on the preview, Start
+// asks first while it's empty, and with the year typed the film goes into Movies/<Title (Year)>/ under its own name.
+test('a film without a year is asked for it, and goes in with it', async ({ page }) => {
+  const from = path.join(WORK, 'noyear', 'Yearless.1080p.BluRay.x264.mp4');
+  const to = path.join(LIBRARY, 'Movies', 'Yearless (2019)', path.basename(from));
+  fs.mkdirSync(path.dirname(from), { recursive: true });
+  fs.copyFileSync(CLIP, from);
+  await page.goto('/media/upload');
+  await page.locator('input[name=files]').setInputFiles(from);
+  const box = page.locator('.media-up-year input');
+  await expect(box).toHaveCount(1);
+  await expect(page.locator('form[data-upload]')).toHaveAttribute('data-confirm', '1 film has no year. Upload it anyway?');
+  let asked = '';
+  page.once('dialog', (d) => { asked = d.message(); d.dismiss(); });
+  await page.locator('#media-up-start').click();
+  await expect.poll(() => asked, { message: 'Start asks first' }).toContain('no year');
+  expect(fs.existsSync(to)).toBe(false); /* (not now: the question was turned down) */
+  await box.fill('2019');
+  await expect(page.locator('.media-up-group .media-up-dir > span')).toHaveText(/Movies\s*\/\s*Yearless \(2019\)/);
+  await expect(page.locator('form[data-upload]')).not.toHaveAttribute('data-confirm', /./);
+  await page.locator('#media-up-start').click();
+  await expect.poll(() => fs.existsSync(to), { message: 'it arrives', timeout: 30_000 }).toBe(true);
+  expect(same(to, CLIP)).toBe(true);
+});

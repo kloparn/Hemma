@@ -30,6 +30,9 @@ typedef struct {
     bool unnumbered; /* episode 0 until the library numbers it (disc, then title order) */
     int disc;        /* from a "Disc - 2" / "DVD 2" folder; 0 = none */
     int track;       /* MakeMKV title number ("B3_t03" -> 3, "title00" -> 0); -1 = none */
+    /* a collection's order number in front of a film's (or other video's) name, in tenths: "1  Aladdin" 10,
+       "1.5. The Lion King (Hakuna Matata)" 15, "2 - Title" 20 - left out of the title (2.4); 0 = none */
+    int order;
 } MediaName;
 
 /* rel = path relative to the library root with '/' separators, e.g.
@@ -40,6 +43,9 @@ void media_parse_name(const char *rel, MediaName *out);
 void media_parse_name_in(const char *root_name, const char *rel, MediaName *out);
 /* The same with the name rules for extras off: for a video named like one that runs too long to be one. */
 void media_parse_name_long(const char *root_name, const char *rel, MediaName *out);
+/* The same read as a film (2.4): as if a Movies folder held it - for a video an hour long or more that names no
+   episode (library.c), or one an upload's "These are films" took (upload_sort.c). A home-videos folder still wins. */
+void media_parse_name_film(const char *root_name, const char *rel, MediaName *out);
 /* Folder roles: a season folder ("Season 2", "season 1 70's show", "S01", "Specials" = 0) or a
    disc folder ("Disc - 1", "DVD 2", "D1") returns its number, anything else -1. */
 int media_season_folder(const char *name);

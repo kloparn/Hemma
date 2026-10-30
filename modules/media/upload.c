@@ -860,6 +860,8 @@ static bool art_plan(Json *j, int at, Batch **out, char *err, size_t cap) {
 /* What a plan is asked for - by the page's Start (the JSON plan) or by its preview (the live action's
    fields): read the same way from either, so both do the same. */
 #define NAMES_MAX 24
+#define YEARS_MAX 256 /* (a folder of films without years: one box each) */
+#define FILMS_MAX 32
 typedef struct {
     int root;        /* into media_roots(); -1 = none chosen */
     bool sort;       /* by the files' names (upload_sort: the page's way); else as chosen, under `into` */
@@ -870,6 +872,10 @@ typedef struct {
     bool ram;        /* copies wait in the browser's memory, not on its disk (only remembered here) */
     UpName names[NAMES_MAX]; /* series renamed on the preview ("to.<16 hex>" fields) */
     int nnames;
+    UpYear years[YEARS_MAX]; /* films' years typed on the preview ("y.<16 hex>" fields: 2.4) */
+    int nyears;
+    uint64_t films[FILMS_MAX]; /* top folders whose videos are films ("films.<16 hex>" = 1: 2.4) */
+    int nfilms;
     int n;           /* files chosen (over MAX_FILES: refused, and none are kept) */
     char **paths;
     int64_t *sizes;  /* -1: the browser didn't say */
@@ -918,6 +924,27 @@ static void ask_name(PlanIn *in, const char *key, const char *val) { /* "to.<16 
     if (nm->name[0]) nm->key = k, in->nnames++;
 }
 
+/* A film's year that can be one: 1880 .. next year */
+static int year_ok(const char *v) {
+    char t[16];
+    str_copy(t, sizeof t, v);
+    str_trim(t);
+    if (strlen(t) != 4 || t[strspn(t, "0123456789")]) return 0;
+    int y = (int)str_int_or(t, 0);
+    return y >= 1880 && y <= dt_local(now_sec()).year + 1 ? y : 0;
+}
+
+/* The preview's other boxes (2.4): "y.<16 hex>" = a film's year, "films.<16 hex>" = 1: that folder's videos are films */
+static void ask_more(PlanIn *in, const char *key, const char *val) {
+    uint64_t k;
+    if (str_starts(key, "y.") && media_parse_id(key + 2, &k) && in->nyears < YEARS_MAX) {
+        int y = year_ok(val);
+        if (y) in->years[in->nyears++] = (UpYear){k, y};
+    } else if (str_starts(key, "films.") && media_parse_id(key + 6, &k) && in->nfilms < FILMS_MAX && str_eq(val, "1")) {
+        in->films[in->nfilms++] = k;
+    }
+}
+
 static void plan_in(const Ask *a, PlanIn *in) {
     char tmp[300];
     in->root = ask_str(a, "root", tmp, sizeof tmp) ? (int)str_int_or(tmp, -1) : -1;
@@ -934,12 +961,16 @@ static void plan_in(const Ask *a, PlanIn *in) {
     in->ram = ask_on(a, "ram");
     if (!ask_str(a, "series", tmp, sizeof tmp) || !media_parse_id(tmp, &in->series)) in->series = 0;
     if (a->f) {
-        for (int i = 0; i < a->f->n; i++) ask_name(in, a->f->k[i], a->f->v[i]);
+        for (int i = 0; i < a->f->n; i++) {
+            ask_name(in, a->f->k[i], a->f->v[i]);
+            ask_more(in, a->f->k[i], a->f->v[i]);
+        }
     } else {
         for (int k = json_child(a->j, 0); k >= 0; k = json_next(a->j, 0, k)) {
             char key[40], val[200];
-            if (json_string(a->j, k, key, sizeof key) && str_starts(key, "to.") && json_string(a->j, k + 1, val, sizeof val))
-                ask_name(in, key, val);
+            if (!json_string(a->j, k, key, sizeof key) || !json_string(a->j, k + 1, val, sizeof val)) continue;
+            if (str_starts(key, "to.")) ask_name(in, key, val);
+            else ask_more(in, key, val);
         }
     }
 }
@@ -1030,7 +1061,8 @@ static Batch *plan_make(Ctx *c, const PlanIn *in, bool dry, char *err, size_t ca
         if (in->sizes[i] >= 0 && upload_clean_rel(in->paths[i], tmp, sizeof tmp)) clean[i] = xstrdup(tmp);
     }
     UpSorted *srt = xcalloc((size_t)n, sizeof *srt);
-    UpSortOpts so = {.root = b->root, .series = in->series, .names = in->names, .nnames = in->nnames};
+    UpSortOpts so = {.root = b->root, .series = in->series, .names = in->names, .nnames = in->nnames,
+                     .years = in->years, .nyears = in->nyears, .films = in->films, .nfilms = in->nfilms};
     upload_sort(&so, (const char *const *)clean, n, srt);
     /* episodes and films the library has under another name stay behind (before any converting) */
     for (int i = 0; i < n; i++) {
@@ -2192,6 +2224,22 @@ typedef struct {
     bool known;
 } PvName;
 
+/* (2.4) A film without a year in its name - its year box - and a folder whose videos could be films - its toggle */
+#define PV_FILMS 200
+#define PV_MARKS 16
+typedef struct {
+    uint64_t key;     /* UpSorted.film: "y.<hex>" */
+    char title[128];
+    int year;         /* typed (0 = not yet) */
+} PvFilm;
+
+typedef struct {
+    uint64_t key;      /* UpSorted.group: "films.<hex>" */
+    char folder[128];  /* the top folder as chosen ("" = files on their own) */
+    int videos;
+    bool on;
+} PvMark;
+
 typedef struct {
     uint64_t id;
     int person;
@@ -2209,6 +2257,10 @@ typedef struct {
     int nrows;
     PvName names[PV_NAMES];
     int nnames;
+    PvFilm films[PV_FILMS]; /* films without a year in their names (2.4) */
+    int nfilms, no_year;    /* ... and how many still lack one */
+    PvMark marks[PV_MARKS]; /* "These are films" (2.4) */
+    int nmarks;
 } Preview;
 
 static Preview *g_pv[PV_SLOTS]; /* (main thread only) */
@@ -2333,6 +2385,38 @@ static void pv_names(Preview *p, const PlanIn *in, const UpSorted *srt) {
     }
 }
 
+/* (2.4) The films without a year (one box per title) and the folders whose videos could be films (one toggle each) */
+static void pv_films(Preview *p, const PlanIn *in, const UpSorted *srt) {
+    for (int i = 0; i < in->n; i++) {
+        const UpSorted *s = &srt[i];
+        if (s->kind == UPK_FILM && s->no_year) {
+            PvFilm *f = NULL;
+            for (int k = 0; k < p->nfilms && !f; k++)
+                if (p->films[k].key == s->film) f = &p->films[k];
+            if (!f && p->nfilms < PV_FILMS) {
+                f = &p->films[p->nfilms++];
+                f->key = s->film;
+                str_copy(f->title, sizeof f->title, s->title);
+                f->year = s->year;
+            }
+        }
+        if (!s->group || (s->kind != UPK_OTHER && !s->as_film)) continue;
+        PvMark *m = NULL;
+        for (int k = 0; k < p->nmarks && !m; k++)
+            if (p->marks[k].key == s->group) m = &p->marks[k];
+        if (!m && p->nmarks == PV_MARKS) continue;
+        if (!m) {
+            m = &p->marks[p->nmarks++];
+            m->key = s->group;
+            const char *path = in->paths[i], *slash = strchr(path, '/');
+            str_ncopy(m->folder, sizeof m->folder, path, slash ? (size_t)(slash - path) : 0);
+            for (int k = 0; k < in->nfilms; k++) m->on |= in->films[k] == s->group;
+        }
+        m->videos++;
+    }
+    for (int k = 0; k < p->nfilms; k++) p->no_year += !p->films[k].year;
+}
+
 static Preview *pv_build(Ctx *c, const PlanIn *in, int all) {
     Preview *p = xcalloc(1, sizeof *p);
     rand_bytes(&p->id, sizeof p->id);
@@ -2348,6 +2432,7 @@ static Preview *pv_build(Ctx *c, const PlanIn *in, int all) {
     int64_t held = 0, spare = spare_for(b, b->root, c->me->id, &held); /* as the plan will ask */
     if (b->total > spare) p->no_room = true, p->need = b->total, p->spare = spare, p->held = held;
     if (in->sort && !in->series) pv_names(p, in, srt);
+    if (in->sort && !in->series) pv_films(p, in, srt);
 
     int n = b->nfiles, *ord = xmalloc((size_t)n * sizeof *ord);
     for (int i = 0; i < n; i++) ord[i] = i;
@@ -2612,6 +2697,45 @@ static void pv_draw(Ctx *c, Buf *b, const Preview *p) {
         buf_puts(b, "<datalist id=\"media-up-shows\">");
         for (int i = 0; i < ix->nseries && i < 400; i++) H(b, "<option value=\"%s\">", ix->series[i].title);
         buf_puts(b, "</datalist></details>");
+    }
+    /* (2.4) folders of videos that could be films: one tick each, and they go into Movies */
+    if (p->nmarks) {
+        H(b, "<fieldset class=\"media-up-marks\" id=\"media-up-marks\"><legend>%s</legend><p class=\"muted media-small\">%s</p>",
+          T("Films?"),
+          T("Hemma reads these as videos that aren't films or episodes. Ticked, they go into Movies, each into a folder of "
+            "its own with its year."));
+        for (int i = 0; i < p->nmarks; i++) {
+            const PvMark *m = &p->marks[i];
+            H(b, "<label class=\"check\" id=\"media-up-m-%X\"><input type=\"checkbox\" name=\"films.%X\" value=\"1\"%r><span>",
+              m->key, m->key, m->on ? " checked" : "");
+            if (m->folder[0]) H(b, T("The videos in %s are films"), m->folder);
+            else H(b, "%s", T("The videos on their own are films"));
+            buf_puts(b, " <small class=\"muted\">");
+            H(b, TN(m->videos, "%d video", "%d videos"), m->videos);
+            buf_puts(b, "</small></span></label>");
+        }
+        buf_puts(b, "</fieldset>");
+    }
+    /* (2.4; owner: "the year of a movie to be almost mandatory") a box for each film without a year in its name */
+    if (p->nfilms) {
+        H(b, "<details class=\"media-up-years\" id=\"media-up-years\"%r><summary>", p->no_year ? " open" : "");
+        if (p->no_year) H(b, TN(p->no_year, "%d film has no year", "%d films have no year"), p->no_year);
+        else H(b, "%s", T("The films' years"));
+        H(b, "</summary><p class=\"muted media-small\">%s</p>",
+          T("The year tells films apart - The Lion King (1994) from The Lion King (2019) - and finds their categories. "
+            "Without one, a film goes in all the same."));
+        for (int i = 0; i < p->nfilms; i++) {
+            const PvFilm *f = &p->films[i];
+            char year[8] = "";
+            if (f->year) snprintf(year, sizeof year, "%d", f->year);
+            H(b, "<label class=\"field media-up-year\" id=\"media-up-y-%X\"><span>%s", f->key, f->title);
+            if (!f->year) H(b, " <small class=\"badge warn\">%s</small>", T("needs its year"));
+            H(b,
+              "</span><input name=\"y.%X\" value=\"%s\" inputmode=\"numeric\" maxlength=\"4\" pattern=\"[0-9]{4}\" "
+              "placeholder=\"%s\" autocomplete=\"off\"></label>",
+              f->key, year, T("Year"));
+        }
+        buf_puts(b, "</details>");
     }
     /* where it all goes, folder by folder */
     for (int gi = 0; gi < p->ngroups; gi++) {
@@ -3102,6 +3226,12 @@ void upload_page(Ctx *c, Buf *b) {
       "data-preview=\"media.upload_preview\" data-empty=\"%s\"",
       T("Choose videos or a folder first"));
     if (here) H(b, " data-convert=\"/static/conv.js?v=%s\" data-wasm=\"/static/av.wasm?v=%s\"", worker->etag, wasm->etag);
+    if (pv && pv->no_year) { /* (2.4: "almost mandatory" - Start asks first while films lack their years) */
+        char ask[200];
+        snprintf(ask, sizeof ask, TN(pv->no_year, "%d film has no year. Upload it anyway?", "%d films have no year. Upload them anyway?"),
+                 pv->no_year);
+        H(b, " data-confirm=\"%s\"", ask);
+    }
     buf_puts(b, "><input type=\"hidden\" name=\"sort\" value=\"1\">");
     if (ser) {
         H(b, "<input type=\"hidden\" name=\"series\" value=\"%s\"><p class=\"notice\">", shex);

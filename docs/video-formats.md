@@ -74,6 +74,7 @@ What the usual words in a release's name mean for Hemma:
 | DTS, DTS-HD MA | DTS | Made AAC (from the DTS core) |
 | TrueHD, TrueHD Atmos | Dolby TrueHD | Not yet. Another sound track in the file is used if there is one |
 | BluRay, WEB-DL, WEBRip, 1080p | Where it came from, and its size | Nothing to do with playing |
+| (1994), 2019 | A film's year | Tells a film from its remake. A film without one gets a *Year* box when you upload it |
 
 ## Not yet
 
