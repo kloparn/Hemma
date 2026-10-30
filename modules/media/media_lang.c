@@ -691,5 +691,25 @@ static const Tr TR[] = {
      "el disco tiene %s de sobra (Hemma deja %lld GB libres, y %s para las subidas y conversiones en curso)"},
     {"the drive has %s to spare (Hemma keeps %lld GB free)", "disken har %s över (Hemma håller %lld GB ledigt)",
      "el disco tiene %s de sobra (Hemma deja %lld GB libres)"},
+    /* sound languages (2.2) */
+    {"Sound %d", "Ljud %d", "Sonido %d"},
+    {"Which language do you want to watch in?", "Vilket språk vill du titta på?", "¿En qué idioma quieres verlo?"},
+    {"This video has sound in several languages. Hemma remembers your choice for every video - the player's Language "
+     "menu changes it for one.",
+     "Den här videon har ljud på flera språk. Hemma kommer ihåg ditt val för alla videor - spelarens Språk-meny ändrar "
+     "det för en.",
+     "Este vídeo tiene sonido en varios idiomas. Hemma recuerda tu elección para todos los vídeos; el menú Idioma del "
+     "reproductor la cambia para uno."},
+    {"As each video comes", "Som varje video är", "Como venga cada vídeo"},
+    {"Pick a language", "Välj ett språk", "Elige un idioma"},
+    {"Sound: %s", "Ljud: %s", "Sonido: %s"},
+    {"Each video plays in its own language", "Varje video spelas på sitt eget språk", "Cada vídeo se reproduce en su idioma"},
+    {"Hemma asks again at the next video with several languages", "Hemma frågar igen vid nästa video med flera språk",
+     "Hemma vuelve a preguntar en el próximo vídeo con varios idiomas"},
+    {"Sound language", "Ljudspråk", "Idioma del sonido"},
+    {"Ask me", "Fråga mig", "Pregúntame"},
+    {"For videos with sound in several languages. A video without yours plays in its own.",
+     "För videor med ljud på flera språk. En video utan ditt spelas på sitt eget.",
+     "Para vídeos con sonido en varios idiomas. Un vídeo sin el tuyo se reproduce en el suyo."},
 };
 TRANSLATIONS(media, TR)

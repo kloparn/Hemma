@@ -380,6 +380,128 @@ TEST(mp4_skips_aac_priming_with_an_edit_list) {
     free(f.p);
 }
 
+/* tkhd's flags (enabled = 1) and alternate group, mdhd's language, hdlr's name of the k-th trak */
+static void trak_facts(const Mem *f, int k, uint32_t *flags, int *group, char lang[4], char *name, size_t cap) {
+    char p[64];
+    Box b;
+    *flags = 0, *group = -1, lang[0] = name[0] = '\0';
+    snprintf(p, sizeof p, "moov/trak.%d/tkhd", k);
+    if (path(f, p, &b)) {
+        bool v1 = b.p[0] == 1;
+        *flags = be32(b.p) & 0xFFFFFF;
+        const uint8_t *q = b.p + (v1 ? 4 + 8 + 8 + 4 + 4 + 8 : 4 + 4 + 4 + 4 + 4 + 4) + 8 + 2;
+        *group = q[0] << 8 | q[1];
+    }
+    snprintf(p, sizeof p, "moov/trak.%d/mdia/mdhd", k);
+    if (path(f, p, &b)) {
+        const uint8_t *q = b.p + (b.p[0] == 1 ? 4 + 8 + 8 + 4 + 8 : 4 + 4 + 4 + 4 + 4);
+        int v = q[0] << 8 | q[1];
+        lang[0] = (char)(0x60 + (v >> 10 & 31)), lang[1] = (char)(0x60 + (v >> 5 & 31)), lang[2] = (char)(0x60 + (v & 31)), lang[3] = 0;
+    }
+    snprintf(p, sizeof p, "moov/trak.%d/mdia/hdlr", k);
+    if (path(f, p, &b) && b.n > 24) snprintf(name, cap, "%.*s", (int)(b.n - 24), (const char *)b.p + 24);
+}
+
+/* 2.2: several sounds of one group - each its language and name, only the default one enabled; a dropped
+   track (one that went undecodable) leaves the moov and hands "enabled" on; the others keep their ids. */
+TEST(mp4_names_sounds_and_drops_a_track) {
+    static const uint8_t asc[2] = {0x11, 0x90};
+    /* 63 bytes of "a", then "ö" (2 bytes) across the 64-byte cut: the cut steps back before it */
+    char longname[80];
+    memset(longname, 'a', 63);
+    memcpy(longname + 63, "\xC3\xB6xyz", 6);
+    for (int drop = 0; drop < 2; drop++) {
+        Mem f = {0};
+        int v, a;
+        Mp4 *m = two_tracks(&f, 0, 8192, &v, &a); /* (a FLAC track: a sound too, on by default) */
+        Mp4Track eng = {.codec = MP4_AAC, .timescale = 48000, .config = asc, .config_len = 2, .channels = 2, .sample_rate = 48000,
+                        .lang = "eng", .name = "English", .off = true};
+        Mp4Track swe = eng;
+        memcpy(swe.lang, "swe", 4);
+        swe.name = longname;
+        int e = mp4_add_track(m, &eng), s = mp4_add_track(m, &swe);
+        CHECK(e == 2 && s == 3);
+        CHECK(mp4_begin(m));
+        uint8_t data[64];
+        for (int i = 0; i < 6; i++) {
+            fill(data, sizeof data, i);
+            CHECK(mp4_sample(m, v, data, 40, 1001, 0, i == 0));
+            CHECK(mp4_sample(m, a, data, 30, 1024, 0, true));
+            CHECK(mp4_sample(m, e, data, 20 + (size_t)i, 1024, 0, true));
+            CHECK(mp4_sample(m, s, data, 10, 1024, 0, true));
+        }
+        if (drop) {
+            CHECK(mp4_drop_track(m, a)); /* the enabled sound goes: the first one left (English) takes over */
+            CHECK(!mp4_drop_track(m, a));
+            CHECK(!mp4_sample(m, a, data, 30, 1024, 0, true));
+            CHECK(mp4_sample(m, e, data, 26, 1024, 0, true));
+        }
+        CHECK(mp4_finish(m));
+        CHECK(!mp4_drop_track(m, e)); /* too late */
+        mp4_free(m);
+        uint32_t flags;
+        int group;
+        char lang[4], name[96];
+        int k = 0;
+        trak_facts(&f, k++, &flags, &group, lang, name, sizeof name);
+        CHECK_INT((int)flags, 3);
+        CHECK_INT(group, 0);
+        CHECK_STR(name, "VideoHandler");
+        if (!drop) {
+            trak_facts(&f, k++, &flags, &group, lang, name, sizeof name);
+            CHECK_INT((int)flags, 3);
+            CHECK_INT(group, 1);
+            CHECK_STR(lang, "swe");
+            CHECK_STR(name, "SoundHandler");
+        }
+        trak_facts(&f, k++, &flags, &group, lang, name, sizeof name);
+        CHECK_INT((int)flags, drop ? 3 : 2); /* in movie; enabled once the default went */
+        CHECK_INT(group, 1);
+        CHECK_STR(lang, "eng");
+        CHECK_STR(name, "English");
+        trak_facts(&f, k++, &flags, &group, lang, name, sizeof name);
+        CHECK_INT((int)flags, 2);
+        CHECK_STR(lang, "swe");
+        CHECK_INT((int)strlen(name), 63); /* cut before the "ö", never inside it */
+        Box b;
+        char p[64];
+        snprintf(p, sizeof p, "moov/trak.%d", k);
+        CHECK(!path(&f, p, &b)); /* (a dropped one left out) */
+        snprintf(p, sizeof p, "moov/trak.%d/tkhd", k - 1);
+        CHECK(path(&f, p, &b));
+        CHECK_INT((int)be32(b.p + 12), 4); /* the Swedish one keeps id 4 */
+        CHECK(path(&f, "moov/mvhd", &b));
+        CHECK_INT((int)be32(b.p + b.n - 4), 5); /* next track id */
+        CHECK(path(&f, drop ? "moov/trak.1/mdia/minf/stbl/stsz" : "moov/trak.2/mdia/minf/stbl/stsz", &b));
+        CHECK_INT((int)be32(b.p + 8), drop ? 7 : 6);
+        uint32_t size = 0;
+        int64_t off = sample_offset(&f, drop ? 1 : 2, drop ? 6 : 5, &size); /* the English track's last sample */
+        CHECK(off > 0 && size == (drop ? 26u : 25u));
+        fill(data, sizeof data, 5); /* (what the loop's last turn wrote) */
+        CHECK(off > 0 && !memcmp(f.p + off, data, size));
+        free(f.p);
+    }
+
+    /* fragments: a track dropped before the start isn't in the init segment; after it, it can't go */
+    Mem f = {0};
+    int v, a;
+    Mp4 *m = two_tracks(&f, MP4_FRAGMENTED, 0, &v, &a);
+    CHECK(mp4_drop_track(m, a));
+    CHECK(mp4_begin(m));
+    CHECK(!mp4_drop_track(m, v));
+    uint8_t data[16] = {0};
+    CHECK(mp4_sample(m, v, data, 16, 1001, 0, true));
+    CHECK(!mp4_sample(m, a, data, 16, 1024, 0, true));
+    CHECK(mp4_finish(m));
+    mp4_free(m);
+    Box b;
+    CHECK(path(&f, "moov/trak.0", &b));
+    CHECK(!path(&f, "moov/trak.1", &b));
+    CHECK(path(&f, "moov/mvex/trex.0", &b));
+    CHECK(!path(&f, "moov/mvex/trex.1", &b));
+    free(f.p);
+}
+
 TEST(mp4_fragments_carry_sequence_tfdt_and_data_offsets) {
     Mem f = {0};
     Mp4Out o = {&f, mem_write, NULL}; /* append-only output is fine for fragments */

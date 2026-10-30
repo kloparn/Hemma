@@ -30,8 +30,11 @@ Hemma converts **MKV** and **WebM** files. Each part of the file is handled on i
 | Dolby Digital Plus (E-AC-3, "DDP5.1") | AAC stereo |
 | DTS, and the DTS inside DTS-HD MA: no browser plays it | AAC stereo |
 
-Surround sound (5.1) is mixed down to stereo. When a file has several sound tracks, Hemma uses the
-first one it can convert, the default one first.
+Surround sound (5.1) is mixed down to stereo. When a file has several sound tracks, the copy keeps every
+one Hemma can convert (up to 8: other languages, commentary), each with its language and name. Everyone
+hears the language they picked (Hemma asks the first time; **Watch → Library settings → Sound language**
+changes it), and the player's **Language** menu switches while watching. A sound track Hemma can't
+convert yet (TrueHD) is left out when the file has another.
 
 | Subtitles inside the file | Saved next to the video as |
 |---|---|

@@ -661,7 +661,8 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  the player's trouble line its own, Convert "Make it play on more devices" (or "Fix the sound"). Checked on a
                  real 10-bit 1080p AV1 + AC-3 film (2 h 28 min): every packet as the original's, ffmpeg decodes it, Chrome
                  plays it;
-                 AC-3 / E-AC-3 (Dolby Digital Plus) and DTS (1.3: the core, 5.1 -> Lo/Ro) -> AAC at the track's own rate (48, 44.1 or 32 kHz - TV rips are 44.1; 1.1.2; E-AC-3 half rates refused; a frame at another rate than the file says = unsupported); AAC copied; the file's subtitles next to the ORIGINAL - also
+                 EVERY sound track it can convert goes into the copy (2.2, up to 8 - "Where things stand" 2.2.0; before, only
+                 the default one); AC-3 / E-AC-3 (Dolby Digital Plus) and DTS (1.3: the core, 5.1 -> Lo/Ro) -> AAC at the track's own rate (48, 44.1 or 32 kHz - TV rips are 44.1; 1.1.2; E-AC-3 half rates refused; a frame at another rate than the file says = unsupported); AAC copied; the file's subtitles next to the ORIGINAL - also
                  after an `unsupported` refusal (1.2) - by convert_save_subs/convert_save_sub(video, AvConvSub,
                  ConvertSubs*): text .srt, PGS .sup, VobSub .sub + .idx (the pair or nothing, .idx last), media/subs.c
                  names ("x.en.srt", "x.sv.forced.srt", "x.en.sdh.srt", "x.en.2.sup"); a second track of the same
@@ -1597,7 +1598,10 @@ paused, a menu is open, the mouse is on the bar, or a live channel is muted), da
 data-muted. The SOUND (volume + muted) is the viewer's per device: wire.js keeps it in localStorage
 "hemma.sound" on every volumechange and gives it to each new video in media() (soundApply) - it reset to
 full with every page (owner, 2026-10-17); onair()'s forced autoplay mute is flagged (_forcedMute) and not
-saved. Parts [data-p]: play back fwd seek at dur mute vol subs; [data-sub="<key>"] menu items (1.2: core/ui.h
+saved. Parts [data-p]: play back fwd seek at dur mute vol subs snd; [data-snd="<n>" data-src="<address>"] = the LANGUAGE
+menu (2.2, UiPlayer.sounds): sndChoose sets the video's src to that address (the same video with sound n alone - stream.c's
+view), data-resume = where it was, plays on if it played, sends live media.sound; each menu is its button's own (the
+click handler takes part.parentNode's [role=menu]); [data-sub="<key>"] menu items (1.2: core/ui.h
 UiSub {key, lang, label, pic, on}; + data-subpic for a picture track) - subPick/subHold show the track whose id is
 "sub-<key>", else the first in the key's language (before its first dot), else none; v._sub = the pick, carried
 into the next episode in the same element; subWatch re-applies a pick on textTracks 'change' (Chrome turns the
@@ -1934,6 +1938,21 @@ while the app is built in, the session's agent says Android and isn't the app, t
 and hasn't pressed Not now (people.app_hint -> pref people.app_hint "off"); never to a display account. CI's actions on
 Node 24 (mlugg/setup-zig has none yet). A developer's own build signs the app with their dev key, which won't install
 over the release-signed app: a build for a Hemma whose phones have the released app leaves it out (HEMMA_SKIP_MODULES=app).
+2.2.0 (branch video/language-track-update; owner, 2026-10-30: "I want hemma to be not 'language locked'"; a film with
+Russian x4, Ukrainian and English sound came out Russian only) = SOUND LANGUAGES: the converter keeps every sound track
+(av/conv.c, AV_CONV_MAX_AUDIO 8: video, then the sounds in the MKV's order, each mdhd language + hdlr name, only the
+default tkhd-enabled, runs of 48 samples with 2+ sounds), the library knows a video's sound tracks (media_sounds), the
+server sends each viewer an MP4 with only their sound (mp4view.c media_view: a new ftyp + moov in memory, the file's
+mdat as it is; /media/file/<id>?a=<n>, built on the stream thread, cached) - so every browser, TV and the app plays it
+(only Safari switches between several tracks itself) -, Hemma asks a viewer's sound language once (media.c
+media_sound_question, pref media.soundlang: "" = ask, "-" = each video's own), and the player has a Language menu
+(core/ui UiPlayer.sounds, wire.js sndChoose - it also sets the new key "<id>-a<n>" itself, so the morph after the
+pick leaves the player be; pref media.snd.<series id | video id> = "<lang>#<n>": that very track in that file, else
+the language).
+Also (owner: "open the app instead!"): people.c's Home card for someone WITH an app session in an Android browser says
+"Open the app instead!" - an `intent://open/#Intent;scheme=hemma;package=...;S.browser_fallback_url=<the apk on Ctx.host>`
+link; the app's VIEW + BROWSABLE filter takes hemma://open/<path> (MainActivity.pageOf: a path only, opened on the
+Hemma it knows). An app from before 2.2 has no such filter: Chrome then goes to the fallback (the download).
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling

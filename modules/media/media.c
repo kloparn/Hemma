@@ -22,14 +22,31 @@ static int64_t g_disks_at; /* when the disks under the library were last measure
 
 /* ---------------------------------------------------------------- helpers */
 
+/* Languages: each named in itself (the menus), and in English (what a file's track names often say: "Swedish") */
+static const struct {
+    const char *code, *name, *english;
+} LANGS[] = {{"sv", "Svenska", "Swedish"},       {"en", "English", "English"},      {"no", "Norsk", "Norwegian"},
+             {"nb", "Norsk", "Norwegian"},       {"da", "Dansk", "Danish"},         {"fi", "Suomi", "Finnish"},
+             {"de", "Deutsch", "German"},        {"fr", "Français", "French"},      {"es", "Español", "Spanish"},
+             {"it", "Italiano", "Italian"},      {"nl", "Nederlands", "Dutch"},     {"pl", "Polski", "Polish"},
+             {"pt", "Português", "Portuguese"},  {"ja", "日本語", "Japanese"},     {"is", "Íslenska", "Icelandic"},
+             {"ru", "Русский", "Russian"},       {"uk", "Українська", "Ukrainian"}, {"cs", "Čeština", "Czech"},
+             {"sk", "Slovenčina", "Slovak"},     {"hu", "Magyar", "Hungarian"},     {"ro", "Română", "Romanian"},
+             {"et", "Eesti", "Estonian"},        {"lv", "Latviešu", "Latvian"},     {"lt", "Lietuvių", "Lithuanian"},
+             {"hr", "Hrvatski", "Croatian"},     {"sr", "Српски", "Serbian"},      {"bg", "Български", "Bulgarian"},
+             {"el", "Ελληνικά", "Greek"},        {"tr", "Türkçe", "Turkish"},       {"ar", "العربية", "Arabic"},
+             {"he", "עברית", "Hebrew"},          {"hi", "हिन्दी", "Hindi"},          {"th", "ไทย", "Thai"},
+             {"ko", "한국어", "Korean"},          {"zh", "中文", "Chinese"}};
+
+static int lang_at(const char *code) {
+    for (int i = 0; code && i < countof(LANGS); i++)
+        if (str_ieq(code, LANGS[i].code)) return i;
+    return -1;
+}
+
 static const char *lang_name(const char *code) {
-    static const struct {
-        const char *code, *name;
-    } L[] = {{"sv", "Svenska"}, {"en", "English"}, {"no", "Norsk"},    {"nb", "Norsk"},   {"da", "Dansk"},
-             {"fi", "Suomi"},   {"de", "Deutsch"}, {"fr", "Français"}, {"es", "Español"}, {"it", "Italiano"},
-             {"nl", "Nederlands"}, {"pl", "Polski"}, {"pt", "Português"}, {"ja", "日本語"}};
-    for (int i = 0; i < countof(L); i++)
-        if (str_ieq(code, L[i].code)) return L[i].name;
+    int i = lang_at(code);
+    if (i >= 0) return LANGS[i].name;
     return code && *code ? code : T("Subtitles");
 }
 
@@ -39,7 +56,125 @@ static void keyed_src(const Ctx *c, const char *path, char *out, size_t cap) {
     snprintf(out, cap, "%s%s%s", path, k[0] ? "?k=" : "", k);
 }
 
+/* ---------------------------------------------------- sound languages (2.2) */
+
+#define PREF_SOUNDLANG "media.soundlang" /* "" = not picked yet (asked), "-" = each video's own, "en", "sv" ... */
+
+/* The pref keeping a viewer's last Language pick: "media.snd.<series id>" for an episode (the series goes on in it),
+   "media.snd.<file id>" for a film or another video - its language. */
+typedef struct {
+    char k[32];
+} SndMemory;
+
+static SndMemory snd_memory_key(const MediaFile *f) {
+    SndMemory m;
+    snprintf(m.k, sizeof m.k, "media.snd.%016llx",
+             (unsigned long long)(f->name.kind == MEDIA_EPISODE && f->series ? f->series : f->id));
+    return m;
+}
+
+/* The sound tracks of the file a video streams (its copy when it has one): NULL = one or none */
+static const MediaSounds *sounds_of(const MediaFile *f) {
+    const MediaFile *pf = f ? media_playable(f) : NULL;
+    return pf && pf->type == MF_VIDEO ? media_sounds(pf->id) : NULL;
+}
+
+static int sound_default(const MediaSounds *s) {
+    for (int i = 0; i < s->n; i++)
+        if (s->s[i].on) return i;
+    return 0;
+}
+
+/* The first track in lang - the file's default when it's one of them; -1 = none */
+static int sound_in(const MediaSounds *s, const char *lang) {
+    if (!lang || strlen(lang) != 2) return -1;
+    int d = sound_default(s);
+    if (str_eq(s->s[d].lang, lang)) return d;
+    for (int i = 0; i < s->n; i++)
+        if (str_eq(s->s[i].lang, lang)) return i;
+    return -1;
+}
+
+static int sound_pick(const Ctx *c, const MediaFile *f, const MediaSounds *s) {
+    int v = ctx_viewer(c), k = -1;
+    /* the menu's pick: "<lang>#<n>" - that very track when this file's n-th is in that language (the same film, or an
+       episode alike), else the language's first */
+    const char *mem = v ? pref(v, snd_memory_key(f).k, "") : "", *hash = strchr(mem, '#');
+    char lang[8] = "";
+    str_ncopy(lang, sizeof lang, mem, hash ? (size_t)(hash - mem) : strlen(mem));
+    int n = hash ? atoi(hash + 1) : -1;
+    if (n >= 0 && n < s->n && str_eq(s->s[n].lang, lang)) k = n;
+    else k = sound_in(s, lang);
+    if (v && k < 0) k = sound_in(s, pref(v, PREF_SOUNDLANG, ""));
+    return k >= 0 ? k : sound_default(s);
+}
+
+/* "/media/file/<id>?a=<n>&k=..." (the key covers the path only: app.c reads k= among the rest) */
+static void sound_src(const Ctx *c, uint64_t id, int n, char *out, size_t cap) {
+    char path[40], k[CTX_KEY_LEN];
+    snprintf(path, sizeof path, "/media/file/%016llx", (unsigned long long)id);
+    ctx_url_key(c, path, k);
+    snprintf(out, cap, "%s?a=%d%s%s", path, n, k[0] ? "&k=" : "", k);
+}
+
+void media_video_key(const Ctx *c, const MediaFile *f, char *out, size_t cap) {
+    const MediaSounds *s = sounds_of(f);
+    if (s) snprintf(out, cap, "%016llx-a%d", (unsigned long long)f->id, sound_pick(c, f, s));
+    else snprintf(out, cap, "%016llx", (unsigned long long)f->id);
+}
+
+/* The menu's words for track i: its language in itself, then its own name ("Русский · MVO, Fox, iTunes"); a second
+   one of a language without a name "Русский 2"; no language: its name, else "Sound 3". */
+static void sound_label(const MediaSounds *s, int i, char *out, size_t cap) {
+    const MediaSound *t = &s->s[i];
+    int nth = 1, l = lang_at(t->lang);
+    for (int j = 0; j < i; j++) nth += str_eq(s->s[j].lang, t->lang);
+    bool says = t->name[0] && !(l >= 0 && (str_ieq(t->name, LANGS[l].name) || str_ieq(t->name, LANGS[l].english)));
+    if (!t->lang[0]) {
+        if (t->name[0]) str_copy(out, cap, t->name);
+        else snprintf(out, cap, T("Sound %d"), i + 1);
+    } else if (says) snprintf(out, cap, "%s · %s", lang_name(t->lang), t->name); /* ("English" on an English one: no) */
+    else if (nth > 1) snprintf(out, cap, "%s %d", lang_name(t->lang), nth);
+    else str_copy(out, cap, lang_name(t->lang));
+}
+
+bool media_sound_question(const Ctx *c, Buf *b, const MediaFile *f, const char *close) {
+    const MediaSounds *s = sounds_of(f);
+    int v = ctx_viewer(c);
+    if (!s || !v || *pref(v, PREF_SOUNDLANG, "") || str_eq(ctx_q(c, "asked"), "1")) return false;
+    const char *langs[MEDIA_MAX_SOUNDS];
+    int n = 0;
+    for (int i = 0; i < s->n; i++) {
+        bool seen = !s->s[i].lang[0];
+        for (int j = 0; j < n && !seen; j++) seen = str_eq(langs[j], s->s[i].lang);
+        if (!seen) langs[n++] = s->s[i].lang;
+    }
+    if (n < 2) return false; /* (one language in several versions: the Language menu is enough) */
+    ui_modal(b, T("Which language do you want to watch in?"), close);
+    H(b, "<p class=\"muted\">%s</p><div class=\"media-snd-q\" data-arrows>",
+      T("This video has sound in several languages. Hemma remembers your choice for every video - the player's "
+        "Language menu changes it for one."));
+    for (int i = 0; i < n; i++) {
+        ui_form(b, "media.soundlang", "inline");
+        H(b, "<input type=\"hidden\" name=\"lang\" value=\"%s\"><button class=\"btn%r\"%r>%s</button>", langs[i],
+          i == 0 ? " primary" : "", i == 0 ? " autofocus" : "", lang_name(langs[i]));
+        ui_form_end(b);
+    }
+    ui_form(b, "media.soundlang", "inline");
+    H(b, "<input type=\"hidden\" name=\"lang\" value=\"-\"><button class=\"btn\">%s</button>", T("As each video comes"));
+    ui_form_end(b);
+    buf_puts(b, "</div>");
+    ui_modal_end(b);
+    return true;
+}
+
 void media_file_src(const Ctx *c, uint64_t id, char *out, size_t cap) {
+    const MediaFile *f = media_file(id);
+    const MediaSounds *s = sounds_of(f);
+    if (s) {
+        sound_src(c, id, sound_pick(c, f, s), out, cap);
+        return;
+    }
     char path[40];
     snprintf(path, sizeof path, "/media/file/%016llx", (unsigned long long)id);
     keyed_src(c, path, out, cap);
@@ -231,8 +366,8 @@ void media_tracks(const Ctx *c, Buf *b, const MediaFile *f) {
 void media_controls(const Ctx *c, Buf *b, const MediaFile *f, bool tv) {
     SubChoice *choice = xmalloc(MEDIA_MAX_SUBS * sizeof *choice); /* the same as the <track>s: same order, same one on */
     UiSub subs[MEDIA_MAX_SUBS];
-    char key[17];
-    media_id_hex(f->id, key);
+    char key[24];
+    media_video_key(c, f, key, sizeof key);
     const MediaFile *pf = media_playable(f);
     int64_t ms = f->probe.duration_ms ? f->probe.duration_ms : pf->probe.duration_ms;
     UiPlayer p = {.box = "media-box", .video = "media-video", .key = key, .seconds = (int)(ms / 1000), .subs = subs, .tv = tv};
@@ -247,6 +382,18 @@ void media_controls(const Ctx *c, Buf *b, const MediaFile *f, bool tv) {
         subs[i] = (UiSub){.key = s->key, .lang = s->t.lang[0] ? s->t.lang : "und", .label = s->label,
                           .pic = s->pic ? s->cues : NULL, .on = s->on, .pref = s->pref};
     }
+    /* its sound tracks (2.2): each the same video's address with that one */
+    const MediaSounds *snds = sounds_of(f);
+    UiSound snd[MEDIA_MAX_SOUNDS];
+    char snd_src[MEDIA_MAX_SOUNDS][120], snd_label[MEDIA_MAX_SOUNDS][112];
+    int on = snds ? sound_pick(c, f, snds) : -1;
+    for (int i = 0; snds && i < snds->n; i++) {
+        sound_src(c, f->id, i, snd_src[i], sizeof snd_src[i]);
+        sound_label(snds, i, snd_label[i], sizeof snd_label[i]);
+        snd[i] = (UiSound){.n = i, .src = snd_src[i], .label = snd_label[i], .on = i == on};
+    }
+    p.sounds = snd;
+    p.nsounds = snds ? snds->n : 0;
     ui_player(b, &p);
     free(choice);
 }
@@ -1721,12 +1868,15 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     Buf go = {0};
     if (next) H(&go, "/media/watch/%X?auto=1", next->id);
     int at = autoplay ? 0 : media_resume_at(w);
-    char src[120];
+    char src[120], vkey[24], here_q[64];
     media_file_src_at(c, f->id, at, src, sizeof src);
+    media_video_key(c, f, vkey, sizeof vkey); /* (with its sound: a new pick morphs it in place - 2.2) */
+    snprintf(here_q, sizeof here_q, "/media/watch/%016llx?asked=1", (unsigned long long)f->id);
+    if (media_sound_question(c, b, f, here_q)) autoplay = false;
     H(b, "<div class=\"media-player-box\" id=\"media-box\"><video id=\"media-video\" class=\"media-player\" "
-         "src=\"%s\" controls preload=\"metadata\" playsinline data-static=\"%X\" data-id=\"%X\" "
+         "src=\"%s\" controls preload=\"metadata\" playsinline data-static=\"%s\" data-id=\"%X\" "
          "data-report=\"media.progress\"",
-      src, f->id, f->id);
+      src, vkey, f->id);
     if (at) H(b, " data-resume=\"%d\"", at);
     if (next) H(b, " data-next=\"%r\"", buf_cstr(&go));
     if (autoplay) buf_puts(b, " autoplay");
@@ -2232,6 +2382,22 @@ static void page_settings(Ctx *c, Buf *b) {
           c->me->name);
         H(b, "</p><noscript><button class=\"btn\">%s</button></noscript>", T("Save"));
         ui_form_end(b);
+        /* the sound language (2.2): what a video with sound in several languages plays in */
+        const char *snd = pref(c->me->id, PREF_SOUNDLANG, "");
+        ui_form(b, "media.soundlang", "stack");
+        H(b, "<label class=\"field\"><span>%s</span><select name=\"lang\" data-auto>", T("Sound language"));
+        H(b, "<option value=\"\"%r>%s</option>", !*snd ? " selected" : "", T("Ask me"));
+        H(b, "<option value=\"-\"%r>%s</option>", str_eq(snd, "-") ? " selected" : "", T("As each video comes"));
+        for (int i = 1; i < countof(langs); i++)
+            H(b, "<option value=\"%s\"%r>%s</option>", langs[i], str_eq(snd, langs[i]) ? " selected" : "", lang_name(langs[i]));
+        if (*snd && !str_eq(snd, "-")) { /* (one picked over a video, not in this list: still shown) */
+            bool listed = false;
+            for (int i = 1; i < countof(langs); i++) listed |= str_eq(snd, langs[i]);
+            if (!listed) H(b, "<option value=\"%s\" selected>%s</option>", snd, lang_name(snd));
+        }
+        H(b, "</select></label><p class=\"muted media-small\">%s</p><noscript><button class=\"btn\">%s</button></noscript>",
+          T("For videos with sound in several languages. A video without yours plays in its own."), T("Save"));
+        ui_form_end(b);
         ui_card_end(b);
     }
 
@@ -2400,6 +2566,35 @@ static void act_sub(Ctx *c, Fields *f) {
     char val[48];
     snprintf(val, sizeof val, "%d %s", sub_generation(v), key[0] ? key : "-");
     pref_set(v, sub_memory_key(mf->series).k, val);
+}
+
+/* The player's Language menu (2.2, live; wire.js has already switched the sound): the pick's language kept for the
+   series (an episode) or the video, by the viewer - as act_sub. */
+static void act_sound(Ctx *c, Fields *f) {
+    uint64_t id = 0;
+    int v = ctx_viewer(c), n = (int)fields_int(f, "n", -1);
+    const MediaFile *mf = v && media_parse_id(fields_str(f, "id"), &id) ? media_file(id) : NULL;
+    const MediaSounds *s = sounds_of(mf);
+    if (!s || n < 0 || n >= s->n) return;
+    char val[16];
+    snprintf(val, sizeof val, "%s#%d", s->s[n].lang, n); /* (its language, and which: a film may have four Russian) */
+    pref_set(v, snd_memory_key(mf).k, val);
+}
+
+/* Someone's sound language (2.2): the question over a video with several, or Library settings. "-" = each video's
+   own, "" = ask again. The viewer's: on a TV, whoever is watching. */
+static void act_soundlang(Ctx *c, Fields *f) {
+    int v = ctx_viewer(c);
+    const char *lang = fields_str(f, "lang");
+    bool code = strlen(lang) == 2 && lang[0] >= 'a' && lang[0] <= 'z' && lang[1] >= 'a' && lang[1] <= 'z';
+    if (!v || !(code || !*lang || str_eq(lang, "-"))) {
+        ctx_fail(c, "%s", T("Pick a language"));
+        return;
+    }
+    pref_set(v, PREF_SOUNDLANG, lang);
+    if (code) ctx_ok(c, T("Sound: %s"), lang_name(lang));
+    else if (*lang) ctx_ok(c, "%s", T("Each video plays in its own language"));
+    else ctx_ok(c, "%s", T("Hemma asks again at the next video with several languages"));
 }
 
 static void act_watched(Ctx *c, Fields *f) {
@@ -2771,6 +2966,7 @@ static void act_prefs(Ctx *c, Fields *f) {
 static const Action actions[] = {
     {"media.search", act_search, true, .may = ACT_ALL}, {"media.progress", act_progress, true, true, ACT_ALL},
     {"media.sub", act_sub, true, true, ACT_ALL}, {"media.watched", act_watched, false, true, ACT_ALL},
+    {"media.sound", act_sound, true, true, ACT_ALL}, {"media.soundlang", act_soundlang, false, true, ACT_ALL},
     {"media.rescan", act_rescan}, {"media.roots", act_roots}, {"media.roots_add", act_roots_add},       {"media.prefs", act_prefs, .may = ACT_ALL},
     {"media.upload_stop", upload_act_stop}, {"media.upload_preview", upload_act_preview, true}, {"media.art_remove", act_art_remove},
     {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove},

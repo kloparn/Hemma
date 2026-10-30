@@ -66,6 +66,7 @@ static const char *home_from(int person, const char *ua) {
     Ctx c;
     app_ctx(&c, person, "/");
     str_copy(c.sess->agent, sizeof c.sess->agent, made ? made->agent : "");
+    str_copy(c.host, sizeof c.host, "hemma.local"); /* (the address the phone opened Hemma by) */
     buf_reset(&page);
     app_render(&c, &page);
     app_ctx_free(&c);
@@ -110,7 +111,16 @@ TEST(people_offer_the_app_on_an_android_phones_home) {
     pref_set(adam, "people.app_hint", "");
     CHECK(strstr(home_from(adam, ANDROID), "people-apphint"));
     CHECK(!strstr(home_from(adam, in_app), "people-apphint")); /* inside the app: it's there already */
-    CHECK(!strstr(home_from(adam, ANDROID), "people-apphint")); /* signed in from the app: the browser stops asking */
+    /* 2.2: signed in from the app - the browser says "Open the app instead!", an intent link to the app's Home that
+       falls back to the download (no app on this phone, or one from before 2.2) */
+    html = home_from(adam, ANDROID);
+    CHECK_HAS(html, "<h2>Open the app instead!</h2>");
+    CHECK_HAS(html, "href=\"intent://open/#Intent;scheme=hemma;package=io.github.kloparn.hemma;"
+                    "S.browser_fallback_url=http%3A%2F%2Fhemma.local%2Fstatic%2Fhemma.apk%3Fv%3D");
+    CHECK_HAS(html, ";end\">Open the app</a>");
+    CHECK(!strstr(html, "Get the app</a>"));
+    CHECK(th_act(adam, "people.app_hint", "").ok); /* "Not now" puts that away too */
+    CHECK(!strstr(home_from(adam, ANDROID), "people-apphint"));
     th_halt();
 }
 

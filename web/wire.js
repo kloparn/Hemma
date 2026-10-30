@@ -1815,6 +1815,29 @@
     for (const b of pl.querySelectorAll('[data-sub]')) b.setAttribute('aria-checked', b.dataset.sub === now ? 'true' : 'false');
   }
 
+  // The LANGUAGE menu (2.2, [data-snd="<n>"]): the same video in another of its sound tracks - the item's data-src is
+  // its address with ?a=<n>, which the server answers with an MP4 holding just that sound (no browser but Safari
+  // switches between several). The same element goes on from the same place, playing or not; the pick goes to the
+  // server (media.sound), which keeps its language for the series or the film.
+  function sndChoose(pl, v, item) {
+    for (const b of pl.querySelectorAll('[data-snd]')) b.setAttribute('aria-checked', b === item ? 'true' : 'false');
+    const src = item.dataset.src;
+    if (src && v.getAttribute('src') !== src) {
+      const go = !v.paused;
+      v.dataset.resume = String(Math.floor(v.currentTime > 1 ? v.currentTime : parseFloat(v.dataset.resume || '0')));
+      v.setAttribute('src', src);
+      /* the key the server's next page gives the player ("<id>-a<n>": media_video_key) - so that morph finds it as it
+         is and leaves it be, instead of starting it over from the server's resume point */
+      for (const el of [v, pl]) {
+        const k = el.getAttribute('data-static') || '';
+        if (/-a\d+$/.test(k)) el.setAttribute('data-static', k.replace(/-a\d+$/, `-a${item.dataset.snd}`));
+      }
+      media(v); /* (a new address: it starts at data-resume once it knows its length) */
+      if (go) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
+    }
+    send({ t: 'live', a: 'media.sound', url: here(), f: [['id', v.dataset.id || ''], ['n', item.dataset.snd]] });
+  }
+
   // ------------------------------------------------------ picture subtitles
   // A Blu-ray (PGS) or DVD (VobSub) track is pictures, which no browser shows as a <track>. Its menu item
   // carries data-subpic="<its cue list>": GET .../<id>.json?v=.. -> {"w":720,"h":480,"cues":[[start_ms,
@@ -1989,7 +2012,7 @@
   document.addEventListener('click', (e) => {
     const t = e.target;
     if (!t.closest) return;
-    const part = t.closest('[data-player] [data-p], [data-player] [data-sub]');
+    const part = t.closest('[data-player] [data-p], [data-player] [data-sub], [data-player] [data-snd]');
     const pic = part ? null : t.closest('video');
     const pl = part ? part.closest('[data-player]') : plOf(pic);
     const v = pl && !pl.hidden && !pl.hasAttribute('data-native') && plVideo(pl); /* (the browser's own player: its own clicks) */
@@ -2005,14 +2028,15 @@
     if (part.tagName === 'INPUT') return;
     e.preventDefault();
     if (part.hasAttribute('data-sub')) { subChoose(pl, v, part.dataset.sub); menus(null); return; }
-    const what = part.dataset.p, menu = pl.querySelector('[role="menu"]');
-    menus(what === 'subs' ? menu : null);
+    if (part.hasAttribute('data-snd')) { sndChoose(pl, v, part); menus(null); return; }
+    const what = part.dataset.p, menu = part.parentNode.querySelector('[role="menu"]'); /* (its own: subtitles, language) */
+    menus(what === 'subs' || what === 'snd' ? menu : null);
     if (what === 'play') play(v);
     else if (what === 'back') seekBy(v, -10);
     else if (what === 'fwd') seekBy(v, 10);
     else if (what === 'mute') mute(v);
-    else if (what === 'subs' && menu) {
-      subTicks(pl, v);
+    else if ((what === 'subs' || what === 'snd') && menu) {
+      if (what === 'subs') subTicks(pl, v);
       menu.hidden = !menu.hidden;
       const c = !menu.hidden && !e.detail && menu.querySelector('[aria-checked="true"]'); // (a key, not a pointer)
       if (c) c.focus();

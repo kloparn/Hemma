@@ -48,6 +48,13 @@ typedef struct {
     bool pref;         /* the one the C key turns on when none shows (1.3: the viewer's last pick in the series,
                           else their language): data-subpref */
 } UiSub;
+/* A sound track the player offers (2.2: a video in several languages) - its own address of the same video */
+typedef struct {
+    int n;             /* which (the address's a=<n>) */
+    const char *src;   /* the video's address with that sound */
+    const char *label; /* "English", "Русский · MVO, Fox, iTunes" */
+    bool on;           /* the one playing */
+} UiSound;
 typedef struct {
     const char *box, *video; /* ids */
     const char *key;         /* data-static: the video's own - a new one (the next episode) starts over */
@@ -55,6 +62,8 @@ typedef struct {
     int seconds;             /* its length, shown until the video knows (0 = unknown) */
     const UiSub *subs;       /* subtitle choices besides Off (none: no subtitles button) */
     int nsubs;
+    const UiSound *sounds;   /* its sound tracks, 2+ = a Language menu (wire.js [data-snd]) */
+    int nsounds;
     bool focus_sound;        /* autofocus the sound button (a live channel on a TV: OK = sound) */
     bool tv;                 /* a remote: arrows move between the bar's buttons (else they're the video's) */
     const char *trouble;     /* shown when the browser can't play it (NULL: "This video won't play in this browser.") */

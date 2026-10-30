@@ -38,6 +38,8 @@ Your movie and series drive as a little cinema.
 - **Subtitles**, the ones inside your video files too - even DVD and Blu-ray subtitles, which are
   pictures, not text.
 - **Remembers where you stopped**, for each person.
+- **Your language:** a film or series with sound in several languages keeps them all, and each person hears
+  theirs - Hemma asks once, and the player's Language menu switches while watching.
 - **Plays everywhere.** Hemma converts videos a browser can't play (DVD rips, Dolby sound that Chrome
   plays silently, DTS sound no browser plays) into a copy that does, keeping the file's subtitles as
   .srt files, and puts HEVC films into a file Safari on iPhone, iPad and Mac can play - and AV1 ones into

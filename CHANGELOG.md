@@ -4,6 +4,43 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.2.0 (2026-10-30)
+
+Films and series in several languages keep them all, and everyone hears their own.
+
+### New
+
+- **Every sound track is kept:** converting an MKV used to keep one sound track, the one the file marks as default -
+  a film with Russian, Ukrainian and English sound came out Russian only. The copy now keeps every sound track Hemma
+  can convert (up to 8), each with its language and name, in the browser while uploading and in Convert alike.
+- **Your language:** the first time you open a video with sound in several languages, Hemma asks *Which language do
+  you want to watch in?* and plays every such video in it from then on (one without it plays in its own). Change it
+  under **Watch → Library settings → Sound language**, or pick *As each video comes*.
+- **A Language menu in the player** for a video with several sound tracks: switch while watching, from the same
+  place. The pick is kept for that film, and for a series' next episodes.
+- It works in every browser, on the TV and in the app: Hemma sends each viewer the video with only the sound they
+  listen to (browsers play one sound track; only Safari switches between several). A download keeps them all.
+- **Open the app instead!** Someone who has signed in from the Hemma app but opens Hemma in an Android phone's
+  browser gets a card on Home with *Open the app*, which opens the app (2.2's - an older app, or none on that phone:
+  the button gets the app instead). Before, the card left out everyone who had the app.
+
+### For developers
+
+- modules/av: the converter keeps every sound track `audio_ok` takes, up to `AV_CONV_MAX_AUDIO` (8), in the MKV's
+  order: video first, then each sound with its ISO 639-2 language (mdhd) and name (hdlr), only the default one
+  tkhd-enabled, all in alternate group 1; with two or more, sound samples go out in runs of 48 (~1 s) so the index
+  stays small. A sound track that turns out undecodable is dropped while another lives (`mp4_drop_track`).
+- modules/media: `media_mp4_sounds` lists an MP4's sound tracks (the probe counts them: `MediaProbe.nsounds`; the
+  library keeps them per video - `media_sounds`, in a video row's spare `tags` column), and `media_view` makes an
+  MP4 seen with one sound track - a new ftyp + moov in memory, the file's own mdat as it is - which `/media/file/<id>?a=<n>`
+  serves. Prefs `media.soundlang` (asked when empty; `-` = each video's own) and `media.snd.<series or video id>`
+  (the Language menu's pick); actions `media.soundlang` and the live `media.sound`.
+- core/ui: `UiPlayer.sounds` puts a Language menu in the player (`[data-snd]`, wire.js `sndChoose` swaps the video's
+  address and goes on from the same place).
+- apps/android: `hemma://open/<path>` opens that page of the Hemma the app knows (an intent filter, VIEW + BROWSABLE;
+  only a path, never an address); the Home card links it as an Android `intent:` with the download as
+  `S.browser_fallback_url`.
+
 ## 2.1.0 (2026-10-29)
 
 AV1 videos get a copy too, and Hemma on an Android phone's browser offers the app.

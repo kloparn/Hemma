@@ -59,6 +59,7 @@ typedef struct {
     char vcodec[12], acodec[12]; /* h264 hevc av1 vp9 vp8 mpeg4 mpeg2 vc1 mjpeg prores ...
                                     aac mp3 ac3 eac3 dts truehd opus vorbis flac pcm alac ... */
     int audio_channels;
+    int nsounds;       /* sound tracks in the file (2.2: an MP4 with 2+ is served one at a time - media_view) */
     Playable playable; /* in a typical browser */
     char why[96];      /* short human reason when not PLAY_YES */
 } MediaProbe;
@@ -80,6 +81,43 @@ bool media_probe_mem(const void *data, size_t n, const char *filename_hint, Medi
 void media_probe_judge(MediaProbe *p);
 /* p->why (kept in English) in the language in use (core/i18n.h), for a page */
 void media_probe_why(const MediaProbe *p, char *out, size_t cap);
+
+/* ------------------------------------------------- sound tracks (2.2) */
+
+/* SOUND LANGUAGES (2.2; owner, 2026-10-30: "I want hemma to be not 'language locked'"): the converter keeps every
+   sound track of an MKV in its MP4 copy (modules/av/conv.c: video first, then the sounds in the MKV's order, each with
+   its language in mdhd and its name in hdlr, only the file's default one tkhd-enabled), and the server hands each
+   viewer an MP4 holding just the one they listen to (media_view) - browsers play one sound track, and only Safari
+   could switch between several. */
+#define MEDIA_MAX_SOUNDS 8
+typedef struct {
+    char lang[8];   /* two letters, lower case ("en", "sv", "ru"; "eng"/"en-US" in the file -> "en"); "" = not said / "und" */
+    char name[48];  /* the track's own name ("MVO, Fox, iTunes"); "" = none (handler names such as "SoundHandler" left out) */
+    char codec[12]; /* as MediaProbe.acodec: "aac", "ac3" ... */
+    int channels;
+    bool on;        /* the file's default: tkhd enabled (the first sound track when none or several are) */
+} MediaSound;
+
+/* An MP4/MOV's sound tracks ('soun' handlers) in file order, at most max of them in out. Returns how many there
+   are in all; -1 = not an MP4 or its moov unreadable. Reads only the box headers and the moov. */
+int media_mp4_sounds(const MediaReader *r, MediaSound *out, int max);
+
+/* A multi-sound MP4 seen with ONE sound track: a new ftyp + moov in memory (the other sound traks left out, the
+   chosen one enabled, chunk offsets moved - stco becomes co64 when it must), then the file's own other top-level
+   boxes (mdat ...) as they are, the other sounds' bytes still in there, unreferenced (allowed: 14496-12). Works on
+   any MP4 whose moov parses, moov first or last; not on fragmented ones (mvex). */
+typedef struct MediaView MediaView;
+/* sound = index among the sound tracks (media_mp4_sounds' order); -1 or out of range = the default one. NULL + err. */
+MediaView *media_view_new(const MediaReader *r, int sound, char *err, size_t cap);
+void media_view_free(MediaView *v);
+int64_t media_view_size(const MediaView *v);
+/* What the view holds at `off`: bytes in memory (mem != NULL) or bytes of the file from file_off, len of them
+   (len > 0 until the end; then false). A reader of the view loops over these parts. */
+typedef struct {
+    const uint8_t *mem;
+    int64_t file_off, len;
+} MediaViewPart;
+bool media_view_part(const MediaView *v, int64_t off, MediaViewPart *out);
 
 const char *media_mime(const char *container);    /* "video/mp4", "video/webm", "video/x-matroska", ... */
 bool media_is_video_ext(const char *name);        /* .mp4 .m4v .mkv .webm .mov .avi .ts .m2ts .mts .wmv .mpg .mpeg */

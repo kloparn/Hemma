@@ -379,12 +379,17 @@ void media_watch_tv(Ctx *c, Buf *b, const MediaFile *f) {
     Buf go = {0};
     if (next) H(&go, "/media/watch/%X?tv=1&amp;auto=1&amp;back=%u", next->id, back);
     int at = fresh ? 0 : media_resume_at(w);
-    char src[120];
+    char src[120], vkey[24];
     media_file_src_at(c, f->id, at, src, sizeof src);
+    media_video_key(c, f, vkey, sizeof vkey); /* (with its sound, 2.2) */
+    Buf close = {0}; /* the question about its language (2.2): the remote's OK answers it; closed, this page again */
+    H(&close, "/media/watch/%X?tv=1&back=%u&asked=1", f->id, back); /* (ui_modal escapes it) */
+    bool asked = media_sound_question(c, b, f, buf_cstr(&close));
+    buf_free(&close);
     H(b, "<div class=\"media-tv-player\" id=\"media-box\"><video id=\"media-video\" class=\"media-tv-video\" "
-         "src=\"%s\" controls autoplay playsinline preload=\"auto\" tabindex=\"0\" autofocus data-static=\"%X\" "
+         "src=\"%s\" controls%r playsinline preload=\"auto\" tabindex=\"0\"%r data-static=\"%s\" "
          "data-id=\"%X\" data-report=\"media.progress\"",
-      src, f->id, f->id);
+      src, asked ? "" : " autoplay", asked ? "" : " autofocus", vkey, f->id);
     if (at) H(b, " data-resume=\"%d\"", at);
     if (next) H(b, " data-next=\"%r\"", buf_cstr(&go));
     uint64_t poster = media_picture(f);

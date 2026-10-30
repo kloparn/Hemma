@@ -28,6 +28,11 @@
  * alternate). Edit lists appear only when a track starts later or doesn't
  * start at media time 0. Files over 4 GB switch to co64 by themselves.
  *
+ * Several sound tracks (2.2: the converter keeps every language): each its own trak in alternate group 1,
+ * its language in mdhd, its name in hdlr, only the one that plays by default tkhd-enabled (Mp4Track.off on
+ * the others). One found useless part-way is dropped (mp4_drop_track): left out of the moov, its bytes left in
+ * the mdat unreferenced, which ISO/IEC 14496-12 allows.
+ *
  * Pure library: libc only, no globals, no OS calls (wasm32 / Pi friendly). */
 #ifndef HEMMA_AV_MP4_H
 #define HEMMA_AV_MP4_H
@@ -36,7 +41,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define MP4_MAX_TRACKS 8
+#define MP4_MAX_TRACKS 10 /* a picture, the converter's AV_CONV_MAX_AUDIO (8) sounds and a spare */
 
 typedef struct {
     void *ctx;
@@ -53,7 +58,10 @@ typedef struct {
        MKV's CodecPrivate too) / AudioSpecificConfig / FLAC STREAMINFO (34 bytes) / dac3 payload (3 bytes) */
     const uint8_t *config;
     size_t config_len;
-    char lang[4]; /* ISO 639-2: "eng", "swe"; "" = "und" */
+    char lang[4]; /* ISO 639-2, lower case: "eng", "swe"; "" = "und" */
+    const char *name; /* the hdlr's name - a sound's own ("English", "Kommentar"; UTF-8, copied, cut at 64 bytes on a
+                         character's edge); NULL or "" = the usual "SoundHandler" / "VideoHandler" */
+    bool off;         /* tkhd not enabled: a sound that doesn't play by default (another of its group does) */
     /* video */
     int width, height;              /* coded size */
     int sar_num, sar_den;           /* pixel aspect (DVD 4:3 = 8:9, 16:9 = 32:27); 0 = square */
@@ -81,6 +89,11 @@ int mp4_add_track(Mp4 *m, const Mp4Track *t); /* before mp4_begin; the track's i
    Progressive: any time before mp4_finish. Fragmented: before mp4_begin. */
 bool mp4_set_config(Mp4 *m, int track, const uint8_t *config, size_t n);
 bool mp4_begin(Mp4 *m); /* progressive: ftyp + reservation + mdat header; fragmented: the init segment */
+/* Leave a track out of the moov (progressive: before mp4_finish; fragmented: before mp4_begin) - a sound that
+   turned out undecodable part-way. Samples it already has stay in the mdat, referenced by nothing; it takes no
+   more (mp4_sample: false). An enabled sound hands "enabled" to the first sound left, so the file keeps a
+   default. The other tracks keep their ids. False when it can't: a bad index, too late, already dropped. */
+bool mp4_drop_track(Mp4 *m, int track);
 
 /* One sample in decode order. `cts` = pts - dts (0 without B-frames). */
 bool mp4_sample(Mp4 *m, int track, const void *data, size_t n, uint32_t duration, int32_t cts, bool key);
