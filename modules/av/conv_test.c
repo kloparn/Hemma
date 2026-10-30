@@ -13,6 +13,7 @@
 #include "dts.h"
 #include "dts_testenc.h"
 #include "h264enc.h"
+#include "mp4.h"
 
 /* ------------------------------------------------------------ bytes in memory */
 
@@ -476,6 +477,78 @@ TEST(conv_copies_h264_as_it_is) {
     free(in.p), free(out.p);
 }
 
+/* 2.5 (the owner's Disney films: 35 of 54 MKVs with H.264 + MP3 went up as they were - "Its sound is MP3, which the
+   converter can't change yet"): MP3 is copied into the MP4 as 'mp4a' with object type 0x6B (MPEG-1, 32-48 kHz) or 0x69
+   (MPEG-2's half rates: Pinocchio's 24 kHz), one frame a sample - a block holding two frames gives two - each 1152 (or
+   576) samples long at the track's rate. */
+static size_t mp3_frame(uint8_t *f, bool half, uint8_t mark) { /* a header + a body (bytes as they come: copied) */
+    static const uint8_t ONE[] = {0xFF, 0xFB, 0x90, 0x00}, TWO[] = {0xFF, 0xF3, 0x84, 0x00}; /* 128 kbps 44.1; 64 kbps 24 kHz */
+    size_t n = half ? 72 * 64000 / 24000 : 144 * 128000 / 44100; /* 192, 417 */
+    memset(f, mark, n);
+    memcpy(f, half ? TWO : ONE, 4);
+    return n;
+}
+
+TEST(conv_copies_mp3_sound) {
+    for (int half = 0; half < 2; half++) {
+        H264Params hp = {.width = 64, .height = 48, .fps_num = 25, .fps_den = 1, .keyint = 10, .annexb = false};
+        H264Enc *e = h264enc_new(&hp);
+        uint8_t avcc[256];
+        size_t avcc_len = h264enc_avcc(e, avcc, sizeof avcc);
+        W in;
+        Tracks t = {"V_MPEG4/ISO/AVC", avcc, avcc_len, 64, 48, "A_MPEG/L3", NULL, 0, .arate = half ? 24000 : 44100};
+        size_t seg = start_file(&in, &t, 1000);
+        size_t cl = w_open(&in, 0x1F43B675);
+        w_uint(&in, 0xE7, 0);
+        static uint8_t y[64 * 48], u[32 * 24], v[32 * 24], blk[2048];
+        for (int k = 0; k < 20; k++) {
+            memset(y, k * 9, sizeof y), memset(u, 100, sizeof u), memset(v, 150, sizeof v);
+            H264Picture p = {y, u, v, 64, 32, 32, k};
+            H264Packet pk;
+            CHECK(h264enc_encode(e, &p, &pk));
+            w_simple(&in, 1, k * 40, pk.idr, pk.data, pk.size);
+            size_t n = mp3_frame(blk, half, (uint8_t)k);
+            if (k == 5) n += mp3_frame(blk + n, half, 0xA5); /* (one block, two frames: two samples) */
+            w_simple(&in, 2, k * 40, true, blk, n);
+        }
+        h264enc_free(e);
+        w_close(&in, cl);
+        w_close(&in, seg);
+
+        W out;
+        AvConvJob j = {0};
+        Seen s;
+        CHECK(run(&in, &out, &j, &s));
+        CHECK_STR(j.what, "H.264 copied · MP3 copied");
+        int n[2];
+        counts(&out, n);
+        CHECK_INT(n[0], 20);
+        CHECK_INT(n[1], 21); /* every frame a sample */
+        size_t moov = box(&out, "moov");
+        const uint8_t *m = out.p + moov, *end = m + be32(m), *esds = NULL, *stts = NULL, *mdhd = NULL;
+        for (const uint8_t *q = m; q + 4 <= end; q++) {
+            if (!memcmp(q, "esds", 4)) esds = q - 4;
+            if (!memcmp(q, "stts", 4)) stts = q - 4; /* (the last: the sound's) */
+            if (!memcmp(q, "mdhd", 4)) mdhd = q - 4;
+        }
+        CHECK(esds && stts && mdhd);
+        if (esds) { /* ES_Descriptor 03, DecoderConfigDescriptor 04, its object type: no DecoderSpecificInfo (05) */
+            const uint8_t *d = esds + 12;
+            CHECK_INT(d[0], 0x03);
+            const uint8_t *dc = memchr(d, 0x04, 12);
+            CHECK(dc && dc[2] == (half ? 0x69 : 0x6B));
+            CHECK(dc && dc[1] == 13 && dc[2 + 13] == 0x06); /* (right after it the SLConfigDescriptor) */
+        }
+        if (stts) { /* one run: 21 samples of 1152 (576) */
+            CHECK_INT((int)be32(stts + 12), 1);
+            CHECK_INT((int)be32(stts + 16), 21);
+            CHECK_INT((int)be32(stts + 20), half ? 576 : 1152);
+        }
+        if (mdhd) CHECK_INT((int)be32(mdhd + 20), half ? 24000 : 44100); /* (its timescale: the rate) */
+        free(in.p), free(out.p);
+    }
+}
+
 /* HEVC (x265 films) can't be decoded here, but Safari plays it - only not inside MKV. So the
    frames move into an MP4 as they are: 'hvc1' with the MKV's hvcC record (parameter-set arrays
    marked complete, as Apple wants), decode order kept, B-frames as composition offsets. */
@@ -637,7 +710,7 @@ TEST(conv_says_what_it_cannot_convert) {
     w_put(&in, "RIFF....AVI LIST", 16);
     CHECK(!run(&in, &out, &j, &s));
     CHECK(j.unsupported);
-    CHECK_HAS(j.err, "Not a readable MKV file");
+    CHECK_HAS(j.err, "Not a readable MKV or MP4 file");
     free(in.p), free(out.p);
 }
 
@@ -2099,7 +2172,7 @@ TEST(conv_subtitles_alone_time_like_a_conversion) {
     w_put(&in, "RIFF....AVI LIST", 16);
     CHECK(!run_subs(&in, &none, &j, &s));
     CHECK(j.unsupported);
-    CHECK_HAS(j.err, "Not a readable MKV file");
+    CHECK_HAS(j.err, "Not a readable MKV or MP4 file");
     free(in.p), free(none.p);
 }
 
@@ -2255,7 +2328,7 @@ TEST(conv_fuzz_seeds) {
                                    0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
     char took[64][40]; /* every CodecID a seed carries: each format the converter takes needs one (below) */
     int ntook = 0;
-    for (int seed = 0; seed < 16; seed++) {
+    for (int seed = 0; seed < 18; seed++) {
         uint8_t avcc[256], asc[2];
         size_t avcc_len = 0;
         Tracks mp2 = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0}, t = mp2;
@@ -2364,6 +2437,41 @@ TEST(conv_fuzz_seeds) {
             }
             for (int f = 0; f < 8; f++) s_add(&a, eac3 + (size_t)f * 384, 384, f * 16, true);
             t = (Tracks){"V_AV1", av1c, sizeof av1c, 64, 48, "A_EAC3", NULL, 0};
+            break;
+        }
+        case 17: { /* an MP4 in (2.5: the owner's DuckTales) - H.264 + Dolby, read by mkv.h's MP4 side, the sound made AAC */
+            name = "h264-ac3.mp4";
+            memset(&in, 0, sizeof in); /* (mux() starts it anew for the others: here mp4.c writes into it) */
+            add_h264(&v, 12, avcc, &avcc_len);
+            uint8_t dac3[3];
+            CHECK(mp4_dac3(ac3, 768, dac3));
+            Mp4Out mo = {&in, mem_write, mem_write_at};
+            Mp4 *m4 = mp4_new(&mo, 0, 1 << 16);
+            Mp4Track mv = {.codec = MP4_H264, .timescale = 1000, .config = avcc, .config_len = avcc_len, .width = 64, .height = 48};
+            Mp4Track ma = {.codec = MP4_AC3, .timescale = 48000, .config = dac3, .config_len = 3, .channels = 2, .sample_rate = 48000};
+            int tv = mp4_add_track(m4, &mv), ta = mp4_add_track(m4, &ma);
+            bool w4 = tv >= 0 && ta >= 0 && mp4_begin(m4);
+            for (int k = 0; w4 && k < v.n; k++) {
+                int next = k + 1 < v.n ? v.ms[k + 1] : v.ms[k] + 33;
+                w4 = mp4_sample(m4, tv, v.data.p + v.at[k], v.at[k + 1] - v.at[k], (uint32_t)(next - v.ms[k]), 0, v.key[k]);
+                if (w4 && k % 3 == 0) w4 = mp4_sample(m4, ta, ac3 + (size_t)(k / 3 % 4) * 768, 768, 1536, 0, true);
+            }
+            CHECK(w4 && mp4_finish(m4));
+            mp4_free(m4);
+            t = (Tracks){"V_MPEG4/ISO/AVC", avcc, avcc_len, 64, 48, "A_AC3", NULL, 0};
+            built = true;
+            break;
+        }
+        case 16: { /* MP3 copied (2.5): MPEG-1 frames, one block holding two */
+            static uint8_t mp3[2 * 417];
+            name = "h264-mp3.mkv";
+            add_h264(&v, 12, avcc, &avcc_len);
+            for (int f = 0; f < 15; f++) {
+                size_t n = mp3_frame(mp3, false, (uint8_t)f);
+                if (f == 7) n += mp3_frame(mp3 + n, false, 0x5A);
+                s_add(&a, mp3, n, f * 26, true);
+            }
+            t = (Tracks){"V_MPEG4/ISO/AVC", avcc, avcc_len, 64, 48, "A_MPEG/L3", NULL, 0, .arate = 44100};
             break;
         }
         case 15: { /* several sounds (2.2): each kept as its own track - AAC copied, Dolby, Dolby Digital Plus and DTS

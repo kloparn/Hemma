@@ -1,6 +1,7 @@
 /* modules/av/mkv.c — see mkv.h */
 #include "mkv.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -121,6 +122,7 @@ struct Mkv {
     int lace_n, lace_i;
     MkvFrame lace;
     const MkvTrack *lace_track;
+    struct Mp4r *mp4; /* 2.5: an MP4/MOV, read by mkv_mp4.h - every call below goes there (NULL: Matroska) */
 };
 
 /* ------------------------------------------------------------- reading */
@@ -494,6 +496,8 @@ static void fail(char *err, size_t cap, const char *msg) {
     err[n] = '\0';
 }
 
+#include "mkv_mp4.h" /* (the MP4/MOV side: its boxes, after rd() and fail()) */
+
 Mkv *mkv_open(const MkvReader *r, char *err, size_t errcap) {
     fail(err, errcap, "");
     Mkv *m = calloc(1, sizeof *m);
@@ -506,6 +510,11 @@ Mkv *mkv_open(const MkvReader *r, char *err, size_t errcap) {
     m->scale = 1000000;
     m->first_cluster = -1;
     memcpy(m->doctype, "matroska", 9);
+    if (mp4_looks(m)) { /* 2.5: an MP4 or a QuickTime file (mkv_mp4.h) - doctype "mp4" or "mov" */
+        if (mp4_open(m, err, errcap)) return m;
+        mkv_close(m);
+        return NULL;
+    }
 
     Elem e;
     if (r->size < 8 || !read_elem(m, 0, r->size, &e) || e.id != ID_EBML || !fits(&e, r->size)) {
@@ -578,6 +587,7 @@ void mkv_close(Mkv *m) {
     free(m->cache);
     free(m->blk);
     free(m->out);
+    mp4_free(m->mp4);
     free(m);
 }
 
@@ -816,6 +826,7 @@ static void resync(Mkv *m) {
 }
 
 int mkv_next(Mkv *m, MkvFrame *f) {
+    if (m->mp4) return mp4_next(m, f);
     for (;;) {
         if (m->lace_i < m->lace_n) {
             emit(m, f);
@@ -867,6 +878,10 @@ int mkv_next(Mkv *m, MkvFrame *f) {
 }
 
 void mkv_rewind(Mkv *m) {
+    if (m->mp4) {
+        mp4_rewind(m);
+        return;
+    }
     m->pos = m->first_cluster >= 0 ? m->first_cluster : m->seg_end;
     m->in_cluster = false;
     m->lace_n = m->lace_i = 0;
@@ -932,6 +947,7 @@ static int64_t bisect(Mkv *m, int64_t t) {
 }
 
 bool mkv_seek(Mkv *m, int64_t t_ns, int track) {
+    if (m->mp4) return mp4_seek(m, t_ns, track);
     mkv_rewind(m);
     if (m->first_cluster < 0) return false;
     if (!track) {

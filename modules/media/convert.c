@@ -33,17 +33,22 @@ static bool container_is(const MediaProbe *p, const char *a, const char *b) {
 ConvertNeed convert_need(const MediaFile *f) {
     if (!f || f->type != MF_VIDEO || f->web || f->role == MF_WEBCOPY) return CONV_NONE;
     const MediaProbe *p = &f->probe;
-    if (!container_is(p, "mkv", "webm")) return CONV_NONE; /* the demuxer we have */
-    bool aac = !p->acodec[0] || str_eq(p->acodec, "aac"), ac3 = str_eq(p->acodec, "ac3") || str_eq(p->acodec, "eac3") ||
+    /* the demuxers we have: Matroska, and (2.5) MP4/MOV - an MP4 needs a copy only for its sound (DuckTales: H.264 +
+       Dolby in MP4s, silent in Chrome and Firefox); one with AAC or MP3 plays as it is */
+    bool mkv = container_is(p, "mkv", "webm"), mp4 = container_is(p, "mp4", "mov");
+    if (!mkv && !mp4) return CONV_NONE;
+    /* (sound copied as it is: AAC, and - 2.5 - MP3, which every browser plays in an MP4 but only Chrome's in an MKV) */
+    bool aac = !p->acodec[0] || str_eq(p->acodec, "aac") || str_eq(p->acodec, "mp3"),
+         ac3 = str_eq(p->acodec, "ac3") || str_eq(p->acodec, "eac3") ||
                                                              str_eq(p->acodec, "dts"); /* (sound decoded and made AAC) */
-    if (str_eq(p->vcodec, "mpeg2") && (aac || ac3)) return CONV_TRANSCODE;
+    if (str_eq(p->vcodec, "mpeg2") && (aac || ac3)) return mkv ? CONV_TRANSCODE : CONV_NONE;
     if (str_eq(p->vcodec, "h264") && ac3) return CONV_TRANSCODE; /* picture copied, sound re-encoded */
-    if (str_eq(p->vcodec, "h264") && aac) return CONV_REMUX;
+    if (str_eq(p->vcodec, "h264") && aac) return mkv ? CONV_REMUX : CONV_NONE;
     /* HEVC stays HEVC and AV1 AV1 (no decoder here): moved into an MP4, which Safari - iPhone, iPad, Mac - plays
        (AV1 only on the newest), never an MKV */
     bool kept = str_eq(p->vcodec, "hevc") || str_eq(p->vcodec, "av1");
     if (kept && ac3) return CONV_TRANSCODE;
-    if (kept && aac) return CONV_REMUX;
+    if (kept && aac) return mkv ? CONV_REMUX : CONV_NONE;
     return CONV_NONE;
 }
 

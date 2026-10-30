@@ -542,7 +542,7 @@ TEST(upload_takes_copies_the_browser_makes) {
 
     /* MKVs come as copies the browser makes ({i,f}); the rest as they are */
     const char *plan = "{\"root\":\"0\",\"into\":\"Up\",\"conv\":\"1\",\"files\":[[\"S/x.mkv\",3000],[\"S/y.mkv\",20],"
-                       "[\"S/z.srt\",5],[\"S/w.mp4\",7]]}";
+                       "[\"S/z.srt\",5],[\"S/w.avi\",7]]}"; /* (an AVI: as it is - an MP4 would be read first, 2.5) */
     plan_for(adam, plan, &r, batch);
     CHECK_HAS(body_of(&r), "\"todo\":[{\"i\":0,\"f\":0},{\"i\":1,\"f\":1},[2,0],[3,0]]");
     /* without the box ticked (or a browser that can't) the originals go */
@@ -1554,7 +1554,8 @@ TEST(upload_sends_audiobooks_into_the_books_folder) {
     preview_of(adam_id, "sort=1&root=0&conv=1", files);
     const char *page = th_page(adam_id, "/media/upload");
     CHECK_HAS(page, "<p class=\"media-up-sum\" data-say>6 files to send · ");
-    CHECK(!strstr(page, "to convert here first")); /* (never converted) */
+    CHECK(!strstr(page, "to convert here first")); /* (never converted - nor counted: the MP4 only if it needs it) */
+    CHECK_HAS(page, "Converted here if needed"); /* (2.5: the episode, an MP4) */
     CHECK_HAS(page, "<span>Audiobooks <i>/</i> Book <i>/</i> CD1</span><small class=\"badge\">New folder</small>");
     CHECK_HAS(page, "2 audiobook files · ");
     CHECK_HAS(page, "<span class=\"media-up-name\">01.mp3</span><small>Part of an audiobook</small></div>"
@@ -1580,7 +1581,7 @@ TEST(upload_sends_audiobooks_into_the_books_folder) {
     Buf r = {0};
     snprintf(plan, sizeof plan, "{\"sort\":\"1\",\"root\":\"0\",\"conv\":\"1\",\"files\":%s}", files);
     plan_for(adam, plan, &r, batch);
-    CHECK_HAS(body_of(&r), "\"todo\":[[0,0],[1,0],[2,0],[3,0],[5,0],[6,0]]");
+    CHECK_HAS(body_of(&r), "\"todo\":[[0,0],[1,0],[2,0],[3,0],{\"i\":5,\"f\":5},[6,0]]"); /* (2.5: the MP4 - converted if it needs it) */
     CHECK_HAS(body_of(&r), "\"skipped\":1");
     size_t m4b_n = 2u << 20; /* (bigger than a buffered body: it streams to disk) */
     char *m4b = xmalloc(m4b_n);
@@ -1607,6 +1608,18 @@ TEST(upload_sends_audiobooks_into_the_books_folder) {
     CHECK_HAS(body_of(&r), "\"ok\":true");
     CHECK(exists(root, "Series/Garden Show/theme.mp3"));
     CHECK(!exists(root, "Book"));
+    /* the MP4 (2.5): its browser found it plays as it is - the original goes under its own name, nothing said */
+    snprintf(url, sizeof url, "/media/upload/%s/5?original=1&plays=1", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    CHECK_HAS(body_of(&r), "\"at\":0");
+    snprintf(url, sizeof url, "/media/upload/%s/5?at=0", batch);
+    call("PUT", url, adam, NULL, "ten bytes!", 10, 10, &r);
+    CHECK_HAS(body_of(&r), "\"ok\":true");
+    CHECK(exists(root, "Series/Garden Show/Season 1/Garden.Show.S01E01.mp4"));
+    CHECK(!exists(root, "Series/Garden Show/Season 1/Garden.Show.S01E01.web.mp4"));
+    page = th_page(adam_id, "/media/upload");
+    CHECK(!strstr(page, "sent as it is"));
+    CHECK(!strstr(page, "media-up-asis"));
     server_stop();
     for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
     CHECK(g_done);

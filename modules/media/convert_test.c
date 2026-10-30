@@ -48,6 +48,16 @@ TEST(convert_knows_what_each_file_needs) {
     CHECK_INT(convert_need(&f), CONV_NONE);
     f = video("mkv", "h264", "dts");
     CHECK_INT(convert_need(&f), CONV_TRANSCODE);
+    f = video("mkv", "h264", "mp3"); /* (2.5: MP3 copied) */
+    CHECK_INT(convert_need(&f), CONV_REMUX);
+    f = video("mp4", "h264", "ac3"); /* (2.5: an MP4 with Dolby - DuckTales - gets a copy with AAC) */
+    CHECK_INT(convert_need(&f), CONV_TRANSCODE);
+    f = video("mov", "hevc", "eac3");
+    CHECK_INT(convert_need(&f), CONV_TRANSCODE);
+    f = video("mp4", "h264", "mp3"); /* ... one with MP3 or AAC plays as it is */
+    CHECK_INT(convert_need(&f), CONV_NONE);
+    f = video("mp4", "hevc", "aac");
+    CHECK_INT(convert_need(&f), CONV_NONE);
     f = video("mkv", "mpeg2", "ac3");
     f.web = 42; /* converted already */
     CHECK_INT(convert_need(&f), CONV_NONE);
@@ -468,7 +478,7 @@ TEST(convert_real_file_when_given) {
     CHECK(media_probe_file(src, &in));
     CHECK_STR(p.container, "mp4");
     CHECK(str_eq(p.vcodec, "h264") || str_eq(p.vcodec, "hevc") || str_eq(p.vcodec, "av1")); /* (HEVC and AV1 are copied) */
-    CHECK_STR(p.acodec, "aac");
+    CHECK(str_eq(p.acodec, "aac") || (str_eq(p.acodec, "mp3") && str_eq(in.acodec, "mp3"))); /* (2.5: MP3 is copied) */
     CHECK_INT(p.playable, str_eq(p.vcodec, "h264") ? PLAY_YES : PLAY_MAYBE);
     int64_t want = secs > 0 ? secs * 1000LL : in.duration_ms;
     CHECK(p.duration_ms > want - 2000 && p.duration_ms < want + 2000);

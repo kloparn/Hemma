@@ -3,6 +3,8 @@
  * nightly run (.github/workflows/fuzz.yml) goes deeper into each (issue #50). Pick one when building:
  *
  *   -DAVFUZZ_MKV     the Matroska reader: headers, tracks, every frame, a seek, a rewind
+ *   -DAVFUZZ_MP4     (2.5) the same calls on an MP4/MOV (mkv.c's mkv_mp4.h): boxes, sample tables, every frame - each
+ *                    one inside the input, an MP4 saying it is one
  *   -DAVFUZZ_AC3     the Dolby decoder: raw AC-3 / E-AC-3 frames, with the CRC check off
  *   -DAVFUZZ_DTS     the DTS decoder (modules/av/dts.c): raw core frames
  *   -DAVFUZZ_MPEG2   the MPEG-2 decoder: a raw video stream, fed in chunks of any size
@@ -18,11 +20,12 @@
  * Seeds: `HEMMA_FUZZ_SEEDS=build/fuzz-seeds HEMMA_FUZZ_RAW=build/fuzz-raw build/test conv_fuzz_seeds` - the MKVs
  * for mkv (as for convfuzz), build/fuzz-raw/ac3, .../dts and .../mpeg2; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test
  * subpic_fuzz_seeds` - build/fuzz-raw/pgs and .../vobsub; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test
- * audiotags_fuzz_seeds` - build/fuzz-raw/tags.
+ * audiotags_fuzz_seeds` - build/fuzz-raw/tags; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test mp4read_fuzz_seeds` -
+ * build/fuzz-raw/mp4.
  *
  *   clang -g -O1 -std=gnu11 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
  *         -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION -DAVFUZZ_AC3 tools/avfuzz.c modules/av/ac3.c -lm -o build/fuzz-ac3
- *   (mkv: modules/av/mkv.c; dts: modules/av/dts.c; mpeg2: modules/av/mpeg2.c; pgs, vobsub: modules/av/subpic.c
+ *   (mkv, mp4: modules/av/mkv.c; dts: modules/av/dts.c; mpeg2: modules/av/mpeg2.c; pgs, vobsub: modules/av/subpic.c
  *    modules/av/png.c; tags: modules/av/audiotags.c)
  *   build/fuzz-ac3 -max_total_time=60 build/fuzz-corpus-ac3 build/fuzz-raw/ac3
  *
@@ -37,8 +40,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(AVFUZZ_MKV) + defined(AVFUZZ_AC3) + defined(AVFUZZ_DTS) + defined(AVFUZZ_MPEG2) + defined(AVFUZZ_PGS) +         defined(AVFUZZ_VOBSUB) + defined(AVFUZZ_TAGS) != 1
-#error "build with exactly one of -DAVFUZZ_MKV, -DAVFUZZ_AC3, -DAVFUZZ_DTS, -DAVFUZZ_MPEG2, -DAVFUZZ_PGS, -DAVFUZZ_VOBSUB, -DAVFUZZ_TAGS"
+#if defined(AVFUZZ_MKV) + defined(AVFUZZ_MP4) + defined(AVFUZZ_AC3) + defined(AVFUZZ_DTS) + defined(AVFUZZ_MPEG2) + defined(AVFUZZ_PGS) +         defined(AVFUZZ_VOBSUB) + defined(AVFUZZ_TAGS) != 1
+#error "build with exactly one of -DAVFUZZ_MKV, -DAVFUZZ_MP4, -DAVFUZZ_AC3, -DAVFUZZ_DTS, -DAVFUZZ_MPEG2, -DAVFUZZ_PGS, -DAVFUZZ_VOBSUB, -DAVFUZZ_TAGS"
 #endif
 
 static volatile uint32_t g_sink; /* what was read: kept, so no read is optimised away */
@@ -49,7 +52,7 @@ static void touch(const uint8_t *p, size_t n) {
     g_sink += s;
 }
 
-#ifdef AVFUZZ_MKV
+#if defined(AVFUZZ_MKV) || defined(AVFUZZ_MP4)
 #include "../modules/av/mkv.h"
 
 typedef struct {
@@ -73,6 +76,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) {
     touch((const uint8_t *)mkv_doctype(m), strlen(mkv_doctype(m)));
     touch((const uint8_t *)mkv_title(m), strlen(mkv_title(m)));
     touch((const uint8_t *)mkv_writing_app(m), strlen(mkv_writing_app(m)));
+#ifdef AVFUZZ_MP4
+    bool mp4 = !strcmp(mkv_doctype(m), "mp4") || !strcmp(mkv_doctype(m), "mov");
+#endif
     for (int i = 0; i < mkv_track_count(m); i++) {
         const MkvTrack *t = mkv_track(m, i);
         touch(t->priv, t->priv_len);
@@ -80,9 +86,18 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) {
         touch((const uint8_t *)t->codec, strlen(t->codec));
         touch((const uint8_t *)t->lang, strlen(t->lang));
         touch((const uint8_t *)t->name, strlen(t->name));
+        touch((const uint8_t *)t->fourcc, strlen(t->fourcc));
+#ifdef AVFUZZ_MP4
+        if (mp4 && (!t->type || !t->codec[0] || strlen(t->lang) != 3)) __builtin_trap(); /* (a track it hands out has these) */
+#endif
     }
     MkvFrame f;
-    for (int k = 0; k < 4000 && mkv_next(m, &f) == 1; k++) touch(f.data, f.size);
+    for (int k = 0; k < 4000 && mkv_next(m, &f) == 1; k++) {
+        touch(f.data, f.size);
+#ifdef AVFUZZ_MP4
+        if (mp4 && (f.size > n || (f.size && !f.data) || f.pos < 0 || (uint64_t)f.pos + f.size > n)) __builtin_trap();
+#endif
+    }
     if (mkv_seek(m, mkv_duration(m) / 2, 0))
         for (int k = 0; k < 200 && mkv_next(m, &f) == 1; k++) touch(f.data, f.size);
     mkv_rewind(m);

@@ -737,7 +737,8 @@
   async function sendMade(url, job, m, files) {
     try {
       if (!job.subs) {
-        const s = await ask(url, m.send ? `size=${m.size}` : `original=1&why=${encodeURIComponent(m.error || '')}`);
+        /* (m.plays, 2.5: an MP4 that plays everywhere as it is - the original goes, and nothing is said about it) */
+        const s = await ask(url, m.send ? `size=${m.size}` : m.plays ? 'original=1&plays=1' : `original=1&why=${encodeURIComponent(m.error || '')}`);
         if (!s.skip) await put(url, m.send ? m : files[job.f], s.at || 0);
       }
       const tracks = (m.subs || []).concat(m.pics || []).sort((a, b) => (a.t || 0) - (b.t || 0));

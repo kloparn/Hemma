@@ -160,6 +160,7 @@ static const Tr TR[] = {
     /* ... and what happens to it */
     {"Sent as it is", "Skickas som den är", "Se envía tal cual"},
     {"Converted here first", "Konverteras här först", "Se convierte aquí primero"},
+    {"Converted here if needed", "Konverteras här om det behövs", "Se convierte aquí si hace falta"},
     {"Continues: %d%% sent", "Fortsätter: %d%% skickat", "Continúa: %d%% enviado"},
     {"Just its first MB", "Bara första MB:n", "Solo su primer MB"},
     {"Skipped", "Hoppas över", "Se omite"},

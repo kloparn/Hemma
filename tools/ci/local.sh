@@ -27,11 +27,11 @@ while [ $# -gt 0 ]; do
     case $1 in
     --tar) tarfile=$2; shift 2 ;;
     [0-9]*) secs=$1; shift ;;
-    conv | mkv | ac3 | dts | mpeg2 | pgs | vobsub | tags) target=$1; shift ;;
+    conv | mkv | mp4 | ac3 | dts | mpeg2 | pgs | vobsub | tags) target=$1; shift ;;
     *) echo "unknown argument $1"; exit 2 ;;
     esac
 done
-case $job in test | asan | fuzz) ;; *) echo "usage: bash tools/ci/local.sh test | asan | fuzz [seconds] [conv|mkv|ac3|dts|mpeg2|pgs|vobsub|tags] [--tar FILE]"; exit 2 ;; esac
+case $job in test | asan | fuzz) ;; *) echo "usage: bash tools/ci/local.sh test | asan | fuzz [seconds] [conv|mkv|mp4|ac3|dts|mpeg2|pgs|vobsub|tags] [--tar FILE]"; exit 2 ;; esac
 
 base=/dev/shm
 [ -d "$base" ] && [ -w "$base" ] || base=${TMPDIR:-/tmp}

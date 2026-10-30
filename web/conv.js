@@ -16,6 +16,7 @@
 //        {status, body}      the PUT's answer; status 0 = none came (the connection dropped)
 //        {lost: true}        the copy can't be read any more (the browser's disk filled up?)
 //        {error}             why there is none (the original is sent instead)
+//        {plays: true}       (2.5) an MP4 that plays everywhere as it is: none needed, the original goes quietly
 // The copy never leaves this worker: wire.js ends the worker once the copy is sent, and the
 // browser lets go of it right then. Handed to the page, finished copies stayed until the page's
 // memory was next tidied - which a page this small hardly ever needs - and a long upload left
@@ -205,6 +206,10 @@ self.onmessage = async (e) => {
       while (b[end]) end++;
       return new TextDecoder().decode(b.subarray(p, end));
     };
+    if (rc === 3) { /* (2.5: an MP4 that plays everywhere as it is - nothing made, the original goes quietly) */
+      postMessage({ plays: true });
+      return;
+    }
     if (rc !== 1) {
       postMessage({ error: text(x.conv_err()) });
       return;

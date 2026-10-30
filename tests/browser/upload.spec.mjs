@@ -229,6 +229,32 @@ test('an MKV with an AV1 picture is converted here too', async ({ page }) => {
   for (const box of ['av01', 'av1C', 'mp4a']) expect(mp4).toContain(box); /* (AV1 copied, the sound made AAC) */
 });
 
+// 2.5 (the owner's DuckTales: MP4s with Dolby sound, silent in Chrome): an MP4 is read by the converter here too - one
+// with Dolby gets a copy with AAC sound, one that plays everywhere already goes as it is, without a word.
+test('an MP4 with Dolby sound is converted here, one that plays goes as it is', async ({ page }) => {
+  const dolby = path.join(WORK, 'mp4-up', 'Dolbyshow S01E01.mp4'), plays = path.join(WORK, 'mp4-up', 'Playsshow S01E01.mp4');
+  fs.mkdirSync(path.dirname(dolby), { recursive: true });
+  fs.copyFileSync(path.join(WORK, 'upload', 'Dolby test (2019).mp4'), dolby); /* (H.264 + AC-3: av_test_clips) */
+  fs.copyFileSync(CLIP, plays); /* (H.264 + AAC) */
+  await page.goto('/media/upload');
+  test.skip(!(await page.locator('form[data-wasm]').count()), 'this Hemma has no converter for browsers (av.wasm)');
+  await page.locator('input[name=files]').setInputFiles([dolby, plays]);
+  await expect(page.locator('.media-up-group', { hasText: 'Dolbyshow' })).toContainText('Converted here if needed');
+  await page.locator('#media-up-start').click();
+  const d = path.join(LIBRARY, 'Series', 'Dolbyshow', 'Season 1'), p = path.join(LIBRARY, 'Series', 'Playsshow', 'Season 1');
+  const copy = path.join(d, 'Dolbyshow S01E01.web.mp4');
+  await expect.poll(() => fs.existsSync(copy) && fs.existsSync(path.join(p, 'Playsshow S01E01.mp4')),
+    { message: 'both arrive', timeout: 30_000 }).toBe(true);
+  await expect(page.locator('.media-up h3')).toContainText('Finished · 2 files sent');
+  await expect(page.locator('.media-up')).not.toContainText('sent as it is');
+  expect(fs.existsSync(path.join(d, 'Dolbyshow S01E01.mp4'))).toBe(false);
+  const mp4 = fs.readFileSync(copy).toString('latin1');
+  expect(mp4).toContain('mp4a'); /* (the sound made AAC) */
+  expect(mp4).not.toContain('dac3');
+  expect(same(path.join(p, 'Playsshow S01E01.mp4'), plays), 'the MP4 that plays: byte for byte').toBe(true);
+  expect(fs.existsSync(path.join(p, 'Playsshow S01E01.web.mp4'))).toBe(false);
+});
+
 // 2.4 (owner: "the year of a movie to be almost mandatory"): a film without a year gets a box on the preview, Start
 // asks first while it's empty, and with the year typed the film goes into Movies/<Title (Year)>/ under its own name.
 test('a film without a year is asked for it, and goes in with it', async ({ page }) => {
