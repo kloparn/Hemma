@@ -4,6 +4,39 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.4.0 (2026-10-30)
+
+Films get their year: Hemma asks for it while uploading, and knows a film without one when it sees it.
+
+### New
+
+- **The year of a film** (owner: "the year of a movie to be almost mandatory ... Otherwise it's hard to identify
+  stuff"): the upload's preview gives every film without a year a *Year* box - the year is what tells The Lion King
+  (1994) from The Lion King (2019) - and *Start* asks first when some are left empty. The film goes into
+  *Movies/Title (Year)/*; its file keeps its name.
+- **"These are films"** on the preview for a folder of videos Hemma reads as other videos (a *Disney* folder of
+  films named without years): they go into Movies, each into its own *Title (Year)* folder.
+- **Films without a year** are listed under **Watch → Library settings**, each with *Fix title* to add it.
+
+### Fixed
+
+- A collection's order number isn't part of a film's title: *1  Aladdin*, *2  The Return Of Jafar*, *1.5. The Lion
+  King (Hakuna Matata)* are *Aladdin*, *The Return Of Jafar*, *The Lion King (Hakuna Matata)*, in that order.
+  *101 Dalmatians* stays as it is.
+- A video an hour long or more that names no episode is a film, wherever it lies (not under *Home videos*) - a
+  folder of films called *Disney* came out as 54 other videos.
+
+### For developers
+
+- modules/media/names.c: `MediaName.order` (a leading "1  ", "1. ", "1.5. ", "2 - " in tenths; one plain space or 4
+  digits keep the number in the title) and `media_parse_name_film` (read as if under a Movies folder; a home-videos
+  folder still wins). library.c `feature_film`: an other video of 60 minutes or more (not an extra, a disc's title
+  or a play-all) is read that way, at the scan and from the cache.
+- modules/media/upload*: the preview's `y.<16 hex>` (a film's year, key = `upload_show_key` of its title as found;
+  1880 .. next year) and `films.<16 hex>` = 1 (the top folder's videos are films, `UpSorted.group`) fields, read from
+  the live preview and Start's plan alike (`UpSortOpts.years` / `.films`); `UpSorted.film`, `.no_year`, `.as_film`;
+  the form's `data-confirm` while films lack years.
+
 ## 2.3.0 (2026-10-30)
 
 The app saves videos and audiobooks for offline.

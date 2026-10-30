@@ -338,8 +338,28 @@ static void nfo_genres(const char *path, char *out, size_t cap) {
 /* Names come from the path; a ".web.mp4" copy is named like its original ("x.web.mp4" as "x.mp4"),
    so it still makes sense on its own if the original is ever deleted. A play-all's header
    ("x.playall.mkv") is named like the title it stands in for. */
+static void parse_with(void (*parse)(const char *, const char *, MediaName *), const char *root_nm, const char *rel,
+                       MediaName *out);
+
 static void parse_name(const char *root_nm, const char *rel, MediaName *out, bool long_sample) {
-    void (*parse)(const char *, const char *, MediaName *) = long_sample ? media_parse_name_long : media_parse_name_in;
+    parse_with(long_sample ? media_parse_name_long : media_parse_name_in, root_nm, rel, out);
+}
+
+/* A video an hour long or more that names no episode - not an extra, not a disc's title or "play all", not in a
+   home-videos folder - is a film all the same (2.4; owner, 2026-10-30: a folder "Disney" of films named without years
+   read as 54 other videos). Its title read as a film's (media_parse_name_film); the year may be missing. */
+#define FEATURE_MIN_MS (60 * 60 * 1000LL)
+static void feature_film(const char *root_nm, MediaFile *f) {
+    if (f->type != MF_VIDEO || f->name.kind != MEDIA_OTHER || f->name.extra || f->name.track >= 0 || f->name.disc ||
+        f->probe.duration_ms < FEATURE_MIN_MS || media_is_playall_head(f->rel))
+        return;
+    MediaName nm;
+    parse_with(media_parse_name_film, root_nm, f->rel, &nm);
+    if (nm.kind == MEDIA_MOVIE && !nm.extra) f->name = nm;
+}
+
+static void parse_with(void (*parse)(const char *, const char *, MediaName *), const char *root_nm, const char *rel,
+                       MediaName *out) {
     const char *strip = media_is_web_copy(rel) ? ".web.mp4" : media_is_playall_head(rel) ? ".playall.mkv" : NULL;
     if (!strip) {
         parse(root_nm, rel, out);
@@ -530,6 +550,7 @@ static void add_file(Scan *sc, int root, const char *rel, char type, int64_t siz
             }
             parse_name(root_name(sc->roots[root]), rel, &f->name, true);
         }
+        feature_film(root_name(sc->roots[root]), f);
         if (o && o->type == MF_VIDEO && o->size == size && o->mtime == mtime) f->fp = o->fp;
         char path[1024];
         join_path(sc->roots[root], rel, path, sizeof path);
@@ -1611,6 +1632,7 @@ static void cache_load(void) {
             parse_name(root_name(ix->roots[r]), f->rel, &f->name, false);
             if (f->name.extra && !named_but_real(f)) continue; /* hidden since it was stored */
             if (f->name.sample || f->name.named) parse_name(root_name(ix->roots[r]), f->rel, &f->name, true);
+            feature_film(root_name(ix->roots[r]), f);
             MediaSounds s;
             if (sounds_unpack((const char *)sqlite3_column_text(st, 17), f, &s)) { /* (2.2: its sound tracks) */
                 if (ix->nsounds == scap) ix->sounds = xrealloc(ix->sounds, (size_t)(scap = scap ? scap * 2 : 16) * sizeof *ix->sounds);

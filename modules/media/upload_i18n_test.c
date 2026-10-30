@@ -331,7 +331,9 @@ TEST(media_upload_preview_speaks_swedish_and_spanish) {
                                         "A4_t04.web.mp4", "A7_t00.mkv", "Film (2001).mp4", "Film (2001)-trailer.mp4",
                                         "IMG_1.mov", "notes.txt", "poster.jpg", "Show.S01E02.mp4",
                                         "Show.S01E03.Third.en.srt", "Show.S01E03.Third.mkv", "Show.S01E03.Third.web.mp4",
-                                        "Show.S01E04.mp4", "Sub only.srt", "Other S02E01.mp4", NULL};
+                                        "Show.S01E04.mp4", "Sub only.srt", "Other S02E01.mp4",
+                                        "1 video", /* (Swedish too: "These are films" counts a folder's videos - 2.4) */
+                                        NULL};
     static const char *const pages[] = {"/media/upload"};
     CHECK_INT(untranslated(adam_id, pages, 1, allow), 0);
     upload_test_free_space((1LL << 30) + 10); /* no room */

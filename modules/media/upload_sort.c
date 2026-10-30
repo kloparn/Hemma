@@ -465,6 +465,37 @@ static const char *rename_of(const UpSortOpts *o, uint64_t key) {
     return NULL;
 }
 
+/* (2.4) The top folder of a file as chosen ("Disney" of "Disney/Toy Story/Toy Story 1.mkv"; "" for a loose one), as a
+   key: what "These are films" names */
+static uint64_t group_of(const char *rel) {
+    const char *slash = strchr(rel, '/');
+    char top[256];
+    str_ncopy(top, sizeof top, rel, slash ? (size_t)(slash - rel) : 0);
+    return upload_show_key(top) | 1; /* (never 0: 0 = none) */
+}
+
+static bool films_here(const UpSortOpts *o, uint64_t group) {
+    for (int i = 0; i < o->nfilms; i++)
+        if (o->films[i] == group) return true;
+    return false;
+}
+
+/* A video read as a film (media_parse_name_film): what "These are films" makes of one */
+static bool as_film(const char *rel, MediaName *n) {
+    char tmp[440];
+    snprintf(tmp, sizeof tmp, "%.*s.mkv", (int)media_stem_len(rel), rel);
+    media_parse_name_film(NULL, tmp, n);
+    return n->kind == MEDIA_MOVIE && !n->extra;
+}
+
+/* A film's year: its name's, else the one typed on the preview for its title */
+static void film_year(const UpSortOpts *o, UpSorted *u, MediaName *nm) {
+    u->film = upload_show_key(nm->title);
+    u->no_year = !nm->year;
+    for (int k = 0; !nm->year && k < o->nyears; k++)
+        if (o->years[k].key == u->film) nm->year = o->years[k].year;
+}
+
 /* ------------------------------------------------------------------ the sort */
 
 static void place_in(UpSorted *u, const char *dir, const char *rel) { /* dir + the file's own name */
@@ -641,12 +672,17 @@ void upload_sort(const UpSortOpts *o, const char *const *rels, int n, UpSorted *
             }
             sort_episode(s, u, rel, &nm, name ? name : nm.title);
             lead[i] = !nm.unnumbered;
-        } else if (nm.kind == MEDIA_MOVIE && !nm.extra && !to_series) {
-            u->kind = UPK_FILM;
+        } else if (!nm.extra && !to_series &&
+                   (nm.kind == MEDIA_MOVIE || ((u->group = group_of(rel)) && films_here(o, u->group) && as_film(rel, &nm)))) {
+            u->kind = UPK_FILM; /* (by its name, or by "These are films": 2.4) */
+            u->as_film = u->group != 0;
+            film_year(o, u, &nm);
+            str_copy(u->title, sizeof u->title, nm.title);
             sort_film(s, u, rel, &nm);
             lead[i] = true;
         } else {
             u->kind = nm.extra ? UPK_EXTRA : UPK_OTHER;
+            if (!nm.extra && !to_series) u->group = group_of(rel);
         }
     }
 

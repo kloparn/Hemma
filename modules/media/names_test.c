@@ -330,3 +330,53 @@ TEST(media_names_film_parts) {
     CHECK_INT(media_name_part("Partisan (2015).mkv"), 0);
     CHECK_INT(media_name_part("Part (2015).mkv"), 0);
 }
+
+/* 2.4: a collection's order number in front of a film's name isn't its title (a Disney folder's "1  Aladdin",
+   "1. The Rescuers", "1.5. The Lion King (Hakuna Matata)") - a number the title reads with one space, a year, a
+   release's dots keep theirs; episodes come first */
+TEST(media_names_order_numbers_arent_titles) {
+    static const struct {
+        const char *path, *title;
+        int order;
+    } C[] = {
+        {"Movies/Disney/Aladdin/1  Aladdin.mkv", "Aladdin", 10},
+        {"Movies/Disney/Aladdin/2  The Return Of Jafar.mkv", "The Return Of Jafar", 20},
+        {"Movies/Disney/The Rescuers/1. The Rescuers.mkv", "The Rescuers", 10},
+        {"Movies/Disney/The Lion King/1.5. The Lion King (Hakuna Matata).mkv", "The Lion King (Hakuna Matata)", 15},
+        {"Movies/Disney/Goofy/2. An Extremely Goofy Movie.mkv", "An Extremely Goofy Movie", 20},
+        {"Movies/Collection/3 - The King of Thieves.mkv", "The King of Thieves", 30},
+        {"Movies/Disney/101 Dalmatians.mkv", "101 Dalmatians", 0},
+        {"Movies/10 Things I Hate About You.mkv", "10 Things I Hate About You", 0},
+        {"Movies/300 Rise of an Empire.mkv", "300 Rise of an Empire", 0},
+        {"Movies/2 Fast 2 Furious (2003).mkv", "2 Fast 2 Furious", 0},
+        {"2.Fast.2.Furious.2003.1080p.BluRay.x264.mkv", "2 Fast 2 Furious", 0},
+        {"Movies/Disney/Toy Story/Toy Story 1.mkv", "Toy Story 1", 0},
+    };
+    for (int i = 0; i < countof(C); i++) {
+        MediaName n;
+        media_parse_name(C[i].path, &n);
+        if (n.kind != MEDIA_MOVIE || strcmp(n.title, C[i].title) || n.order != C[i].order)
+            test_fail(__FILE__, __LINE__, "%s\n      got: kind=%d \"%s\" order %d", C[i].path, n.kind, n.title, n.order);
+    }
+    MediaName n;
+    media_parse_name("Movies/2001 A Space Odyssey (1968).mkv", &n); /* (a year in front is never an order) */
+    CHECK_STR(n.title, "2001 A Space Odyssey");
+    CHECK_INT(n.year, 1968);
+    CHECK_INT(n.order, 0);
+    media_parse_name("Series/Garden Show/Season 1/01 - Seeds.mkv", &n); /* (an episode stays one) */
+    CHECK_INT(n.kind, MEDIA_EPISODE);
+    CHECK_INT(n.episode, 1);
+    CHECK_STR(n.ep_title, "Seeds");
+    media_parse_name("Disney/1  Aladdin.mkv", &n); /* (no Movies folder: another video, its number left out too) */
+    CHECK_INT(n.kind, MEDIA_OTHER);
+    CHECK_STR(n.title, "Aladdin");
+    /* read as a film: a Disney folder's names, as if under Movies - a home-videos folder keeps them home videos */
+    media_parse_name_film(NULL, "Disney/Toy Story/Toy Story 2.mkv", &n);
+    CHECK_INT(n.kind, MEDIA_MOVIE);
+    CHECK_STR(n.title, "Toy Story 2");
+    media_parse_name_film(NULL, "Disney/1.5. The Lion King (Hakuna Matata).mkv", &n);
+    CHECK_INT(n.kind, MEDIA_MOVIE);
+    CHECK_STR(n.title, "The Lion King (Hakuna Matata)");
+    media_parse_name_film(NULL, "Home videos/Midsommar 2024/IMG_1234.mov", &n);
+    CHECK_INT(n.kind, MEDIA_OTHER);
+}

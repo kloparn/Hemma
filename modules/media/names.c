@@ -895,6 +895,37 @@ void media_parse_name_long(const char *root_name, const char *rel, MediaName *ou
     t_long = false;
 }
 
+static _Thread_local bool t_film; /* media_parse_name_film: as if under a Movies folder */
+
+void media_parse_name_film(const char *root_name, const char *rel, MediaName *out) {
+    t_film = true;
+    media_parse_name_in(root_name, rel, out);
+    t_film = false;
+}
+
+/* A collection's order number leading a name (2.4; owner, 2026-10-30: a Disney folder's "1  Aladdin", "1. The
+   Rescuers", "1.5. The Lion King (Hakuna Matata)"): 1-3 digits (a ".5" after them for a film between two), then a dot
+   and a space, two or more spaces, or " - " - and a name after it. One plain space keeps the number in the title
+   ("101 Dalmatians", "10 Things I Hate About You", "300 Rise of an Empire"), and so does a dot a word follows at once
+   ("2.Fast.2.Furious": a release's dots are spaces); 4 digits are a year, never an order ("2001 A Space Odyssey").
+   Returns the bytes to skip (0 = none) and the number in tenths. */
+static size_t order_prefix(const char *s, int *order) {
+    const char *p = s;
+    int n = 0, d = 0, tenth = 0;
+    while (isdigit((unsigned char)*p) && d < 4) n = n * 10 + (*p++ - '0'), d++;
+    if (d == 0 || d > 3) return 0;
+    if (p[0] == '.' && isdigit((unsigned char)p[1]) && p[2] == '.' && p[3] == ' ') tenth = p[1] - '0', p += 2; /* "1.5. " */
+    const char *q = p;
+    if (q[0] == '.' && q[1] == ' ') q += 1;
+    else if (q[0] == ' ' && q[1] == ' ') q += 1;
+    else if (q[0] == ' ' && q[1] == '-' && q[2] == ' ') q += 2;
+    else return 0;
+    while (*q == ' ' || *q == '-') q++;
+    if (!isalnum((unsigned char)*q) && (unsigned char)*q < 0x80) return 0; /* (nothing, or no name after it) */
+    *order = n * 10 + tenth;
+    return (size_t)(q - s);
+}
+
 void media_parse_name_in(const char *root_name, const char *rel, MediaName *out) {
     memset(out, 0, sizeof *out);
     out->track = -1;
@@ -937,6 +968,7 @@ void media_parse_name_in(const char *root_name, const char *rel, MediaName *out)
         else if (g == GEN_HOME) home_hint = true;
         else if (g == GEN_EXTRAS) extra = by_folder = true; /* (an Extras folder says so for sure) */
     }
+    if (t_film && !home_hint) movie_hint = true; /* (a home-videos folder still wins) */
     int track = makemkv_title(base);
 
     /* Walk up from the file over extras, disc and season folders ("Movie (2010)/Extras/x.mkv",
@@ -1021,9 +1053,12 @@ void media_parse_name_in(const char *root_name, const char *rel, MediaName *out)
                 str_copy(out->ep_title, sizeof out->ep_title, ce.full);
         }
     } else {
+        /* a collection's order number isn't the film's title (2.4: "1  Aladdin" is Aladdin, number 1) */
+        size_t skip = track < 0 ? order_prefix(base, &out->order) : 0;
+        if (skip) tokenize(base + skip, T);
         Clean cf;
         clean_title(T, 0, T->n, &cf);
-        bool junk = junk_name(base, &cf);
+        bool junk = junk_name(base + skip, &cf);
         bool dir_movie = cd.year && cd.title[0] && (cd.year_paren || cd.tags) && !home_hint;
         out->extra = extra;
         if (extra) {

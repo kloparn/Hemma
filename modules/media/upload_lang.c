@@ -626,5 +626,29 @@ static const Tr TR[] = {
     {"Only its subtitles", "Bara undertexterna", "Solo sus subtítulos"},
     {"only the subtitles of %d video", "bara undertexterna till %d video", "solo los subtítulos de %d vídeo"},
     {"only the subtitles of %d videos", "bara undertexterna till %d videor", "solo los subtítulos de %d vídeos"},
+    /* a film's year, folders of films (2.4) */
+    {"Films?", "Filmer?", "¿Películas?"},
+    {"Hemma reads these as videos that aren't films or episodes. Ticked, they go into Movies, each into a folder of its "
+     "own with its year.",
+     "Hemma läser de här som videor som varken är filmer eller avsnitt. Ikryssade hamnar de i Filmer, var och en i en "
+     "egen mapp med sitt år.",
+     "Hemma lee estos como vídeos que no son películas ni episodios. Marcados, van a Películas, cada uno en su propia "
+     "carpeta con su año."},
+    {"The videos in %s are films", "Videorna i %s är filmer", "Los vídeos de %s son películas"},
+    {"The videos on their own are films", "De lösa videorna är filmer", "Los vídeos sueltos son películas"},
+    {"%d film has no year", "%d film saknar år", "%d película no tiene año"},
+    {"%d films have no year", "%d filmer saknar år", "%d películas no tienen año"},
+    {"The films' years", "Filmernas år", "Los años de las películas"},
+    {"The year tells films apart - The Lion King (1994) from The Lion King (2019) - and finds their categories. Without "
+     "one, a film goes in all the same.",
+     "Året skiljer filmer åt - Lejonkungen (1994) från Lejonkungen (2019) - och hittar deras kategorier. Utan det "
+     "kommer filmen in ändå.",
+     "El año distingue las películas - El rey león (1994) de El rey león (2019) - y encuentra sus categorías. Sin él, "
+     "la película entra igualmente."},
+    {"needs its year", "behöver sitt år", "necesita su año"},
+    {"%d film has no year. Upload it anyway?", "%d film saknar år. Ladda upp den ändå?",
+     "%d película no tiene año. ¿Subirla igualmente?"},
+    {"%d films have no year. Upload them anyway?", "%d filmer saknar år. Ladda upp dem ändå?",
+     "%d películas no tienen año. ¿Subirlas igualmente?"},
 };
 TRANSLATIONS(media_upload, TR)

@@ -485,6 +485,14 @@ TEST(media_real_show_folder_listing) {
         if (f->role == MF_BONUS)
             printf("  extra: %-58s %5.1f min  \"%s\"\n", f->rel, f->probe.duration_ms / 60000.0, f->name.title);
     }
+    for (int x = 0; x < ix->nmovies; x++) { /* (films and other videos: the title each gets) */
+        const MediaFile *f = &ix->files[ix->movies[x]];
+        printf("movie \"%s\" (%d): %s\n", f->name.title, f->name.year, f->rel);
+    }
+    for (int x = 0; x < ix->nothers; x++) {
+        const MediaFile *f = &ix->files[ix->others[x]];
+        printf("other \"%s\": %s\n", f->name.title, f->rel);
+    }
     th_halt();
 }
 
