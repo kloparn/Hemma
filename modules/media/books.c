@@ -17,6 +17,7 @@
  * moves from one to the next in the same element. The lock screen (the Media Session API): the book's title,
  * author, cover and the chapter, play/pause, 15/30 s, the chapters as tracks. Both the element and the controls
  * are data-static: a re-render never touches them, so neither does a page's morph while it plays. */
+#include "../../core/json.h"
 #include "../../core/ui.h"
 #include "download.h"
 #include "media.h"
@@ -184,6 +185,21 @@ static int book_chapters(const MediaBook *bk, BookChapter *out, int max) {
         at += MAX(f->probe.duration_ms, 0);
     }
     return n;
+}
+
+bool media_book_art_src(Buf *b, const MediaBook *bk) { return bk && book_art_src(b, bk); }
+
+void media_book_chapters_json(const MediaBook *bk, Buf *b) {
+    BookChapter *ch = xmalloc(BOOK_CHAPTERS_MAX * sizeof *ch);
+    int n = bk ? book_chapters(bk, ch, BOOK_CHAPTERS_MAX) : 0;
+    buf_putc(b, '[');
+    for (int i = 0; i < n; i++) {
+        buf_printf(b, "%s{\"t\":%lld,\"title\":", i ? "," : "", (long long)(ch[i].at_ms / 1000));
+        json_str(b, ch[i].title);
+        buf_putc(b, '}');
+    }
+    buf_putc(b, ']');
+    free(ch);
 }
 
 static void book_clock(Buf *b, int64_t ms) { /* "1:03", "1:02:03" */
@@ -425,6 +441,7 @@ void media_book_page(Ctx *c, Buf *b, const char *idhex) {
         H(b, T("Download (%s)"), size);
         buf_puts(b, "</a>");
     }
+    media_offline_book(c, b, bk); /* (in the app: "Save for offline" - offline.c, 2.3) */
     buf_puts(b, "</div>");
 
     const MediaTags *t = media_tags(bk->id);

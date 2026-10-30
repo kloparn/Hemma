@@ -691,6 +691,13 @@ static const Tr TR[] = {
      "el disco tiene %s de sobra (Hemma deja %lld GB libres, y %s para las subidas y conversiones en curso)"},
     {"the drive has %s to spare (Hemma keeps %lld GB free)", "disken har %s över (Hemma håller %lld GB ledigt)",
      "el disco tiene %s de sobra (Hemma deja %lld GB libres)"},
+    /* offline in the app (2.3) */
+    {"Save for offline", "Spara offline", "Guardar sin conexión"},
+    {"Save season for offline", "Spara säsongen offline", "Guardar la temporada sin conexión"},
+    {"Save the specials for offline", "Spara specialavsnitten offline", "Guardar los especiales sin conexión"},
+    {"Offline", "Offline", "Sin conexión"},
+    {"Saving for offline isn't open to guests or screens.", "Att spara offline går inte för gäster eller skärmar.",
+     "Guardar sin conexión no está disponible para invitados ni pantallas."},
     /* sound languages (2.2) */
     {"Sound %d", "Ljud %d", "Sonido %d"},
     {"Which language do you want to watch in?", "Vilket språk vill du titta på?", "¿En qué idioma quieres verlo?"},

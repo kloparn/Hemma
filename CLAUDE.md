@@ -1117,6 +1117,27 @@ apps/android/    THE HEMMA APP FOR ANDROID (2.0; docs/decisions/0011, docs/andro
                  the app asks at the first look, again from Look again, then sends to the app's settings page; an app in
                  the back of a locked phone has no network either - it looks again when it comes to the front.
                  Strings in res/values{,-sv,-es}. The app's name in a release: Hemma.
+                 OFFLINE (2.3; media/offline.c's manifests): MainActivity takes hemma-app:save?m=<path> (Saved.savePath: only
+                 a /media/offline/... path - letters, digits, /-_., no query, no ..) and hemma-app:offline, only from Hemma's
+                 own page; the first save asks POST_NOTIFICATIONS (Android 13+: the progress notification). Saved.java =
+                 the pure part (a small JSON reader/writer, the manifest/item model, a book's whole-book place <-> part +
+                 offset, Range resume, which places to send) - test/SavedTest.java, run by both builds like NetTest.
+                 Offline.java = the store (getExternalFilesDir/offline/<id>/: item.json, files, poster ~512 px, .vtt) + HTTP
+                 (the WebView's cookie, private addresses only) + the sync: open() POSTs every unsent place to
+                 /a/media.progress (Origin/Referer = base), one sync at a time. OfflineService = a dataSync foreground
+                 service downloading ITSELF (HttpURLConnection, .part + Range resume, one file at a time, StatFs + 200 MB
+                 margin) - not DownloadManager (another process: Android 17's local-network permission, and the cookie).
+                 OfflineActivity = the Offline screen (also the finder panel's "Offline (N)" when Hemma can't be reached);
+                 WatchActivity = VideoView + MediaController (subclassed: it ate Back), VideoView's own WebVTT; BookActivity
+                 + PlayerService's native mode (MediaPlayer over the parts, the place in the whole book, chapters as
+                 next/previous, -15/+30, audio focus, pause when headphones go; the page's reports ignored meanwhile). Tried
+                 on an Android 8 emulator against a stand-in; on a real phone still to see: Android 17's local network for
+                 the app's own HTTP, Android 15's dataSync limit, multi-GB files, HEVC/AV1 copies, WebVTT, insets on 11+.
+                 Known: a video brought back from the background reopens without its subtitles. TWO RULES OF HEMMA'S ANSWERS:
+                 signed out, the core answers a module's address with the sign-in page - a 200 of text/html, never a 401
+                 (Offline.signInPage: refused as 401 for manifests, files, posters, subtitles); and a file's size is what
+                 the answer says (Saved.totalOf: a 200's length, a 206's /total) - a manifest's "bytes" is the playable
+                 file's, and a video in several languages is sent as its smaller one-sound view.
 tests/browser/   CI-ONLY Node (owner, 2026-10-21: "The CI can use node"; nothing ships): Playwright in Google
                  Chrome (the bundled Chromium can't play H.264/AAC) against a real Hemma - server.mjs makes a fresh
                  folder under the OS temp (hemma-browser-tests), test clips by `build/test av_test_clips` with
@@ -1953,6 +1974,19 @@ Also (owner: "open the app instead!"): people.c's Home card for someone WITH an 
 "Open the app instead!" - an `intent://open/#Intent;scheme=hemma;package=...;S.browser_fallback_url=<the apk on Ctx.host>`
 link; the app's VIEW + BROWSABLE filter takes hemma://open/<path> (MainActivity.pageOf: a path only, opened on the
 Hemma it knows). An app from before 2.2 has no such filter: Chrome then goes to the fallback (the download).
+2.3.0 (branch app/offline-running-support; owner, 2026-10-30: "a 'offline' section in the app, where you can download
+videos/audiobooks and play them offline from the app"; WHO: "Grown-ups and children" - members, admins and children, a
+child only what's open to children; guests and display accounts never - unlike 1.1's downloads, grown-ups only) = OFFLINE
+IN THE APP. Hemma's side (media/offline.c): media_offline_ok(c); GET /media/offline/<id>.json = a video's or a book's
+manifest {"v":1,"kind":"video"|"book","id","title","series","code","poster","duration_ms","resume_s","files":[{"url",
+"bytes"}],"subs":[{"url","lang","label","on"}],"chapters":[{"t","title"}],"author","narrator"} (a video's file =
+media_file_src: the viewer's sound; text subtitles only, as .vtt; a book's parts + chapters in whole-book seconds) and
+/media/offline/season/<series>-<n>.json = {"kind":"list","title","items":[manifest paths]}; 403 text for guests and
+screens, 404 for what a child may not see; Cache-Control no-store. Links only in an app session (session_in_app), never
+on TV pages: hemma-app:save?m=<manifest, %-encoded> ("Save for offline" after Download on a watch page and a book page;
+"Save season for offline" in the season toolbar - which children now get in the app, holding only that) and
+hemma-app:offline (Watch's header; people.c's "The Hemma app" card in the app: "Saved for offline"). The app's side:
+apps/android (see there). Progress comes back through the plain POST /a/media.progress (same origin, the cookie).
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling

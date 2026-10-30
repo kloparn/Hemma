@@ -4,6 +4,35 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.3.0 (2026-10-30)
+
+The app saves videos and audiobooks for offline.
+
+### New
+
+- **Save for offline** (in the Hemma app): a video's page, a season (on its series page) and an audiobook's page have
+  *Save for offline*. The app downloads it to the phone - in the language you listen to, with its subtitles; a book
+  with its chapters and cover - and keeps it until you delete it. Grown-ups and children can (a child only what's open
+  to children); guests and display accounts can't.
+- **The app's Offline screen** lists what's saved, how big it is and how much room the phone has left, with *Play*
+  and *Delete*. Open it from Watch in the app, from Your account, or - away from home, when Hemma can't be reached -
+  from the app's own start screen.
+- **Playing offline:** videos in the phone's own player; audiobooks with the lock screen's controls, 15 seconds back,
+  30 forward and the chapters. Where you got to goes back to Hemma the next time the app reaches it at home, so
+  *Continue watching* and your books carry on from there.
+- **More about the app** in Hemma: Your account says what the app does, in a browser and in the app.
+
+### For developers
+
+- modules/media: `GET /media/offline/<id>.json` (a video's or a book's manifest for the app: its files - a video's
+  address with the viewer's sound -, text subtitles, chapters, poster, the viewer's place) and
+  `/media/offline/season/<series>-<n>.json` (a season's list); `hemma-app:save?m=<manifest>` and `hemma-app:offline`
+  links, rendered only in an app session (`session_in_app`) for members, admins and children.
+- apps/android: the app takes `hemma-app:` links, downloads itself (HttpURLConnection with the session cookie, Range
+  resume, a dataSync foreground service - not DownloadManager, whose process may lack Android 17's local-network
+  permission), keeps each item in its own folder under the app's files, plays videos natively and audiobooks through
+  PlayerService, and posts offline places back with `/a/media.progress`.
+
 ## 2.2.0 (2026-10-30)
 
 Films and series in several languages keep them all, and everyone hears their own.

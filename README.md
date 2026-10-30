@@ -6,7 +6,7 @@ Book the car, share the chores and the shopping list, leave notes on the fridge 
 your own films and series on every screen in the house. Hemma ("at home" in Swedish) runs on one
 small computer at home, like a Raspberry Pi. Everyone else just opens it in their browser.
 
-No app to install, no cloud account, and nothing leaves your home.
+Nothing you have to install (an Android app if you like one), no cloud account, and nothing leaves your home.
 
 <p align="center">
   <img src="docs/img/wall.webp" alt="Hemma on a wall tablet: a big clock, what's on now and next, who's home, and cards for today, bookings, the coming days, notes, the shopping list and Live TV" width="820">
@@ -139,7 +139,7 @@ Another computer, or a Pi you already use? Pick your guide:
 | [macOS](docs/macos.md) | A Mac |
 | [Your home network](docs/home-network.md) | A fixed address, `hemma.local`, TVs, reaching it from outside |
 | [Accounts](docs/accounts.md) | The admin, adding people, children, guests, the TV, a forgotten password |
-| [The Android app](docs/android.md) | Hemma in an app of its own: it finds Hemma at home by itself |
+| [The Android app](docs/android.md) | Hemma in an app of its own: it finds Hemma at home by itself, and saves videos and audiobooks for offline |
 
 ## Need help?
 

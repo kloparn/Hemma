@@ -1071,14 +1071,16 @@ static bool serve_subpic(Ctx *c, Conn *conn, HttpReq *r) {
 bool media_http(Ctx *c, Conn *conn, HttpReq *r) {
     bool file = str_starts(r->path, "/media/file/"), img = str_starts(r->path, "/media/img/"),
          sub = str_starts(r->path, "/media/sub/"), zip = str_starts(r->path, "/media/zip/"),
-         pic = str_starts(r->path, "/media/subpic/"), cover = str_starts(r->path, "/media/cover/");
-    if (!file && !img && !sub && !zip && !pic && !cover) return false;
+         pic = str_starts(r->path, "/media/subpic/"), cover = str_starts(r->path, "/media/cover/"),
+         offline = str_starts(r->path, "/media/offline/");
+    if (!file && !img && !sub && !zip && !pic && !cover && !offline) return false;
     /* The household's videos (and home photos used as posters) are for signed-in
        people only; browsers send the session cookie with <video>/<img> requests. */
     if (!c->me) {
         plain(conn, 401, "sign in to Hemma to watch\n");
         return true;
     }
+    if (offline) return media_offline_http(c, conn, r); /* (the app's manifests: offline.c, 2.3) */
     if (zip) return serve_zip(c, conn, r);
     if (pic) return serve_subpic(c, conn, r);
     if (cover) {

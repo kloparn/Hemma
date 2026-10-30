@@ -284,12 +284,17 @@ void media_download_link(Ctx *c, Buf *b, const MediaFile *f) {
 }
 
 void media_download_series(Ctx *c, Buf *b, const MediaSeries *s, int season) {
-    if (!media_grown_up(c) || media_tv_mode(c) || !s) return;
-    uint64_t all = media_zip_bytes(s, -1);
-    if (!all) return;
+    if (media_tv_mode(c) || !s) return;
+    uint64_t all = media_grown_up(c) ? media_zip_bytes(s, -1) : 0;
+    Buf save = {0};
+    media_offline_season(c, &save, s, season); /* (in the app: "Save season for offline" - offline.c, 2.3; children too) */
+    if (!all && !save.len) {
+        buf_free(&save);
+        return;
+    }
     char size[24];
     buf_puts(b, "<div class=\"toolbar\" id=\"media-dl\">");
-    uint64_t one = s->nseasons > 1 ? media_zip_bytes(s, season) : 0; /* (one season: "all" is that season) */
+    uint64_t one = all && s->nseasons > 1 ? media_zip_bytes(s, season) : 0; /* (one season: "all" is that season) */
     if (one) {
         media_size_text((int64_t)one, size, sizeof size);
         H(b, "<a class=\"btn\" href=\"/media/zip/%X?s=%d\" download data-native>", s->id, season);
@@ -297,8 +302,14 @@ void media_download_series(Ctx *c, Buf *b, const MediaSeries *s, int season) {
         else H(b, T("Download season %d (%s)"), season, size);
         buf_puts(b, "</a>");
     }
-    media_size_text((int64_t)all, size, sizeof size);
-    H(b, "<a class=\"btn\" href=\"/media/zip/%X\" download data-native>", s->id);
-    H(b, T("Download all (%s)"), size);
-    H(b, "</a><span class=\"muted small\">%s</span></div>", T("Downloads slow down while someone is watching."));
+    if (all) {
+        media_size_text((int64_t)all, size, sizeof size);
+        H(b, "<a class=\"btn\" href=\"/media/zip/%X\" download data-native>", s->id);
+        H(b, T("Download all (%s)"), size);
+        buf_puts(b, "</a>");
+    }
+    buf_put(b, save.p, save.len);
+    if (all) H(b, "<span class=\"muted small\">%s</span>", T("Downloads slow down while someone is watching."));
+    buf_puts(b, "</div>");
+    buf_free(&save);
 }

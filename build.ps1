@@ -206,10 +206,14 @@ function Build-App([bool]$Force) {
     $savedHome = $env:JAVA_HOME
     $env:JAVA_HOME = $t.Jdk # (d8.bat and apksigner.bat run Java through it)
     try {
-        # 1. the address rules, with a JDK alone
+        # 1. the address rules and what's saved for offline (2.3), with a JDK alone
         $net = "apps/android/src/io/github/kloparn/hemma/Net.java"
-        Invoke-Tool "$jb\javac.exe" @("-encoding", "UTF-8", "-d", "$out/test", $net, "apps/android/test/NetTest.java") | Out-Null
-        Invoke-Tool "$jb\java.exe" @("-cp", "$out/test", "NetTest") | ForEach-Object { Write-Host $_ -ForegroundColor DarkGray }
+        $saved = "apps/android/src/io/github/kloparn/hemma/Saved.java"
+        Invoke-Tool "$jb\javac.exe" @("-encoding", "UTF-8", "-d", "$out/test", $net, "apps/android/test/NetTest.java",
+                $saved, "apps/android/test/SavedTest.java") | Out-Null
+        foreach ($test in "NetTest", "SavedTest") {
+            Invoke-Tool "$jb\java.exe" @("-cp", "$out/test", $test) | ForEach-Object { Write-Host $_ -ForegroundColor DarkGray }
+        }
         # 2. the key: the release key (HEMMA_APP_KEYSTORE + HEMMA_APP_KEY_PASSWORD), else this developer's own
         if ($env:HEMMA_APP_KEYSTORE) {
             $ks = $env:HEMMA_APP_KEYSTORE; $pw = $env:HEMMA_APP_KEY_PASSWORD; $debugMode = @()

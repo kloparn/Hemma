@@ -193,6 +193,25 @@ void media_lookup_test_put(const char *work, const char *genres, bool pinned);
 bool media_kids_book_ok(const Ctx *c, const MediaBook *bk); /* (issue #44: as for a series - all of it, or none) */
 void media_books_page(Ctx *c, Buf *b);
 void media_book_page(Ctx *c, Buf *b, const char *idhex);
+/* ... its picture's address (a picture file, else the one inside a part: /media/cover/<file>?v=); false = none */
+bool media_book_art_src(Buf *b, const MediaBook *bk);
+/* ... its chapters as offline.c's manifest lists them: [{"t":<seconds into the whole book>,"title":"..."}, ...] - the
+   book page's own list */
+void media_book_chapters_json(const MediaBook *bk, Buf *b);
+
+/* OFFLINE IN THE APP (2.3; offline.c; owner, 2026-10-30: videos and audiobooks saved in the Android app and played
+   with no Hemma in reach, for "Grown-ups and children"). The app fetches a manifest - GET /media/offline/<id>.json
+   (a video's file id or a book's id), or a season's list GET /media/offline/season/<series id>-<season>.json - and
+   downloads its files with the WebView's cookie; what it watched comes back by POST /a/media.progress. */
+bool media_offline_ok(const Ctx *c); /* may save for offline: a member, an admin or a child (never guests or screens) */
+bool media_offline_http(Ctx *c, Conn *conn, HttpReq *r); /* /media/offline/... (stream.c media_http, signed in) */
+/* The buttons, only in the app (session_in_app) and for who may: plain links to hemma-app:save?m=<the manifest's
+   address, URL-encoded> / hemma-app:offline, which the app takes (MainActivity) */
+void media_offline_video(Ctx *c, Buf *b, const MediaFile *f);                     /* the watch page */
+void media_offline_season(Ctx *c, Buf *b, const MediaSeries *s, int season);    /* a series page's season */
+void media_offline_book(Ctx *c, Buf *b, const MediaBook *bk);                    /* a book's page */
+void media_offline_head(Ctx *c, Buf *b);                                         /* Watch's header: "Offline" */
+void media_subs_json(const Ctx *c, const MediaFile *f, Buf *b); /* (media.c) its text subtitles for the manifest */
 void media_book_card(Ctx *c, Buf *b, const MediaBook *bk);
 int media_books_going(const Ctx *c, const MediaBook **out, int max); /* the viewer's unfinished books, latest first */
 void media_books_shelf(Ctx *c, Buf *b); /* "Continue listening" (nothing when there's none) */

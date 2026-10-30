@@ -1,14 +1,33 @@
 # The Hemma app for Android
 
 Hemma is a web page, and any phone's browser opens it. The app is the same Hemma in a window of its
-own, with three things a browser can't do as well:
+own, with four things a browser can't do as well:
 
 - **It finds Hemma by itself** on the Wi-Fi you're on - no address to type.
 - **It keeps you signed in** and opens straight to Hemma, like any app.
 - **Audiobooks keep playing with the phone locked**, with the book's cover, the chapter, play and
   pause, 15 seconds back and 30 forward on the lock screen and in the notifications.
+- **Videos and audiobooks for offline** (from 2.3): save them at home, watch and listen anywhere.
 
-It only ever connects to Hemma on your home network. Away from home it waits until you're back.
+It only ever connects to Hemma on your home network. Away from home it waits until you're back - and
+shows what you saved for offline meanwhile.
+
+## Offline
+
+1. At home, open the video, the series or the audiobook in the app and press **Save for offline**
+   (a series has it per season, next to *Download*). A notification shows how far it has got; it carries
+   on if the Wi-Fi drops, and when you open the app again.
+2. Away from home, open the app: its start screen has **Offline** with what you saved. At home it's
+   under **Watch → Offline**, and **Household → Your account → Saved for offline**.
+3. **Play** plays it from where you got to. Videos come in the language you listen to (see *Sound
+   language* in Watch's Library settings) and with their subtitles; audiobooks with their chapters, the
+   lock screen's controls, 15 seconds back and 30 forward.
+4. Back home, the app tells Hemma where you got to, so *Continue watching* and your books carry on there.
+
+Saved things stay on the phone until you **Delete** them on the Offline screen (or uninstall the app).
+A film takes about as much room as its file in Hemma - a gigabyte or more for a long one in HD - and the
+Offline screen shows how much room the phone has left. Grown-ups and children can save (children only
+what's open to them); guests and the TV's or the wall's display accounts can't.
 
 ## Getting it
 

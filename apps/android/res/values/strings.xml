@@ -22,4 +22,40 @@
     <string name="play">Play</string>
     <string name="pause">Pause</string>
     <string name="downloading">Downloading %1$s</string>
+    <!-- offline (2.3) -->
+    <string name="offline">Offline</string>
+    <string name="offline_n">Offline (%1$d)</string>
+    <string name="offline_stays">Saved videos stay until you delete them.</string>
+    <string name="offline_empty">Nothing saved yet. At home, press Save for offline on a video, a season or an audiobook in Hemma.</string>
+    <string name="free_space">%1$s free on this phone</string>
+    <string name="saving_channel">Saving for offline</string>
+    <string name="saving_start">Saving for offline…</string>
+    <string name="saving_for_offline">Saving %1$s for offline</string>
+    <string name="saving_note">Saving %1$s · %2$d%%</string>
+    <string name="saving_state">Saving… %1$d%%</string>
+    <string name="waiting">Waiting its turn</string>
+    <string name="saved_note">Saved for offline: %1$s</string>
+    <plurals name="saved_n">
+        <item quantity="one">%d saved for offline</item>
+        <item quantity="other">%d saved for offline</item>
+    </plurals>
+    <string name="save_failed_note">Couldn\'t save %1$s for offline</string>
+    <string name="already_saved">%1$s is saved already</string>
+    <string name="not_for_you">Hemma says this isn\'t for you.</string>
+    <string name="gone">It\'s gone from Hemma.</string>
+    <string name="sign_in">Sign in to Hemma in the app first.</string>
+    <string name="network_failed">The connection to Hemma dropped. Try again at home.</string>
+    <string name="no_room">Not enough room on this phone: %1$s more is needed.</string>
+    <string name="why_room">not enough room on the phone</string>
+    <string name="failed">Failed: %1$s</string>
+    <string name="try_again">Try again</string>
+    <string name="delete">Delete</string>
+    <string name="delete_q">Delete %1$s from this phone?</string>
+    <string name="cancel">Cancel</string>
+    <string name="gone_here">That\'s not saved on this phone any more.</string>
+    <string name="wont_play">This video won\'t play on this phone.</string>
+    <string name="chapters">Chapters</string>
+    <string name="chapter_n">Chapter %1$d</string>
+    <string name="back15_short">−15 s</string>
+    <string name="fwd30_short">+30 s</string>
 </resources>

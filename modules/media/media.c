@@ -6,6 +6,7 @@
  * threads (stream.c) and every person's progress is remembered, so "continue
  * watching" works across the phone, the laptop and the TV's browser. */
 #include "../../core/env.h"
+#include "../../core/json.h"
 #include "../../core/ui.h"
 #include "media.h"
 #include "convert.h"
@@ -350,6 +351,29 @@ static int sub_choices(const Ctx *c, const MediaFile *f, SubChoice *out, int max
 
 /* The video's text subtitles as <track>s (id "sub-<key>": wire.js picks by it); the viewer's language
    (Library settings) is on by default. (Picture ones have none: the player draws them.) */
+/* A video's text subtitles as offline.c's manifest lists them (2.3): the player's own order, labels and which is on */
+void media_subs_json(const Ctx *c, const MediaFile *f, Buf *b) {
+    SubChoice *s = xmalloc(MEDIA_MAX_SUBS * sizeof *s);
+    int n = sub_choices(c, f, s, MEDIA_MAX_SUBS);
+    buf_putc(b, '[');
+    bool first = true;
+    for (int i = 0; i < n; i++) {
+        if (s[i].pic) continue; /* (pictures: Hemma's player draws them - not offline) */
+        char url[48];
+        snprintf(url, sizeof url, "/media/sub/%016llx.vtt", (unsigned long long)s[i].f->id);
+        buf_puts(b, first ? "{\"url\":" : ",{\"url\":");
+        json_str(b, url);
+        buf_puts(b, ",\"lang\":");
+        json_str(b, s[i].t.lang);
+        buf_puts(b, ",\"label\":");
+        json_str(b, s[i].label);
+        buf_printf(b, ",\"on\":%s}", s[i].on ? "true" : "false");
+        first = false;
+    }
+    buf_putc(b, ']');
+    free(s);
+}
+
 void media_tracks(const Ctx *c, Buf *b, const MediaFile *f) {
     SubChoice *s = xmalloc(MEDIA_MAX_SUBS * sizeof *s);
     int n = sub_choices(c, f, s, MEDIA_MAX_SUBS);
@@ -716,6 +740,7 @@ void media_lib_head(Ctx *c, Buf *b, const char *active, const char *title, const
         ui_icon(b, "plus");
         H(b, "<span>%s</span></a>", str_eq(active, "books") ? T("Add audiobooks") : T("Add videos"));
     }
+    media_offline_head(c, b); /* (in the app: "Offline" - its own screen of what's saved, 2.3) */
     H(b, "<a class=\"icon-btn\" href=\"/media/settings\" title=\"%s\" aria-label=\"%s\">", T("Library settings"),
       T("Library settings"));
     ui_icon(b, "settings");
@@ -1980,6 +2005,7 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         buf_puts(b, "</span></details>");
     }
     media_download_link(c, b, f); /* "Download (1.2 GB)": grown-ups only (download.c) */
+    media_offline_video(c, b, f); /* "Save for offline": in the app, grown-ups and children (offline.c, 2.3) */
     buf_puts(b, "</div>");
     ConvertNeed need = convert_need(f);
     if (need != CONV_NONE) { /* Hemma makes a copy that plays everywhere, once */

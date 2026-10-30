@@ -32,6 +32,7 @@
 .people-cal-qr .qr { display: block; width: 156px; height: 156px; border-radius: 8px; }
 .people-cal-url { display: inline-block; max-width: 100%; overflow-wrap: anywhere; font-size: 13px; }
 .people-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.people-app-what { margin: 6px 0 12px; padding-left: 20px; display: grid; gap: 4px; }
 
 /* A guest's last day (issue #44): only beside the Guest role, where the browser can tell (:has) */
 @supports selector(:has(*)) {
