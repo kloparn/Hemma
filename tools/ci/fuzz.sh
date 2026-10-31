@@ -7,6 +7,7 @@
 #   ac3     tools/avfuzz.c:   the Dolby (AC-3 / E-AC-3) decoder alone, raw frames
 #   dts     tools/avfuzz.c:   the DTS decoder alone, raw core frames
 #   mpeg2   tools/avfuzz.c:   the MPEG-2 decoder alone, raw streams
+#   mpeg4   tools/avfuzz.c:   the MPEG-4 Part 2 decoder (DivX, Xvid) alone, raw streams
 #   pgs     tools/avfuzz.c:   Blu-ray picture subtitles (a .sup) opened, every cue drawn, made a PNG
 #   vobsub  tools/avfuzz.c:   DVD picture subtitles (.idx text, a NUL, the .sub) the same
 #   tags    tools/avfuzz.c:   an audio file's tags (an MP4's boxes, an MP3's ID3) read, every field checked
@@ -20,7 +21,7 @@ secs=${2:-90}
 jobs=${3:-1}
 seeds=build/fuzz-seeds
 case $t in
-conv) src="tools/convfuzz.c modules/av/conv.c modules/av/mkv.c modules/av/mpeg2.c modules/av/deint.c
+conv) src="tools/convfuzz.c modules/av/conv.c modules/av/mkv.c modules/av/mpeg2.c modules/av/mpeg4.c modules/av/deint.c
            modules/av/h264enc.c modules/av/ac3.c modules/av/dts.c modules/av/aac.c modules/av/mp4.c"
       def= opts="-max_len=65536 -timeout=60" ;;
 mkv) src="tools/avfuzz.c modules/av/mkv.c" def=-DAVFUZZ_MKV opts="-max_len=65536 -timeout=10" ;;
@@ -28,15 +29,16 @@ mp4) src="tools/avfuzz.c modules/av/mkv.c" def=-DAVFUZZ_MP4 opts="-max_len=65536
 ac3) src="tools/avfuzz.c modules/av/ac3.c" def=-DAVFUZZ_AC3 opts="-max_len=32768 -timeout=10" seeds=build/fuzz-raw/ac3 ;;
 dts) src="tools/avfuzz.c modules/av/dts.c" def=-DAVFUZZ_DTS opts="-max_len=32768 -timeout=10" seeds=build/fuzz-raw/dts ;;
 mpeg2) src="tools/avfuzz.c modules/av/mpeg2.c" def=-DAVFUZZ_MPEG2 opts="-max_len=65536 -timeout=20" seeds=build/fuzz-raw/mpeg2 ;;
+mpeg4) src="tools/avfuzz.c modules/av/mpeg4.c" def=-DAVFUZZ_MPEG4 opts="-max_len=65536 -timeout=20" seeds=build/fuzz-raw/mpeg4 ;;
 pgs) src="tools/avfuzz.c modules/av/subpic.c modules/av/png.c" def=-DAVFUZZ_PGS opts="-max_len=65536 -timeout=20" seeds=build/fuzz-raw/pgs ;;
 vobsub) src="tools/avfuzz.c modules/av/subpic.c modules/av/png.c" def=-DAVFUZZ_VOBSUB opts="-max_len=65536 -timeout=20" seeds=build/fuzz-raw/vobsub ;;
 tags) src="tools/avfuzz.c modules/av/audiotags.c" def=-DAVFUZZ_TAGS opts="-max_len=65536 -timeout=10" seeds=build/fuzz-raw/tags ;;
-*) echo "usage: sh tools/ci/fuzz.sh conv|mkv|mp4|ac3|dts|mpeg2|pgs|vobsub|tags [seconds] [processes]"; exit 2 ;;
+*) echo "usage: sh tools/ci/fuzz.sh conv|mkv|mp4|ac3|dts|mpeg2|mpeg4|pgs|vobsub|tags [seconds] [processes]"; exit 2 ;;
 esac
 
 # the seeds: small files of every kind the converter takes, picture subtitles and tagged audio files, made by
 # their tests (never committed)
-[ -d build/fuzz-seeds ] && [ -d build/fuzz-raw/ac3 ] && [ -d build/fuzz-raw/dts ] ||
+[ -d build/fuzz-seeds ] && [ -d build/fuzz-raw/ac3 ] && [ -d build/fuzz-raw/dts ] && [ -d build/fuzz-raw/mpeg4 ] ||
     HEMMA_FUZZ_SEEDS=build/fuzz-seeds HEMMA_FUZZ_RAW=build/fuzz-raw build/test conv_fuzz_seeds >/dev/null
 [ -d build/fuzz-raw/pgs ] && [ -d build/fuzz-raw/vobsub ] ||
     HEMMA_FUZZ_RAW=build/fuzz-raw build/test subpic_fuzz_seeds >/dev/null

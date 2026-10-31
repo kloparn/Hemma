@@ -1,6 +1,6 @@
 # 0009 - Categories may be looked up online, when an admin asks
 
-**Status:** accepted · **Since:** 2026-10-27 (Hemma 1.4) · amends [0005](0005-nothing-leaves-home.md)
+**Status:** accepted · **Since:** 2026-10-27 (Hemma 1.4) · amends [0005](0005-nothing-leaves-home.md) · amended by [0012](0012-pictures-and-https-through-curl.md) (pictures, https)
 
 ## Context
 

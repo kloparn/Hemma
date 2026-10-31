@@ -707,7 +707,7 @@ TEST(manage_speaks_swedish_and_spanish) {
                                   "Rip",    "B",       "C",       "t",       "mkv",      "Film",     "Series",
                                   "series", "Extras",  "Extra",   "Video",   "System",   "Svenska",  "English",
                                   "Norsk",  "Dansk",   "Suomi",   "Deutsch", "Français", "Español",  "TVmaze",
-                                  "OMDb",   "omdbapi.com", NULL, NULL}; /* (+ the services categories are looked up at) */
+                                  "OMDb",   "omdbapi.com", "Wikipedia", NULL, NULL}; /* (+ the services categories are looked up at) */
     allow[countof(allow) - 2] = g_root;
     Buf rep = {0};
     int bad = 0;

@@ -264,7 +264,20 @@ static bool m4_entry(MkvTrack *t, Span stsd, uint32_t handler, bool *tx3g) {
         else if (!strcmp(fc, "dtsc") || !strcmp(fc, "dtsh") || !strcmp(fc, "dtsl") || !strcmp(fc, "dtse")) codec = "A_DTS";
         else if (!strcmp(fc, "alac")) codec = "A_ALAC";
         else if (!strcmp(fc, "fLaC")) codec = "A_FLAC";
-        else if (!strcmp(fc, "Opus")) codec = "A_OPUS";
+        else if (!strcmp(fc, "Opus")) { /* (2.5: its dOps as the OpusHead Matroska keeps - RFC 7845, little-endian) */
+            codec = "A_OPUS";
+            if (m4_child(kids, "dOps", &c) && c.n >= 11 && c.p[0] == 0) {
+                uint8_t h[32];
+                size_t ch = c.p[1], n = c.p[10] && c.n >= 13 + ch && ch <= 8 ? 21 + ch : 19;
+                memcpy(h, "OpusHead", 8);
+                h[8] = 1, h[9] = (uint8_t)ch;
+                h[10] = c.p[3], h[11] = c.p[2];                               /* pre-skip */
+                h[12] = c.p[7], h[13] = c.p[6], h[14] = c.p[5], h[15] = c.p[4]; /* input rate */
+                h[16] = c.p[9], h[17] = c.p[8], h[18] = c.p[10];              /* gain, mapping family */
+                if (n > 19) h[19] = c.p[11], h[20] = c.p[12], memcpy(h + 21, c.p + 13, ch);
+                if (!m4_priv(t, h, n)) return false;
+            }
+        }
         else if (!strcmp(fc, "lpcm") || !strcmp(fc, "sowt") || !strcmp(fc, "twos") || !strcmp(fc, "in24")) codec = "A_PCM/INT/LIT";
         char id[16];
         if (!codec) snprintf(id, sizeof id, "A_MP4/%s", fc), codec = id;

@@ -41,9 +41,11 @@ Runs on a Raspberry Pi in production; developed on Windows 11 with `zig cc`.
 - **The internet only when an admin ticks it** (1.4; owner, 2026-10-27: "if internet is available ... if the
   user has checked the box", "It can be grayed if the server does not have online activity available to it"):
   Hemma itself fetches nothing from outside the home but media/lookup.c's genres (TVmaze, OMDb with the admin's
-  key), off by default, over plain http (core/fetch.c - no TLS library; never anything secret that way), only
-  titles and years sent. Updates still go through the root helper (hemma-upgrade, curl). Anything new that goes
-  online gets its own box, off by default, greyed while unreachable.
+  key) and - 2.5, a box of its own - pictures for titles without one (TVmaze, Wikipedia), off by default, over plain
+  http (core/fetch.c - no TLS library; never anything secret that way) or, where a service answers only https, through
+  the computer's own curl (fetch_https; owner, 2026-10-30: "I do not want it to be setup with another key", "Use curl
+  for https"; docs/decisions/0012), only titles and years sent. Updates still go through the root helper (hemma-upgrade,
+  curl). Anything new that goes online gets its own box, off by default, greyed while unreachable.
 - **Modular**: features are self-contained modules so several workers can build
   in parallel without touching each other's files.
 - **Tests**: co-located `*_test.c`, auto-registered. Cover parsers, protocol code,
@@ -129,7 +131,9 @@ core/            framework with a stable API for modules
                  must be in core/ui.c WIRE_TEXTS. HEMMA_I18N_AUDIT=1 ./build/test.exe i18n_audit lists what
                  reads the same in every language on the main pages.
   plat.*         the ONLY place with #ifdef _WIN32 besides lan.c and base.c's two clock calls (sockets,
-                 files, dirs, threads, random, env)
+                 files, dirs, threads, random, env); plat_run(argv, timeout) (2.5) runs a program by its full path and
+                 waits (posix_spawn with /dev/null as its stdio and SIGPIPE back to default / CreateProcessW with no
+                 window; past the time it's killed: -1) - threads only; plat_quote_args = Windows' command-line quoting
   lan.*          LAN facts: interface/gateway (LanIface.link: Wi-Fi or a cable - Windows the adapter's IfType, Linux
                  /sys/class/net/<dev>/wireless or a real device of type 1, macOS SIOCGIFFUNCTIONALTYPE, not yet seen on a
                  real Mac; unknown -> the page names the interface), ARP neighbours, probes, Wake-on-LAN, reverse-DNS packets
@@ -263,6 +267,12 @@ core/            framework with a stable API for modules
                  (plat_resolve = getaddrinfo, tcp_connect_nb + poll, reads to the close) - threads only; Fetched =
                  status (0 = no answer, err says why), the body de-chunked, a redirect's location (not followed:
                  maybe https). fetch_parse alone is what fetch_test.c checks. No TLS: only services answering http://.
+                 HTTPS (2.5): fetch_https(url, max, timeout) runs the computer's OWN curl (fetch_curl(): System32's
+                 curl.exe by %SystemRoot%, else /usr/bin /bin /usr/local/bin /opt/homebrew/bin; NULL = none) with -sS -L
+                 --max-redirs 3 --proto =https --proto-redir =https --max-time --max-filesize, -D/-o/--stderr into temp
+                 files (TMPDIR|TEMP|TMP|/tmp, removed after) - the certificate checked by curl. Fetched.exit = curl's
+                 exit code (6/7/28 = no network); fetch_curl_status reads the last answer's status from -D. Tests:
+                 fetch_test_curl("" | path | NULL).
   main.c         command line (--gen-salt, --env, --web, --reset-password, --restore, --demo ...)
   zone.*         the time zone (issue #39; core/zone.h; series too: their start/end/until move, and a row a
                  series made at the start after a change counts as typed when its series was): zone_sig() = the offsets in January/July
@@ -662,7 +672,7 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  real 10-bit 1080p AV1 + AC-3 film (2 h 28 min): every packet as the original's, ffmpeg decodes it, Chrome
                  plays it;
                  EVERY sound track it can convert goes into the copy (2.2, up to 8 - "Where things stand" 2.2.0; before, only
-                 the default one); AC-3 / E-AC-3 (Dolby Digital Plus) and DTS (1.3: the core, 5.1 -> Lo/Ro) -> AAC at the track's own rate (48, 44.1 or 32 kHz - TV rips are 44.1; 1.1.2; E-AC-3 half rates refused; a frame at another rate than the file says = unsupported); AAC copied; MP3 copied (2.5: MP4_MP3, mp4a + esds object type 0x6B, or 0x69 below 32 kHz; mp3_frame_size splits a block into its frames, 1152 or 576 samples each); the file's subtitles next to the ORIGINAL - also
+                 the default one); AC-3 / E-AC-3 (Dolby Digital Plus) and DTS (1.3: the core, 5.1 -> Lo/Ro) -> AAC at the track's own rate (48, 44.1 or 32 kHz - TV rips are 44.1; 1.1.2; E-AC-3 half rates refused; a frame at another rate than the file says = unsupported); AAC copied; MP3 copied (2.5: MP4_MP3, mp4a + esds object type 0x6B, or 0x69 below 32 kHz; mp3_frame_size splits a block into its frames, 1152 or 576 samples each); Opus copied (2.5: MP4_OPUS = 'Opus' + dOps made of the OpusHead by opus_dops - version 0, big-endian, mapping families 0/1 only, else the track is left out; each packet a sample of opus_samples(TOC) at 48 kHz, put_audio_d with its own length, rdur[] in runs; the pre-skip = the edit list's start; an MKV, not a WebM, with Opus is a remux; an MP4 with it plays as it is; mkv_mp4.h turns a dOps back into an OpusHead; checked on an ffmpeg-made H.264 + Opus MKV: ffmpeg decodes the copy cleanly, every packet at its time, Chrome plays it); the file's subtitles next to the ORIGINAL - also
                  after an `unsupported` refusal (1.2) - by convert_save_subs/convert_save_sub(video, AvConvSub,
                  ConvertSubs*): text .srt, PGS .sup, VobSub .sub + .idx (the pair or nothing, .idx last), media/subs.c
                  names ("x.en.srt", "x.sv.forced.srt", "x.en.sdh.srt", "x.en.2.sup"); a second track of the same
@@ -789,7 +799,57 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  the result is pinned (never re-asked by name) and the admin gets a toast (app_notify_person). A series
                  rename / a film's Fix title: media_lookup_renamed (by name = asked again; pinned moves). Lists re-drawn
                  at most every 15 s while answers come. Under tests nothing is fetched: media_lookup_test_tvmaze/_omdb/
-                 _next/_online/_put (cats_test.c).
+                 _next/_online/_put (cats_test.c). A RENAME HOLDS the asking by name (g_hold) until the library has read
+                 it again (media_lib_gen changed, no scan running or queued): Manage's Rename looked DuckTales up in the
+                 same second with the old name and no year and matched the 2017 show (2.5).
+                 PICTURES (2.5; owner, 2026-10-30: "It should automatically fetch if an image is not given", no new key):
+                 setting media.lookup_art (OFF by default; card "Pictures from the internet" under the categories card,
+                 greyed like it; media_lookup_card draws both). A series or film whose poster is 0 gets one: a series'
+                 from TVmaze (image.original, else medium, fetched over plain http from static.tvmaze.com - in the same
+                 job as its genres when both boxes are on: Job.both; else an art job by name, or /shows/<ref> when the
+                 categories row was pinned by an admin), a film's from Wikipedia over https (fetch_https - needs curl;
+                 none = no film jobs and the card says so): en.wikipedia.org/w/api.php generator=search "<title> <year>
+                 film" + prop=pageimages|description piprop=original pilicense=any (non-free posters) - wiki_answer
+                 takes the first in the search's order with a JPEG/PNG/WebP picture that is a film ("film" in its
+                 description or its title's brackets) of its year (description or brackets), or without a year whose
+                 title minus brackets is ours. Saved on the THREAD by save_picture to media_art_target's place
+                 (art_dest: media_art_folder + "/" + stem, + .jpg/.png/.webp by its magic) only when
+                 media_art_on_disk finds no <stem>.<image ext> there (-4: a picture came meanwhile - the household's)
+                 - so the scan, other players and Set picture all see it as any picture. Table media_art {work, got 1
+                 saved / 0 none found (asked again after NOT_FOUND_DAYS) / -1 couldn't (a day), pinned, source, ref,
+                 name, size, at}; renames move a saved or pinned row, drop the rest. Saved pictures -> a rescan 10 s
+                 after the last (ART_QUIET_MS), at most 60 s after the first. HEMMA'S OWN = the work's poster file has
+                 the size saved (hemmas_own): media.art_id (work, id; admins; the form under the categories one in
+                 media_lookup_form - which shows only the pictures' part while categories are off) replaces only that
+                 one (Job.replace: removed on the thread if still that size, then the new one saved), never a picture of
+                 the household's own (refused). Ids: series a TVmaze link/number or an IMDb tt (as categories); films
+                 a Wikipedia link (any language: <lang>.wikipedia.org/wiki/<page>, titles=<page>&redirects=1). Tests:
+                 media_lookup_test_tvmaze_pic/_wiki/_job/_save/_art_put (cats_test.c pictures_*); a real run on a PC
+                 fetched DuckTales (1987) and five Disney/Marvel films' posters correctly.
+  media/devices.c WHAT YOUR DEVICES PLAY (2.5; owner, 2026-10-30: "check the issue with the videos that are not playable
+                 everywhere and how we can make them playable everywhere" - "Play everywhere 1456 of 2776", the rest
+                 HEVC/AV1 copies; "Both, devices first": measure the household's devices before any HEVC -> H.264 work;
+                 "Just the number": nothing had failed). media_caps(b) = <i hidden id=media-caps data-caps="type|type...">
+                 on Watch's head (media_lib_head) and every watch page; wire.js capsTell() answers it ONCE A LOAD (after
+                 settle and on the socket's open) with canPlayType per type - y probably / m maybe / n - as the live
+                 action media.caps (live, .display, ACT_ALL: a TV's display account reports too). CAP_TYPE[] is append
+                 only (CAPS_FORMAT + 1 for any other change: older answers stop counting): H.264 High 4.0, HEVC Main and
+                 Main 10 at 5.1 (an HEVC file is matched against Main 10: x265 releases are 10-bit; the probe keeps no
+                 bit depth), AV1 8/10-bit, AAC, MP3, Opus, FLAC, AC-3, E-AC-3 in MP4, WebM VP9+Opus, WebM AV1, Vorbis,
+                 Matroska. Table media_device {person (the session's - a display account's own), agent (Session.agent,
+                 packed), caps, format, first, seen}: one row per person + browser + answers; seen written at most
+                 hourly; a device COUNTS while seen within DEVICE_DAYS (30), by someone present; rows go after 90 days
+                 or with their person (media_devices_forget, in media's forget hook). cant(caps, probe) = the kind a
+                 device can't play ("HEVC (x265)", "Dolby sound", "MKV", "unreadable files" for PLAY_UNKNOWN ...) or
+                 NULL; media_device_plays. Library settings: Status gets "Play on your devices N of M" (videos = the
+                 "Play everywhere" set: ix->recent's playable files); media_devices_card = the reasons the rest doesn't
+                 play everywhere (probe.why counted, said through media_probe_why of one of them) for everyone, and -
+                 admins - each device ("Anna · Chrome on Windows — plays N of M · not 1250 HEVC (x265)") + "N of M
+                 videos play on every one of these K devices". The watch page (media_devices_line, for PLAY_MAYBE/NO):
+                 "Plays on every device of yours" / "Doesn't play on: Living room TV (Chrome on Linux)". The tick logs
+                 the breakdown when a scan changed it ("media: 1456 of 2776 videos play everywhere, 2700 on all 4
+                 devices seen - the rest: ...") and each new device with what it plays - readable in the journal.
+                 Tests: devices_test.c, tests/browser/devices.spec.mjs.
   media/kids.c   NOT FOR CHILDREN (issue #44; owner: "per folder"): table media_no_kids (root path + folder below
                  it, "" = all), marked on the Folders tab (media.kids, admins; Library settings lists them).
                  media_kid(c) = a child, or a display account with a child picked (ctx_viewer). media_lib_for(c)
@@ -929,7 +989,25 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  clips_test.c makes the browser tests' books with it). mkv.* (2.5: AND AN MP4/MOV READER behind the same API - mkv_mp4.h, mkv_open knows an MP4 by its first box,
                  codecs named as Matroska names them; see "Where things stand" 2.5.0) (Matroska demuxer: cues/bisect seeking, lacing, unknown
                  sizes), mpeg2.* (MPEG-2 MP@ML + MPEG-1 video decoder, display-order frames, IEEE 1180
-                 IDCT), ac3.* (full A/52 + E-AC-3 decoder (ETSI TS 102 366 Annex E: 1/2/3/6 blocks a frame,
+                 IDCT - idct.h, header-only, shared with mpeg4.c since 2.5), mpeg4.* (2.5; owner, 2026-10-31: "the videos
+                 on hemma that are not converted" - Solsidan S06E03-04 (Simple Profile MP4s, resync markers, 11.7 fps
+                 unevenly) and S07 (XviD 1.3 ASP with B-frames in MKV, 1144/1152x720) played nowhere: MPEG-4 Part 2,
+                 ISO/IEC 14496-2 Simple + Advanced Simple - I/P/B-VOPs, S-VOPs only without warping points (GMC with
+                 points refused), AC/DC prediction, H.263 and MPEG quantisers (+ matrices, mismatch control), 1 or 4
+                 vectors, half/quarter samples (FFmpeg's chroma rules; DivX's/old XviD's chroma and direct-16x16 bugs
+                 from the user data), direct mode, video packets: a marker naming a LATER macroblock is taken only when
+                 the ones before it take no bits (B-VOPs whose co-located one was skipped - FFmpeg's encoder puts them
+                 there), else concealment + resync search; not-coded VOPs bring no frame; DivX packed blocks (P+B in one
+                 block, an empty one after). PTS: each block's time is pushed (sorted), each frame shown pops the
+                 smallest - a packed block's second VOP takes the next empty block's time (`debt`), a lone N-VOP's time
+                 is dropped. Refused by name (mpeg4_unsupported): interlaced, GMC, data partitioning, shapes, sprites,
+                 complexity estimation, NEWPRED, reduced res, scalability, not 8-bit. MC clamps to the VISIBLE size (1144
+                 wide: not MB-aligned). Checked vs FFmpeg (HEMMA_TEST_MPEG4=<file> [_REF=<ffmpeg yuv420p, -fps_mode
+                 passthrough>] [_N] [_OUT] ./build/test mpeg4_real): the 3 real files 53-65 dB, 16 clips from FFmpeg's
+                 mpeg4 and libxvid with every tool 49-66 dB luma PSNR, 0 concealed - the IDCT is all that differs.
+                 mpeg4_testenc.h = test streams (m4_*: flat intra MBs with a DC-prediction replica, vectors, escape-3
+                 coefficients; mpeg4_test_block() = whole streams for conv seeds + avfuzz). DivX 3 (MS-MPEG4) is another
+                 codec: probe calls it "msmpeg4", never converted), ac3.* (full A/52 + E-AC-3 decoder (ETSI TS 102 366 Annex E: 1/2/3/6 blocks a frame,
                  Ac3Info.samples; spectral extension; AHT with ac3_aht.h = the spec's VQ tables - FFmpeg's
                  hebap-4 table lacks the spec's row 0; mixing metadata's Lo/Ro levels; independent substream 0
                  only, the rest AC3_SKIP; enhanced coupling / half rates AC3_ERR_UNSUPPORTED): native/WAV-order/
@@ -953,8 +1031,10 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  frame writer (every tool, random; or tones: a steady value in subband k comes out at its EDGE,
                  so tones use odd bands: (ch + 1) x 1500 Hz). HEMMA_TEST_DTS=<file.mkv> [HEMMA_TEST_DTS_S,
                  HEMMA_TEST_DTS_WAV] ./build/test dts_real decodes a real track (native float WAV to compare).
-                 Feed mpeg2 the track's CodecPrivate first, then
-                 each block with its pts; mpeg2_reset()/ac3_reset() after mkv_seek(). h264enc.* (Constrained
+                 Feed mpeg2 (and mpeg4) the track's CodecPrivate first (an AVI's V_MS/VFW/FOURCC: past its
+                 BITMAPINFOHEADER), then each block with its pts; mpeg2_reset()/mpeg4_reset()/ac3_reset() after mkv_seek().
+                 conv.c re-encodes MPEG-4 progressive (DEINT_PASS), its track on a 90 kHz clock timed by each picture's
+                 pts (place_of; the last one and those without a time: the median gap of the first pictures, usual_gap). h264enc.* (Constrained
                  Baseline encoder, bit-exact vs Chrome; annexb=false + h264enc_avcc() for MP4; ~180 fps SD
                  per PC core, ~7.6 fps per Pi 3 core). mp4.* (faststart via reserved moov, or fragmented), flac.*, deint.* (IVTC / yadif / bob /
                  pass + analysis), aac.* (AAC-LC encoder, 48 kHz stereo 160 kbit/s for the converter;
@@ -1033,11 +1113,13 @@ tools/h264check.c encode | synth | bench: MKV -> H.264 Annex-B + reconstruction 
 tools/convfuzz.c libFuzzer target over av_convert (MKV in memory -> MP4 in memory); -DCONVFUZZ_MAIN = a
                  replay/mutate driver that builds with zig on Windows (build lines at the top). Seeds:
                  `HEMMA_FUZZ_SEEDS=<dir> HEMMA_FUZZ_RAW=<dir2> ./build/test conv_fuzz_seeds` (generated, never
-                 committed: the MKVs in <dir>, raw Dolby frames and MPEG-2 streams in <dir2>/ac3, /mpeg2)
-tools/avfuzz.c   six faster targets, one part alone each (issue #50): -DAVFUZZ_MKV the Matroska reader,
+                 committed: the MKVs in <dir>, raw Dolby frames, MPEG-2 and MPEG-4 streams in <dir2>/ac3, /mpeg2, /mpeg4)
+tools/avfuzz.c   faster targets, one part alone each (issue #50): -DAVFUZZ_MKV the Matroska reader,
                  -DAVFUZZ_AC3 the Dolby decoder (raw frames, CRC off), -DAVFUZZ_DTS the DTS decoder (raw core
                  frames; 1.3), -DAVFUZZ_MPEG2 the MPEG-2 decoder (a raw
-                 stream in chunks of any size); an input's first byte picks options (layout, chunking, a reset).
+                 stream in chunks of any size), -DAVFUZZ_MPEG4 (2.5) the MPEG-4 Part 2 decoder (a VOP a block, whole or in
+                 pieces, block times in or out of order; FUZZING_BUILD_MODE caps its pictures at 720x576 - ~480 inputs/s
+                 in WSL); an input's first byte picks options (layout, chunking, a reset).
                  -DAVFUZZ_PGS (a .sup) and -DAVFUZZ_VOBSUB (the .idx text, a NUL, the .sub) (1.2): opened, every cue
                  checked against subpic.h's promises (abort), drawn (2M pixels an input) and made a PNG.
                  Measured in WSL: ~1.3M inputs a minute (mkv), 210k (ac3), 310k (mpeg2), ~200k (pgs), ~90k
@@ -1049,11 +1131,11 @@ tools/avfuzz.c   six faster targets, one part alone each (issue #50): -DAVFUZZ_M
                  book.MP3); aborts on text that isn't clean UTF-8, chapters out of order, a cover past the end or without its
                  JPEG/PNG bytes there. Seeds: HEMMA_FUZZ_RAW=build/fuzz-raw build/test audiotags_fuzz_seeds (~40-50k inputs/s;
                  50 min with 8 processes before 1.6 found one bug, in its own text check)
-tools/ci/fuzz.sh TARGET [S] [JOBS]: builds + runs conv | mkv | mp4 | ac3 | dts | mpeg2 | pgs | vobsub | tags under ASan + UBSan from the
+tools/ci/fuzz.sh TARGET [S] [JOBS]: builds + runs conv | mkv | mp4 | ac3 | dts | mpeg2 | mpeg4 | pgs | vobsub | tags under ASan + UBSan from the
                  tree's top after `make build/test` (seeds made when missing; pgs/vobsub's from `HEMMA_FUZZ_RAW=
                  build/fuzz-raw build/test subpic_fuzz_seeds`), corpus in build/fuzz-corpus-T, findings in
                  build/fuzz-found-T (exit 1); JOBS > 1 = libFuzzer -fork, carrying on after a finding. Used by
-                 build.yml's fuzz job (conv, 90 s), fuzz.yml (NIGHTLY 01:17 UTC: the nine side by side on their own
+                 build.yml's fuzz job (conv, 90 s), fuzz.yml (NIGHTLY 01:17 UTC: the ten side by side on their own
                  runners, 170 min each with every core, the corpus cached night to night - owner, 2026-10-21:
                  "about 3 hours"; a finding fails the job and keeps the files as an artifact) and local.sh
 tests/           test.h (framework), runner.c, harness.* (boot the core without a server; th_boot_in(dir) for a
@@ -1161,7 +1243,7 @@ tests/browser/   CI-ONLY Node (owner, 2026-10-21: "The CI can use node"; nothing
                  web/*.js, run from the repo top (`npm run lint`). Locally: build (./build.ps1 build + test, or
                  make), then `cd tests/browser && npm ci && npx playwright test`. Test-only modules' words etc.:
                  see Tests. CI jobs: build.yml `browser` and `lint`
-tools/ci/local.sh  CI's Linux jobs locally: test | asan | fuzz [S] [conv|mkv|ac3|dts|mpeg2|pgs|vobsub], on a fresh copy of the tree (stdin tar,
+tools/ci/local.sh  CI's Linux jobs locally: test | asan | fuzz [S] [conv|mkv|mp4|ac3|dts|mpeg2|mpeg4|pgs|vobsub|tags], on a fresh copy of the tree (stdin tar,
                  --tar FILE, or this checkout) in /dev/shm, each job's build/ kept for the next run (only
                  what changed compiles); never deletes. Windows: ./build.ps1 ci [job] (WSL; $env:HEMMA_WSL)
 deploy/          avahi-hemma.service (2.0): install-pi.sh writes it to /etc/avahi/services/hemma.service (Hemma's port for
@@ -1667,6 +1749,8 @@ element full screen: its video's webkitEnterFullscreen (Apple's player) instead;
 `<html data-idle>` hides the pointer after 3 still seconds; Escape then only leaves full screen, never
 [data-esc]. Chrome driven by DevTools (the chrome-devtools MCP) keeps ANY full screen inside its window:
 check real full screen in a normal browser) ·
+`[data-caps="<type>|<type>|..."]` (2.5, media/devices.c: answered ONCE A LOAD - canPlayType per type, y/m/n - as the
+live media.caps; the list and its meaning are the server's; wire.js capsTell) ·
 `[data-upnext="S"]` (the page's "next episode" card for its video[data-next]: unhidden in the last S
 seconds, `[data-count]` = seconds left, `[data-hide]` puts it away for that video, a link in it reports
 the video watched BEFORE the nav goes; an [autofocus] in it takes the focus from the video) ·
@@ -2009,6 +2093,20 @@ an MP4 that plays everywhere (H.264 / hvc1 / AV1 + AAC or MP3) - nothing written
 original=1&plays=1 -> UpFile.plays: sent as it is quietly (no card notice); the plan sends every MP4/M4V/MOV through the
 converter (preview badge "Converted here if needed", not counted as "to convert"); convert_need: MP4/MOV + Dolby/DTS =
 transcode, + AAC/MP3 = none. Copied pictures' times rounded to the nearest tick (at_tick), not each length down.
+names.c tok_year: a run of years ("1987-1990", "1988-89") is its first year - a pack folder "DUCKTALES (1987-1990) -
+The Complete ..." had come out "DUCKTALES (1987-1990) - The" and split the show (seasons whose folders said no more took it).
+Then (owner: "we don't have to give an image to a show / movie. It should automatically fetch") PICTURES FROM THE INTERNET
+(media/lookup.c, decision 0012: TVmaze for series, Wikipedia for films through the computer's curl - core plat_run +
+fetch_https), OPUS SOUND COPIED ("Its sound is Opus, which the converter can't change yet"), and a rename no longer looks a
+title up before the library has read its new name. And (owner: "check the issue with the videos that are not playable
+everywhere"; "Both, devices first") WHAT YOUR DEVICES PLAY (media/devices.c): browsers report canPlayType for a list of
+types, Library settings counts what plays on every device of the household, lists them and the reasons; HEVC -> H.264
+(an HEVC decoder) only for what turns out to fail on one of them. Then (owner, 2026-10-31: "the videos on hemma that are
+not converted", "fix it in this branch") XVID AND DIVX CONVERTED (av/mpeg4.c - see the av layout; the Pi's ten that played
+nowhere: Solsidan S06E03-04 + S07) and TWO FILES OF ONE NAME ARE ONE VIDEO (owner: "How come the doublicate deletion cannot
+pickup the arhur episodes?" - library.c same_stem/lone_version: "x.mkv" + "x.mp4" in one folder lasting as long
+(media_copy_lasts) pair like a copy made here: the more compatible (media_compat_cost) becomes the MF_WEBCOPY the other
+streams through, Manage/the watch page say "Another version", Keep only the most compatible version deletes the other).
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
@@ -2031,4 +2129,5 @@ on the wall (ticking the shopping list - needs .display actions), more wall bloc
 MKV→MP4 remux on the fly for Safari/iPhone (planned as 1.2, owner 2026-10-21: a "virtual MP4" over the MKV,
 Dolby passed through for Apple devices; live AC-3 -> AAC after), "Open in VLC" links, router integration, DLNA, API tokens for
 scripts, "tune in" on the TV's browser via a QR code, more video formats as files need them (HEVC decoding,
-AV1 decoding for older Apple devices, Xvid (MP3 sound is copied since 2.5), TrueHD - each with its fuzz seed: docs/decisions/0006).
+AV1 decoding for older Apple devices, interlaced XviD and GMC, Vorbis sound, TrueHD, AVI files - each with its fuzz
+seed: docs/decisions/0006).

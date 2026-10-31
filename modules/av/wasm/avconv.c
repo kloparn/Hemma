@@ -8,7 +8,7 @@
  * modules/<id>, not subfolders). Built with: zig cc -target wasm32-wasi
  * -mexec-model=reactor -msimd128 -O2 -s -Wl,-z,stack-size=8388608 -Imodules/av
  * (av_convert alone keeps ~40 KB on the stack), this file plus the av sources the
- * converter uses (conv mkv mpeg2 deint h264enc ac3 aac mp4).
+ * converter uses (conv mkv mpeg2 mpeg4 deint h264enc ac3 dts aac mp4).
  *
  * The page side (web/conv.js) provides four functions:
  *   hemma.read(off, dst, n)       n bytes of the original at off into memory[dst]; 1 = ok

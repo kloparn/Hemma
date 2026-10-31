@@ -642,3 +642,9 @@ html[data-nodir] .media-up-folder { display: none; } /* (wire.js: no folder pick
 .media-chapters a[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); font-weight: 700; }
 .media-ch-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .media-ch-at { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+/* what your devices play (2.5, devices.c): on the watch page, and Library settings' card */
+.media-devs { flex-basis: 100%; color: var(--muted); }
+.media-devs.ok, .media-ok { color: var(--ok); }
+.media-why-list, .media-devices { margin: 6px 0 12px; padding-left: 18px; }
+.media-why-list li, .media-devices li { margin: 4px 0; }

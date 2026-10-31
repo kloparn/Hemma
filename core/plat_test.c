@@ -200,3 +200,33 @@ TEST(free_on_loop_takes_blocks_back_from_threads) {
     CHECK(!b.p && !b.len && !b.cap);
     CHECK(free_on_loop_now() >= 1);
 }
+
+TEST(plat_quotes_arguments_as_windows_reads_them) {
+    Buf b = {0};
+    const char *const plain[] = {"C:\\Windows\\System32\\curl.exe", "-sS", "--url", "https://x.org/a?b=1&c=2", NULL};
+    plat_quote_args(plain, &b);
+    CHECK_STR(b.p, "C:\\Windows\\System32\\curl.exe -sS --url https://x.org/a?b=1&c=2");
+    /* spaces quoted; a quote escaped; backslashes doubled only before a quote (also the closing one) */
+    const char *const spaced[] = {"a b", "", "Hemma/2.5 (+https://x)", "say \"hi\"", "C:\\dir with space\\", "a\\\\\"b", NULL};
+    plat_quote_args(spaced, &b);
+    CHECK_STR(b.p, "\"a b\" \"\" \"Hemma/2.5 (+https://x)\" \"say \\\"hi\\\"\" \"C:\\dir with space\\\\\" \"a\\\\\\\\\\\"b\"");
+    buf_free(&b);
+}
+
+TEST(plat_runs_a_program_and_waits_for_it) {
+    /* the computer's own shell: cmd.exe on Windows, /bin/sh elsewhere */
+    const char *root = plat_getenv("SystemRoot");
+    char cmd[400];
+    snprintf(cmd, sizeof cmd, "%s\\System32\\cmd.exe", root ? root : "");
+    bool win = root && path_stat(cmd, NULL, NULL, NULL);
+    const char *const exit3[] = {win ? cmd : "/bin/sh", win ? "/c" : "-c", "exit 3", NULL};
+    CHECK_INT(plat_run(exit3, 10000), 3);
+    const char *const none[] = {"/no/such/program/here", NULL};
+    CHECK_INT(plat_run(none, 2000), -1);
+    if (!win) { /* (stopped when it runs too long) */
+        const char *const slow[] = {"/bin/sh", "-c", "sleep 5", NULL};
+        int64_t t0 = now_ms();
+        CHECK_INT(plat_run(slow, 200), -1);
+        CHECK(now_ms() - t0 < 3000);
+    }
+}

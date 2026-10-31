@@ -1128,6 +1128,41 @@ static int with_login(const char *name, const char *user, int role) {
     return id;
 }
 
+/* (2.5) Two files of one name - Arthur S25's "x.mkv" (Vorbis sound) beside "x.mp4" - lasting as long are two
+   versions of one video too: one row, the more compatible streams, and keeping only that deletes the other. Of
+   other lengths they stay two videos. */
+TEST(media_pairs_two_versions_under_one_name) {
+    int adam = boot_with_library();
+    Person p = *person_get(adam);
+    p.role = ROLE_ADMIN;
+    tbl_put(&T_person, &p);
+    put_video_as("Series/Arthur/Season 25/Arthur - S25E01-E02.mov", MP4_HEVC, 60); /* the less compatible */
+    put_video_as("Series/Arthur/Season 25/Arthur - S25E01-E02.mp4", MP4_H264, 60);
+    put_video_as("Series/Arthur/Season 25/Arthur - S25E03-E04.mov", MP4_HEVC, 60);
+    put_video_as("Series/Arthur/Season 25/Arthur - S25E03-E04.mp4", MP4_H264, 30); /* (another length: not a version) */
+    media_scan_sync();
+    const MediaFile *mov = find("S25E01-E02.mov"), *mp4 = find("S25E01-E02.mp4"), *other = find("S25E03-E04.mp4");
+    CHECK(mov && mp4 && other);
+    if (!mov || !mp4 || !other) {
+        th_halt();
+        return;
+    }
+    CHECK(mov->web == mp4->id && mp4->role == MF_WEBCOPY);
+    CHECK(other->role == MF_MAIN && !other->web);
+    uint64_t mov_id = mov->id;
+    const char *page = th_page(adam, url("/media/watch/%s", mov_id));
+    CHECK_HAS(page, "Plays in browsers"); /* (it streams the MP4) */
+    page = th_page(adam, url("/media/series/%s?manage=1", mov->series));
+    CHECK_HAS(page, "Another version");
+    CHECK(th_act(adam, "media.drop_originals", "").ok);
+    CHECK(!there("Series/Arthur/Season 25/Arthur - S25E01-E02.mov"));
+    CHECK(there("Series/Arthur/Season 25/Arthur - S25E01-E02.mp4"));
+    CHECK(there("Series/Arthur/Season 25/Arthur - S25E03-E04.mov") && there("Series/Arthur/Season 25/Arthur - S25E03-E04.mp4"));
+    mp4 = find("S25E01-E02.mp4");
+    CHECK(mp4 && mp4->role == MF_MAIN); /* (rescanned: on its own now) */
+    th_halt();
+}
+
 /* Rescanning is for admins - and for the members an admin lets; display accounts never, and
    members can't let themselves. */
 TEST(media_rescan_is_for_admins_and_who_they_let) {

@@ -1,6 +1,7 @@
 /* 1.4: categories of series and films (cats.c) - ticked by hand, from .nfo files, from the online lookup
    (lookup.c) - and what uses them: the lists' chips, order and "Not started / Started", Watch's rows and a
    category's page, the TV's row, and search (media.c). */
+#include "../../core/fetch.h"
 #include "../../core/plat.h"
 #include "../../tests/harness.h"
 #include "media.h"
@@ -280,6 +281,8 @@ TEST(cats_from_the_lookup_and_its_answers) {
     CHECK_INT(media_lookup_test_omdb("{\"Response\":\"False\",\"Error\":\"Invalid API key!\"}", g, sizeof g), -2);
     /* what's asked next: series by name (the one without an answer), films only with a key */
     char host[64], path[700];
+    CHECK(!media_lookup_test_next(host, sizeof host, path, sizeof path)); /* (switched off: nothing) */
+    setting_set("media.lookup", "1");
     CHECK(media_lookup_test_next(host, sizeof host, path, sizeof path));
     CHECK_STR(host, "api.tvmaze.com");
     CHECK_STR(path, "/search/shows?q=Night%20Owls");
@@ -350,4 +353,216 @@ TEST(cats_lookup_card_and_ids_for_admins) {
     media_lookup_test_put(owls.key, "Comedy", true);
     CHECK_HAS(th_page(adam, page), "by the id you gave");
     th_halt();
+}
+
+/* ---- pictures looked up online (2.5): TVmaze for series, Wikipedia (https, curl) for films ---- */
+
+static int admin_library(void) {
+    int adam = library();
+    Person p = *person_get(adam);
+    p.role = ROLE_ADMIN;
+    tbl_put(&T_person, &p);
+    return adam;
+}
+
+TEST(pictures_from_tvmaze_and_wikipedia_answers) {
+    char img[600], name[200];
+    CHECK_INT(media_lookup_test_tvmaze_pic("[{\"show\":{\"id\":4295,\"name\":\"DuckTales\",\"premiered\":\"1987-09-18\",\"image\":"
+                                           "{\"medium\":\"https://static.tvmaze.com/m/1.jpg\",\"original\":\"https://static.tvmaze.com/"
+                                           "o/1.jpg\"}}},{\"show\":{\"id\":19621,\"name\":\"DuckTales\",\"premiered\":\"2017-08-11\","
+                                           "\"image\":{\"original\":\"https://static.tvmaze.com/o/2.jpg\"}}}]",
+                                           "Ducktales", 2017, img, sizeof img),
+              1);
+    CHECK_STR(img, "https://static.tvmaze.com/o/2.jpg"); /* (the show of its year) */
+    CHECK_INT(media_lookup_test_tvmaze_pic("{\"id\":4295,\"name\":\"DuckTales\",\"image\":null}", "x", 0, img, sizeof img), 1);
+    CHECK_STR(img, ""); /* (found, without a picture) */
+    /* Wikipedia: in the search's order, a film of its year (description or title), with a picture that's no logo */
+    static const char *const dalmatians =
+        "{\"batchcomplete\":true,\"query\":{\"pages\":["
+        "{\"pageid\":1,\"ns\":0,\"title\":\"101 Dalmatians (1996 film)\",\"index\":2,\"description\":\"1996 film by Stephen Herek\","
+        "\"original\":{\"source\":\"https://upload.wikimedia.org/wikipedia/en/e/ef/d96.jpg?utm_source=en.wikipedia.org\",\"width\":220}},"
+        "{\"pageid\":2,\"ns\":0,\"title\":\"One Hundred and One Dalmatians\",\"index\":1,\"description\":\"1961 Disney animated film\","
+        "\"original\":{\"source\":\"https://upload.wikimedia.org/wikipedia/en/c/cd/d61.jpg?utm_source=en.wikipedia.org\",\"width\":256}},"
+        "{\"pageid\":3,\"ns\":0,\"title\":\"101 Dalmatians (franchise)\",\"index\":3,\"description\":\"Disney media franchise from 1961\","
+        "\"original\":{\"source\":\"https://upload.wikimedia.org/wikipedia/commons/9/9d/Logo.svg\"}},"
+        "{\"pageid\":4,\"ns\":0,\"title\":\"101 Dalmatian Street\",\"index\":4,\"description\":\"Animated television series\"}]}}";
+    CHECK_INT(media_lookup_test_wiki(dalmatians, "101 Dalmatians", 1961, false, img, sizeof img, name, sizeof name), 1);
+    CHECK_STR(img, "https://upload.wikimedia.org/wikipedia/en/c/cd/d61.jpg");
+    CHECK_STR(name, "One Hundred and One Dalmatians (1961 Disney animated film)");
+    CHECK_INT(media_lookup_test_wiki(dalmatians, "101 Dalmatians", 1996, false, img, sizeof img, name, sizeof name), 1);
+    CHECK_STR(name, "101 Dalmatians (1996 film)");
+    CHECK_INT(media_lookup_test_wiki(dalmatians, "101 Dalmatians", 2005, false, img, sizeof img, name, sizeof name), 0);
+    CHECK_INT(media_lookup_test_wiki(dalmatians, "101 Dalmatians", 0, false, img, sizeof img, name, sizeof name), 1);
+    CHECK_STR(name, "101 Dalmatians (1996 film)"); /* (no year: its very title, a film) */
+    CHECK_INT(media_lookup_test_wiki(dalmatians, "Dalmatians", 0, false, img, sizeof img, name, sizeof name), 0);
+    /* the year in the title's brackets only ("American animated film by ..."); a soundtrack is no film */
+    CHECK_INT(media_lookup_test_wiki("{\"query\":{\"pages\":[{\"title\":\"Tarzan (1999 soundtrack)\",\"index\":1,\"description\":"
+                                     "\"1999 soundtrack album\",\"original\":{\"source\":\"https://u/s.jpg\"}},{\"title\":\"Tarzan (1999 "
+                                     "film)\",\"index\":2,\"description\":\"American animated film\",\"original\":{\"source\":"
+                                     "\"https://u/t.JPG\"}}]}}",
+                                     "Tarzan", 1999, false, img, sizeof img, name, sizeof name),
+              1);
+    CHECK_STR(img, "https://u/t.JPG");
+    /* a page an admin gave: its picture, whatever it says */
+    CHECK_INT(media_lookup_test_wiki("{\"query\":{\"pages\":[{\"title\":\"Hocus Pocus (1993 film)\",\"description\":\"1993 film\","
+                                     "\"original\":{\"source\":\"https://u/h.png\"}}]}}",
+                                     "Something", 0, true, img, sizeof img, name, sizeof name),
+              1);
+    CHECK_STR(img, "https://u/h.png");
+    CHECK_INT(media_lookup_test_wiki("{\"query\":{\"pages\":[{\"title\":\"Nope\",\"missing\":true}]}}", "Nope", 0, true, img,
+                                     sizeof img, name, sizeof name),
+              0);
+    CHECK_INT(media_lookup_test_wiki("{\"batchcomplete\":true}", "Zzz", 1990, false, img, sizeof img, name, sizeof name), 0);
+    CHECK_INT(media_lookup_test_wiki("{\"error\":{\"code\":\"badvalue\"}}", "Zzz", 1990, false, img, sizeof img, name, sizeof name), -1);
+    CHECK_INT(media_lookup_test_wiki("<html>", "Zzz", 1990, false, img, sizeof img, name, sizeof name), -1);
+}
+
+TEST(pictures_go_only_where_there_is_none) {
+    const char *dir = test_tmpdir();
+    char dest[600], path[700];
+    static const char jpeg[] = "\xFF\xD8\xFF\xE0 a picture", png[] = "\x89PNG\r\n\x1a\n and more";
+    snprintf(dest, sizeof dest, "%s/poster", dir);
+    CHECK_INT(media_lookup_test_save(dest, jpeg, sizeof jpeg - 1, NULL, 0), 1);
+    snprintf(path, sizeof path, "%s/poster.jpg", dir);
+    int64_t size = 0;
+    CHECK(path_stat(path, &size, NULL, NULL) && size == (int64_t)sizeof jpeg - 1);
+    CHECK_INT(media_lookup_test_save(dest, png, sizeof png - 1, NULL, 0), -4); /* (never over one: any picture of that name) */
+    CHECK_INT(media_lookup_test_save(dest, "<html>", 6, NULL, 0), -1);         /* (not a picture) */
+    /* Hemma's own is replaced - still the size it saved; the household's (another size) never */
+    snprintf(dest, sizeof dest, "%s/Film (2001)", dir);
+    CHECK_INT(media_lookup_test_save(dest, jpeg, sizeof jpeg - 1, NULL, 0), 1);
+    snprintf(path, sizeof path, "%s/Film (2001).jpg", dir);
+    CHECK_INT(media_lookup_test_save(dest, png, sizeof png - 1, path, (int64_t)sizeof jpeg - 1), 1);
+    CHECK(!path_stat(path, NULL, NULL, NULL));
+    snprintf(path, sizeof path, "%s/Film (2001).png", dir);
+    CHECK(path_stat(path, NULL, NULL, NULL));
+    CHECK_INT(media_lookup_test_save(dest, jpeg, sizeof jpeg - 1, path, 3), -4);
+    CHECK(path_stat(path, NULL, NULL, NULL));
+}
+
+TEST(pictures_asked_for_what_has_none) {
+    admin_library();
+    media_lookup_test_online(1);
+    fetch_test_curl("/usr/bin/curl");
+    char host[64], path[700], dest[700];
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 0); /* (both boxes off) */
+    setting_set("media.lookup", "1");
+    setting_set("media.lookup_art", "1");
+    /* both on: a series' genres bring its picture along */
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 'b');
+    CHECK_STR(host, "api.tvmaze.com");
+    CHECK_STR(path, "/search/shows?q=Garden%20Show");
+    CHECK(str_ends(dest, "Series/Garden Show/poster"));
+    MediaWork garden, owls, flower, inc;
+    media_work_series(series_named("Garden Show"), &garden);
+    media_work_series(series_named("Night Owls"), &owls);
+    media_work_film(film("Flower"), &flower);
+    media_work_film(film("Inception"), &inc);
+    media_lookup_test_put(garden.key, "Comedy", false);
+    media_lookup_test_put(owls.key, "Comedy", false);
+    /* pictures alone: a series without one, then films by their title and year at Wikipedia */
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 'p');
+    CHECK_STR(path, "/search/shows?q=Garden%20Show");
+    media_lookup_test_art_put(garden.key, 1, 10, false);
+    put(g_root, "Series/Night Owls/poster.jpg", "\xFF\xD8\xFF a picture of its own"); /* (Night Owls has one) */
+    media_scan_sync();
+    CHECK(series_named("Night Owls")->poster);
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 'p');
+    CHECK_STR(host, "en.wikipedia.org");
+    CHECK(str_starts(path, "https://en.wikipedia.org/w/api.php?"));
+    CHECK_HAS(path, "&gsrsearch=Flower%202020%20film");
+    CHECK_HAS(path, "&pilicense=any");
+    CHECK(str_ends(dest, "Movies/Flower (2020)/Flower"));
+    media_lookup_test_art_put(flower.key, 0, 0, false); /* (nothing found: not asked again for a month) */
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 'p');
+    CHECK_HAS(path, "Inception%202010%20film");
+    fetch_test_curl(""); /* no curl here: no films */
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 0);
+    fetch_test_curl("/usr/bin/curl");
+    media_lookup_test_art_put(inc.key, -1, 0, false); /* (couldn't: asked again tomorrow, not now) */
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 0);
+    /* a rename: nothing asked by name until the library has read it under the new name */
+    media_lookup_renamed(inc.key, "m0000000000000002"); /* (what wasn't found goes: asked again) */
+    media_work_film(film("Inception"), &inc);
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 0);
+    media_scan_sync();
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 'p');
+    CHECK_HAS(path, "Inception%202010%20film");
+    th_halt();
+    fetch_test_curl(NULL);
+}
+
+TEST(pictures_card_and_links_for_admins) {
+    int adam = admin_library();
+    int eva = th_person("Eva");
+    fetch_test_curl("/usr/bin/curl");
+    media_lookup_test_online(-1);
+    const char *h = th_page(adam, "/media/settings");
+    CHECK_HAS(h, "Pictures from the internet");
+    CHECK(!th_act(adam, "media.lookup_art", "on=1").ok); /* (offline: it can't be switched on) */
+    CHECK(!strstr(th_page(eva, "/media/settings"), "Pictures from the internet"));
+    media_lookup_test_online(1);
+    CHECK(!th_act(eva, "media.lookup_art", "on=1").ok);
+    CHECK(th_act(adam, "media.lookup_art", "on=1").ok);
+    CHECK_INT(setting_int("media.lookup_art", 0), 1);
+    CHECK_HAS(th_page(adam, "/media/settings"), "With a picture: 0 of 2 series");
+    /* Manage: what its picture is, and a field for the right one's link (categories off: nothing about them) */
+    char page[96], form[300], host[64], path[700], dest[700];
+    snprintf(page, sizeof page, "/media/series/%016llx?manage=1", (unsigned long long)series_named("Garden Show")->id);
+    h = th_page(adam, page);
+    CHECK_HAS(h, "Picture: not looked for yet.");
+    CHECK_HAS(h, "Update picture");
+    CHECK(!strstr(h, "Update categories"));
+    MediaWork garden, owls, inc;
+    media_work_series(series_named("Garden Show"), &garden);
+    media_work_series(series_named("Night Owls"), &owls);
+    media_work_film(film("Inception"), &inc);
+    snprintf(form, sizeof form, "work=%s&id=https%%3A%%2F%%2Fwww.tvmaze.com%%2Fshows%%2F4295%%2Fducktales", garden.key);
+    CHECK(th_act(adam, "media.art_id", form).ok);
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 'p');
+    CHECK_STR(path, "/shows/4295");
+    snprintf(form, sizeof form, "work=%s&id=tt0092345", garden.key);
+    CHECK(th_act(adam, "media.art_id", form).ok);
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 'p');
+    CHECK_STR(path, "/lookup/shows?imdb=tt0092345");
+    snprintf(form, sizeof form, "work=%s&id=", garden.key); /* (none: by its name again) */
+    CHECK(th_act(adam, "media.art_id", form).ok);
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 'p');
+    CHECK_STR(path, "/search/shows?q=Garden%20Show");
+    /* a film by its Wikipedia page, in any language's Wikipedia */
+    snprintf(form, sizeof form, "work=%s&id=https%%3A%%2F%%2Fen.wikipedia.org%%2Fwiki%%2FInception%%3Fx%%3D1", inc.key);
+    CHECK(th_act(adam, "media.art_id", form).ok);
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 'p');
+    CHECK(str_starts(path, "https://en.wikipedia.org/w/api.php?"));
+    CHECK_HAS(path, "&titles=Inception&");
+    snprintf(form, sizeof form, "work=%s&id=sv.m.wikipedia.org%%2Fwiki%%2FHocus_Pocus_%%281993%%29", inc.key);
+    CHECK(th_act(adam, "media.art_id", form).ok);
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 'p');
+    CHECK(str_starts(path, "https://sv.wikipedia.org/w/api.php?"));
+    CHECK_HAS(path, "&titles=Hocus%20Pocus%20%281993%29");
+    snprintf(form, sizeof form, "work=%s&id=tt1375666", inc.key); /* (a film: its Wikipedia page) */
+    ThResult r = th_act(adam, "media.art_id", form);
+    CHECK(!r.ok);
+    CHECK_STR(r.field, "id");
+    CHECK(!th_act(eva, "media.art_id", form).ok);
+    /* a picture of the household's own stays; the one Hemma saved may be replaced */
+    static const char *const own = "\xFF\xD8\xFF a picture of its own";
+    put(g_root, "Series/Night Owls/poster.jpg", own);
+    media_scan_sync();
+    snprintf(page, sizeof page, "/media/series/%016llx?manage=1", (unsigned long long)series_named("Night Owls")->id);
+    CHECK_HAS(th_page(adam, page), "Picture: its own");
+    snprintf(form, sizeof form, "work=%s&id=84", owls.key);
+    CHECK(!th_act(adam, "media.art_id", form).ok);
+    media_lookup_test_art_put(owls.key, 1, (int64_t)strlen(own), false);
+    CHECK_HAS(th_page(adam, page), "Picture: from TVmaze, Test (2001)");
+    CHECK(th_act(adam, "media.art_id", form).ok);
+    CHECK_INT(media_lookup_test_job(host, sizeof host, path, sizeof path, dest, sizeof dest), 'p');
+    CHECK(str_ends(dest, "Series/Night Owls/poster.jpg")); /* (the one it replaces) */
+    /* no curl: no films' pictures */
+    fetch_test_curl("");
+    snprintf(form, sizeof form, "work=%s&id=", inc.key);
+    CHECK(!th_act(adam, "media.art_id", form).ok);
+    CHECK_HAS(th_page(adam, "/media/settings"), "needs the program curl");
+    th_halt();
+    fetch_test_curl(NULL);
 }

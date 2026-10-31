@@ -104,7 +104,7 @@ static const char *g_allow[48] = {"Anna", "Eva", "A", "E", "Garden Show", "Garde
                                   "Inception", "Flower", "Midsommar", "IMG", "70's Show", "70's show", "Kino", "Shows",
                                   "Klipp", "Series", "series", "Extras", "Extra", "Video", "video", "A–Z", "Svenska",
                                   "English", "Norsk", "Dansk", "Suomi", "Deutsch", "Français", "Español", "System",
-                                  "TVmaze", "OMDb", "omdbapi.com", NULL};
+                                  "TVmaze", "OMDb", "omdbapi.com", "Wikipedia", NULL};
 
 static void allow_also(const char *s) {
     int n = 0;
@@ -298,7 +298,7 @@ TEST(media_speaks_swedish_and_spanish_before_there_is_a_library) {
     media_scan_sync();
     static const char *const allow[] = {"Anna", "Eva", "A", "E", "Series", "series", "Svenska", "English", "Norsk",
                                         "Dansk", "Suomi", "Deutsch", "Français", "Español", "System",
-                                        "TVmaze", "OMDb", "omdbapi.com", NULL};
+                                        "TVmaze", "OMDb", "omdbapi.com", "Wikipedia", NULL};
     Buf r = {0};
     int n = th_untranslated(anna, "/media", allow, &r) + th_untranslated(eva, "/media", allow, &r) +
             th_untranslated(eva, "/media/settings", allow, &r) + th_untranslated(anna, "/media/movies", allow, &r);

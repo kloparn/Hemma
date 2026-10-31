@@ -11,6 +11,7 @@
 #include "dts.h"
 #include "h264enc.h"
 #include "mpeg2.h"
+#include "mpeg4.h"
 
 #define NS 1000000000LL
 #define COPY_SURVEY_PM 300 /* copying: the first read (every timestamp) is about a third of the work */
@@ -51,9 +52,13 @@ static void sar_of(int w, int h, int dar_n, int dar_d, int *sw, int *sh) {
 /* One sound track kept (2.2: every one the converter takes, AV_CONV_MAX_AUDIO). */
 struct ConvAudio {
     const MkvTrack *t;
-    bool code;     /* Dolby or DTS decoded and made AAC (false: AAC or MP3 copied) */
+    bool code;     /* Dolby or DTS decoded and made AAC (false: AAC, MP3 or Opus copied) */
     bool mp3;      /* MP3 copied (2.5): each block's frames one sample each */
+    bool opus;     /* Opus copied (2.5): each packet a sample, as long as its TOC says - fdur = the last one's */
     uint32_t fdur; /* a frame's samples in the MP4: AAC 1024, MP3 1152 (MPEG-1) or 576 (MPEG-2's half rates) */
+    uint8_t dops[32]; /* Opus: its dOps box's body, made of the OpusHead */
+    size_t dops_len;
+    int channels, preskip; /* Opus: from the OpusHead */
     bool dead;     /* dropped part-way (lose): fed no more, left out of the moov */
     int track;     /* its MP4 track */
     int rate;      /* coded: the track's rate - 48000, 44100 or 32000 - and so the AAC's */
@@ -70,7 +75,7 @@ struct ConvAudio {
     /* 2+ sounds: frames held until AUDIO_RUN of them go out as one chunk */
     uint8_t *run;
     size_t nrun, crun;
-    uint32_t rsize[AUDIO_RUN];
+    uint32_t rsize[AUDIO_RUN], rdur[AUDIO_RUN];
     int nrunf;
 };
 
@@ -92,9 +97,16 @@ typedef struct {
     uint8_t au[AAC_MAX_AU];
     /* video re-encode */
     Mpeg2 *dec;
+    bool m4;                     /* (2.5) the picture is MPEG-4 Part 2 - DivX, Xvid: dec4 instead of dec */
+    Mpeg4 *dec4;
+    const uint8_t *vol;          /* its setup (the VOL): CodecPrivate, past an AVI's BITMAPINFOHEADER */
+    size_t nvol;
+    int64_t seen[ANALYZE_FRAMES]; /* its first pictures' times (the survey), for their usual length */
+    int nseen;
+    int64_t vgap, vprev; /* MPEG-4 pictures are timed by their own times on 90 kHz: a usual length (ns), the last place */
     Deint *di;
     int w, h; /* the picture size everything was set up for */
-    int dmode, out_num, out_den;
+    int dmode, out_num, out_den; /* (MPEG-4: the track's clock is 90 kHz, out_* only the encoder's rate) */
     H264Enc *enc;
     uint8_t *pend; /* the last encoded frame waits for the next to learn its duration */
     size_t npend, cpend;
@@ -138,6 +150,9 @@ static bool stopped(const Conv *c) { return c->j->stop && *c->j->stop; }
 const AvCodec AV_CONV_CODECS[] = {
     {"V_MPEG2", MKV_VIDEO, AV_DECODE, false},
     {"V_MPEG1", MKV_VIDEO, AV_DECODE, false},
+    {"V_MPEG4/ISO/ASP", MKV_VIDEO, AV_DECODE, false}, /* (2.5: MPEG-4 Part 2 - Xvid, DivX; an MP4's 'mp4v' too) */
+    {"V_MPEG4/ISO/SP", MKV_VIDEO, AV_DECODE, false},
+    {"V_MS/VFW/FOURCC", MKV_VIDEO, AV_DECODE, false}, /* (an AVI's track as mkvmerge keeps it: by its fourcc, vfw_mpeg4) */
     {"V_MPEG4/ISO/AVC", MKV_VIDEO, AV_COPY, false},
     {"V_MPEGH/ISO/HEVC", MKV_VIDEO, AV_COPY, false}, /* (as 'hvc1': Safari plays it in MP4, never in MKV) */
     {"V_AV1", MKV_VIDEO, AV_COPY, false},            /* (as 'av01': the same for Safari on devices with AV1) */
@@ -146,6 +161,7 @@ const AvCodec AV_CONV_CODECS[] = {
     {"A_EAC3", MKV_AUDIO, AV_DECODE, false},
     {"A_DTS", MKV_AUDIO, AV_DECODE, false}, /* (the core: DTS-HD's extra substream is left alone) */
     {"A_MPEG/L3", MKV_AUDIO, AV_COPY, false}, /* (2.5: MP3 copied - every browser plays it in an MP4, an MKV only Chrome's) */
+    {"A_OPUS", MKV_AUDIO, AV_COPY, false},    /* (2.5: Opus copied - Chrome, Firefox, Edge, Safari 17+ play it in an MP4) */
     {"S_TEXT/UTF8", MKV_SUBTITLE, AV_TEXT, false},
     {"S_TEXT/ASS", MKV_SUBTITLE, AV_TEXT, false},
     {"S_TEXT/SSA", MKV_SUBTITLE, AV_TEXT, false},
@@ -163,6 +179,41 @@ const AvCodec *av_conv_codec(const char *id) {
 
 static bool dolby(const char *codec) { return !strcmp(codec, "A_AC3") || !strcmp(codec, "A_EAC3"); }
 static bool is_dts(const char *codec) { return !strcmp(codec, "A_DTS"); }
+static bool is_opus(const char *codec) { return !strcmp(codec, "A_OPUS"); }
+
+/* An Opus track's setup - its OpusHead (RFC 7845 5.1, little-endian; Matroska's CodecPrivate) - as the MP4's dOps box
+   ("Encapsulation of Opus in ISO Base Media File Format" 4.3.2: version 0, big-endian), with its channels and pre-skip.
+   0 = not one we copy: a channel mapping family other than 0 (mono, stereo) or 1 (up to 8, as Vorbis orders them) -
+   what browsers play. */
+static size_t opus_dops(const uint8_t *h, size_t n, uint8_t *out, size_t cap, int *channels, int *preskip) {
+    if (!h || n < 19 || memcmp(h, "OpusHead", 8) || h[8] >> 4) return 0; /* (version 1; 0-15 read alike) */
+    int ch = h[9], fam = h[18];
+    if (!ch || fam > 1 || (fam == 0 && ch > 2) || ch > 8 || (fam && n < 21 + (size_t)ch)) return 0;
+    size_t len = fam ? 13 + (size_t)ch : 11;
+    if (cap < len) return 0;
+    out[0] = 0, out[1] = (uint8_t)ch;
+    out[2] = h[11], out[3] = h[10];                         /* PreSkip */
+    out[4] = h[15], out[5] = h[14], out[6] = h[13], out[7] = h[12]; /* InputSampleRate */
+    out[8] = h[17], out[9] = h[16];                         /* OutputGain */
+    out[10] = (uint8_t)fam;
+    if (fam) out[11] = h[19], out[12] = h[20], memcpy(out + 13, h + 21, (size_t)ch); /* streams, coupled, the mapping */
+    *channels = ch;
+    *preskip = h[10] | h[11] << 8;
+    return len;
+}
+
+/* An Opus packet's length in 48 kHz samples (RFC 6716 3.1): its TOC byte's frame size times its frame count. 0 = an
+   empty or broken one. */
+static uint32_t opus_samples(const uint8_t *p, size_t n) {
+    static const uint16_t SIZE[32] = {480, 960, 1920, 2880, 480, 960, 1920, 2880, 480, 960, 1920, 2880, /* SILK 10-60 ms */
+                                      480, 960, 480,  960,                                              /* hybrid 10, 20 */
+                                      120, 240, 480,  960,  120, 240, 480,  960,  120, 240, 480,  960,  /* CELT 2.5-20 */
+                                      120, 240, 480,  960};
+    if (!n) return 0;
+    int code = p[0] & 3, frames = code == 0 ? 1 : code < 3 ? 2 : n >= 2 ? p[1] & 0x3F : 0;
+    uint32_t total = (uint32_t)frames * SIZE[p[0] >> 3];
+    return total <= 5760 ? total : 0; /* (120 ms at most) */
+}
 #define MAX_AFRAME DTS_SAMPLES /* the most samples one decoded frame brings (DTS; Dolby's is 1536) */
 
 /* The rate of a Dolby or DTS track we can make AAC of at that same rate: the three both use (48 kHz on
@@ -181,7 +232,9 @@ static bool audio_ok(const MkvTrack *t) {
     const AvCodec *k = av_conv_codec(t->codec);
     if (t->compressed || !k || k->type != MKV_AUDIO) return false;
     if (k->how == AV_DECODE) return dolby_rate(t) > 0;
-    return true;
+    uint8_t d[32];
+    int ch, ps;
+    return !is_opus(t->codec) || opus_dops(t->priv, t->priv_len, d, sizeof d, &ch, &ps) > 0;
 }
 
 /* A codec in the words people know it by (the reasons in err are read on the upload page). */
@@ -252,7 +305,7 @@ static bool put_sample(Conv *c, int track, const void *p, size_t n, uint32_t dur
 static bool write_run(Conv *c, struct ConvAudio *a) {
     size_t at = 0;
     for (int i = 0; i < a->nrunf && !c->failed; i++) {
-        if (!mp4_sample(c->mp4, a->track, a->run + at, a->rsize[i], a->fdur, 0, true))
+        if (!mp4_sample(c->mp4, a->track, a->run + at, a->rsize[i], a->rdur[i], 0, true))
             fail(c, "Couldn't write the new file (disk full?)", NULL);
         at += a->rsize[i];
     }
@@ -260,13 +313,13 @@ static bool write_run(Conv *c, struct ConvAudio *a) {
     return !c->failed;
 }
 
-/* Every AAC frame of a sound goes out through here, counted against its bound: at once with one sound, else
-   held for a run (AUDIO_RUN). */
-static bool put_audio(Conv *c, struct ConvAudio *a, const void *p, size_t n) {
+/* Every sound frame goes out through here, `dur` samples long, counted against its bound: at once with one sound,
+   else held for a run (AUDIO_RUN). */
+static bool put_audio_d(Conv *c, struct ConvAudio *a, const void *p, size_t n, uint32_t dur) {
     if (a->dead) return true;
     if (++a->n > c->amax) return too_many(c, false);
     if (c->naud < 2) {
-        if (!mp4_sample(c->mp4, a->track, p, n, a->fdur, 0, true)) return fail(c, "Couldn't write the new file (disk full?)", NULL);
+        if (!mp4_sample(c->mp4, a->track, p, n, dur, 0, true)) return fail(c, "Couldn't write the new file (disk full?)", NULL);
         return true;
     }
     if (n > 0xFFFFFFFFu) return fail(c, "Couldn't write the new file (disk full?)", NULL);
@@ -278,8 +331,19 @@ static bool put_audio(Conv *c, struct ConvAudio *a, const void *p, size_t n) {
     }
     memcpy(a->run + a->nrun, p, n);
     a->nrun += n;
+    a->rdur[a->nrunf] = dur;
     a->rsize[a->nrunf++] = (uint32_t)n;
     return a->nrunf < AUDIO_RUN || write_run(c, a);
+}
+
+/* ... a frame of the sound's one length (AAC, MP3) */
+static bool put_audio(Conv *c, struct ConvAudio *a, const void *p, size_t n) { return put_audio_d(c, a, p, n, a->fdur); }
+
+/* An Opus packet copied (2.5): a sample of its own, as long as its TOC says - a broken one as long as the one before. */
+static bool copy_opus(Conv *c, struct ConvAudio *a, const MkvFrame *fr) {
+    uint32_t d = opus_samples(fr->data, fr->size);
+    if (d) a->fdur = d;
+    return put_audio_d(c, a, fr->data, fr->size, a->fdur);
 }
 
 /* An MPEG audio Layer III frame's size from its header (ISO 11172-3, 13818-3 and MPEG-2.5's 8-12 kHz): 0 = not one
@@ -322,11 +386,14 @@ static bool lose(Conv *c, struct ConvAudio *a, const char *fmt, const char *arg)
 
 /* ---- video: re-encode ---- */
 
+/* index: the picture's number at the output rate (MPEG-2, through the deinterlacer), or - MPEG-4 - its place on the
+   90 kHz clock, so a file whose pictures come at an uneven pace (Solsidan S06E04: 11.7 a second, unevenly) keeps it */
 static bool put_video(Conv *c, const uint8_t *data, size_t n, int64_t index, bool key) {
     if (c->have_pend) {
         int64_t frames = index - c->pend_index;
         if (frames < 1) frames = 1;
-        if (!put_sample(c, c->vtrack, c->pend, c->npend, (uint32_t)(frames * c->out_den), 0, c->pend_key)) return false;
+        uint32_t dur = (uint32_t)(c->dec4 ? CMIN(frames, 90000 * 60) : frames * c->out_den);
+        if (!put_sample(c, c->vtrack, c->pend, c->npend, dur, 0, c->pend_key)) return false;
     }
     if (n > c->cpend) {
         uint8_t *p = realloc(c->pend, n);
@@ -342,16 +409,53 @@ static bool put_video(Conv *c, const uint8_t *data, size_t n, int64_t index, boo
     return true;
 }
 
+/* An MPEG-4 picture's place on the 90 kHz clock from the first picture: its own time, else (none, or one out of
+   order) the last place + its usual length. Places only go forward. */
+static int64_t place_of(Conv *c, int64_t pts) {
+    int64_t t = c->vprev + CMAX(1, at_tick(c->vgap));
+    if (pts != MKV_NOPTS && c->v0 != MKV_NOPTS && pts >= c->v0 && pts - c->v0 < MAX_TS) t = at_tick(pts - c->v0);
+    if (c->have_pend && t <= c->vprev) t = c->vprev + 1;
+    return c->vprev = t;
+}
+
 static bool encode_out(Conv *c, const DeintOut *o) {
     H264Picture pic = {o->y, o->u, o->v, o->stride_y, o->stride_c, o->stride_c, o->index};
     H264Packet pk;
     if (!h264enc_encode(c->enc, &pic, &pk)) return fail(c, "The H.264 encoder stopped", NULL);
-    return put_video(c, pk.data, pk.size, o->index, pk.idr);
+    return put_video(c, pk.data, pk.size, c->dec4 ? place_of(c, o->pts) : o->index, pk.idr);
+}
+
+/* ---- the picture decoder: MPEG-2/-1, or (2.5) MPEG-4 Part 2, its frames as MPEG-2's ---- */
+
+static void vdec_decode(Conv *c, const uint8_t *p, size_t n, int64_t pts) {
+    if (c->dec4) mpeg4_decode(c->dec4, p, n, pts);
+    else mpeg2_decode(c->dec, p, n, pts);
+}
+
+static bool vdec_frame(Conv *c, Mpeg2Frame *pf) {
+    if (!c->dec4) return mpeg2_frame(c->dec, pf);
+    Mpeg4Frame f;
+    if (!mpeg4_frame(c->dec4, &f)) return false;
+    memset(pf, 0, sizeof *pf);
+    pf->y = f.y, pf->u = f.u, pf->v = f.v, pf->stride_y = f.stride_y, pf->stride_c = f.stride_c;
+    pf->width = pf->disp_width = f.width, pf->height = pf->disp_height = f.height;
+    pf->dar_num = f.width * f.par_num, pf->dar_den = f.height * f.par_den;
+    pf->rate_num = f.rate_num, pf->rate_den = f.rate_den;
+    pf->type = f.type == 'B' ? 'B' : f.type == 'I' ? 'I' : 'P';
+    pf->progressive_sequence = pf->progressive_frame = true; /* (interlaced coding is refused: mpeg4_unsupported) */
+    pf->pts = f.pts;
+    pf->concealed = f.concealed;
+    return true;
+}
+
+static void vdec_flush(Conv *c) {
+    if (c->dec4) mpeg4_flush(c->dec4);
+    else mpeg2_flush(c->dec);
 }
 
 static bool decoded(Conv *c) {
     Mpeg2Frame pf;
-    while (!c->failed && mpeg2_frame(c->dec, &pf)) {
+    while (!c->failed && vdec_frame(c, &pf)) {
         if (pf.width != c->w || pf.height != c->h) { /* a later sequence header changed the size: the
                                                         deinterlacer and the encoder are set up for one */
             char sizes[64];
@@ -958,11 +1062,54 @@ static bool subs_pass(Conv *c, int pm0) {
 
 /* ---- the passes ---- */
 static bool restart_decoder(Conv *c) {
+    if (c->m4) {
+        if (c->dec4) mpeg4_free(c->dec4);
+        c->dec4 = mpeg4_new();
+        if (!c->dec4) return fail(c, "Out of memory", NULL);
+        if (c->nvol) mpeg4_decode(c->dec4, c->vol, c->nvol, MPEG4_NOPTS);
+        return true;
+    }
     if (c->dec) mpeg2_free(c->dec);
     c->dec = mpeg2_new();
     if (!c->dec) return fail(c, "Out of memory", NULL);
     if (c->vt->priv_len) mpeg2_decode(c->dec, c->vt->priv, c->vt->priv_len, MPEG2_NOPTS);
     return true;
+}
+
+/* An AVI's picture kept as it was (V_MS/VFW/FOURCC: CodecPrivate = a BITMAPINFOHEADER, then the codec's own
+   setup): MPEG-4 Part 2 by its fourcc - not DivX 3's MS-MPEG4 (DIV3, MP43 ...), another codec. */
+static bool vfw_mpeg4(const MkvTrack *t, char cc[5]) {
+    memcpy(cc, "????", 5);
+    if (t->priv_len < 40) return false;
+    for (int i = 0; i < 4; i++) {
+        uint8_t ch = t->priv[16 + i];
+        cc[i] = (char)(ch >= 'a' && ch <= 'z' ? ch - 32 : ch >= ' ' && ch < 127 ? ch : '?');
+    }
+    static const char *const MPEG4[] = {"XVID", "DIVX", "DX50", "FMP4", "MP4V", "3IV2", "XVIX", "RMP4", "SIPP", "DM4V", "M4S2"};
+    for (size_t i = 0; i < sizeof MPEG4 / sizeof *MPEG4; i++)
+        if (!memcmp(cc, MPEG4[i], 4)) return true;
+    return false;
+}
+
+/* An MPEG-4 picture's usual length (ns): the gap most common between the first pictures' times (median), else the
+   file's stated one, else 1/25 s - for the last picture and any without a time; and so the encoder's rate. */
+static int cmp_gap(const void *a, const void *b) {
+    int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+static int64_t usual_gap(Conv *c) {
+    int64_t gaps[ANALYZE_FRAMES];
+    int n = 0;
+    for (int i = 1; i < c->nseen; i++)
+        if (c->seen[i] != MKV_NOPTS && c->seen[i - 1] != MKV_NOPTS && c->seen[i] > c->seen[i - 1])
+            gaps[n++] = c->seen[i] - c->seen[i - 1];
+    if (n >= 4) {
+        qsort(gaps, (size_t)n, sizeof *gaps, cmp_gap);
+        if (gaps[n / 2] >= NS / 240 && gaps[n / 2] <= 10 * NS) return gaps[n / 2];
+    }
+    if (c->vt->default_duration >= NS / 240 && c->vt->default_duration <= 10 * NS) return c->vt->default_duration;
+    return NS / 25;
 }
 
 /* A block of a kept sound with a time: its first one is where that sound starts */
@@ -997,13 +1144,17 @@ static int analyze_window(Conv *c, DeintStats *ds, Mpeg2Frame *first, bool *have
             if (opening && sound_unseen(c, &fr)) continue; /* still looking for the first sound */
             break;
         }
-        mpeg2_decode(c->dec, fr.data, fr.size, fr.pts);
+        vdec_decode(c, fr.data, fr.size, fr.pts);
         Mpeg2Frame pf;
-        while (mpeg2_frame(c->dec, &pf)) {
+        while (vdec_frame(c, &pf)) {
             if (!*have_first) *first = pf, *have_first = true;
-            DeintIn in = {pf.y, pf.u, pf.v, pf.stride_y, pf.stride_c, pf.width, pf.height, pf.progressive_frame,
-                          pf.top_field_first, pf.repeat_first_field, pf.pts};
-            deint_analyze(ds, &in, pf.width, pf.height);
+            if (c->m4) { /* (progressive: nothing to analyse - only the pictures' times) */
+                if (opening && c->nseen < ANALYZE_FRAMES) c->seen[c->nseen++] = pf.pts;
+            } else {
+                DeintIn in = {pf.y, pf.u, pf.v, pf.stride_y, pf.stride_c, pf.width, pf.height, pf.progressive_frame,
+                              pf.top_field_first, pf.repeat_first_field, pf.pts};
+                deint_analyze(ds, &in, pf.width, pf.height);
+            }
             got++;
         }
     }
@@ -1038,7 +1189,13 @@ static bool survey(Conv *c, Mpeg2Frame *first, DeintStats *ds) {
     }
     bool have_first = false;
     if (!restart_decoder(c) || analyze_window(c, ds, first, &have_first, true) < 0) return fail(c, "Stopped", NULL);
+    if (c->dec4 && mpeg4_unsupported(c->dec4)) /* (interlaced Xvid, GMC ...) */
+        return unsupported(c, "Its MPEG-4 picture uses %s, which the converter can't decode yet", mpeg4_unsupported(c->dec4));
     if (!have_first) return fail(c, "No picture could be decoded", NULL);
+    if (c->m4) {
+        c->vgap = usual_gap(c);
+        return true;
+    }
     static const int at_percent[] = {25, 50, 75};
     for (int w = 0; w < 3 && c->duration > 120 * NS; w++) { /* (clips under 2 min: the opening is all) */
         if (!mkv_seek(c->mkv, c->duration * at_percent[w] / 100, c->vt->number) || !restart_decoder(c)) break;
@@ -1086,6 +1243,15 @@ static bool setup_audio(Conv *c, struct ConvAudio *a, bool is_def) {
         a->frame = dts ? 512 : AC3_SAMPLES;
         if (lead < 0) a->skip = ticks(-lead, a->rate);
         words = dts ? " · DTS → AAC" : strcmp(a->t->codec, "A_EAC3") ? " · Dolby Digital → AAC" : " · Dolby Digital Plus → AAC";
+    } else if (a->opus) { /* (2.5: 'Opus' + dOps at 48 kHz; the pre-skip the edit list's start, as the spec asks) */
+        at.codec = MP4_OPUS;
+        at.config = a->dops;
+        at.config_len = a->dops_len;
+        at.channels = a->channels;
+        at.sample_rate = 48000;
+        at.timescale = 48000;
+        at.start = a->preskip + (lead < 0 ? ticks(-lead, 48000) : 0);
+        words = " · Opus copied";
     } else {
         at.codec = a->mp3 ? MP4_MP3 : MP4_AAC;
         at.config = a->mp3 ? NULL : a->t->priv; /* (MP3: no setup data - its frames carry it) */
@@ -1106,9 +1272,17 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
     Mp4Track vt = {0};
     uint8_t avcc[512];
     if (c->vcode) {
-        int k = deint_kind(ds);
-        c->dmode = deint_mode_for(k);
-        deint_rate(c->dmode, first->rate_num, first->rate_den, &c->out_num, &c->out_den);
+        int rn = first->rate_num, rd = first->rate_den, dn = first->dar_num, dd = first->dar_den;
+        if (c->m4) { /* progressive pictures as they are; the rate the VOL states, else their usual length's */
+            c->dmode = DEINT_PASS;
+            if (rn <= 0 || rd <= 0) {
+                int64_t mfps = (1000 * NS + c->vgap / 2) / c->vgap, g = gcd64(mfps, 1000);
+                rn = (int)(mfps / g), rd = (int)(1000 / g);
+            }
+            if (c->vt->disp_width > 0 && c->vt->disp_height > 0 && c->vt->disp_unit == 0) /* (the file's shape wins) */
+                dn = c->vt->disp_width, dd = c->vt->disp_height;
+        } else c->dmode = deint_mode_for(deint_kind(ds));
+        deint_rate(c->dmode, rn, rd, &c->out_num, &c->out_den);
         c->w = first->width, c->h = first->height;
         c->di = deint_new(first->width, first->height, c->dmode);
         H264Params hp = {0};
@@ -1116,7 +1290,7 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         hp.height = first->height;
         hp.fps_num = c->out_num;
         hp.fps_den = c->out_den;
-        sar_of(first->width, first->height, first->dar_num, first->dar_den, &hp.sar_w, &hp.sar_h);
+        sar_of(first->width, first->height, dn, dd, &hp.sar_w, &hp.sar_h);
         hp.quality = c->j->quality ? c->j->quality : 23;
         hp.preset = H264_FAST;
         hp.annexb = false;
@@ -1125,7 +1299,7 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         if (!c->di || !c->enc) return fail(c, "Can't set up the converter for this picture size", NULL);
         size_t n = h264enc_avcc(c->enc, avcc, sizeof avcc);
         vt.codec = MP4_H264;
-        vt.timescale = (uint32_t)c->out_num;
+        vt.timescale = c->m4 ? 90000 : (uint32_t)c->out_num;
         vt.config = avcc;
         vt.config_len = n;
         vt.width = first->width;
@@ -1137,7 +1311,9 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         vt.transfer = first->height >= 720 ? 1 : 6;
         vt.matrix = first->height >= 720 ? 1 : pal ? 5 : 6;
         const char *kind = c->dmode == DEINT_IVTC ? "film" : c->dmode == DEINT_PASS ? "progressive" : "video";
-        snprintf(c->j->what, sizeof c->j->what, "DVD video (%s, %.3f fps) → H.264", kind, (double)c->out_num / c->out_den);
+        if (c->m4)
+            snprintf(c->j->what, sizeof c->j->what, "MPEG-4 video (DivX/Xvid, %.3f fps) → H.264", (double)c->out_num / c->out_den);
+        else snprintf(c->j->what, sizeof c->j->what, "DVD video (%s, %.3f fps) → H.264", kind, (double)c->out_num / c->out_den);
     } else {
         if (!c->vt->priv_len) return fail(c, "The video track has no setup data", NULL);
         /* decode order is file order; presentation times are the pts. dts = the sorted
@@ -1180,7 +1356,7 @@ static bool main_pass(Conv *c) {
         if (stopped(c)) return fail(c, "Stopped", NULL);
         if (fr.track == c->vt->number) {
             if (c->vcode) {
-                mpeg2_decode(c->dec, fr.data, fr.size, fr.pts);
+                vdec_decode(c, fr.data, fr.size, fr.pts);
                 decoded(c);
             } else {
                 copy_video(c, &fr);
@@ -1199,17 +1375,19 @@ static bool main_pass(Conv *c) {
         else if (a->dead) continue;
         else if (a->code) code_audio(c, a, &fr);
         else if (a->mp3) copy_mp3(c, a, &fr);
+        else if (a->opus) copy_opus(c, a, &fr);
         else put_audio(c, a, fr.data, fr.size);
     }
     if (c->failed) return false;
     if (r < 0) return fail(c, "Couldn't read the original (disk error?)", NULL);
     if (c->vcode) { /* the last pictures still inside the decoder and the deinterlacer */
-        mpeg2_flush(c->dec);
+        vdec_flush(c);
         decoded(c);
         deint_flush(c->di);
         DeintOut o;
         while (!c->failed && deint_pull(c->di, &o)) encode_out(c, &o);
-        if (c->failed || (c->have_pend && !put_sample(c, c->vtrack, c->pend, c->npend, (uint32_t)c->out_den, 0, c->pend_key)))
+        uint32_t last = (uint32_t)(c->m4 ? CMAX(1, at_tick(c->vgap)) : c->out_den); /* (its usual length) */
+        if (c->failed || (c->have_pend && !put_sample(c, c->vtrack, c->pend, c->npend, last, 0, c->pend_key)))
             return false;
     }
     for (int k = 0; k < c->naud && !c->failed; k++) { /* not a silent copy that claims success */
@@ -1262,8 +1440,8 @@ static int64_t index_room(const Conv *c, const Mpeg2Frame *first) {
 }
 
 /* 2.5: an MP4/MOV that plays everywhere as it is needs no copy - its picture H.264, HEVC as 'hvc1' (what Safari
-   plays; 'hev1' is copied as hvc1) or AV1, and every sound AAC or MP3 (several AAC sounds too: the server sends a
-   viewer one at a time). Decided from the moov alone: nothing past it is read. */
+   plays; 'hev1' is copied as hvc1) or AV1, and every sound AAC, MP3 or Opus - a copy would hold the same (several
+   sounds too: the server sends a viewer one at a time). Decided from the moov alone: nothing past it is read. */
 static bool plays_as_it_is(const Conv *c) {
     const char *d = mkv_doctype(c->mkv);
     if (strcmp(d, "mp4") && strcmp(d, "mov")) return false;
@@ -1273,7 +1451,7 @@ static bool plays_as_it_is(const Conv *c) {
         return false;
     for (int i = 0; i < mkv_track_count(c->mkv); i++) {
         const MkvTrack *t = mkv_track(c->mkv, i);
-        if (t->type == MKV_AUDIO && strcmp(t->codec, "A_AAC") && strcmp(t->codec, "A_MPEG/L3")) return false;
+        if (t->type == MKV_AUDIO && strcmp(t->codec, "A_AAC") && strcmp(t->codec, "A_MPEG/L3") && !is_opus(t->codec)) return false;
     }
     return true;
 }
@@ -1331,14 +1509,32 @@ bool av_convert(AvConvJob *j) {
         a->rate = a->code ? dolby_rate(a->t) : 48000;
         a->mp3 = !strcmp(a->t->codec, "A_MPEG/L3");
         a->fdur = !a->mp3 ? AAC_FRAME : a->t->rate <= 0 || a->t->rate >= 32000 ? 1152 : 576;
+        if ((a->opus = is_opus(a->t->codec))) { /* (audio_ok checked its OpusHead) */
+            a->dops_len = opus_dops(a->t->priv, a->t->priv_len, a->dops, sizeof a->dops, &a->channels, &a->preskip);
+            a->fdur = 960; /* (20 ms, until a packet says) */
+        }
     }
     const AvCodec *vk = c->vt ? av_conv_codec(c->vt->codec) : NULL;
     if (!c->vt) unsupported(c, "There's no picture to convert", NULL);
     else if (c->vt->compressed) unsupported(c, "The picture is compressed or encrypted inside the file", NULL);
     else if (!vk || vk->type != MKV_VIDEO)
         unsupported(c, "Its picture is %s, which the converter can't change yet", codec_words(c->vt->codec));
-    else if (vk->how == AV_DECODE) c->vcode = true; /* MPEG-2 / MPEG-1 */
-    else if (!strcmp(vk->id, "V_AV1") && !av1c_ok(c->vt->priv, c->vt->priv_len)) /* (Matroska requires it; an MP4 needs it) */
+    else if (vk->how == AV_DECODE) { /* MPEG-2 / MPEG-1, or (2.5) MPEG-4 Part 2 */
+        c->vcode = true;
+        char cc[5];
+        if (!strcmp(vk->id, "V_MS/VFW/FOURCC")) {
+            if (!vfw_mpeg4(c->vt, cc)) {
+                char words[48];
+                snprintf(words, sizeof words, "Video for Windows (%s)", cc);
+                unsupported(c, "Its picture is %s, which the converter can't change yet", words);
+            } else {
+                uint32_t hdr = (uint32_t)c->vt->priv[0] | (uint32_t)c->vt->priv[1] << 8 | (uint32_t)c->vt->priv[2] << 16 |
+                               (uint32_t)c->vt->priv[3] << 24; /* biSize: its own setup follows */
+                if (hdr < 40 || hdr > c->vt->priv_len) hdr = 40;
+                c->m4 = true, c->vol = c->vt->priv + hdr, c->nvol = c->vt->priv_len - hdr;
+            }
+        } else if (!strncmp(vk->id, "V_MPEG4/ISO/", 12)) c->m4 = true, c->vol = c->vt->priv, c->nvol = c->vt->priv_len;
+    } else if (!strcmp(vk->id, "V_AV1") && !av1c_ok(c->vt->priv, c->vt->priv_len)) /* (Matroska requires it; an MP4 needs it) */
         unsupported(c, "Its AV1 picture has no settings record (CodecPrivate) in the file", NULL);
     else /* copied: Safari plays HEVC (and AV1, where the device decodes it) in an MP4, never in an MKV */
         c->vcopy = !strcmp(vk->id, "V_MPEGH/ISO/HEVC") ? MP4_HEVC : !strcmp(vk->id, "V_AV1") ? MP4_AV1 : MP4_H264;
@@ -1350,7 +1546,7 @@ bool av_convert(AvConvJob *j) {
             unsupported(c, "Its sound is %s, which the converter can't change yet (browsers play it silently)",
                         codec_words(first_audio->codec));
         else unsupported(c, "Its sound is %s, which the converter can't change yet", codec_words(first_audio->codec));
-        /* (Opus, Vorbis, FLAC ... in an MKV: Chrome and Edge play them as they are - only TrueHD is silent) */
+        /* (Vorbis, FLAC ... in an MKV: Chrome and Edge play them as they are - only TrueHD is silent) */
     }
     if (j->want_subs) choose_subs(c);
 
@@ -1379,6 +1575,7 @@ bool av_convert(AvConvJob *j) {
     if (c->mp4) mp4_free(c->mp4);
     mkv_close(c->mkv);
     if (c->dec) mpeg2_free(c->dec);
+    if (c->dec4) mpeg4_free(c->dec4);
     if (c->di) deint_free(c->di);
     if (c->enc) h264enc_free(c->enc);
     for (int k = 0; k < c->naud; k++) {

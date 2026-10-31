@@ -37,11 +37,16 @@ ConvertNeed convert_need(const MediaFile *f) {
        Dolby in MP4s, silent in Chrome and Firefox); one with AAC or MP3 plays as it is */
     bool mkv = container_is(p, "mkv", "webm"), mp4 = container_is(p, "mp4", "mov");
     if (!mkv && !mp4) return CONV_NONE;
-    /* (sound copied as it is: AAC, and - 2.5 - MP3, which every browser plays in an MP4 but only Chrome's in an MKV) */
-    bool aac = !p->acodec[0] || str_eq(p->acodec, "aac") || str_eq(p->acodec, "mp3"),
+    /* (sound copied as it is: AAC, and - 2.5 - MP3, which every browser plays in an MP4 but only Chrome's in an MKV, and
+       Opus, which Chrome, Firefox, Edge and Safari 17+ play in an MP4 - a WebM with it plays as it is) */
+    bool aac = !p->acodec[0] || str_eq(p->acodec, "aac") || str_eq(p->acodec, "mp3") ||
+               (str_eq(p->acodec, "opus") && !container_is(p, "webm", NULL)),
          ac3 = str_eq(p->acodec, "ac3") || str_eq(p->acodec, "eac3") ||
                                                              str_eq(p->acodec, "dts"); /* (sound decoded and made AAC) */
     if (str_eq(p->vcodec, "mpeg2") && (aac || ac3)) return mkv ? CONV_TRANSCODE : CONV_NONE;
+    /* MPEG-4 Part 2 - DivX, Xvid (2.5): no browser plays it - decoded and made H.264, from an MKV (an AVI's track
+       too) or an MP4 (Solsidan S06-S07). DivX 3 is the probe's "msmpeg4": another codec, never this one. */
+    if (str_eq(p->vcodec, "mpeg4") && (aac || ac3)) return CONV_TRANSCODE;
     if (str_eq(p->vcodec, "h264") && ac3) return CONV_TRANSCODE; /* picture copied, sound re-encoded */
     if (str_eq(p->vcodec, "h264") && aac) return mkv ? CONV_REMUX : CONV_NONE;
     /* HEVC stays HEVC and AV1 AV1 (no decoder here): moved into an MP4, which Safari - iPhone, iPad, Mac - plays

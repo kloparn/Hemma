@@ -180,6 +180,37 @@ void media_lookup_tick(int64_t now);
 void media_lookup_stop(void);
 void act_media_lookup(Ctx *c, Fields *f);
 void act_media_lookup_id(Ctx *c, Fields *f);
+/* PICTURES (2.5; owner: "It should automatically fetch if an image is not given", no new key): a box of its own
+   (setting media.lookup_art, off by default) - a series without a picture gets TVmaze's, a film Wikipedia's by its
+   title and year (https: core/fetch.c's curl), saved where Set picture puts one, never over one. media.art_id = an
+   admin's link to the right one (TVmaze/IMDb, a Wikipedia page), replacing only the picture Hemma saved. */
+void act_media_lookup_art(Ctx *c, Fields *f);
+void act_media_art_id(Ctx *c, Fields *f);
+/* WHAT YOUR DEVICES PLAY (devices.c, 2.5; owner: "check the issue with the videos that are not playable everywhere"):
+   a Watch page carries a hidden list of media types (media_caps); wire.js answers it once a load with the browser's
+   canPlayType (live media.caps) - kept per device (person + browser + answers, table media_device). Library settings
+   counts what plays on every device seen in the last 30 days, lists them (admins), and why the rest doesn't play
+   everywhere. media_devices_on_all = how many play on all of them (-1: no device yet), *all = of how many. */
+void media_caps(Buf *b);
+bool media_device_plays(const char *caps, const MediaProbe *p);
+int media_devices_on_all(const Ctx *c, int *all);
+void media_devices_card(Ctx *c, Buf *b);
+void media_devices_line(const Ctx *c, Buf *b, const MediaProbe *p); /* the watch page: on your devices? */
+void media_devices_init(void);
+void media_devices_start(void);
+void media_devices_tick(int64_t now_s);
+int media_devices_forget(Forget *f);
+void act_media_caps(Ctx *c, Fields *f);
+int media_devices_test_ncaps(void);
+/* tests: TVmaze's picture; Wikipedia's answer (1 found: its picture and name, 0 none, -1 not understood); the next
+   ask ('c' categories, 'b' categories + picture, 'p' a picture; 0 none) with its picture's place - or the picture it
+   replaces; a picture saved to <dest><ext> (1, -4 one there, -1 not a picture); a picture row */
+int media_lookup_test_tvmaze_pic(const char *json, const char *title, int year, char *img, size_t cap);
+int media_lookup_test_wiki(const char *json, const char *title, int year, bool pinned, char *img, size_t icap, char *name,
+                           size_t ncap);
+char media_lookup_test_job(char *host, size_t hcap, char *path, size_t pcap, char *dest, size_t dcap);
+int media_lookup_test_save(const char *dest, const void *bytes, size_t n, const char *replace, int64_t replace_size);
+void media_lookup_test_art_put(const char *work, int got, int64_t size, bool pinned);
 /* tests: what an answer gives (1 found, 0 nothing, -1 not understood); the scheduler's next ask (false = none);
    the internet check's result (1 reachable, -1 not, 0 not known); a found row */
 int media_lookup_test_tvmaze(const char *json, const char *title, int year, char *genres, size_t cap);

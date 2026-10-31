@@ -42,7 +42,13 @@ TEST(convert_knows_what_each_file_needs) {
     CHECK_INT(convert_need(&f), CONV_REMUX);
     f = video("mkv", "av1", "eac3");
     CHECK_INT(convert_need(&f), CONV_TRANSCODE);
-    f = video("webm", "av1", "opus"); /* plays in the browsers as it is: nothing to do (Opus isn't converted) */
+    f = video("webm", "av1", "opus"); /* plays in the browsers as it is: nothing to do */
+    CHECK_INT(convert_need(&f), CONV_NONE);
+    f = video("mkv", "h264", "opus"); /* (2.5: Opus copied into an MP4 - Safari, Firefox and TVs don't take an MKV) */
+    CHECK_INT(convert_need(&f), CONV_REMUX);
+    f = video("mkv", "av1", "opus");
+    CHECK_INT(convert_need(&f), CONV_REMUX);
+    f = video("mp4", "h264", "opus"); /* (an MP4 with it plays as it is) */
     CHECK_INT(convert_need(&f), CONV_NONE);
     f = video("mkv", "vp9", "aac");
     CHECK_INT(convert_need(&f), CONV_NONE);
@@ -57,6 +63,14 @@ TEST(convert_knows_what_each_file_needs) {
     f = video("mp4", "h264", "mp3"); /* ... one with MP3 or AAC plays as it is */
     CHECK_INT(convert_need(&f), CONV_NONE);
     f = video("mp4", "hevc", "aac");
+    CHECK_INT(convert_need(&f), CONV_NONE);
+    f = video("mkv", "mpeg4", "mp3"); /* (2.5: Xvid - Solsidan S07 - decoded and made H.264, its MP3 copied) */
+    CHECK_INT(convert_need(&f), CONV_TRANSCODE);
+    f = video("mp4", "mpeg4", "aac"); /* (... in an MP4 too: S06E03/E04) */
+    CHECK_INT(convert_need(&f), CONV_TRANSCODE);
+    f = video("mkv", "mpeg4", "vorbis"); /* (sound the converter can't take) */
+    CHECK_INT(convert_need(&f), CONV_NONE);
+    f = video("mkv", "msmpeg4", "mp3"); /* DivX 3: another codec */
     CHECK_INT(convert_need(&f), CONV_NONE);
     f = video("mkv", "mpeg2", "ac3");
     f.web = 42; /* converted already */
@@ -478,7 +492,8 @@ TEST(convert_real_file_when_given) {
     CHECK(media_probe_file(src, &in));
     CHECK_STR(p.container, "mp4");
     CHECK(str_eq(p.vcodec, "h264") || str_eq(p.vcodec, "hevc") || str_eq(p.vcodec, "av1")); /* (HEVC and AV1 are copied) */
-    CHECK(str_eq(p.acodec, "aac") || (str_eq(p.acodec, "mp3") && str_eq(in.acodec, "mp3"))); /* (2.5: MP3 is copied) */
+    CHECK(str_eq(p.acodec, "aac") || ((str_eq(p.acodec, "mp3") || str_eq(p.acodec, "opus")) && str_eq(in.acodec, p.acodec)));
+    /* (2.5: MP3 and Opus are copied) */
     CHECK_INT(p.playable, str_eq(p.vcodec, "h264") ? PLAY_YES : PLAY_MAYBE);
     int64_t want = secs > 0 ? secs * 1000LL : in.duration_ms;
     CHECK(p.duration_ms > want - 2000 && p.duration_ms < want + 2000);

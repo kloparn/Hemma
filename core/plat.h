@@ -123,6 +123,15 @@ void thread_background(void); /* lower the calling thread's priority (long batch
 int plat_cpu_count(void);     /* logical CPUs */
 const char *plat_bundle(void); /* the release download that is this build ("hemma-pi64" ...), NULL = none */
 
+/* ---- other programs (2.5: core/fetch.c's https goes through the computer's own curl) ---- */
+/* Run a program - argv[0] its full path, NULL-ended, no shell, no window, nothing read or shown - and wait for it,
+   at most timeout_ms (then it's stopped). Its exit code; -1 = it couldn't start, or was stopped. BLOCKS: threads
+   only, never the event loop. */
+int plat_run(const char *const argv[], int timeout_ms);
+/* The command line Windows hands such a program: each argument quoted where it needs it, as the C runtime reads it
+   back (backslashes doubled only before a quote). Any platform (tests). */
+void plat_quote_args(const char *const argv[], Buf *out);
+
 typedef struct {
 #ifdef _WIN32
     SRWLOCK l;

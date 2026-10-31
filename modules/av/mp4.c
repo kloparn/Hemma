@@ -232,7 +232,7 @@ bool mp4_set_config(Mp4 *m, int track, const uint8_t *config, size_t n) {
 }
 
 int mp4_add_track(Mp4 *m, const Mp4Track *tr) {
-    if (m->begun || m->ntrk == MP4_MAX_TRACKS || !tr->timescale || tr->codec < MP4_H264 || tr->codec > MP4_MP3) return -1;
+    if (m->begun || m->ntrk == MP4_MAX_TRACKS || !tr->timescale || tr->codec < MP4_H264 || tr->codec > MP4_OPUS) return -1;
     int i = m->ntrk;
     Trk *t = &m->trk[i];
     memset(t, 0, sizeof *t);
@@ -473,6 +473,15 @@ static void sample_entry(Bb *b, const Trk *t) {
         put8(b, 0x06); /* SLConfigDescriptor */
         put8(b, 1);
         put8(b, 2);
+        end(b, c);
+        end(b, e);
+        break;
+    }
+    case MP4_OPUS: { /* (2.5: Opus copied - 'Opus' + dOps: "Encapsulation of Opus in ISO Base Media File Format") */
+        e = box(b, "Opus");
+        audio_entry(b, t, 16);
+        size_t c = box(b, "dOps");
+        put_bytes(b, t->cfg, t->cfg_len);
         end(b, c);
         end(b, e);
         break;

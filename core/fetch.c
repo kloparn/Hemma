@@ -148,3 +148,107 @@ bool fetch_get(const char *host, int port, const char *path, size_t max, int tim
     buf_free(&got);
     return parsed;
 }
+
+/* ------------------------------------------------------------------ https */
+
+static Lock g_curl_lock = LOCK_INIT;
+static int g_curl_state; /* 0 not looked yet, 1 found, -1 none */
+static char g_curl[400];
+
+static bool runnable(const char *path) {
+    bool dir = false;
+    return path_stat(path, NULL, NULL, &dir) && !dir;
+}
+
+const char *fetch_curl(void) {
+    lock_take(&g_curl_lock);
+    if (!g_curl_state) {
+        g_curl_state = -1;
+        const char *win = plat_getenv("SystemRoot"); /* (Windows 10 1803 and later carry curl.exe there) */
+        static const char *const unix_places[] = {"/usr/bin/curl", "/bin/curl", "/usr/local/bin/curl", "/opt/homebrew/bin/curl"};
+        if (win && *win) snprintf(g_curl, sizeof g_curl, "%s\\System32\\curl.exe", win);
+        if (win && *win && runnable(g_curl)) g_curl_state = 1;
+        for (int i = 0; g_curl_state < 0 && i < (int)countof(unix_places); i++)
+            if (runnable(unix_places[i])) {
+                str_copy(g_curl, sizeof g_curl, unix_places[i]);
+                g_curl_state = 1;
+            }
+    }
+    const char *c = g_curl_state > 0 ? g_curl : NULL;
+    lock_give(&g_curl_lock);
+    return c;
+}
+
+void fetch_test_curl(const char *path) {
+    lock_take(&g_curl_lock);
+    g_curl_state = !path ? 0 : *path ? 1 : -1;
+    str_copy(g_curl, sizeof g_curl, path ? path : "");
+    lock_give(&g_curl_lock);
+}
+
+int fetch_curl_status(const char *headers, size_t n) {
+    int status = 0;
+    for (const char *p = headers; p && p < headers + n;) {
+        const char *eol = memchr(p, '\n', (size_t)(headers + n - p));
+        int s = 0;
+        if ((size_t)(headers + n - p) > 8 && !strncmp(p, "HTTP/", 5) && sscanf(p, "HTTP/%*s %d", &s) == 1 && s >= 100 && s <= 999)
+            status = s;
+        p = eol ? eol + 1 : NULL;
+    }
+    return status;
+}
+
+bool fetch_https(const char *url, size_t max, int timeout_ms, Fetched *out) {
+    memset(out, 0, sizeof *out);
+    const char *curl = fetch_curl();
+    if (!curl) return fail(out, "there's no curl on this computer (https needs it)", NULL);
+    if (strncmp(url, "https://", 8) != 0) return fail(out, "not an https address: %s", url);
+    const char *tmp = plat_getenv("TMPDIR");
+    if (!tmp || !*tmp) tmp = plat_getenv("TEMP");
+    if (!tmp || !*tmp) tmp = plat_getenv("TMP");
+    if (!tmp || !*tmp) tmp = "/tmp";
+    char hex[17], heads[600], body[600], errs[600], secs[16], most[24], ua[96];
+    rand_hex(hex, 8);
+    snprintf(heads, sizeof heads, "%s/hemma-fetch-%s.h", tmp, hex);
+    snprintf(body, sizeof body, "%s/hemma-fetch-%s.b", tmp, hex);
+    snprintf(errs, sizeof errs, "%s/hemma-fetch-%s.e", tmp, hex);
+    snprintf(secs, sizeof secs, "%d", timeout_ms / 1000 > 0 ? timeout_ms / 1000 : 1);
+    snprintf(most, sizeof most, "%zu", max);
+    snprintf(ua, sizeof ua, "Hemma/%s (+https://github.com/kloparn/Hemma)", hemma_version());
+    const char *argv[] = {curl, "-sS", "-L", "--max-redirs", "3", "--proto", "=https", "--proto-redir", "=https",
+                          "--connect-timeout", "10", "--max-time", secs, "--max-filesize", most, "-A", ua,
+                          "-D", heads, "-o", body, "--stderr", errs, "--url", url, NULL};
+    int rc = plat_run(argv, timeout_ms + 5000);
+    out->exit = rc;
+    Buf h = {0}, e = {0};
+    file_read_all(heads, &h, 256 << 10);
+    bool ok = false;
+    if (rc == 0) {
+        out->status = fetch_curl_status(h.p ? h.p : "", h.len);
+        if (!out->status) fail(out, "curl gave no answer from %s", url);
+        else if (!file_read_all(body, &out->body, max) && path_stat(body, NULL, NULL, NULL)) fail(out, "the answer was too big", NULL);
+        else ok = true; /* (no body file: an empty answer) */
+    } else if (rc == 63) {
+        fail(out, "the answer was too big", NULL);
+    } else {
+        file_read_all(errs, &e, 4096);
+        char line[160] = "", code[16];
+        if (e.p) str_ncopy(line, sizeof line, e.p, strcspn(e.p, "\r\n"));
+        snprintf(code, sizeof code, "%d", rc);
+        if (rc < 0) fail(out, "curl didn't finish in time (or couldn't start)", NULL);
+        else if (line[0]) fail(out, "%s", line);
+        else fail(out, "curl stopped (exit %s)", code);
+    }
+    if (ok) {
+        buf_putc(&out->body, '\0'); /* (a C string for parsers; not counted) */
+        out->body.len--;
+    } else {
+        buf_free(&out->body);
+    }
+    file_remove(heads);
+    file_remove(body);
+    file_remove(errs);
+    buf_free(&h);
+    buf_free(&e);
+    return ok;
+}

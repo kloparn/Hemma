@@ -380,3 +380,36 @@ TEST(media_names_order_numbers_arent_titles) {
     media_parse_name_film(NULL, "Home videos/Midsommar 2024/IMG_1234.mov", &n);
     CHECK_INT(n.kind, MEDIA_OTHER);
 }
+
+/* 2.5 (the owner's DuckTales): a series' run of years is its year - "(1987-1990)", "1988-89" - so a release pack's folder
+   names the show cleanly. Read as no year, "DUCKTALES (1987-1990) - The Complete ORIGINAL TV Series, Season 1,2,3,4 ... -
+   480p Proper DVDRip x264" came out "DUCKTALES (1987-1990) - The", and the seasons whose folders said nothing more took
+   that name: the show went into two series. */
+TEST(media_names_a_run_of_years_is_the_year) {
+    static const char *const PACK = "DUCKTALES (1987-1990) - The Complete ORIGINAL TV Series, Season 1,2,3,4 and Movie - "
+                                    "480p Proper DVDRip x264";
+    static const char *const SEASONS[][2] = {
+        {"Season 1 (1987-88)", "Ducktales - S01 E01 - Don't Give Up the Ship (480p - Proper DVDRip).mp4"},
+        {"Season 2 (1988-89)", "Ducktales - S02 E01 - Time is Money 1, Marking Time (480p - Proper DVDRip).mp4"},
+        {"Season 3a (1989)", "Ducktales - S03 E01 - The Land of Trala La (480p - Proper DVDRip).mp4"},
+        {"Season 4 (1990)", "Ducktales - S04 E01 - Ducky Mountain High (480p - Proper DVDRip).mp4"},
+    };
+    for (int i = 0; i < 4; i++) {
+        char path[400];
+        snprintf(path, sizeof path, "%s/%s/%s", PACK, SEASONS[i][0], SEASONS[i][1]);
+        MediaName n;
+        media_parse_name(path, &n);
+        CHECK_INT(n.kind, MEDIA_EPISODE);
+        CHECK(str_ieq(n.title, "Ducktales")); /* (one series: titles fold alike) */
+        CHECK_INT(n.season, i + 1);
+        CHECK_INT(n.episode, 1);
+    }
+    MediaName n; /* the folder an older Hemma made of it, on a library already: the same series */
+    media_parse_name("Series/DUCKTALES (1987-1990) - The/Season 2/Ducktales - S02 E01 - Time is Money 1.mp4", &n);
+    CHECK(str_ieq(n.title, "Ducktales"));
+    media_parse_name("Movies/Concert (1988-89).mkv", &n);
+    CHECK_STR(n.title, "Concert");
+    CHECK_INT(n.year, 1988);
+    media_parse_name("Movies/Film 1999-2000 Remastered.mkv", &n); /* (an unbracketed run too) */
+    CHECK_INT(n.year, 1999);
+}

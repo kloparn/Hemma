@@ -44,6 +44,10 @@ Your movie and series drive as a little cinema.
   plays silently, DTS sound no browser plays) into a copy that does, keeping the file's subtitles as
   .srt files, and puts HEVC films into a file Safari on iPhone, iPad and Mac can play - and AV1 ones into
   one the newest Apple devices play too ([which videos](video-formats.md)).
+- **What your devices play.** Each phone, computer and TV that opens Watch tells Hemma which kinds of video it can
+  play. Library settings then says how many videos play on every one of your devices - not just "everywhere", which
+  counts every device there is - lists your devices with what each can't play, and says why the rest doesn't play
+  everywhere. A video that doesn't says whether it plays on your devices, or on which it doesn't.
 - **Live TV** ("90s TV"): channels that play your shows non-stop on a shared clock, with a TV guide.
 - **Downloads** for grown-ups: a video, or a whole season as one .zip, to watch away from home.
   Downloads slow down while someone is watching.
@@ -70,10 +74,14 @@ For admins:
 
 ### Posters
 
-Hemma never fetches pictures from the internet, so a new film or series shows as a coloured card
-with its title, like *Spring* below. To give it a poster, put `poster.jpg` in a series folder or
-`Film Name (Year).jpg` next to a film, or (as an admin) press **Picture** on its page and pick one
-from your computer.
+A new film or series without a picture shows as a coloured card with its title, like *Spring* below. To give it a
+poster, put `poster.jpg` in a series folder or `Film Name (Year).jpg` next to a film, or (as an admin) press
+**Picture** on its page and pick one from your computer. Or let Hemma find them: an admin ticks **Pictures from the
+internet** under **Watch → Library settings**, and every series without a picture gets its poster from TVmaze, every
+film its own from Wikipedia - found by title and year, no account or key needed. A picture you set yourself always
+stays. A wrong one? Paste the right one's link under the title's **Categories** (a series: **Manage**). Films'
+pictures come over https, which Hemma fetches through the computer's own `curl` (a Raspberry Pi, Windows 10 and later
+and macOS have it).
 
 <p align="center">
   <img src="img/movies.webp" alt="Watch's Movies page: six films with posters and one, Spring, shown as a coloured card with its title" width="820">
@@ -132,8 +140,9 @@ It's all built in.
 
 ## The internet
 
-Hemma doesn't need it. The only two things that use it - checking for updates, and looking up the
-categories of films and series - are off until an admin switches them on
-([why](decisions/0009-categories-looked-up-when-asked.md)). Inside your home, every page except the
+Hemma doesn't need it. The only three things that use it - checking for updates, looking up the categories of films
+and series, and finding their pictures - are off until an admin switches them on
+([why](decisions/0009-categories-looked-up-when-asked.md), [pictures](decisions/0012-pictures-and-https-through-curl.md)).
+Only titles and years are sent, never anything about your household. Inside your home, every page except the
 sign-in page needs an account in your household; outside it, nobody can reach Hemma as long as you
 don't open a port for it on your router ([the safe way in from outside](home-network.md#reaching-hemma-from-outside-the-safe-way)).

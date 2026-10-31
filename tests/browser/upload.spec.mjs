@@ -229,6 +229,46 @@ test('an MKV with an AV1 picture is converted here too', async ({ page }) => {
   for (const box of ['av01', 'av1C', 'mp4a']) expect(mp4).toContain(box); /* (AV1 copied, the sound made AAC) */
 });
 
+// 2.5 (the owner: "the videos on hemma that are not converted"): an XviD picture (MPEG-4 Part 2, B-VOPs, quarter samples)
+// plays nowhere - the browser's converter decodes it and makes H.264, its MP3 copied. The copy goes, not the original.
+test('an MKV with an XviD picture is converted here too', async ({ page }) => {
+  const from = path.join(WORK, 'mkv-up', 'Xvidshow S01E01.mkv');
+  fs.mkdirSync(path.dirname(from), { recursive: true });
+  fs.copyFileSync(path.join(WORK, 'mkv', 'mpeg4-asp-qpel-mp3.mkv'), from);
+  await page.goto('/media/upload');
+  test.skip(!(await page.locator('form[data-wasm]').count()), 'this Hemma has no converter for browsers (av.wasm)');
+  await page.locator('input[name=files]').setInputFiles(from);
+  await expect(page.locator('.media-up-group', { hasText: 'Xvidshow' })).toContainText('Xvidshow · S01E01');
+  await page.locator('#media-up-start').click();
+  const dir = path.join(LIBRARY, 'Series', 'Xvidshow', 'Season 1'), copy = path.join(dir, 'Xvidshow S01E01.web.mp4');
+  await expect.poll(() => fs.existsSync(copy), { message: 'the copy arrives', timeout: 30_000 }).toBe(true);
+  await expect(page.locator('.media-up h3')).toContainText('Finished · 1 file sent');
+  await expect(page.locator('.media-up')).not.toContainText('sent as it is');
+  expect(fs.existsSync(path.join(dir, 'Xvidshow S01E01.mkv'))).toBe(false);
+  const mp4 = fs.readFileSync(copy).toString('latin1');
+  for (const box of ['avc1', 'avcC', 'mp4a']) expect(mp4).toContain(box); /* (made H.264, the MP3 copied) */
+});
+
+// 2.5 (the owner: "Its sound is Opus, which the converter can't change yet. So we should support that"): Opus sound is
+// copied into the MP4 ('Opus' + dOps) - the copy goes, not the original.
+test('an MKV with Opus sound is converted here too', async ({ page }) => {
+  const from = path.join(WORK, 'mkv-up', 'Opushow S01E01.mkv');
+  fs.mkdirSync(path.dirname(from), { recursive: true });
+  fs.copyFileSync(path.join(WORK, 'mkv', 'h264-opus.mkv'), from);
+  await page.goto('/media/upload');
+  test.skip(!(await page.locator('form[data-wasm]').count()), 'this Hemma has no converter for browsers (av.wasm)');
+  await page.locator('input[name=files]').setInputFiles(from);
+  await expect(page.locator('.media-up-group', { hasText: 'Opushow' })).toContainText('Opushow · S01E01');
+  await page.locator('#media-up-start').click();
+  const dir = path.join(LIBRARY, 'Series', 'Opushow', 'Season 1'), copy = path.join(dir, 'Opushow S01E01.web.mp4');
+  await expect.poll(() => fs.existsSync(copy), { message: 'the copy arrives', timeout: 30_000 }).toBe(true);
+  await expect(page.locator('.media-up h3')).toContainText('Finished · 1 file sent');
+  await expect(page.locator('.media-up')).not.toContainText('sent as it is');
+  expect(fs.existsSync(path.join(dir, 'Opushow S01E01.mkv'))).toBe(false);
+  const mp4 = fs.readFileSync(copy).toString('latin1');
+  for (const box of ['avc1', 'Opus', 'dOps']) expect(mp4).toContain(box);
+});
+
 // 2.5 (the owner's DuckTales: MP4s with Dolby sound, silent in Chrome): an MP4 is read by the converter here too - one
 // with Dolby gets a copy with AAC sound, one that plays everywhere already goes as it is, without a word.
 test('an MP4 with Dolby sound is converted here, one that plays goes as it is', async ({ page }) => {

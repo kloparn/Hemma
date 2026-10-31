@@ -50,13 +50,14 @@ typedef struct {
     bool (*write_at)(void *ctx, int64_t off, const void *p, size_t n); /* overwrite earlier bytes (NULL: can't) */
 } Mp4Out;
 
-enum { MP4_H264 = 1, MP4_AAC, MP4_FLAC, MP4_AC3, MP4_HEVC, MP4_AV1, MP4_MP3 };
+enum { MP4_H264 = 1, MP4_AAC, MP4_FLAC, MP4_AC3, MP4_HEVC, MP4_AV1, MP4_MP3, MP4_OPUS };
 
 typedef struct {
-    int codec;          /* MP4_H264, MP4_HEVC, MP4_AV1, MP4_AAC, MP4_MP3 (2.5: no config), MP4_FLAC or MP4_AC3 */
+    int codec;          /* MP4_H264, MP4_HEVC, MP4_AV1, MP4_AAC, MP4_MP3 (2.5: no config), MP4_OPUS (2.5), MP4_FLAC or MP4_AC3 */
     uint32_t timescale; /* ticks per second: 30000 for 29.97 fps video, the sample rate for audio */
     /* avcC / hvcC record (HEVCDecoderConfigurationRecord, as MKV keeps it) / av1C record (AV1CodecConfigurationRecord,
-       MKV's CodecPrivate too) / AudioSpecificConfig / FLAC STREAMINFO (34 bytes) / dac3 payload (3 bytes) */
+       MKV's CodecPrivate too) / AudioSpecificConfig / FLAC STREAMINFO (34 bytes) / dac3 payload (3 bytes) / dOps body
+       (Opus: version 0, big-endian - 11 bytes, or 13 + channels with a mapping table) */
     const uint8_t *config;
     size_t config_len;
     char lang[4]; /* ISO 639-2, lower case: "eng", "swe"; "" = "und" */

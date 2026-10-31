@@ -180,12 +180,12 @@ its spec too; the rules are listed in CLAUDE.md ("the player's rules").
 ### Fuzzing
 
 The converter reads files nobody controls, in the process that serves the whole household, so it's
-fuzzed: libFuzzer feeds it damaged and strange inputs under AddressSanitizer + UBSan. Seven targets
+fuzzed: libFuzzer feeds it damaged and strange inputs under AddressSanitizer + UBSan. Ten targets
 (`tools/ci/fuzz.sh TARGET [seconds] [processes]`): `conv` - a whole conversion
-(`tools/convfuzz.c`, slow per input, reaches everything) - and `mkv`, `ac3`, `dts`, `mpeg2`, `pgs` and
-`vobsub` (Blu-ray and DVD picture subtitles), one part alone (`tools/avfuzz.c`, tens to hundreds of
+(`tools/convfuzz.c`, slow per input, reaches everything) - and `mkv`, `mp4`, `ac3`, `dts`, `mpeg2`, `mpeg4`
+(DivX/Xvid), `pgs` and `vobsub` (Blu-ray and DVD picture subtitles) and `tags` (audiobooks), one part alone (`tools/avfuzz.c`, tens to hundreds of
 times as many inputs a minute). Every push runs `conv` for 90 s; every night
-`.github/workflows/fuzz.yml` runs all seven side by side for about three
+`.github/workflows/fuzz.yml` runs all ten side by side for about three
 hours, each starting from what the earlier nights found. A finding fails that night's run, and the
 input that does it is kept with the run: `build/fuzz-<target> <file>` replays it.
 

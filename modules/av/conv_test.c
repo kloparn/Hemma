@@ -14,6 +14,7 @@
 #include "dts_testenc.h"
 #include "h264enc.h"
 #include "mp4.h"
+#include "mpeg4_testenc.h"
 
 /* ------------------------------------------------------------ bytes in memory */
 
@@ -547,6 +548,90 @@ TEST(conv_copies_mp3_sound) {
         if (mdhd) CHECK_INT((int)be32(mdhd + 20), half ? 24000 : 44100); /* (its timescale: the rate) */
         free(in.p), free(out.p);
     }
+}
+
+/* 2.5 (the owner: "Its sound is Opus, which the converter can't change yet. So we should support that"): Opus is
+   copied into the MP4 - 'Opus' with a dOps box made of the MKV's OpusHead (big-endian, version 0), 48 kHz, each packet a
+   sample as long as its TOC byte says (20 ms, 60 ms, two frames ...), the pre-skip as the edit list's start. An Opus
+   whose OpusHead is missing or of a mapping browsers don't play is left out, as before. */
+static const uint8_t OPUS_HEAD[19] = {'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2, 0x38, 0x01, 0x80, 0xBB, 0, 0, 0, 0, 0};
+
+static size_t opus_packet(uint8_t *p, int k) { /* (a TOC byte and a body: copied, never decoded) */
+    size_t n = 40;
+    memset(p, k, n);
+    p[0] = k == 3 ? 0x18 : k == 5 ? 0xF9 : k == 7 ? 0xFB : 0xF8; /* SILK 60 ms; CELT 20 ms x2 (code 1); code 3, cut short */
+    if (k == 7) n = 1;                                          /* (no frame count: as long as the one before) */
+    return n;
+}
+
+TEST(conv_copies_opus_sound) {
+    H264Params hp = {.width = 64, .height = 48, .fps_num = 25, .fps_den = 1, .keyint = 10, .annexb = false};
+    H264Enc *e = h264enc_new(&hp);
+    uint8_t avcc[256], pkt[64];
+    size_t avcc_len = h264enc_avcc(e, avcc, sizeof avcc);
+    for (int bad = 0; bad < 2; bad++) {
+        W in;
+        static const uint8_t SURROUND[19] = {'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 6, 0x38, 1, 0x80, 0xBB, 0, 0, 0, 0, 2};
+        Tracks t = {"V_MPEG4/ISO/AVC", avcc, avcc_len, 64, 48, "A_OPUS", bad ? SURROUND : OPUS_HEAD, sizeof OPUS_HEAD};
+        size_t seg = start_file(&in, &t, 1000);
+        size_t cl = w_open(&in, 0x1F43B675);
+        w_uint(&in, 0xE7, 0);
+        static uint8_t y[64 * 48], u[32 * 24], v[32 * 24];
+        for (int k = 0; k < 20; k++) {
+            memset(y, k * 9, sizeof y), memset(u, 100, sizeof u), memset(v, 150, sizeof v);
+            H264Picture p = {y, u, v, 64, 32, 32, k};
+            H264Packet pk;
+            CHECK(h264enc_encode(e, &p, &pk));
+            w_simple(&in, 1, k * 40, pk.idr, pk.data, pk.size);
+            w_simple(&in, 2, k * 40, true, pkt, opus_packet(pkt, k));
+        }
+        w_close(&in, cl);
+        w_close(&in, seg);
+        W out;
+        AvConvJob j = {0};
+        Seen s;
+        bool ok = run(&in, &out, &j, &s);
+        if (bad) { /* (mapping family 2: no sound we can copy - the file is refused, saying it) */
+            CHECK(!ok && j.unsupported);
+            CHECK_HAS(j.err, "Its sound is Opus");
+            free(in.p), free(out.p);
+            continue;
+        }
+        CHECK(ok);
+        CHECK_STR(j.what, "H.264 copied · Opus copied");
+        int n[2];
+        counts(&out, n);
+        CHECK_INT(n[0], 20);
+        CHECK_INT(n[1], 20); /* every packet a sample */
+        size_t moov = box(&out, "moov");
+        const uint8_t *m = out.p + moov, *end = m + be32(m), *dops = NULL, *stts = NULL, *mdhd = NULL, *elst = NULL, *entry = NULL;
+        for (const uint8_t *q = m; q + 4 <= end; q++) {
+            if (!memcmp(q, "dOps", 4)) dops = q - 4;
+            if (!memcmp(q, "Opus", 4) && !entry) entry = q - 4;
+            if (!memcmp(q, "stts", 4)) stts = q - 4; /* (the last ones: the sound's) */
+            if (!memcmp(q, "mdhd", 4)) mdhd = q - 4;
+            if (!memcmp(q, "elst", 4)) elst = q - 4;
+        }
+        CHECK(dops && stts && mdhd && elst && entry);
+        if (entry) CHECK_INT(entry[8 + 6 + 2 + 8 + 1], 2); /* (the sample entry's channel count: 2) */
+        if (dops) { /* version 0, 2 channels, pre-skip 312, 48000, gain 0, mapping 0 - big-endian now */
+            static const uint8_t want[11] = {0, 2, 0x01, 0x38, 0, 0, 0xBB, 0x80, 0, 0, 0};
+            CHECK_INT((int)be32(dops), 8 + 11);
+            CHECK(!memcmp(dops + 8, want, 11));
+        }
+        if (stts) { /* 960 x3, 2880, 960, 1920, 960 x14 (the cut one as long as the one before) */
+            static const uint32_t runs[][2] = {{3, 960}, {1, 2880}, {1, 960}, {1, 1920}, {14, 960}};
+            CHECK_INT((int)be32(stts + 12), 5);
+            for (int r = 0; r < 5 && be32(stts + 12) == 5; r++) {
+                CHECK_INT((int)be32(stts + 16 + r * 8), (int)runs[r][0]);
+                CHECK_INT((int)be32(stts + 20 + r * 8), (int)runs[r][1]);
+            }
+        }
+        if (mdhd) CHECK_INT((int)be32(mdhd + 20), 48000);
+        if (elst) CHECK_INT((int)be32(elst + 12 + 4 + 8 + 4), 312); /* (its one edit - version 1 - starts at the pre-skip) */
+        free(in.p), free(out.p);
+    }
+    h264enc_free(e);
 }
 
 /* HEVC (x265 films) can't be decoded here, but Safari plays it - only not inside MKV. So the
@@ -1372,6 +1457,31 @@ static void add_h264(Stream *s, int n, uint8_t avcc[256], size_t *avcc_len) {
         if (h264enc_encode(e, &p, &pk)) s_add(s, pk.data, pk.size, frame_ms(k), pk.idr);
     }
     h264enc_free(e);
+}
+
+/* (2.5) blocks 0 .. n-1 of mpeg4_testenc.h's MPEG-4 Part 2 stream (I P B B P B B ... in decoding order), each at
+   ms_of(its place in display order) - packed: DivX's blocks, each at its slot's. Returns its VOL (CodecPrivate) in vol. */
+static size_t add_mpeg4(Stream *s, int n, int width, int height, unsigned flags, bool packed, int (*ms_of)(int),
+                        uint8_t vol[64]) {
+    static uint8_t blk[32768];
+    for (int k = 0; k < n; k++) {
+        int disp;
+        size_t len = mpeg4_test_block(blk, sizeof blk, k, width, height, flags, packed, &disp);
+        s_add(s, blk, len, ms_of(disp), k == 0);
+    }
+    static M4w w;
+    memset(&w, 0, sizeof w);
+    m4_vol(&w, width, height, flags);
+    memcpy(vol, w.b, m4_bytes(&w));
+    return m4_bytes(&w);
+}
+
+/* An AVI's track as mkvmerge keeps it (V_MS/VFW/FOURCC): a BITMAPINFOHEADER as CodecPrivate */
+static void bitmapinfo(uint8_t bih[40], int width, int height, const char *fourcc) {
+    memset(bih, 0, 40);
+    bih[0] = 40, bih[4] = (uint8_t)width, bih[5] = (uint8_t)(width >> 8), bih[8] = (uint8_t)height, bih[9] = (uint8_t)(height >> 8);
+    bih[12] = 1, bih[14] = 24;
+    memcpy(bih + 16, fourcc, 4);
 }
 
 /* `seconds` of AAC; its AudioSpecificConfig goes to asc */
@@ -2266,6 +2376,91 @@ static void mux_laced(W *in, const Tracks *t, double ms, const Stream *v, const 
     w_close(in, seg);
 }
 
+/* ------------------------------------------------- MPEG-4 Part 2: DivX, Xvid (2.5) */
+
+/* the k-th track's sample durations, from its stts (at most cap); -1 without one */
+static int durations(const W *w, int k, uint32_t *d, int cap) {
+    Bx t, b;
+    if (!trak_k(w, k, &t) || !bx_path(t, "mdia/minf/stbl/stts", &b)) return -1;
+    int n = 0;
+    for (uint32_t e = 0, entries = be32(b.p + 4); e < entries; e++)
+        for (uint32_t c = 0, cnt = be32(b.p + 8 + e * 8); c < cnt && n < cap; c++) d[n++] = be32(b.p + 12 + e * 8);
+    return n;
+}
+
+/* pictures at an uneven pace (Solsidan S06E04: 11.7 a second, unevenly): 40 ms apart, then a gap of 140 ms */
+static int uneven_ms(int d) { return d * 40 + (d >= 7 ? 100 : 0); }
+
+/* An Xvid stream (B-VOPs, coefficients, four vectors, intra macroblocks in P-VOPs) decoded and made H.264, each
+   picture as long as its own time says; its MP3 copied. The same as an AVI's track (mkvmerge's V_MS/VFW/FOURCC,
+   DivX's packed blocks), and from an MP4's 'mp4v' track. */
+TEST(conv_reencodes_mpeg4_part_2) {
+    static Stream v, a;
+    uint8_t vol[64];
+    size_t nvol = add_mpeg4(&v, 13, 72, 40, 0, false, uneven_ms, vol);
+    static uint8_t mp3[417];
+    for (int f = 0; f < 22; f++) s_add(&a, mp3, mp3_frame(mp3, false, (uint8_t)f), f * 26, true);
+    Tracks t = {"V_MPEG4/ISO/ASP", vol, nvol, 72, 40, "A_MPEG/L3", NULL, 0, .arate = 44100};
+    W in, out;
+    mux(&in, &t, 600, &v, &a);
+    AvConvJob j = {0};
+    Seen s;
+    CHECK(run(&in, &out, &j, &s));
+    CHECK_STR(j.err, "");
+    CHECK_HAS(j.what, "MPEG-4 video (DivX/Xvid, 25.000 fps) → H.264"); /* (the usual gap: 40 ms) */
+    CHECK_HAS(j.what, "MP3 copied");
+    int n[2];
+    counts(&out, n);
+    CHECK_INT(n[0], 13); /* every picture, B-VOPs in their place */
+    CHECK(track_timescale(&out, 0) == 90000);
+    uint32_t d[16];
+    CHECK_INT(durations(&out, 0, d, 16), 13);
+    for (int i = 0; i < 13; i++) CHECK_INT((int)d[i], i == 6 ? 12600 : 3600); /* 40 ms, 140 ms at the gap, 40 ms the last */
+    free(in.p), free(out.p);
+    s_free(&v), s_free(&a);
+
+    /* an AVI's: a BITMAPINFOHEADER (XVID) in front, the VOL in the first block, packed blocks at their slots' times */
+    uint8_t bih[40];
+    bitmapinfo(bih, 48, 32, "XVID");
+    add_mpeg4(&v, 13, 48, 32, M4_RESYNC, true, frame_ms, vol);
+    for (int f = 0; f < 12; f++) s_add(&a, mp3, mp3_frame(mp3, false, (uint8_t)f), f * 26, true);
+    t = (Tracks){"V_MS/VFW/FOURCC", bih, sizeof bih, 48, 32, "A_MPEG/L3", NULL, 0, .arate = 44100};
+    mux(&in, &t, 450, &v, &a);
+    AvConvJob j2 = {0};
+    CHECK(run(&in, &out, &j2, &s));
+    CHECK_STR(j2.err, "");
+    counts(&out, n);
+    CHECK_INT(n[0], 13);
+    CHECK_INT(durations(&out, 0, d, 16), 13);
+    bool even = true; /* (the slots: 1001/30 ms, in whole ms - 33 or 34) */
+    int sum = 0;
+    for (int i = 0; i < 12; i++) even &= d[i] == 2970 || d[i] == 3060, sum += (int)d[i];
+    CHECK(even);
+    CHECK_INT(sum, frame_ms(12) * 90);
+    free(in.p), free(out.p);
+    s_free(&v), s_free(&a);
+
+    /* refused, in words: interlaced Xvid, global motion, DivX 3 (another codec) */
+    static const struct {
+        const char *codec, *fourcc, *err;
+        unsigned flags;
+    } R[] = {{"V_MPEG4/ISO/ASP", NULL, "Its MPEG-4 picture uses interlaced coding, which the converter can't decode yet", M4_INTERLACED},
+             {"V_MPEG4/ISO/ASP", NULL, "Its MPEG-4 picture uses global motion compensation (GMC), which the converter can't decode yet", M4_GMC},
+             {"V_MS/VFW/FOURCC", "DIV3", "Its picture is Video for Windows (DIV3), which the converter can't change yet", 0}};
+    for (int r = 0; r < 3; r++) {
+        nvol = add_mpeg4(&v, 4, 32, 32, R[r].flags, false, frame_ms, vol);
+        bitmapinfo(bih, 32, 32, R[r].fourcc ? R[r].fourcc : "XVID");
+        t = (Tracks){R[r].codec, R[r].fourcc ? bih : vol, R[r].fourcc ? sizeof bih : nvol, 32, 32, NULL, NULL, 0};
+        mux(&in, &t, 150, &v, NULL);
+        AvConvJob jr = {0};
+        CHECK(!run(&in, &out, &jr, &s));
+        CHECK(jr.unsupported);
+        CHECK_STR(jr.err, R[r].err);
+        free(in.p), free(out.p);
+        s_free(&v);
+    }
+}
+
 /* Small files of every kind the converter takes - the starting corpus for tools/convfuzz.c.
    Each must convert (the size change: fail cleanly); with HEMMA_FUZZ_SEEDS=<dir> they are
    also written there (CI's fuzz job makes them so, no binaries live in the repo). */
@@ -2278,7 +2473,7 @@ TEST(conv_fuzz_seeds) {
     static uint8_t eac3[8 * 384]; /* Dolby Digital Plus, 3-block frames */
     CHECK_INT((int)eac3_test_tone(eac3, sizeof eac3, 8), 8 * 384);
     const char *raw = getenv("HEMMA_FUZZ_RAW");
-    if (raw && *raw) { /* tools/avfuzz.c's seeds: raw Dolby frames and MPEG-2 streams, each after its options byte */
+    if (raw && *raw) { /* tools/avfuzz.c's seeds: raw Dolby frames, MPEG-2 and MPEG-4 streams, each after its options byte */
         char path[1024];
         Buf b = {0};
         static uint8_t pic[4096];
@@ -2322,14 +2517,30 @@ TEST(conv_fuzz_seeds) {
             snprintf(path, sizeof path, "%s/dts/%s", raw, names[i]);
             CHECK(file_write_atomic(path, b.p, b.len));
         }
+        /* MPEG-4 Part 2 streams (2.5): B-VOPs, quarter samples, video packets, the MPEG quantiser, packed blocks */
+        snprintf(path, sizeof path, "%s/mpeg4", raw);
+        CHECK(dir_make(path));
+        for (int i = 0; i < 4; i++) {
+            static const char *const names[] = {"mpeg4-b-vops", "mpeg4-qpel-reversed", "mpeg4-packets-mpegquant-pieces",
+                                                "mpeg4-packed-reset"};
+            static const uint8_t opts[] = {0, 128, 3 | 8, 64};
+            static const unsigned flags[] = {0, M4_QPEL, M4_RESYNC | M4_MPEGQ, 0};
+            static uint8_t blk[32768];
+            buf_reset(&b);
+            buf_putc(&b, (char)opts[i]);
+            for (int k = 0, disp; k < 10; k++)
+                buf_put(&b, blk, mpeg4_test_block(blk, sizeof blk, k, i == 2 ? 72 : 48, i == 2 ? 40 : 32, flags[i], i == 3, &disp));
+            snprintf(path, sizeof path, "%s/mpeg4/%s", raw, names[i]);
+            CHECK(file_write_atomic(path, b.p, b.len));
+        }
         buf_free(&b);
     }
     static const uint8_t hvcc[] = {1,    0x01, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 0x5D, 0xF0, 0, 0xFC,
                                    0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
     char took[64][40]; /* every CodecID a seed carries: each format the converter takes needs one (below) */
     int ntook = 0;
-    for (int seed = 0; seed < 18; seed++) {
-        uint8_t avcc[256], asc[2];
+    for (int seed = 0; seed < 22; seed++) {
+        uint8_t avcc[256], asc[2], vol[64], bih[40];
         size_t avcc_len = 0;
         Tracks mp2 = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0}, t = mp2;
         const char *name = "";
@@ -2460,6 +2671,36 @@ TEST(conv_fuzz_seeds) {
             mp4_free(m4);
             t = (Tracks){"V_MPEG4/ISO/AVC", avcc, avcc_len, 64, 48, "A_AC3", NULL, 0};
             built = true;
+            break;
+        }
+        case 19: { /* MPEG-4 Part 2 (2.5, Xvid as Solsidan S07's): B-VOPs, quarter samples, its MP3 copied */
+            static uint8_t mp3[417];
+            name = "mpeg4-asp-qpel-mp3.mkv";
+            size_t nvol = add_mpeg4(&v, 13, 48, 32, M4_QPEL, false, frame_ms, vol);
+            for (int f = 0; f < 17; f++) s_add(&a, mp3, mp3_frame(mp3, false, (uint8_t)f), f * 26, true);
+            t = (Tracks){"V_MPEG4/ISO/ASP", vol, nvol, 48, 32, "A_MPEG/L3", NULL, 0, .arate = 44100};
+            break;
+        }
+        case 20: { /* ... video packets and the MPEG quantiser (an odd size), AAC copied */
+            name = "mpeg4-sp-resync-mpegquant-aac.mkv";
+            size_t nvol = add_mpeg4(&v, 10, 72, 40, M4_RESYNC | M4_MPEGQ, false, frame_ms, vol);
+            add_aac(&a, 0.35, asc);
+            t = (Tracks){"V_MPEG4/ISO/SP", vol, nvol, 72, 40, "A_AAC", asc, 2};
+            break;
+        }
+        case 21: /* ... an AVI's track (V_MS/VFW/FOURCC, XVID), DivX's packed blocks, Dolby sound made AAC */
+            name = "mpeg4-vfw-packed-ac3.mkv";
+            add_mpeg4(&v, 13, 48, 32, 0, true, frame_ms, vol);
+            for (int f = 0; f < 14; f++) s_add(&a, ac3 + f % 4 * 768, 768, f * 32, true);
+            bitmapinfo(bih, 48, 32, "XVID");
+            t = (Tracks){"V_MS/VFW/FOURCC", bih, sizeof bih, 48, 32, "A_AC3", NULL, 0};
+            break;
+        case 18: { /* Opus copied (2.5): packets of 20 and 60 ms and two frames, one cut short */
+            static uint8_t pkt[64];
+            name = "h264-opus.mkv";
+            add_h264(&v, 12, avcc, &avcc_len);
+            for (int f = 0; f < 20; f++) s_add(&a, pkt, opus_packet(pkt, f), f * 20, true);
+            t = (Tracks){"V_MPEG4/ISO/AVC", avcc, avcc_len, 64, 48, "A_OPUS", OPUS_HEAD, sizeof OPUS_HEAD};
             break;
         }
         case 16: { /* MP3 copied (2.5): MPEG-1 frames, one block holding two */
