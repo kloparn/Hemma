@@ -12,8 +12,10 @@
 #include <fcntl.h>
 #include <netinet/tcp.h>
 #include <signal.h>
+#include <spawn.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/wait.h>
 #include <time.h>
 #ifdef __linux__
 #include <sys/sendfile.h>
@@ -901,3 +903,88 @@ const char *plat_bundle(void) {
     return NULL; /* (Windows: no download yet - built from source) */
 #endif
 }
+
+/* ========================================================= other programs */
+
+void plat_quote_args(const char *const argv[], Buf *out) {
+    buf_reset(out);
+    for (int i = 0; argv[i]; i++) {
+        const char *a = argv[i];
+        if (i) buf_putc(out, ' ');
+        if (*a && !strpbrk(a, " \t\n\v\"")) {
+            buf_puts(out, a);
+            continue;
+        }
+        buf_putc(out, '"');
+        for (const char *p = a;; p++) {
+            size_t bs = 0;
+            while (*p == '\\') bs++, p++;
+            if (!*p) { /* (before the closing quote: each doubled) */
+                for (size_t k = 0; k < bs * 2; k++) buf_putc(out, '\\');
+                break;
+            }
+            for (size_t k = 0; k < (*p == '"' ? bs * 2 + 1 : bs); k++) buf_putc(out, '\\');
+            buf_putc(out, *p);
+        }
+        buf_putc(out, '"');
+    }
+}
+
+#ifdef _WIN32
+int plat_run(const char *const argv[], int timeout_ms) {
+    Buf cmd = {0};
+    plat_quote_args(argv, &cmd);
+    wchar_t *app = widen(argv[0]), *line = widen(buf_cstr(&cmd));
+    buf_free(&cmd);
+    STARTUPINFOW si = {0};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi = {0};
+    BOOL started = app && line && CreateProcessW(app, line, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    free(app);
+    free(line);
+    if (!started) return -1;
+    DWORD code = 0;
+    bool done = WaitForSingleObject(pi.hProcess, (DWORD)timeout_ms) == WAIT_OBJECT_0 && GetExitCodeProcess(pi.hProcess, &code);
+    if (!done) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 5000);
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return done ? (int)code : -1;
+}
+#else
+extern char **environ;
+
+int plat_run(const char *const argv[], int timeout_ms) {
+    posix_spawn_file_actions_t fa;
+    posix_spawnattr_t at;
+    if (posix_spawn_file_actions_init(&fa) != 0) return -1;
+    posix_spawnattr_init(&at);
+    for (int fd = 0; fd <= 2; fd++) posix_spawn_file_actions_addopen(&fa, fd, "/dev/null", fd ? O_WRONLY : O_RDONLY, 0);
+    sigset_t dflt; /* (Hemma ignores SIGPIPE; the program gets the usual) */
+    sigemptyset(&dflt);
+    sigaddset(&dflt, SIGPIPE);
+    posix_spawnattr_setsigdefault(&at, &dflt);
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSIGDEF);
+    pid_t pid;
+    int rc = posix_spawn(&pid, argv[0], &fa, &at, (char *const *)argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    posix_spawnattr_destroy(&at);
+    if (rc != 0) return -1;
+    int64_t deadline = now_ms() + timeout_ms;
+    for (;;) {
+        int st = 0;
+        pid_t w = waitpid(pid, &st, WNOHANG);
+        if (w == pid) return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+        if (w < 0 && errno != EINTR) return -1;
+        if (now_ms() >= deadline) {
+            kill(pid, SIGKILL);
+            while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {
+            }
+            return -1;
+        }
+        plat_sleep_ms(50);
+    }
+}
+#endif

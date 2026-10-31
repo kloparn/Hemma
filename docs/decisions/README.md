@@ -17,6 +17,7 @@ replaces the old one, which stays here marked as such.
 | [0009](0009-categories-looked-up-when-asked.md) | Categories may be looked up online, when an admin asks (amends 0005) | 2026-10-27 |
 | [0010](0010-free-on-the-thread-that-allocated.md) | Memory is freed by the thread that allocated it | 2026-10-28 |
 | [0011](0011-an-android-app-as-a-thin-window.md) | An Android app: a thin window onto Hemma, served by Hemma itself | 2026-10-28 |
+| [0012](0012-pictures-and-https-through-curl.md) | Pictures may be fetched too; https goes through the computer's curl (amends 0009) | 2026-10-30 |
 
 New record: copy the shape of one of these (status, context, decision, consequences), number it
 next, add it to the table, and link it from the pull request that acts on it.

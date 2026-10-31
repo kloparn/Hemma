@@ -201,6 +201,9 @@ uint64_t media_art_current(uint64_t id); /* the picture file at that place now (
 /* Delete the pictures named <stem>.<jpg|jpeg|png|webp> (any case) in dir, except `keep`
    (a file name, or NULL). Touches only the disk, so any thread may call it. Returns how many. */
 int media_art_prune(const char *dir, const char *stem, const char *keep);
+/* Is there a picture named <stem>.<jpg|jpeg|png|webp> (any case) in dir? Disk only: any thread (2.5: a picture
+   looked up online goes only where there's none - lookup.c). */
+bool media_art_on_disk(const char *dir, const char *stem);
 
 /* ---- scanning ---- */
 int media_roots(char roots[][300], int max); /* from setting "media.roots" (one per line) */

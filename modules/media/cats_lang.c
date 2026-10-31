@@ -133,5 +133,71 @@ static const Tr TR[] = {
     {"Nothing has that id", "Inget har det id:t", "Nada tiene ese id"},
     {"Found %s: %s", "Hittade %s: %s", "Encontrado %s: %s"},
     {"Nothing found by the name %s", "Inget hittades med namnet %s", "No se encontró nada con el nombre %s"},
+
+    /* pictures looked up online (lookup.c, 2.5) */
+    {"Pictures from the internet", "Bilder från internet", "Imágenes de internet"},
+    {"Hemma can find a picture for each series and film that has none: a series' at TVmaze, a film's at Wikipedia by its "
+     "title and year. Only titles and years are sent, and a picture you set yourself always stays. Nothing is looked up "
+     "until you tick the box.",
+     "Hemma kan hitta en bild till varje serie och film som saknar en: seriens på TVmaze, filmens på Wikipedia med dess "
+     "titel och år. Bara titlar och år skickas, och en bild du själv har valt finns alltid kvar. Inget slås upp förrän du "
+     "kryssar i rutan.",
+     "Hemma puede encontrar una imagen para cada serie y película que no tenga: la de una serie en TVmaze, la de una "
+     "película en Wikipedia por su título y año. Solo se envían títulos y años, y una imagen que hayas puesto tú siempre se "
+     "queda. No se busca nada hasta que marques la casilla."},
+    {"With a picture: %d of %d series", "Med bild: %d av %d serier", "Con imagen: %d de %d series"},
+    {"Films' pictures come over https, which needs the program curl - and this computer doesn't have it. Series' "
+     "pictures still come.",
+     "Filmernas bilder kommer över https, som kräver programmet curl - och den här datorn har det inte. Seriernas bilder "
+     "kommer ändå.",
+     "Las imágenes de las películas llegan por https, que necesita el programa curl, y este ordenador no lo tiene. Las de "
+     "las series llegan igual."},
+    {"Find pictures online", "Hitta bilder på nätet", "Buscar imágenes en internet"},
+    {"Series' pictures come from <a href=\"https://www.tvmaze.com\" rel=\"noreferrer\">TVmaze</a>, films' from "
+     "<a href=\"https://en.wikipedia.org\" rel=\"noreferrer\">Wikipedia</a> - the studios' own posters, for your "
+     "household. Those found stay when you switch it off. A wrong one? Give the right one's link under the title's "
+     "Categories, or set a picture of your own.",
+     "Seriernas bilder kommer från <a href=\"https://www.tvmaze.com\" rel=\"noreferrer\">TVmaze</a>, filmernas från "
+     "<a href=\"https://en.wikipedia.org\" rel=\"noreferrer\">Wikipedia</a> - studiornas egna affischer, för ditt "
+     "hushåll. De som hittats finns kvar när du stänger av det. En felaktig? Ge länken till den rätta under titelns "
+     "Kategorier, eller välj en egen bild.",
+     "Las imágenes de las series vienen de <a href=\"https://www.tvmaze.com\" rel=\"noreferrer\">TVmaze</a>, las de las "
+     "películas de <a href=\"https://en.wikipedia.org\" rel=\"noreferrer\">Wikipedia</a>: los carteles de los propios "
+     "estudios, para tu hogar. Las encontradas se quedan si lo desactivas. ¿Una equivocada? Da el enlace de la correcta en "
+     "las Categorías del título, o pon una imagen tuya."},
+    {"Picture: its own - Hemma never changes it.", "Bild: en egen - Hemma byter aldrig ut den.",
+     "Imagen: la suya propia; Hemma nunca la cambia."},
+    {"Picture: from %s, %s", "Bild: från %s, %s", "Imagen: de %s, %s"},
+    {"by the link you gave", "med länken du gav", "por el enlace que diste"},
+    {"Picture: nothing found by its name at %s.", "Bild: inget hittades med dess namn på %s.",
+     "Imagen: no se encontró nada con su nombre en %s."},
+    {"Picture: it couldn't be fetched - Hemma tries again tomorrow.", "Bild: den kunde inte hämtas - Hemma försöker igen i morgon.",
+     "Imagen: no se pudo descargar; Hemma lo intenta de nuevo mañana."},
+    {"Picture: not looked for yet.", "Bild: inte letad efter än.", "Imagen: aún no se ha buscado."},
+    {"Films' pictures need the program curl, which this computer doesn't have.",
+     "Filmernas bilder kräver programmet curl, som den här datorn inte har.",
+     "Las imágenes de las películas necesitan el programa curl, que este ordenador no tiene."},
+    {"Its Wikipedia link, when the name finds the wrong one", "Dess Wikipedia-länk, när namnet hittar fel",
+     "Su enlace de Wikipedia, si el nombre encuentra la equivocada"},
+    {"Update picture", "Uppdatera bild", "Actualizar imagen"},
+    {"It has a picture of its own now: that one stays", "Den har en egen bild nu: den får vara kvar",
+     "Ya tiene una imagen propia: esa se queda"},
+    {"Found a picture: %s", "Hittade en bild: %s", "Imagen encontrada: %s"},
+    {"%s has no picture there", "%s har ingen bild där", "%s no tiene imagen allí"},
+    {"Couldn't fetch the picture: %s", "Kunde inte hämta bilden: %s", "No se pudo descargar la imagen: %s"},
+    {"Hemma looks for pictures online now", "Hemma letar efter bilder på nätet nu", "Hemma busca imágenes en internet ahora"},
+    {"Hemma doesn't look for pictures online now", "Hemma letar inte efter bilder på nätet nu",
+     "Hemma ya no busca imágenes en internet"},
+    {"Switch on finding pictures online first (Library settings)",
+     "Slå på att hitta bilder på nätet först (Biblioteksinställningar)",
+     "Activa primero la búsqueda de imágenes en internet (Ajustes de la biblioteca)"},
+    {"It has a picture of its own - Hemma never changes that one", "Den har en egen bild - den byter Hemma aldrig ut",
+     "Tiene una imagen propia; Hemma nunca la cambia"},
+    {"Films' pictures need the program curl, which this computer doesn't have",
+     "Filmernas bilder kräver programmet curl, som den här datorn inte har",
+     "Las imágenes de las películas necesitan el programa curl, que este ordenador no tiene"},
+    {"Paste its Wikipedia link, like https://en.wikipedia.org/wiki/Hocus_Pocus_(1993_film)",
+     "Klistra in dess Wikipedia-länk, som https://en.wikipedia.org/wiki/Hocus_Pocus_(1993_film)",
+     "Pega su enlace de Wikipedia, como https://en.wikipedia.org/wiki/Hocus_Pocus_(1993_film)"},
 };
 TRANSLATIONS(media_cats, TR)

@@ -70,6 +70,7 @@
       send(h ? { t: 'hello', url: here(), v: VERSION, h } : { t: 'hello', url: here(), v: VERSION });
       while (later.length) send({ t: 'log', url: here(), m: later.shift(), ua: navigator.userAgent });
       if (subLater) { send(subLater); subLater = null; } // (a subtitles pick made while the socket was down)
+      capsTell();
       // a new socket is a new screen to the server: an upload page's preview is asked for again
       for (const f of document.querySelectorAll('form[data-preview]')) if (f._files && f._files.length && !uploading) preview(f, true);
     };
@@ -95,6 +96,7 @@
   // socket opened wait for it (10 at most).
   const later = [];
   let subLater = null;
+  let capsSent = false; // (this load's answer to [data-caps] went: capsTell)
   const report = (what) => {
     const m = String(what).slice(0, 400);
     if (!send({ t: 'log', url: here(), m, ua: navigator.userAgent }) && later.length < 10) later.push(m);
@@ -737,7 +739,8 @@
   async function sendMade(url, job, m, files) {
     try {
       if (!job.subs) {
-        const s = await ask(url, m.send ? `size=${m.size}` : `original=1&why=${encodeURIComponent(m.error || '')}`);
+        /* (m.plays, 2.5: an MP4 that plays everywhere as it is - the original goes, and nothing is said about it) */
+        const s = await ask(url, m.send ? `size=${m.size}` : m.plays ? 'original=1&plays=1' : `original=1&why=${encodeURIComponent(m.error || '')}`);
         if (!s.skip) await put(url, m.send ? m : files[job.f], s.at || 0);
       }
       const tracks = (m.subs || []).concat(m.pics || []).sort((a, b) => (a.t || 0) - (b.t || 0));
@@ -1262,6 +1265,18 @@
       for (const b of within(el, '[data-fullscreen]')) fsButton(b);
     }
     letGo();
+    capsTell();
+  }
+
+  // What this browser plays (2.5, media/devices.c): a page carrying [data-caps="<type>|<type>|..."] is answered once a
+  // load - canPlayType for each, y (probably), m (maybe) or n - as the live media.caps. The list and what it means are
+  // the server's.
+  function capsTell() {
+    const el = capsSent ? null : document.querySelector('[data-caps]');
+    if (!el) return;
+    const v = document.createElement('video');
+    const said = (t) => { const r = v.canPlayType(t); return r === 'probably' ? 'y' : r === 'maybe' ? 'm' : 'n'; };
+    capsSent = send({ t: 'live', a: 'media.caps', url: here(), f: [['caps', el.dataset.caps.split('|').map(said).join('')]] });
   }
 
   // A video or a book taken off the page (another page came) lets go of its file - a paused one too: it kept it,

@@ -4,6 +4,108 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.5.0 (2026-10-30)
+
+XviD and DivX videos, which played nowhere, are converted. MP3 and Opus sound get a copy too, and so do MP4s with Dolby
+sound. Series and films without a picture can get one from the internet, and Hemma learns which videos play on your own
+devices.
+
+### New
+
+- **XviD and DivX videos are converted:** MPEG-4 Part 2 video - XviD, DivX 4 and later, the usual kind in an AVI and
+  in older rips (ten episodes of Solsidan) - played on no device: no browser, phone or TV decodes it. Hemma's converter
+  decodes it now and makes it H.264, from an MKV (an AVI's track kept in an MKV too) or an MP4, the sound converted or
+  copied as ever. Each picture keeps its own time, so a video whose pictures come at an uneven pace (one of them: 11.7
+  a second, unevenly) stays in step with its sound. Uploads convert them in the browser; **Watch → Library settings →
+  Convert** offers the ones already in the library. Not yet: XviD that is interlaced or uses *global motion* (GMC),
+  and DivX 3, an older codec - Hemma says so.
+- **Two files of one name are one video:** an episode or film in two files of the same name and length - Arthur's
+  "x.mkv", whose Vorbis sound iPhones don't play, beside an "x.mp4" - showed up twice. Now it's one video that plays the
+  file that plays in more places; Manage and its page call the other *Another version*, and **Keep only the most
+  compatible version** deletes it.
+
+- **Pictures from the internet:** a series or film without a picture can get one by itself - a series' poster from
+  TVmaze, a film's from Wikipedia, found by its title and year (why 2.4 asks for the year). No key or account: tick
+  **Watch → Library settings → Pictures from the internet** (off until an admin does, like categories). A picture you
+  set yourself always stays, and Hemma never writes over one. Found the wrong one? Paste the right one's link - the
+  show's TVmaze or IMDb page, the film's Wikipedia page - under the title's **Categories** (Manage for a series), or
+  set a picture of your own. Wikipedia answers only over https, which Hemma fetches through the computer's own
+  `curl` (there on a Raspberry Pi, Windows 10 and later, and macOS); without it films get no pictures, series still do.
+- **What your devices play:** *Play everywhere* counts the videos every device there is plays; HEVC (x265) and AV1
+  copies play on most from the last few years, just not on every one. Now each phone, computer and TV that opens Watch
+  tells Hemma which kinds of video it plays, and **Watch → Library settings** shows *Play on your devices* beside it, a
+  card with why the rest doesn't play everywhere (counted by reason), and - for admins - each of your devices with what
+  it can't play. A video's page says whether it plays on your devices, or names the ones it doesn't.
+- **Videos with Opus sound are converted:** an MKV with Opus sound went up as it was, "Its sound is Opus, which the
+  converter can't change yet". The copy now takes the Opus as it is into the MP4 - nothing re-encoded - where Chrome,
+  Firefox, Edge, Safari 17 and later, and Android play it (in an MKV only Chrome and Edge did). A WebM with Opus already
+  plays as it is and stays so. Uploads convert them in the browser; **Watch → Library settings → Convert** offers the
+  ones already in the library.
+- **MP4s with Dolby or DTS sound are converted:** an MP4 or MOV with Dolby Digital (AC-3), Dolby Digital Plus or DTS
+  sound - DVD rips such as the owner's DuckTales, 101 episodes - played its picture silently in Chrome and Firefox,
+  and Hemma's converter read only MKV files. It reads MP4 and MOV now: the picture is copied, the sound made AAC. An
+  MP4 that already plays everywhere (H.264 with AAC or MP3) is left as it is - while uploading too, quietly; the
+  preview says *Converted here if needed*. **Watch → Library settings → Convert** offers the ones already in the
+  library.
+- **Videos with MP3 sound are converted:** an MKV with MP3 sound (small x264 encodes - 35 of the owner's 54 Disney
+  films) went up as it was, "Its sound is MP3, which the converter can't change yet". The copy now takes the MP3 as it
+  is into the MP4 - nothing re-encoded, so it takes seconds - where every browser, iPhone, iPad and TV plays it (in an
+  MKV only Chrome and Edge did). MP3 at half rates (24 kHz) too. Uploads convert them in the browser; **Watch → Library
+  settings → Convert** offers the ones already in the library.
+
+### Fixed
+
+- A series uploaded from one folder no longer splits in two: a run of years ("(1987-1990)", "1988-89") is read as the
+  year, so a release pack's folder ("DUCKTALES (1987-1990) - The Complete ORIGINAL TV Series ... 480p Proper DVDRip x264")
+  names the show cleanly. DuckTales' seasons 2 and 4 had gone into a series of their own; the folders already in a
+  library come together by themselves - names are read again at every start.
+- Category lookups no longer run the moment a title is renamed: they wait until the library has read the new name.
+  Renaming DuckTales' folder to "Ducktales (1987)" had looked it up with the old name and no year, and found the
+  2017 DuckTales.
+- The words for sound the converter can't take yet no longer say "browsers play it silently" for sound that browsers
+  play (Vorbis, FLAC): only TrueHD's do.
+
+### For developers
+
+- modules/av: `MP4_MP3` in the MP4 writer ('mp4a' + esds, object type 0x6B for MPEG-1, 0x69 for MPEG-2's half rates,
+  no DecoderSpecificInfo); `A_MPEG/L3` in `AV_CONV_CODECS` as a copy - each frame its own sample (mp3_frame_size splits a
+  block holding several), 1152 or 576 samples long. A new fuzz seed, `h264-mp3.mkv`. media/convert.c: H.264/HEVC/AV1
+  with MP3 is a remux.
+- modules/av: an MP4/MOV reader behind mkv.h's API (mkv_mp4.h: mkv_open knows an MP4 by its first box; codecs named
+  in Matroska's terms, so the converter takes them unchanged - avc1/hvc1/av01, mp4a by object type, ac-3, ec-3, dts;
+  tx3g subtitles as text; chapter and text tracks left out; times from ctts and the edit list; fragmented files
+  refused). `AvConvJob.as_is`: an MP4 whose picture and sound play everywhere (H.264, `hvc1` HEVC or AV1 with AAC or
+  MP3) is left as it is - `conv_run` says 3, conv.js `{plays}`, and the upload sends the original with `?plays=1`, not
+  "sent as it is". A copied picture's times are rounded to the nearest 90 kHz tick, not each frame's length down (an
+  MP4 at 1/24000 s ran 0.24 s short per episode). A new fuzz target, `mp4` (nightly too), and the seed `h264-ac3.mp4`.
+  media/convert.c: an MP4/MOV with Dolby or DTS sound is a transcode; the upload plan sends MP4s through the converter.
+- modules/av: `MP4_OPUS` ('Opus' + dOps, "Encapsulation of Opus in ISO Base Media File Format"); `A_OPUS` in
+  `AV_CONV_CODECS` as a copy - the MKV's OpusHead made a dOps (version 0, big-endian; mapping families 0 and 1), each
+  packet its own sample as long as its TOC byte says (RFC 6716), the pre-skip as the edit list's start; mkv_mp4.h turns
+  an MP4's dOps back into an OpusHead. A new fuzz seed, `h264-opus.mkv`. media/convert.c: an MKV (not a WebM) with Opus
+  is a remux; an MP4 with Opus plays as it is.
+- modules/av: mpeg4.c, an MPEG-4 Part 2 decoder (ISO/IEC 14496-2 Simple and Advanced Simple Profile): I-, P- and
+  B-VOPs (S-VOPs without warping points), intra AC/DC prediction, the H.263 and MPEG quantisers, one or four vectors,
+  half and quarter samples, direct mode, video packets with concealment, VOPs not coded, DivX's packed blocks; a frame's
+  pts = the block times handed out smallest first, so reordering, packed blocks and uneven rates keep their times.
+  Interlaced coding, GMC, data partitioning, shapes and the like are refused by name (`mpeg4_unsupported`). Checked
+  against FFmpeg on three real episodes (XviD 1.3 with B-frames in MKV; Simple Profile MP4s with resync markers) and on
+  clips from FFmpeg's and libxvid's encoders with every tool: 49-66 dB luma PSNR, nothing concealed - what differs is the
+  IDCT (modules/av/idct.h, the MPEG-2 decoder's, now shared). conv.c: `V_MPEG4/ISO/ASP`, `V_MPEG4/ISO/SP` and
+  `V_MS/VFW/FOURCC` (by the BITMAPINFOHEADER's fourcc: XVID, DIVX, DX50, FMP4 ...) in `AV_CONV_CODECS`; MPEG-4 pictures
+  are timed by their pts on a 90 kHz clock. mpeg4_testenc.h writes test streams; three new fuzz seeds and a fuzz target,
+  `mpeg4` (nightly too). media: `convert_need` makes MPEG-4 Part 2 in an MKV or an MP4 a transcode; the probe calls
+  DivX 3 `msmpeg4`; library.c pairs two videos of one name and length (the more compatible stands for both, as a copy
+  made here does).
+- media/devices.c: Watch pages carry a hidden list of media types (`[data-caps]`); wire.js answers it once a load with
+  `canPlayType` as the live action `media.caps` (one letter each); table `media_device` (person, the session's browser,
+  the answers; made at start) - a device counts for 30 days. The breakdown is logged when a scan changes it, and each
+  new device with what it plays.
+- core: `plat_run()` runs a program and waits (posix_spawn / CreateProcess, no shell, a time limit) and
+  `fetch_https()` GETs an https address through the computer's own curl - still no TLS in Hemma
+  (docs/decisions/0012). media/lookup.c: the pictures (setting `media.lookup_art`, table `media_art`, made at start;
+  saved where Set picture puts one, `media_art_on_disk`), actions `media.lookup_art` and `media.art_id`.
+
 ## 2.4.0 (2026-10-30)
 
 Films get their year: Hemma asks for it while uploading, and knows a film without one when it sees it.

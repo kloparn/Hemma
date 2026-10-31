@@ -232,7 +232,7 @@ bool mp4_set_config(Mp4 *m, int track, const uint8_t *config, size_t n) {
 }
 
 int mp4_add_track(Mp4 *m, const Mp4Track *tr) {
-    if (m->begun || m->ntrk == MP4_MAX_TRACKS || !tr->timescale || tr->codec < MP4_H264 || tr->codec > MP4_AV1) return -1;
+    if (m->begun || m->ntrk == MP4_MAX_TRACKS || !tr->timescale || tr->codec < MP4_H264 || tr->codec > MP4_OPUS) return -1;
     int i = m->ntrk;
     Trk *t = &m->trk[i];
     memset(t, 0, sizeof *t);
@@ -444,30 +444,44 @@ static void sample_entry(Bb *b, const Trk *t) {
         end(b, e);
         break;
     }
-    case MP4_AAC: {
+    case MP4_AAC:
+    case MP4_MP3: { /* (2.5: MP3 as 'mp4a' too - its object type says which; no DecoderSpecificInfo: the frames say it all) */
+        bool mp3 = t->t.codec == MP4_MP3;
         e = box(b, "mp4a");
         audio_entry(b, t, 16);
         size_t c = fullbox(b, "esds", 0, 0);
-        size_t dsi = 1 + desc_size(t->cfg_len) + t->cfg_len; /* whole DecoderSpecificInfo */
-        size_t dcd = 13 + dsi;                                /* DecoderConfigDescriptor contents */
-        size_t es = 3 + 1 + desc_size(dcd) + dcd + 3;         /* ES_Descriptor contents */
+        size_t dsi = mp3 ? 0 : 1 + desc_size(t->cfg_len) + t->cfg_len; /* whole DecoderSpecificInfo */
+        size_t dcd = 13 + dsi;                                           /* DecoderConfigDescriptor contents */
+        size_t es = 3 + 1 + desc_size(dcd) + dcd + 3;                    /* ES_Descriptor contents */
         put8(b, 0x03); /* ES_Descriptor */
         desc_len(b, es);
         put16(b, t->id);
         put8(b, 0);
         put8(b, 0x04); /* DecoderConfigDescriptor */
         desc_len(b, dcd);
-        put8(b, 0x40); /* Audio ISO/IEC 14496-3 */
+        /* Audio ISO/IEC 14496-3 (AAC); MP3: 11172-3 (MPEG-1, 32-48 kHz) or 13818-3 (MPEG-2's half rates, 16-24 kHz) */
+        put8(b, !mp3 ? 0x40 : t->t.sample_rate >= 32000 ? 0x6B : 0x69);
         put8(b, 0x15); /* audio stream */
         put24(b, 0);
         put32(b, t->t.max_bitrate);
         put32(b, t->t.avg_bitrate);
-        put8(b, 0x05); /* DecoderSpecificInfo: the AudioSpecificConfig */
-        desc_len(b, t->cfg_len);
-        put_bytes(b, t->cfg, t->cfg_len);
+        if (!mp3) {
+            put8(b, 0x05); /* DecoderSpecificInfo: the AudioSpecificConfig */
+            desc_len(b, t->cfg_len);
+            put_bytes(b, t->cfg, t->cfg_len);
+        }
         put8(b, 0x06); /* SLConfigDescriptor */
         put8(b, 1);
         put8(b, 2);
+        end(b, c);
+        end(b, e);
+        break;
+    }
+    case MP4_OPUS: { /* (2.5: Opus copied - 'Opus' + dOps: "Encapsulation of Opus in ISO Base Media File Format") */
+        e = box(b, "Opus");
+        audio_entry(b, t, 16);
+        size_t c = box(b, "dOps");
+        put_bytes(b, t->cfg, t->cfg_len);
         end(b, c);
         end(b, e);
         break;

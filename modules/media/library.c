@@ -1210,6 +1210,18 @@ static void loose_specials(const MediaIndex *ix, MediaFile *F, int w) {
     free(sf);
 }
 
+/* A video that could be one of two versions under one name: neither paired yet, nor a copy made here, nor a disc's
+   play-all or an extra */
+static bool lone_version(const MediaFile *f) {
+    return f->type == MF_VIDEO && f->role == MF_MAIN && !f->web && !media_is_web_copy(f->rel);
+}
+
+/* "x.mkv" and "x.mp4": the same name before another extension, in one folder (the caller's) */
+static bool same_stem(const char *a, const char *b) {
+    const char *ab = base_of(a), *bb = base_of(b), *ad = strrchr(ab, '.'), *bd = strrchr(bb, '.');
+    return ad && bd && ad - ab == bd - bb && !strncmp(ab, bb, (size_t)(ad - ab)) && strcmp(ad, bd);
+}
+
 /* Sort, de-duplicate, and derive everything the pages need: subtitle and
  * poster links, series, and the display orders. Runs on whichever thread
  * built the file list. */
@@ -1250,6 +1262,25 @@ static void index_finish(MediaIndex *ix) {
                     c->name.kind = MEDIA_OTHER;
                     break;
                 }
+            }
+        }
+        /* (2.5) Two versions under one name - "x.mkv" beside "x.mp4" (Arthur S25: an MKV with Vorbis sound and an MP4
+           of each episode) - lasting as long: the one that plays in more places stands for both, as a copy made here
+           does (one row, it streams), and "Keep only the most compatible version" can delete the other */
+        for (int k = g0; k < g1; k++) {
+            MediaFile *a = &F[ents[k].idx];
+            if (!lone_version(a)) continue;
+            for (int v = k + 1; v < g1; v++) {
+                MediaFile *b = &F[ents[v].idx];
+                if (!lone_version(b) || !same_stem(a->rel, b->rel) ||
+                    !media_copy_lasts(a->probe.duration_ms, b->probe.duration_ms))
+                    continue;
+                MediaFile *keep = media_compat_cost(&b->probe) <= media_compat_cost(&a->probe) ? b : a,
+                          *other = keep == a ? b : a;
+                other->web = keep->id;
+                keep->role = MF_WEBCOPY;
+                keep->name.kind = MEDIA_OTHER;
+                break;
             }
         }
         int nvideos = 0;
@@ -1983,6 +2014,20 @@ int media_art_prune(const char *dir, const char *stem, const char *keep) {
         removed += file_remove(path);
     }
     return removed;
+}
+
+bool media_art_on_disk(const char *dir, const char *stem) {
+    size_t sl = strlen(stem);
+    DirIter *it = dir_open(dir);
+    if (!it) return false;
+    DirEntry e;
+    bool found = false;
+    while (!found && dir_next(it, &e)) {
+        const char *dot = strrchr(e.name, '.');
+        found = !e.is_dir && dot && (size_t)(dot - e.name) == sl && span_ieq(e.name, stem, sl) && media_is_image_ext(e.name);
+    }
+    dir_close(it);
+    return found;
 }
 
 /* =============================================================== progress */

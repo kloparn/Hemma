@@ -21,7 +21,7 @@ void conv_test_rip(const char *root, const char *rel, const char *doctype, int64
    offers (each in itself), its example folders and the services categories are looked up at (1.4) */
 #define SAME_EVERYWHERE \
     "Svenska", "English", "Norsk", "Dansk", "Suomi", "Deutsch", "Français", "Español", "/mnt/media&#10;D:\\Movies", \
-        "TVmaze", "OMDb", "omdbapi.com"
+        "TVmaze", "OMDb", "omdbapi.com", "Wikipedia"
 
 /* every url as person, in Swedish and Spanish; what reads as in English is printed */
 static int untranslated(int person, const char *const *urls, size_t n, const char *const *allow) {
@@ -151,7 +151,7 @@ TEST(media_upload_pages_speak_swedish_and_spanish) {
     char root[512];
     str_copy(root, sizeof root, test_tmpdir());
     /* (names, their initials, the library folder) */
-    const char *allow[] = {"Adam", "Maja", "Eva", "A", "M", "Show", "x.mkv", "w.mp4", root, SAME_EVERYWHERE, NULL};
+    const char *allow[] = {"Adam", "Maja", "Eva", "A", "M", "Show", "x.mkv", "w.avi", root, SAME_EVERYWHERE, NULL};
 
     /* no library folder yet; a member */
     static const char *const up[] = {"/media/upload"};
@@ -160,9 +160,9 @@ TEST(media_upload_pages_speak_swedish_and_spanish) {
 
     /* a library with one episode, things already in the upload's folder */
     put_file(root, "Series/Show/Season 1/Show.S01E01.mp4", "e1", 2);
-    put_file(root, "Up/S/there.mp4", "1234", 4);
-    put_file(root, "Up/S/other.mp4", "12", 2);
-    put_file(root, "Up/S/dir.mp4/inside.txt", "x", 1);
+    put_file(root, "Up/S/there.avi", "1234", 4);
+    put_file(root, "Up/S/other.avi", "12", 2);
+    put_file(root, "Up/S/dir.avi/inside.txt", "x", 1);
     setting_set("media.roots", root);
     media_scan_sync();
     CHECK_INT(media_lib()->nseries, 1);
@@ -211,8 +211,8 @@ TEST(media_upload_pages_speak_swedish_and_spanish) {
     const char *plan =
         "{\"root\":\"0\",\"into\":\"Up\",\"conv\":\"1\",\"files\":["
         "[\"S/x.mkv\",3000],[\"S/y.mkv\",20],[\"S/notes.txt\",10],[\"../evil.mkv\",5],[\"S/Thumbs.db\",3],"
-        "[\"S/w.mp4\",7],[\"S/there.mp4\",4],[\"S/other.mp4\",9],[\"S/w.mp4\",7],[\"S/big.mp4\",3000],"
-        "[\"S/nosize.mp4\",-1],[\"S/dir.mp4\",5],[\"Show/Season 1/Show 1x01.mp4\",50],"
+        "[\"S/w.avi\",7],[\"S/there.avi\",4],[\"S/other.avi\",9],[\"S/w.avi\",7],[\"S/big.avi\",3000],"  /* (plain sends: an MP4 is converted if it needs it - 2.5) */
+        "[\"S/nosize.avi\",-1],[\"S/dir.avi\",5],[\"Show/Season 1/Show 1x01.mp4\",50],"
         "[\"Show/Season 1/Show 1x01.en.srt\",30],"
         "[\"D/Disc - 1/A1_t01.mkv\",943718400],[\"D/Disc - 1/A2_t02.mkv\",996147200],"
         "[\"D/Disc - 1/A3_t03.mkv\",1048576000],[\"D/Disc - 1/A4_t04.mkv\",1048576000],"
@@ -332,6 +332,9 @@ TEST(media_upload_preview_speaks_swedish_and_spanish) {
                                         "IMG_1.mov", "notes.txt", "poster.jpg", "Show.S01E02.mp4",
                                         "Show.S01E03.Third.en.srt", "Show.S01E03.Third.mkv", "Show.S01E03.Third.web.mp4",
                                         "Show.S01E04.mp4", "Sub only.srt", "Other S02E01.mp4",
+                                        /* (2.5: an MP4's copy, made only if its sound needs it) */
+                                        "IMG_1.web.mp4", "Film (2001)-trailer.web.mp4", "Film (2001).web.mp4",
+                                        "01 - Unknown.web.mp4", "Show.S01E04.web.mp4",
                                         "1 video", /* (Swedish too: "These are films" counts a folder's videos - 2.4) */
                                         NULL};
     static const char *const pages[] = {"/media/upload"};

@@ -1,13 +1,13 @@
 /* tools/convfuzz.c — fuzzing modules/av's converter: av_convert on MKV bytes in memory, the MP4
- * written to memory. Reaches the demuxer, the MPEG-2 decoder, the deinterlacer, the H.264
- * encoder, the AC-3 decoder, the AAC encoder and the MP4 writer (dev aid, not part of the app).
+ * written to memory. Reaches the demuxer, the MPEG-2 and MPEG-4 Part 2 decoders, the deinterlacer, the
+ * H.264 encoder, the AC-3 decoder, the AAC encoder and the MP4 writer (dev aid, not part of the app).
  *
  * libFuzzer (clang on Linux/macOS; CI's fuzz job does this):
  *   HEMMA_FUZZ_SEEDS=build/fuzz-seeds build/test conv_fuzz_seeds      the seed files (made by
  *                                        the converter tests: small MKVs of every kind it takes)
  *   clang -g -O1 -std=gnu11 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
  *         -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION tools/convfuzz.c modules/av/conv.c modules/av/mkv.c \
- *         modules/av/mpeg2.c modules/av/deint.c modules/av/h264enc.c modules/av/ac3.c modules/av/dts.c \
+ *         modules/av/mpeg2.c modules/av/mpeg4.c modules/av/deint.c modules/av/h264enc.c modules/av/ac3.c modules/av/dts.c \
  *         modules/av/aac.c modules/av/mp4.c -lm -o build/convfuzz
  *   build/convfuzz -max_total_time=90 -max_len=65536 -rss_limit_mb=2048 -timeout=60 build/fuzz-corpus build/fuzz-seeds
  *

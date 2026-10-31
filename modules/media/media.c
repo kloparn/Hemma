@@ -479,7 +479,7 @@ static void quality(Buf *b, const MediaFile *f) {
 /* A codec or container by the name people know it by ("h264" -> "H.264"); others in capitals. */
 static void tech_name(Buf *b, const char *id) {
     static const char *const names[][2] = {
-        {"h264", "H.264"}, {"hevc", "HEVC (H.265)"}, {"mpeg2", "MPEG-2"}, {"mpeg4", "MPEG-4 (XviD/DivX)"},
+        {"h264", "H.264"}, {"hevc", "HEVC (H.265)"}, {"mpeg2", "MPEG-2"}, {"mpeg4", "MPEG-4 (XviD/DivX)"}, {"msmpeg4", "DivX 3 (MS-MPEG4)"},
         {"ac3", "AC-3 (Dolby Digital)"}, {"eac3", "E-AC-3"}, {"opus", "Opus"}, {"vorbis", "Vorbis"},
         {"truehd", "TrueHD"}, {"pcm", "PCM"}};
     for (int i = 0; i < countof(names); i++)
@@ -741,6 +741,7 @@ void media_lib_head(Ctx *c, Buf *b, const char *active, const char *title, const
         H(b, "<span>%s</span></a>", str_eq(active, "books") ? T("Add audiobooks") : T("Add videos"));
     }
     media_offline_head(c, b); /* (in the app: "Offline" - its own screen of what's saved, 2.3) */
+    media_caps(b);            /* (the browser says what it plays: devices.c, 2.5) */
     H(b, "<a class=\"icon-btn\" href=\"/media/settings\" title=\"%s\" aria-label=\"%s\">", T("Library settings"),
       T("Library settings"));
     ui_icon(b, "settings");
@@ -1917,6 +1918,7 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     if (next) media_upnext(b, next, buf_cstr(&go), false);
     media_controls(c, b, f, false);
     buf_puts(b, "</div>");
+    media_caps(b); /* (the browser says what it plays: devices.c) */
     buf_free(&go);
 
     /* about it */
@@ -1988,7 +1990,8 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     H(b, "<div class=\"media-playable\"><span class=\"badge %s\">%s</span>", cls[CLAMP((int)pl, 0, 3)],
       newer ? T("Plays on newer devices") : T(media_playable_label(pl)));
     if (newer)
-        H(b, "<span class=\"muted\">%s%s%s</span>", pf != f ? T("Converted copy") : "", pf != f ? " · " : "",
+        H(b, "<span class=\"muted\">%s%s%s</span>",
+          pf == f ? "" : media_is_web_copy(pf->rel) ? T("Converted copy") : T("Another version"), pf != f ? " · " : "",
           av1 ? T("AV1 video: Chrome, Edge and Firefox on computers and phones, most TVs from the last few years, and "
                   "the newest iPhones, iPads and Macs")
               : T("HEVC video: Safari on iPhone, iPad and Mac, and Chrome or Edge on most computers and phones from the "
@@ -1999,6 +2002,7 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         media_probe_why(&pf->probe, why, sizeof why);
         H(b, "<span class=\"muted\">%s</span>", why);
     }
+    if (pl != PLAY_YES) media_devices_line(c, b, &pf->probe); /* (on the household's own devices? devices.c, 2.5) */
     if (pf->probe.container[0] || pf->probe.vcodec[0]) { /* the codecs folded away: plain words first (issue #62) */
         H(b, "<details class=\"media-tech\"><summary>%s</summary><span>", T("File details"));
         tech_facts(b, pf);
@@ -2401,7 +2405,14 @@ static void page_settings(Ctx *c, Buf *b) {
     for (int i = 0; i < ix->nrecent; i++) playable += media_playable(&ix->files[ix->recent[i]])->probe.playable == PLAY_YES;
     H(b, "<div><dt>%s</dt><dd>", T("Play everywhere"));
     H(b, T("%d of %d"), playable, ix->nrecent);
-    buf_puts(b, "</dd></div></dl><p class=\"muted\">");
+    buf_puts(b, "</dd></div>");
+    int all = 0, mine = media_devices_on_all(c, &all); /* (2.5: and on the devices this household uses) */
+    if (mine >= 0) {
+        H(b, "<div><dt>%s</dt><dd>", T("Play on your devices"));
+        H(b, T("%d of %d"), mine, all);
+        buf_puts(b, "</dd></div>");
+    }
+    buf_puts(b, "</dl><p class=\"muted\">");
     if (media_scanning()) {
         int seen = media_scan_seen();
         H(b, TN(seen, "Scanning now — %d file looked at so far.", "Scanning now — %d files looked at so far."), seen);
@@ -2418,6 +2429,7 @@ static void page_settings(Ctx *c, Buf *b) {
     if (can_rescan(c)) ui_act(b, "media.rescan", "btn", T("Rescan now"), NULL, NULL, NULL);
     if (is_admin(c)) rescanners_form(b);
     ui_card_end(b);
+    media_devices_card(c, b); /* (why the rest doesn't play everywhere; admins: each device and what it can't - 2.5) */
     left_card(c, b, ix);
     noyear_card(c, b, ix);
     parts_card(c, b, ix);
@@ -3025,6 +3037,7 @@ static const Action actions[] = {
     {"media.search", act_search, true, .may = ACT_ALL}, {"media.progress", act_progress, true, true, ACT_ALL},
     {"media.sub", act_sub, true, true, ACT_ALL}, {"media.watched", act_watched, false, true, ACT_ALL},
     {"media.sound", act_sound, true, true, ACT_ALL}, {"media.soundlang", act_soundlang, false, true, ACT_ALL},
+    {"media.caps", act_media_caps, true, true, ACT_ALL}, /* (what this browser plays: devices.c, 2.5) */
     {"media.rescan", act_rescan}, {"media.roots", act_roots}, {"media.roots_add", act_roots_add},       {"media.prefs", act_prefs, .may = ACT_ALL},
     {"media.upload_stop", upload_act_stop}, {"media.upload_preview", upload_act_preview, true}, {"media.art_remove", act_art_remove},
     {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove},
@@ -3039,6 +3052,7 @@ static const Action actions[] = {
     {"media.take_subs", subtake_act_switch},
     {"media.cat", act_media_cat}, {"media.cat_new", act_media_cat_new}, /* (members and admins: 1.4) */
     {"media.lookup", act_media_lookup}, {"media.lookup_id", act_media_lookup_id},
+    {"media.lookup_art", act_media_lookup_art}, {"media.art_id", act_media_art_id}, /* (pictures: 2.5) */
     {0},
 };
 
@@ -3053,6 +3067,7 @@ static void init(void) {
     media_cats_init();
     media_lookup_init();
     media_kids_init();
+    media_devices_init();
 }
 
 /* Someone leaves (issue #45): moved out, what they watched stays with them; erased, it goes. */
@@ -3065,7 +3080,7 @@ static int forget(Forget *f) {
         if (f->apply) tbl_del(&T_media_watch, w->id);
     }
     if (n) forget_note(f, TN(n, "What they watched goes (%d video)", "What they watched goes (%d videos)"), n);
-    return n;
+    return n + media_devices_forget(f); /* (and the devices they watched on: devices.c) */
 }
 
 static void start(void) {
@@ -3074,6 +3089,7 @@ static void start(void) {
     upload_start();
     media_lib_start();
     subtake_start(); /* (after the library: its table sits beside the library's cache) */
+    media_devices_start();
     media_health_reset();
     g_disks_at = 0; /* (a start measures afresh: a test before this one may have measured other folders) */
     media_drives_start(); /* (after the library: a disk the helper just mounted becomes a folder of it) */
@@ -3162,6 +3178,7 @@ static void tick(int64_t now) {
     media_drives_tick(now);
     media_manage_tick(now); /* (a removal finished on its thread) */
     media_lookup_tick(now);
+    media_devices_tick(now / 1000);
     if (!g_disks_at || now - g_disks_at >= 30000) disks_refresh(now);
 }
 

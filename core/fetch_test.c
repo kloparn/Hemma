@@ -40,3 +40,24 @@ TEST(fetch_reads_a_chunked_answer_and_a_redirect) {
     CHECK(!parse("HTTP/1.1 200 OK\r\nContent-Length: 2", 100, &f)); /* headers cut short */
     fetched_free(&f);
 }
+
+TEST(fetch_reads_curls_last_answer) {
+    /* curl -D: every answer's headers, a redirect's first */
+    const char *h = "HTTP/1.1 301 Moved Permanently\r\nLocation: https://en.wikipedia.org/x\r\n\r\n"
+                    "HTTP/2 200 \r\ncontent-type: application/json\r\n\r\n";
+    CHECK_INT(fetch_curl_status(h, strlen(h)), 200);
+    CHECK_INT(fetch_curl_status("HTTP/1.1 404 Not Found\r\n\r\n", 26), 404);
+    CHECK_INT(fetch_curl_status("", 0), 0);
+    CHECK_INT(fetch_curl_status("hello\r\n", 7), 0);
+    /* no curl here: https refuses, saying why; plain http addresses aren't https */
+    Fetched f;
+    fetch_test_curl("");
+    CHECK(!fetch_curl());
+    CHECK(!fetch_https("https://en.wikipedia.org/", 1000, 1000, &f));
+    CHECK_HAS(f.err, "curl");
+    fetch_test_curl("/usr/bin/curl");
+    CHECK_STR(fetch_curl(), "/usr/bin/curl");
+    CHECK(!fetch_https("http://api.tvmaze.com/", 1000, 1000, &f));
+    CHECK_HAS(f.err, "not an https address");
+    fetch_test_curl(NULL); /* (looked for again next time) */
+}

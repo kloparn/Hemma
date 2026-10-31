@@ -610,8 +610,8 @@ static const char *vfw_fourcc(const uint8_t *f) {
     } map[] = {
         {"h264", "h264"}, {"x264", "h264"}, {"avc1", "h264"}, {"davc", "h264"}, {"vssh", "h264"}, {"hevc", "hevc"},
         {"h265", "hevc"}, {"hvc1", "hevc"}, {"x265", "hevc"}, {"xvid", "mpeg4"}, {"divx", "mpeg4"}, {"dx50", "mpeg4"},
-        {"fmp4", "mpeg4"}, {"mp4v", "mpeg4"}, {"div3", "mpeg4"}, {"div4", "mpeg4"}, {"mp42", "mpeg4"},
-        {"mp43", "mpeg4"}, {"3iv2", "mpeg4"}, {"xvix", "mpeg4"}, {"dm4v", "mpeg4"}, {"mjpg", "mjpeg"},
+        {"fmp4", "mpeg4"}, {"mp4v", "mpeg4"}, {"div3", "msmpeg4"}, {"div4", "msmpeg4"}, {"mp42", "msmpeg4"},
+        {"mp43", "msmpeg4"}, {"3iv2", "mpeg4"}, {"xvix", "mpeg4"}, {"dm4v", "mpeg4"}, {"mjpg", "mjpeg"},
         {"jpeg", "mjpeg"}, {"mpg1", "mpeg2"}, {"mpg2", "mpeg2"}, {"mpeg", "mpeg2"}, {"mp2v", "mpeg2"},
         {"wmv1", "wmv"},  {"wmv2", "wmv"},  {"wmv3", "wmv"},  {"wvc1", "vc1"},   {"vp80", "vp8"},   {"vp90", "vp9"},
         {"av01", "av1"},  {"iv50", "indeo"}, {"iv41", "indeo"}, {"cvid", "cinepak"},
@@ -653,7 +653,7 @@ static const char *mkv_codec(const char *id, Span priv) {
     } map[] = {
         {"V_MPEG4/ISO/AVC", "h264", false},  {"V_MPEGH/ISO/HEVC", "hevc", false}, {"V_AV1", "av1", false},
         {"V_VP9", "vp9", false},             {"V_VP8", "vp8", false},             {"V_MPEG4/ISO/", "mpeg4", true},
-        {"V_MPEG4/MS/V3", "mpeg4", false},   {"V_MPEG2", "mpeg2", false},         {"V_MPEG1", "mpeg2", false},
+        {"V_MPEG4/MS/V3", "msmpeg4", false}, {"V_MPEG2", "mpeg2", false},         {"V_MPEG1", "mpeg2", false},
         {"V_THEORA", "theora", false},       {"V_PRORES", "prores", false},       {"V_REAL/", "real", true},
         {"V_MJPEG", "mjpeg", false},         {"V_FFV1", "ffv1", false},           {"A_AAC", "aac", true},
         {"A_EAC3", "eac3", false},           {"A_AC3", "ac3", true},              {"A_DTS", "dts", true},
@@ -969,6 +969,7 @@ static bool probe_avi(const MediaReader *r, MediaProbe *o) {
 
 static const char *video_label(const char *c) {
     if (!strcmp(c, "mpeg4")) return "MPEG-4 Part 2 (XviD/DivX)";
+    if (!strcmp(c, "msmpeg4")) return "DivX 3 (MS-MPEG4)"; /* (not MPEG-4 Part 2: the converter can't decode it) */
     if (!strcmp(c, "mpeg2")) return "MPEG-2";
     if (!strcmp(c, "vc1")) return "VC-1";
     if (!strcmp(c, "mjpeg")) return "Motion JPEG";

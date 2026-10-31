@@ -1088,7 +1088,8 @@ static void episode_row(Buf *b, const MediaSeries *s, const MediaFile *e, const 
     H(b, " · %s</small>", size);
     if (web) {
         file_line(b, e, "", T("Original"));
-        file_line(b, web, PLAY_CLS[CLAMP((int)web->probe.playable, 0, 3)], T("Converted copy"));
+        file_line(b, web, PLAY_CLS[CLAMP((int)web->probe.playable, 0, 3)],
+                  media_is_web_copy(web->rel) ? T("Converted copy") : T("Another version")); /* (2.5: "x.mp4" beside "x.mkv") */
     } else {
         file_line(b, e, PLAY_CLS[CLAMP((int)e->probe.playable, 0, 3)], T(media_playable_label(e->probe.playable)));
     }

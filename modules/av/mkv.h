@@ -11,7 +11,10 @@
  * any number of them. Input is random access through MkvReader, so it works on
  * files, memory or anything else. Corrupt input never crashes or loops: every
  * size is bounded and damaged data is skipped by resynchronising on the next
- * Cluster. */
+ * Cluster.
+ *
+ * 2.5: an MP4, M4V or MOV file opens too, behind the same calls (mkv_mp4.h): its tracks named as Matroska names
+ * their codecs, its samples handed out in file order with their presentation times. */
 #ifndef HEMMA_AV_MKV_H
 #define HEMMA_AV_MKV_H
 
@@ -64,6 +67,7 @@ typedef struct {
     const uint8_t *strip; /* header stripping: these bytes are put back in front of every frame */
     size_t strip_len;
     bool compressed; /* zlib/bzlib/lzo compressed or encrypted: frames are not usable as they are */
+    char fourcc[5];  /* 2.5, an MP4/MOV's: its sample entry ("avc1", "hvc1", "mp4a", "ac-3" ...); "" in Matroska */
 } MkvTrack;
 
 typedef struct {
@@ -82,7 +86,7 @@ typedef struct Mkv Mkv;
 Mkv *mkv_open(const MkvReader *r, char *err, size_t errcap);
 void mkv_close(Mkv *m);
 
-const char *mkv_doctype(const Mkv *m); /* "matroska" or "webm" */
+const char *mkv_doctype(const Mkv *m); /* "matroska" or "webm" - or (2.5) "mp4" / "mov" */
 const char *mkv_title(const Mkv *m);
 const char *mkv_writing_app(const Mkv *m);
 int64_t mkv_duration(const Mkv *m); /* ns, 0 = unknown */

@@ -480,7 +480,7 @@ TEST(subtake_card_speaks_swedish_and_spanish) {
     /* (data: names, the library folder; the subtitle languages, each in its own words; the services categories are
        looked up at) */
     const char *const allow[] = {"Anna", "A",     "Show",  "MKV",   root,       "Svenska", "English",
-                                 "Norsk", "Dansk", "Suomi", "Deutsch", "Français", "Español", "TVmaze", "OMDb",
+                                 "Norsk", "Dansk", "Suomi", "Deutsch", "Français", "Español", "TVmaze", "OMDb", "Wikipedia",
                                  "omdbapi.com", NULL};
     Buf r = {0};
     int bad = 0;

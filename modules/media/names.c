@@ -256,7 +256,11 @@ static bool is_lang_tag(const Toks *T, int a, int i, bool strict) {
 }
 
 static int tok_year(const Tok *t) {
-    if (strlen(t->lo) != 4 || !all_digits(t->lo, 4)) return 0;
+    size_t n = strlen(t->lo);
+    /* a run of years ("1987-1990", "1988-89" - a series' years, as in "DuckTales (1987-1990)") is its first year (2.5:
+       read as no year, a pack's folder came out "DUCKTALES (1987-1990) - The" and split the show in two) */
+    bool range = (n == 9 || n == 7) && t->lo[4] == '-' && all_digits(t->lo + 5, n - 5);
+    if ((n != 4 && !range) || !all_digits(t->lo, 4)) return 0;
     int y = atoi(t->lo);
     return (y >= 1920 && y <= 2039) ? y : 0;
 }

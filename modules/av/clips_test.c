@@ -7,15 +7,18 @@
  * "next episode" card, which wants three times its 30 seconds - and a 40-second film; 2.2: a 40-second film
  * in two languages, "Two Voices (2024)", its sounds as a converted copy has them; 1.6: audiobooks - a
  * 40-second .m4b with three chapters, its index after its sound as some are, and a book in two .m4a parts),
- * one clip to upload under <folder>/upload, and picture subtitles (Blu-ray .sup files) in <folder>/sidecars
+ * one clip to upload under <folder>/upload (2.5: and "Dolby test (2019).mp4", H.264 + AC-3 in an MP4 - an upload makes
+ * its sound AAC), and picture subtitles (Blu-ray .sup files) in <folder>/sidecars
  * - outside the library: the test that wants them puts them beside the episodes. Without the variable
  * it only makes one clip and the .sup files in memory and checks them - so the suite keeps the generator
  * working. */
 #include "../../tests/test.h"
 #include "../../core/plat.h"
 #include "aac.h"
+#include "ac3_testenc.h"
 #include "audiotags_testmk.h"
 #include "h264enc.h"
+#include "mkv.h"
 #include "mp4.h"
 #include "subpic.h"
 
@@ -151,6 +154,64 @@ static bool clip(Sink *s, int seconds, int pitch, int pitch2) {
     if (a2) aac_close(a2);
     buf_free(&r1.data), buf_free(&r2.data);
     return ok;
+}
+
+/* 2.5: H.264 + Dolby (AC-3 2.0, 48 kHz, 192 kbit/s) in an MP4 - what the owner's DuckTales are, silent in Chrome and
+   Firefox: an upload makes its sound AAC. The tone's 64 frames (ac3_test_tone) over and over. */
+static bool dolby_clip(Sink *s, int seconds) {
+    H264Params hp = {.width = W, .height = H, .fps_num = FPS, .fps_den = 1, .keyint = FPS, .annexb = false};
+    H264Enc *e = h264enc_new(&hp);
+    static uint8_t ac3[64 * 768];
+    size_t got = ac3_test_tone(ac3, sizeof ac3, 64);
+    uint8_t avcc[256], dac3[3];
+    if (!e || got != sizeof ac3 || !mp4_dac3(ac3, 768, dac3)) return false;
+    size_t avcc_len = h264enc_avcc(e, avcc, sizeof avcc);
+    int frames = seconds * FPS, blocks = seconds * 48000 / 1536;
+    Mp4Out out = {s, sink_write, sink_write_at};
+    Mp4 *m = mp4_new(&out, 0, mp4_moov_bound(frames + blocks + 8, frames + blocks + 8));
+    Mp4Track vt = {.codec = MP4_H264, .timescale = FPS, .config = avcc, .config_len = avcc_len, .width = W, .height = H};
+    Mp4Track at = {.codec = MP4_AC3, .timescale = 48000, .config = dac3, .config_len = 3, .channels = 2, .sample_rate = 48000};
+    memcpy(at.lang, "eng", 4);
+    int vtrack = mp4_add_track(m, &vt), atrack = mp4_add_track(m, &at);
+    bool ok = vtrack >= 0 && atrack >= 0 && mp4_begin(m);
+    static uint8_t y[W * H], u[W / 2 * H / 2], v[W / 2 * H / 2];
+    for (int f = 0, b = 0; ok && (f < frames || b < blocks);) {
+        if (f < frames && (b >= blocks || (int64_t)f * 48000 <= (int64_t)b * 1536 * FPS)) { /* (by time, as clip()) */
+            for (int i = 0; i < W * H; i++) y[i] = (uint8_t)((i % W * 3 + i / W * 2 + f * 5) & 0xFF);
+            memset(u, 90, sizeof u), memset(v, 170, sizeof v);
+            H264Picture p = {y, u, v, W, W / 2, W / 2, f};
+            H264Packet pk;
+            ok = h264enc_encode(e, &p, &pk) && mp4_sample(m, vtrack, pk.data, pk.size, 1, 0, pk.idr);
+            f++;
+        } else {
+            ok = mp4_sample(m, atrack, ac3 + (size_t)(b % 64) * 768, 768, 1536, 0, true);
+            b++;
+        }
+    }
+    ok = ok && mp4_finish(m) && s->ok;
+    mp4_free(m);
+    h264enc_free(e);
+    return ok;
+}
+
+static bool dolby_file(const char *dir, const char *rel, int seconds) {
+    char path[600], folder[600];
+    if (snprintf(path, sizeof path, "%s/%s", dir, rel) >= (int)sizeof path) return false;
+    snprintf(folder, sizeof folder, "%s", path);
+    char *slash = strrchr(folder, '/');
+    if (slash) *slash = '\0';
+    if (!dir_make(folder)) return false;
+    Sink s = {.f = fopen(path, "wb"), .ok = true};
+    if (!s.f) return false;
+    bool ok = dolby_clip(&s, seconds);
+    return fclose(s.f) == 0 && ok;
+}
+
+static bool sink_read(void *ctx, int64_t off, void *dst, size_t n) {
+    const Buf *b = ctx;
+    if (off < 0 || (size_t)off > b->len || n > b->len - (size_t)off) return false;
+    memcpy(dst, b->p + off, n);
+    return true;
 }
 
 /* ------------------------------------------------- picture subtitles (a .sup)
@@ -308,6 +369,20 @@ TEST(av_test_clips) {
         CHECK(eng && swe);
         buf_free(&two.mem);
 
+        Sink dolby = {.ok = true}; /* 2.5: H.264 + AC-3 in an MP4, read back as mkv.h reads one */
+        CHECK(dolby_clip(&dolby, 2));
+        MkvReader r = {&dolby.mem, (int64_t)dolby.mem.len, sink_read};
+        char why[100];
+        Mkv *mk = mkv_open(&r, why, sizeof why);
+        CHECK(mk != NULL);
+        if (mk) {
+            const MkvTrack *vt = mkv_find_track(mk, MKV_VIDEO), *at = mkv_find_track(mk, MKV_AUDIO);
+            CHECK(vt && !strcmp(vt->codec, "V_MPEG4/ISO/AVC"));
+            CHECK(at && !strcmp(at->codec, "A_AC3") && at->rate == 48000 && at->channels == 2);
+            mkv_close(mk);
+        }
+        buf_free(&dolby.mem);
+
         Sink s = {.ok = true};
         CHECK(clip(&s, 2, 440, 0));
         CHECK(s.mem.len > 1000);
@@ -381,6 +456,7 @@ TEST(av_test_clips) {
     CHECK(book_file(lib, "Audiobooks/Parted Book/02 - Part Two.m4a", 6, 550,
                     (AtTestM4b){.title = "Part Two", .album = "Parted Book", .artist = "Ann Author", .track = 2}));
     CHECK(clip_file(up, "Upload test (2021).mp4", 4, 330, 0));
+    CHECK(dolby_file(up, "Dolby test (2019).mp4", 20)); /* 2.5: an MP4 whose sound the upload makes AAC */
     CHECK(dir_make(sides));
     for (int s = 0; s < (int)countof(SUPS); s++) {
         Buf sup = {0};
