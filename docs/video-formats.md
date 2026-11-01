@@ -54,8 +54,10 @@ itself too, a few at a time while nobody is watching.
 ### Where it happens
 
 - **While uploading** (the box *Make videos play everywhere on this device first*, on by default): the
-  computer you upload from makes the copy, and only the copy is sent.
-- **On the server:** **Watch → Library settings → Convert** for everything at once, or **Make it play
+  computer you upload from makes the copy, and only the copy is sent. Under *More options*, *Make HEVC videos play
+  everywhere too* (2.7, off by default) makes HEVC uploads H.264 on the way - slow, so the box says which of your
+  devices need it.
+- **On the server:** **Watch → Library settings → Converting → Convert** for everything at once, or **Make it play
   everywhere** on one video's page.
 
 Copying a picture is quick, even on a Raspberry Pi: under a minute for an episode, a few minutes for
@@ -66,8 +68,8 @@ DVD rips from a computer and let it do the work.
 ### HEVC made H.264 (2.6)
 
 An HEVC copy plays on most devices from the last few years, but not on every one (**Watch → Library
-settings** shows which of yours play what). Hemma can make an H.264 copy instead, which plays everywhere:
-**Watch → Library settings → Play everywhere from HEVC** lists every series with HEVC episodes, the
+settings → Devices** shows which of yours play what). Hemma can make an H.264 copy instead, which plays everywhere:
+**Watch → Library settings → Converting → Play everywhere from HEVC** lists every series with HEVC episodes, the
 films, and *All of them*; a series' **Manage** offers the whole series or a season, and a video's own page
 that one video. Each has two buttons:
 
@@ -76,8 +78,11 @@ that one video. Each has two buttons:
   sends it back. Keep the page open until it's done.
 
 Decoding HEVC and encoding H.264 is the heaviest work Hemma does: a 22-minute 1080p episode takes about 35
-minutes of one PC core - in a browser too - and a computer works on several at once (up to 8 in a browser); on
-a Raspberry Pi it takes many hours. The new copy takes the place of the HEVC
+minutes of one PC core - in a browser too - and a computer works on several at once; on a Raspberry Pi it takes many
+hours. **How hard to work** (2.7, on the same tab) says how much of each computer it may take - Hemma's own, and the
+one you're using: *Low power* (about a third of its cores, so it stays free for everything else), *Medium power*
+(about two thirds) or *Full throttle* (all of them). On Full throttle, when fewer videos are left than cores, one is
+made in parts side by side and joined, so a film uses every core instead of one. The new copy takes the place of the HEVC
 copy Hemma made, or comes beside an HEVC original; an original is never written over. (With *Do that by itself
 after each conversion* ticked, a copy made on Hemma's computer takes its original's place, as any conversion's
 does.) Its size is near the HEVC's: from about two thirds of it to half as much again in the episodes tried.

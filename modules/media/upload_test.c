@@ -13,6 +13,7 @@
 void conv_test_rip(const char *root, const char *rel, const char *doctype, int64_t size); /* convert_test.c */
 void conv_test_hevc(const char *root, const char *rel, int64_t size);                    /* (2.6) */
 void conv_test_hevc_mp4(const char *root, const char *rel);
+void conv_test_h264_mp4(const char *root, const char *rel); /* (2.7) */
 
 TEST(upload_names_keep_folders_and_refuse_tricks) {
     char out[400];
@@ -401,8 +402,8 @@ TEST(upload_sets_pictures_and_sends_copies_not_originals) {
     CHECK_HAS(th_page(adam_id, url), hshow);
     CHECK_HAS(th_page(adam_id, url), "Remove picture"); /* Poster.PNG is in that place */
     CHECK(!strstr(th_page(eva_id, url), "data-upload"));
-    snprintf(url, sizeof url, "/media/watch/%s", hfilm);
-    CHECK_HAS(th_page(adam_id, url), "?pic=1");
+    snprintf(url, sizeof url, "/media/watch/%s?manage=1", hfilm); /* (2.7: Picture is in a film's Manage view) */
+    CHECK_HAS(th_page(adam_id, url), "&amp;pic=1");
     snprintf(url, sizeof url, "/media/watch/%s", hep);
     CHECK(!strstr(th_page(adam_id, url), "?pic=1"));
 
@@ -552,14 +553,14 @@ TEST(upload_takes_copies_the_browser_makes) {
     char other[17];
     plan_for(adam, plain, &r, other);
     CHECK_HAS(body_of(&r), "\"todo\":[[0,0]]");
-    /* the room slider's choice is kept for next time (the browser's converter keeps to it), within 2-32 GB */
+    /* the room slider's choice is kept for next time (the browser's converter keeps to it), within 2-256 GB (2.7: 32 before) */
     plan_for(adam, "{\"root\":\"0\",\"into\":\"Up3\",\"conv\":\"1\",\"room\":\"16\",\"files\":[[\"S/x.mkv\",3000]]}", &r, other);
     CHECK_STR(pref(adam_id, "media.upload_room", ""), "16");
-    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up3\",\"conv\":\"1\",\"room\":\"99\",\"files\":[[\"S/x.mkv\",3000]]}", &r, other);
-    CHECK_STR(pref(adam_id, "media.upload_room", ""), "32");
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up3\",\"conv\":\"1\",\"room\":\"999\",\"files\":[[\"S/x.mkv\",3000]]}", &r, other);
+    CHECK_STR(pref(adam_id, "media.upload_room", ""), "256");
     const char *form = th_page(adam_id, "/media/upload");
     if (strstr(form, "data-wasm")) { /* (when the converter is built in: the slider comes with it) */
-        CHECK_HAS(form, "name=\"room\" min=\"2\" max=\"32\" step=\"1\" value=\"32\" data-show=\"media-room-n\"");
+        CHECK_HAS(form, "name=\"room\" min=\"2\" max=\"256\" step=\"1\" value=\"256\" data-show=\"media-room-n\"");
         CHECK_HAS(form, "<input type=\"checkbox\" name=\"ram\" value=\"1\"><span>"); /* (1.3: off at first) */
     }
     /* ... and the memory box's (1.3), when converting */
@@ -875,10 +876,158 @@ TEST(upload_here_makes_library_hevc_h264_on_the_device) {
     server_shutdown();
     buf_free(&r);
     /* its card where it was started - Library settings, a video's page - for the admin who started it, a while after too */
-    CHECK_HAS(th_page(adam_id, "/media/settings"), "Converting on this device");
+    CHECK_HAS(th_page(adam_id, "/media/settings/converting"), "Converting on this device");
     snprintf(url, sizeof url, "/media/watch/%016llx", (unsigned long long)e1_id);
     CHECK_HAS(th_page(adam_id, url), "id=\"media-h264-run\"");
-    CHECK(!strstr(th_page(eva_id, "/media/settings"), "media-h264-run"));
+    CHECK(!strstr(th_page(eva_id, "/media/settings/converting"), "media-h264-run"));
+    th_halt();
+}
+
+/* (2.7) With "Do that by itself after each conversion" ticked, a copy made on a device takes its original's place as
+   one made by Hemma's own queue does (owner, 2026-11-01: the original stayed beside it) - once it's in place, on the
+   loop (upload_tick), with the same checks: the copy lasts as long and plays in at least as many places */
+TEST(upload_here_copies_drop_originals_when_ticked) {
+    th_boot();
+    auth_configure("upload-salt", 1000);
+    int adam_id = make_user("Adam", "adam", "pw-adam-123", ROLE_ADMIN);
+    char root[512], path[1100];
+    str_copy(root, sizeof root, test_tmpdir());
+    setting_set("media.roots", root);
+    conv_test_hevc(root, "Series/H/Season 1/H.S01E01.mkv", 3000); /* an HEVC original, a minute long */
+    conv_test_hevc_mp4(root, "Series/H/Season 1/H.S01E01.web.mp4"); /* and Hemma's HEVC copy of it */
+    media_scan_sync();
+    CHECK(th_act(adam_id, "media.drop_auto", "on=1").ok);
+    char made[512]; /* the H.264 copy the device made: a minute long too */
+    str_copy(made, sizeof made, test_tmpdir());
+    conv_test_h264_mp4(made, "copy.mp4");
+    Buf copy = {0};
+    snprintf(path, sizeof path, "%s/copy.mp4", made);
+    CHECK(file_read_all(path, &copy, 1 << 20) && copy.len > 0);
+    const MediaFile *e1 = NULL;
+    for (int i = 0; i < media_lib()->nfiles; i++)
+        if (str_eq(media_lib()->files[i].rel, "Series/H/Season 1/H.S01E01.mkv")) e1 = &media_lib()->files[i];
+    CHECK(e1);
+    if (!e1 || !copy.len) {
+        buf_free(&copy);
+        th_halt();
+        return;
+    }
+    CHECK(server_listen("127.0.0.1", 0));
+    g_port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], batch[17], url[160], json[200];
+    sign_in("adam", "pw-adam-123", adam, sizeof adam);
+    Buf r = {0};
+    snprintf(json, sizeof json, "{\"here\":\"series=%016llx\",\"conv\":\"1\"}", (unsigned long long)e1->series);
+    plan_for(adam, json, &r, batch);
+    snprintf(url, sizeof url, "/media/upload/%s/0?size=%d", batch, (int)copy.len);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    CHECK_HAS(body_of(&r), "\"at\":0");
+    snprintf(url, sizeof url, "/media/upload/%s/0?at=0", batch);
+    call("PUT", url, adam, NULL, (const char *)copy.p, copy.len, (int64_t)copy.len, &r);
+    CHECK_HAS(buf_cstr(&r), "200");
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    upload_tick(now_ms()); /* (the server's own ticks may have done it already) */
+    snprintf(path, sizeof path, "%s/Series/H/Season 1/H.S01E01.mkv", root);
+    CHECK(!path_stat(path, NULL, NULL, NULL)); /* the original went, as after Hemma's own conversions */
+    snprintf(path, sizeof path, "%s/Series/H/Season 1/H.S01E01.web.mp4", root);
+    CHECK(same_file(path, (const char *)copy.p, copy.len));
+    buf_free(&r);
+    buf_free(&copy);
+    th_halt();
+}
+
+bool conv_test_hevc_three(const char *path); /* av/conv_test.c (2.7): a real HEVC + AAC MKV, 0.9 s */
+
+/* (2.7) Full throttle on this device, fewer videos than it makes at once: a long one made in parts side by side - each
+   part an entry of the plan's ({"part": [from, to]}), sent as any copy to its own file - and the server joins them into
+   the video's copy (its sound from the library's file), the parts' files gone after */
+TEST(upload_here_makes_a_video_in_parts_and_the_server_joins_them) {
+    th_boot();
+    auth_configure("upload-salt", 1000);
+    int adam_id = make_user("Adam", "adam", "pw-adam-123", ROLE_ADMIN);
+    char root[512], src[700], made[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    setting_set("media.roots", root);
+    snprintf(src, sizeof src, "%s/Movies/R (2020)", root);
+    CHECK(dir_make(src));
+    snprintf(src, sizeof src, "%s/Movies/R (2020)/R (2020).mkv", root);
+    CHECK(conv_test_hevc_three(src)); /* a real HEVC film, 0.9 s */
+    media_scan_sync();
+    const MediaFile *film = NULL;
+    for (int i = 0; i < media_lib()->nfiles; i++)
+        if (str_eq(media_lib()->files[i].rel, "Movies/R (2020)/R (2020).mkv")) film = &media_lib()->files[i];
+    CHECK(film);
+    if (!film) {
+        th_halt();
+        return;
+    }
+    pref_set(adam_id, "media.power_here", "full");
+    convert_test_device_cores(20);
+    upload_test_part_min(300); /* (parts of 300 ms: three) */
+    /* the parts, as this device would make them */
+    str_copy(made, sizeof made, test_tmpdir());
+    char mdst[700];
+    snprintf(mdst, sizeof mdst, "%s/made.web.mp4", made);
+    Buf piece[3] = {{0}};
+    for (int k = 0; k < 3; k++) {
+        ConvertJob *pj = xcalloc(1, sizeof *pj);
+        str_copy(pj->src, sizeof pj->src, src);
+        str_copy(pj->dst, sizeof pj->dst, mdst);
+        pj->h264 = true, pj->piece = k;
+        pj->piece_from = k * 300000000LL;
+        pj->piece_to = k < 2 ? (k + 1) * 300000000LL : AV_CONV_TO_END;
+        CHECK(convert_file(pj));
+        char path[800];
+        convert_piece_path(mdst, k, path, sizeof path);
+        CHECK(file_read_all(path, &piece[k], 1 << 22) && piece[k].len > 0);
+        free(pj);
+    }
+    CHECK(server_listen("127.0.0.1", 0));
+    g_port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], batch[17], url[160], json[200];
+    sign_in("adam", "pw-adam-123", adam, sizeof adam);
+    Buf r = {0};
+    snprintf(json, sizeof json, "{\"here\":\"id=%016llx\",\"conv\":\"1\"}", (unsigned long long)film->id);
+    plan_for(adam, json, &r, batch);
+    CHECK_HAS(body_of(&r), "{\"i\":1,\"f\":0,\"part\":[0,300]");
+    CHECK_HAS(body_of(&r), "{\"i\":2,\"f\":0,\"part\":[300,600]");
+    CHECK_HAS(body_of(&r), "{\"i\":3,\"f\":0,\"part\":[600,-1]");
+    CHECK(!strstr(body_of(&r), "{\"i\":0,")); /* (the film itself: joined, never sent) */
+    CHECK_HAS(body_of(&r), "\"room\":8589934592"); /* (the room set - 8 GB - over what 20 workers' small parts need) */
+    for (int k = 0; k < 3; k++) {
+        snprintf(url, sizeof url, "/media/upload/%s/%d?size=%d", batch, 1 + k, (int)piece[k].len);
+        call("POST", url, adam, NULL, "", 0, 0, &r);
+        CHECK_HAS(body_of(&r), "\"at\":0");
+        snprintf(url, sizeof url, "/media/upload/%s/%d?at=0", batch, 1 + k);
+        call("PUT", url, adam, NULL, piece[k].p, piece[k].len, piece[k].len, &r);
+        CHECK_HAS(buf_cstr(&r), "200");
+    }
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    upload_tick(now_ms()); /* (the join - the server's own ticks may have done it) */
+    char copy[800], part[900];
+    snprintf(copy, sizeof copy, "%s/Movies/R (2020)/R (2020).web.mp4", root);
+    Buf got = {0};
+    CHECK(file_read_all(copy, &got, 1 << 22) && got.len > 8 && !memcmp(got.p + 4, "ftyp", 4));
+    buf_free(&got);
+    for (int k = 0; k < 3; k++) {
+        convert_piece_path(copy, k, part, sizeof part);
+        CHECK(!path_stat(part, NULL, NULL, NULL)); /* (the parts went) */
+    }
+    CHECK(path_stat(src, NULL, NULL, NULL)); /* (the original stays: the box isn't ticked) */
+    convert_test_device_cores(0);
+    upload_test_part_min(0);
+    for (int k = 0; k < 3; k++) buf_free(&piece[k]);
+    buf_free(&r);
     th_halt();
 }
 
@@ -1262,7 +1411,7 @@ TEST(upload_and_the_converter_never_write_the_same_copy) {
     CHECK_HAS(body_of(&r), "\"todo\":[[0,0]]");
     CHECK(convert_test_start() == NULL); /* a 4 KB original, 2 KB to spare past the upload */
     CHECK(!queued(root, "Up/W/z.webm"));
-    const char *page = th_page(adam_id, "/media/settings");
+    const char *page = th_page(adam_id, "/media/settings/converting");
     CHECK_HAS(page, "1 video didn't fit on the drive");
     CHECK_HAS(page, "and 3 KB for the uploads and conversions running now");
 

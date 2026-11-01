@@ -88,13 +88,16 @@ TEST(media_a_feature_length_video_is_a_film_wherever_it_lies) {
         }
     }
     /* Library settings: the films without a year, each with Fix title - Inception has its year */
-    const char *html = th_page(adam, "/media/settings");
+    const char *html = th_page(adam, "/media/settings/manage");
     CHECK_HAS(html, "Films without a year");
     CHECK_HAS(html, "3 films have no year in their names.");
     char want[120];
     snprintf(want, sizeof want, "href=\"/media/watch/%016llx?fix=1\"", (unsigned long long)find("Disney/Up.mp4")->id);
     CHECK_HAS(html, want);
-    CHECK(!strstr(html, "<b>Inception</b>"));
+    const MediaFile *inception = find("Movies/Inception (2010)/Inception (2010).mp4");
+    CHECK(inception != NULL);
+    snprintf(want, sizeof want, "id=\"media-noyear-%016llx\"", inception ? (unsigned long long)inception->id : 0ULL);
+    CHECK(!strstr(html, want)); /* (the tab lists every film too: Inception isn't among those without a year) */
     th_halt();
 }
 

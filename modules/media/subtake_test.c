@@ -340,7 +340,7 @@ TEST(subtake_reads_each_mkv_once_and_saves_its_tracks) {
 
     /* the card while it's to do */
     subtake_tick(now_ms());
-    CHECK_HAS(th_page(adam, "/media/settings"), "Taking subtitles out of videos: 0 of 4 checked (waits while someone watches)");
+    CHECK_HAS(th_page(adam, "/media/settings/converting"), "Taking subtitles out of videos: 0 of 4 checked (waits while someone watches)");
 
     CHECK_INT(run_all(), 4);
     CHECK_INT(subtake_test_opens(), 4);
@@ -364,7 +364,7 @@ TEST(subtake_reads_each_mkv_once_and_saves_its_tracks) {
     CHECK(e1 && sup && idx && srt);
     if (e1 && sup && idx && srt) CHECK(sup->video == e1->id && idx->video == e1->id && srt->video == e1->id);
     subtake_tick(now_ms());
-    CHECK_HAS(th_page(adam, "/media/settings"), "Subtitles found in 2 videos");
+    CHECK_HAS(th_page(adam, "/media/settings/converting"), "Subtitles found in 2 videos");
 
     /* never read twice: not now, not after a restart */
     CHECK_INT(subtake_test_step(), 0);
@@ -408,7 +408,7 @@ TEST(subtake_gives_way_and_carries_on) {
     media_download_test_pace(0, 1);
     CHECK_INT(subtake_test_step(), -1);
     subtake_tick(now_ms());
-    CHECK_HAS(th_page(adam, "/media/settings"), "0 of 2 checked - waiting while someone watches");
+    CHECK_HAS(th_page(adam, "/media/settings/converting"), "0 of 2 checked - waiting while someone watches");
     media_download_test_pace(0, 0);
 
     /* a conversion queued (none runs in tests: it waits in the queue) */
@@ -421,18 +421,18 @@ TEST(subtake_gives_way_and_carries_on) {
     CHECK(th_act(adam, "media.convert", form).ok);
     CHECK_INT(subtake_test_step(), -1);
     subtake_tick(now_ms());
-    CHECK_HAS(th_page(adam, "/media/settings"), "waiting for the conversions to finish");
+    CHECK_HAS(th_page(adam, "/media/settings/converting"), "waiting for the conversions to finish");
     CHECK(th_act(adam, "media.convert_stop", "").ok);
     media_test_free_space(-1);
 
     /* switched off */
     CHECK(th_act(adam, "media.take_subs", "").ok);
     CHECK_INT(subtake_test_step(), -1);
-    const char *html = th_page(adam, "/media/settings");
+    const char *html = th_page(adam, "/media/settings/converting");
     CHECK_HAS(html, "Switched off - 0 of 2 videos checked so far.");
     CHECK(!strstr(html, "data-auto checked> Take subtitles out of videos by themselves"));
     CHECK(th_act(adam, "media.take_subs", "on=1").ok);
-    CHECK_HAS(th_page(adam, "/media/settings"), "data-auto checked> Take subtitles out of videos by themselves");
+    CHECK_HAS(th_page(adam, "/media/settings/converting"), "data-auto checked> Take subtitles out of videos by themselves");
     CHECK_INT(subtake_test_reads(), 0);
 
     /* a library folder away: nothing is read, from any folder */
@@ -443,7 +443,7 @@ TEST(subtake_gives_way_and_carries_on) {
     media_scan_sync();
     CHECK_INT(subtake_test_step(), -1);
     subtake_tick(now_ms());
-    CHECK_HAS(th_page(adam, "/media/settings"), "waiting for a library folder that's missing");
+    CHECK_HAS(th_page(adam, "/media/settings/converting"), "waiting for a library folder that's missing");
     file_write_atomic(path, film.p, film.len);
     buf_free(&film);
     media_scan_sync();
@@ -457,7 +457,7 @@ TEST(subtake_gives_way_and_carries_on) {
     CHECK_INT(subtake_test_reads(), 4); /* (the same file each time: it's never done) */
     CHECK(!there(root, "Show/Season 1/Show.S01E01.en.srt") && !there(root2, "Film (2001)/Film (2001).en.srt"));
     subtake_tick(now_ms());
-    CHECK_HAS(th_page(adam, "/media/settings"), "0 of 2 checked");
+    CHECK_HAS(th_page(adam, "/media/settings/converting"), "0 of 2 checked");
     subtake_test_halt_after(0);
     CHECK_INT(run_all(), 2);
     CHECK_INT(subtake_test_reads(), 6);
@@ -485,28 +485,28 @@ TEST(subtake_card_speaks_swedish_and_spanish) {
     Buf r = {0};
     int bad = 0;
     subtake_tick(now_ms());
-    bad += th_untranslated(anna, "/media/settings", allow, &r); /* to do */
+    bad += th_untranslated(anna, "/media/settings/converting", allow, &r); /* to do */
     media_download_test_pace(0, 1);
     subtake_tick(now_ms());
-    bad += th_untranslated(anna, "/media/settings", allow, &r); /* waiting */
+    bad += th_untranslated(anna, "/media/settings/converting", allow, &r); /* waiting */
     media_download_test_pace(0, 0);
     CHECK_INT(subtake_test_step(), 1);
-    bad += th_untranslated(anna, "/media/settings", allow, &r); /* half-way, found so far */
+    bad += th_untranslated(anna, "/media/settings/converting", allow, &r); /* half-way, found so far */
     CHECK_INT(run_all(), 1);
-    bad += th_untranslated(anna, "/media/settings", allow, &r); /* done */
+    bad += th_untranslated(anna, "/media/settings/converting", allow, &r); /* done */
     CHECK(th_act(anna, "media.take_subs", "").ok);
-    bad += th_untranslated(anna, "/media/settings", allow, &r); /* switched off */
+    bad += th_untranslated(anna, "/media/settings/converting", allow, &r); /* switched off */
     if (bad) printf("%s", buf_cstr(&r));
     CHECK_INT(bad, 0);
     pref_set(anna, PREF_LANG, "sv");
-    CHECK_HAS(th_page(anna, "/media/settings"), "Undertexter hittade i 1 video");
+    CHECK_HAS(th_page(anna, "/media/settings/converting"), "Undertexter hittade i 1 video");
     ThResult on = th_act(anna, "media.take_subs", "on=1");
     CHECK_STR(on.toast, "Hemma tar ut undertexterna ur videor av sig själv");
     pref_set(anna, PREF_LANG, "es");
-    CHECK_HAS(th_page(anna, "/media/settings"), "Subtítulos encontrados en 1 vídeo");
+    CHECK_HAS(th_page(anna, "/media/settings/converting"), "Subtítulos encontrados en 1 vídeo");
     /* members see none of it */
     int eva = th_person("Eva");
-    CHECK(!strstr(th_page(eva, "/media/settings"), "media-subtake"));
+    CHECK(!strstr(th_page(eva, "/media/settings/converting"), "media-subtake"));
     CHECK(!th_act(eva, "media.take_subs", "on=1").ok);
     buf_free(&r);
     th_halt();

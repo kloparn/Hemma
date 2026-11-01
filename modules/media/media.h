@@ -22,6 +22,15 @@
    Live TV is there only while the tv module is. */
 void media_lib_head(Ctx *c, Buf *b, const char *active, const char *title, const char *sub, const char *buttons);
 
+/* Library settings' tabs (2.7), each its own address: Overview | Converting | Manage | Folders | Online | Devices -
+   Converting, Manage and Online only for admins. Link the tab that holds what you point at. */
+#define MEDIA_SETTINGS "/media/settings"
+#define MEDIA_SETTINGS_CONVERTING "/media/settings/converting"
+#define MEDIA_SETTINGS_MANAGE "/media/settings/manage"
+#define MEDIA_SETTINGS_FOLDERS "/media/settings/folders"
+#define MEDIA_SETTINGS_ONLINE "/media/settings/online"
+#define MEDIA_SETTINGS_DEVICES "/media/settings/devices"
+
 /* TV mode (?tv=1): a page opened from a TV screen (modules/screens) - bare, always dark, big type,
    a Back link to ?back= first. Without tv=1 the same address is the ordinary page. */
 bool media_tv_mode(const Ctx *c);
@@ -194,6 +203,11 @@ void act_media_art_id(Ctx *c, Fields *f);
 void media_caps(Buf *b);
 bool media_device_plays(const char *caps, const MediaProbe *p);
 int media_devices_on_all(const Ctx *c, int *all);
+/* (2.7) this session's device: its logical cores as its browser said (0 = not yet), a phone/tablet?, its name (packed:
+   i18n_unpack shows it) - NULL for what isn't wanted */
+int media_device_cores(const Ctx *c, bool *phone, char *agent, size_t cap);
+/* (2.7) the household's devices that can't play HEVC: how many (-1 = none seen yet), named in names */
+int media_devices_no_hevc(const Ctx *c, char *names, size_t cap);
 void media_devices_card(Ctx *c, Buf *b);
 void media_devices_line(const Ctx *c, Buf *b, const MediaProbe *p); /* the watch page: on your devices? */
 void media_devices_init(void);

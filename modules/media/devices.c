@@ -44,12 +44,13 @@ typedef struct {
     char caps[24];  /* NCAPS letters y / m / n */
     int format;     /* CAPS_FORMAT the answers are to */
     int64_t first, seen;
+    int cores; /* (2.7) its logical cores, as the browser said (navigator.hardwareConcurrency); 0 = not said */
 } MediaDevice;
 
 static const FieldDef device_fields[] = {
     FIELD(MediaDevice, id, F_INT),     FIELD(MediaDevice, person, F_INT), FIELD(MediaDevice, agent, F_STR),
     FIELD(MediaDevice, caps, F_STR),   FIELD(MediaDevice, format, F_INT), FIELD(MediaDevice, first, F_I64),
-    FIELD(MediaDevice, seen, F_I64),
+    FIELD(MediaDevice, seen, F_I64),   FIELD(MediaDevice, cores, F_INT),
 };
 static Table T_media_device = TABLE("media_device", MediaDevice, device_fields);
 
@@ -135,18 +136,21 @@ void act_media_caps(Ctx *c, Fields *f) {
     if (!c->sess || strlen(caps) != NCAPS || strspn(caps, "ymn") != NCAPS) return;
     int person = c->sess->person;
     int64_t now = now_sec();
+    long cores = strtol(fields_str(f, "cores"), NULL, 10);
+    cores = cores > 0 && cores <= 1024 ? cores : 0;
     for (int i = 0; i < tbl_count(&T_media_device); i++) {
         const MediaDevice *d = tbl_at(&T_media_device, i);
         if (d->person != person || d->format != CAPS_FORMAT || !str_eq(d->agent, c->sess->agent) || !str_eq(d->caps, caps))
             continue;
-        if (now - d->seen >= SEEN_EVERY_S) {
+        if (now - d->seen >= SEEN_EVERY_S || (cores && d->cores != cores)) {
             MediaDevice m = *d;
             m.seen = now;
+            if (cores) m.cores = (int)cores;
             tbl_put(&T_media_device, &m);
         }
         return;
     }
-    MediaDevice m = {.person = person, .format = CAPS_FORMAT, .first = now, .seen = now};
+    MediaDevice m = {.person = person, .format = CAPS_FORMAT, .first = now, .seen = now, .cores = (int)cores};
     str_copy(m.agent, sizeof m.agent, c->sess->agent);
     str_copy(m.caps, sizeof m.caps, caps);
     tbl_put(&T_media_device, &m);
@@ -160,6 +164,47 @@ void act_media_caps(Ctx *c, Fields *f) {
     log_info("media: a new device: %s's %s plays %s", p ? p->name : "?", agent, buf_cstr(&what));
     buf_free(&what);
     app_changed_where("/media/settings");
+}
+
+/* (2.7) this session's device: its cores as its browser last said (0 = not yet), whether it's a phone or tablet (by
+   the session's agent: Android, iPhone, iPad) and its name ("Chrome on Windows", packed) */
+int media_device_cores(const Ctx *c, bool *phone, char *agent, size_t cap) {
+    if (phone) *phone = false;
+    if (agent && cap) agent[0] = '\0';
+    if (!c->sess) return 0;
+    const char *a = c->sess->agent;
+    if (phone) *phone = strstr(a, "Android") || strstr(a, "iPhone") || strstr(a, "iPad");
+    if (agent) str_copy(agent, cap, a);
+    const MediaDevice *best = NULL;
+    for (int i = 0; i < tbl_count(&T_media_device); i++) {
+        const MediaDevice *d = tbl_at(&T_media_device, i);
+        if (d->person == c->sess->person && str_eq(d->agent, a) && d->cores > 0 && (!best || d->seen > best->seen)) best = d;
+    }
+    return best ? best->cores : 0;
+}
+
+/* (2.7) the household's devices that can't play HEVC (10-bit, as x265 releases are): how many (-1 = no device seen yet),
+   named in names ("Anna's Chrome on Windows, Living room TV") */
+int media_devices_no_hevc(const Ctx *c, char *names, size_t ncap) {
+    (void)c;
+    if (ncap) names[0] = 0;
+    const MediaDevice *dev[64];
+    int nd = devices_now(dev, countof(dev), now_sec()), n = 0;
+    if (!nd) return -1;
+    Buf b = {0};
+    for (int d = 0; d < nd; d++) {
+        if (cap(dev[d]->caps, CAP_HEVC10)) continue;
+        const Person *p = person_get(dev[d]->person);
+        Buf agent = {0};
+        i18n_unpack(&agent, dev[d]->agent);
+        if (n++) buf_puts(&b, ", ");
+        if (p && p->role == ROLE_DISPLAY) buf_puts(&b, p->name); /* (a TV: its account's name says it) */
+        else buf_printf(&b, "%s (%s)", p ? p->name : "?", buf_cstr(&agent));
+        buf_free(&agent);
+    }
+    if (ncap) str_copy(names, ncap, buf_cstr(&b));
+    buf_free(&b);
+    return n;
 }
 
 /* ---------------------------------------------------------------- counting */

@@ -4,6 +4,63 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.7.0 (2026-11-01)
+
+Library settings in tabs, Manage one tap away, and how hard converting works - up to every core on one video.
+
+### New
+
+- **Library settings in tabs:** Overview, Converting, Manage, Folders, Online and Devices instead of one long page.
+  Overview has the counts and a *Needs a look* list - films without a year, videos left out, unfinished uploads,
+  conversions that failed or didn't fit, a new disk - each a tap away from the tab where it's done.
+- **Manage, easy to find:** a *Manage* button in Watch's header opens the whole library - every series and film, A-Z or
+  biggest first, with a search - each one a tap from its Manage. Every episode's page has *Manage* too (its row in the
+  series' Manage), and films get a Manage view of their own: their files, Fix title, Picture and Remove.
+- **How hard to work:** *Low power* (about a third of the computer's cores: it stays free for everything else),
+  *Medium power* (about two thirds, the default) or *Full throttle* (all of them) - for Hemma's computer, and for the
+  device you're using for *On this device* and uploads. The Converting tab says what each means on each machine.
+  The room a device may fill with copies being made now goes up to 256 GB (it stopped at 32), and each tier gets at
+  least what its cores need at once - an 8 GB room had held Full throttle to about ten 1080p episodes.
+- **Full throttle uses every core on one video:** when fewer videos are left than cores, a video being made H.264 from
+  HEVC is made in parts side by side and joined - a film no longer takes one core for hours while the rest wait. On a
+  device, its parts are sent as they're made and Hemma joins them.
+- **HEVC made H.264 while uploading:** a box under *More options* (off by default) re-encodes HEVC uploads to H.264 on
+  the sending computer - one pass, instead of uploading and then converting on this device. It says which of your
+  devices can't play HEVC, if any.
+
+### Fixed
+
+- **A copy made on your device takes its original's place too:** with *Do that by itself after each conversion* ticked,
+  Hemma's own conversions removed the original, but a copy made *On this device* left it beside the copy.
+
+### For developers
+
+- modules/media/media.c: `page_settings` draws one tab of `SET_TABS` (media.h `MEDIA_SETTINGS_*`: `/media/settings`,
+  `/converting`, `/manage`, `/folders`, `/online`, `/devices`; Converting, Manage and Online admins' only - anyone else
+  gets Overview); `look_card` = Overview's *Needs a look* (convert.c `convert_summary`, drives.c
+  `media_drives_attention`). Links into Library settings go to the tab that holds their thing.
+- modules/media/manage.c: `media_manage_library_card` (the Manage tab: `?q=`, `?sort=size`) replaces "What takes room";
+  the watch page's `media_manage_watch_button` is *Manage* for any video (an episode to `/media/series/<id>?manage=1&s=N
+  #media-m-<id>`, a film to `?manage=1`: `media_manage_film_view`), Picture/Remove/Fix title moved into that view.
+- modules/media/convert.c: `convert_power_workers(tier, cores, phone)` (Low 30%, Medium 60%, Full all, MAX_WORKERS 32;
+  a phone 1 or 2), setting `media.power`, pref `media.power_here`, action `media.power` (where=server|here, tier),
+  `convert_power_card`; workers over a lowered tier stop after their video (`pick`). Full throttle: `split` makes a long
+  HEVC-to-H.264 item `nparts` jobs (`convert_piece_path`: `x.web.mp4.p<k>.conv.part`), workers take parts before new
+  items, `part_finished` - the last one joins (`ConvertJob.npieces`). `convert_device_workers(c)` = this session's
+  device at its person's tier: devices.c keeps each device's `cores` (wire.js sends `navigator.hardwareConcurrency` with
+  `media.caps`); the converting forms carry `data-workers`.
+- modules/av/conv.c: `AvConvJob.piece_from/piece_to` (a part: decoded from the keyframe before it, its own pictures
+  encoded, an empty edit to where it starts - mp4.c `mp4_set_delay`) and `AvConvJob.pieces/npieces` (the join: the
+  parts' pictures as they are - each part's settings record must be the encoder's - the sound and subtitles from `in`).
+  wasm `conv_part(size, quality, from_ms, to_ms)`; conv.js `cut`. Tests: conv_makes_one_video_in_parts_and_joins_them;
+  a seed, hevc-three-keyframes-aac.mkv.
+- modules/media/upload.c: `here_parts` - on Full throttle a here batch's long videos get part entries (`part_of`,
+  `cut_from/_to`; the plan's todo `{"i","f","part":[from,to],"share"}`), their video's progress theirs
+  (`part_progress`); `upload_tick` joins them on a thread (`join_worker`) and settles a here copy's original
+  (`UpFile.settle`, convert_replace_original). `upload_has_part` keeps a scan off waiting parts. The upload form's `h264`
+  box: wire.js passes it to each job (`use.h264`). `HEMMA_TEST_PART_MS` (the browser tests: parts of 300 ms).
+- docs/decisions/0014: how hard conversions work, and videos in parts.
+
 ## 2.6.1 (2026-11-01)
 
 A copy ends where its original does: no pictures cut off, none added.

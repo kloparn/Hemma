@@ -736,6 +736,12 @@ void media_lib_head(Ctx *c, Buf *b, const char *active, const char *title, const
        has a folder to put them in (the empty page offers the folders first) */
     char roots[MEDIA_MAX_ROOTS][300];
     if (is_admin(c) && !str_eq(active, "tv") && media_roots(roots, MEDIA_MAX_ROOTS) > 0) {
+        /* (2.7; owner, 2026-11-01: "easier to get to a manage page - currently it's not easy to understand how to get
+           there"): the whole library, each series and film to its Manage */
+        H(b, "<a class=\"btn media-manage\" href=\"" MEDIA_SETTINGS_MANAGE "\" title=\"%s\">",
+          T("Rename, fix, convert or remove series and films"));
+        ui_icon(b, "list");
+        H(b, "<span>%s</span></a>", T("Manage"));
         buf_puts(b, "<a class=\"btn primary media-add\" href=\"/media/upload\">");
         ui_icon(b, "plus");
         H(b, "<span>%s</span></a>", str_eq(active, "books") ? T("Add audiobooks") : T("Add videos"));
@@ -932,7 +938,7 @@ static bool library_empty_states(Ctx *c, Buf *b) {
                  T("Tell it which folders hold your movies and series — the drive on the Pi, a mounted share, "
                    "or a folder on this computer."));
         if (media_drives_offer(c, b)) { /* (issue #74: a USB disk just plugged in) */
-            H(b, "<p class=\"media-center\"><a href=\"/media/settings\">%s</a></p>", T("Another folder"));
+            H(b, "<p class=\"media-center\"><a href=\"" MEDIA_SETTINGS_FOLDERS "\">%s</a></p>", T("Another folder"));
             return true;
         }
         Suggest s[4];
@@ -940,10 +946,10 @@ static bool library_empty_states(Ctx *c, Buf *b) {
         if (ns) {
             buf_puts(b, "<div class=\"media-center media-suggest-big\">");
             suggestion_forms(b, s, ns, true);
-            H(b, "</div><p class=\"media-center\"><a href=\"/media/settings\">%s</a></p>", T("Another folder"));
+            H(b, "</div><p class=\"media-center\"><a href=\"" MEDIA_SETTINGS_FOLDERS "\">%s</a></p>", T("Another folder"));
             return true;
         }
-        H(b, "<p class=\"media-center\"><a class=\"btn primary\" href=\"/media/settings\">%s</a></p>", T("Choose folders"));
+        H(b, "<p class=\"media-center\"><a class=\"btn primary\" href=\"" MEDIA_SETTINGS_FOLDERS "\">%s</a></p>", T("Choose folders"));
         return true;
     }
     if (ix->nrecent == 0 && ix->nbooks) { /* (1.6: a library of audiobooks only) */
@@ -1968,18 +1974,27 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         H(b, "<span>%s</span></button>", done ? T("Watched") : T("Mark watched"));
         ui_form_end(b);
     }
-    if (can_set_art(c, f->id)) { /* films and other videos; episodes use their series' picture */
-        H(b, "<a class=\"btn\" href=\"/media/watch/%X?pic=1\" title=\"%s\">", f->id, T("Change the picture"));
-        ui_icon(b, "edit");
-        H(b, "<span>%s</span></a>", T("Picture"));
-    }
-    if (can_remove(c, f)) {
-        H(b, "<a class=\"btn\" href=\"/media/watch/%X?remove=1\" title=\"%s\">", f->id, T("Delete it from the library"));
-        ui_icon(b, "trash");
-        H(b, "<span>%s</span></a>", T("Remove"));
-    }
-    media_manage_watch_button(c, b, f); /* (admins: Fix title - manage.c) */
+    media_manage_watch_button(c, b, f); /* (admins: Manage - 2.7: Picture, Remove and Fix title are in its view) */
     buf_puts(b, "</div></div>");
+    if (media_manage_film_view(c, f)) { /* (2.7) a film's or other video's Manage: its files and what can be done */
+        ui_card(b, T("Manage"), NULL, NULL);
+        media_manage_film_files(b, f);
+        buf_puts(b, "<div class=\"ph-a\">");
+        media_manage_fix_link(c, b, f);
+        if (can_set_art(c, f->id)) { /* films and other videos; episodes use their series' picture */
+            H(b, "<a class=\"btn\" href=\"/media/watch/%X?manage=1&amp;pic=1\" title=\"%s\">", f->id, T("Change the picture"));
+            ui_icon(b, "edit");
+            H(b, "<span>%s</span></a>", T("Picture"));
+        }
+        if (can_remove(c, f)) {
+            H(b, "<a class=\"btn danger\" href=\"/media/watch/%X?manage=1&amp;remove=1\" title=\"%s\">", f->id,
+              T("Delete it from the library"));
+            ui_icon(b, "trash");
+            H(b, "<span>%s</span></a>", T("Remove"));
+        }
+        buf_puts(b, "</div>");
+        ui_card_end(b);
+    }
 
     static const char *const cls[] = {"", "ok", "warn", "bad"};
     const MediaFile *pf = media_playable(f); /* the play-everywhere copy, when there is one */
@@ -2093,17 +2108,13 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
         buf_puts(b, "</ol>");
     }
 
-    if (str_eq(ctx_q(c, "pic"), "1") && can_set_art(c, f->id)) {
-        char close[64];
-        snprintf(close, sizeof close, "/media/watch/%016llx", (unsigned long long)f->id);
+    char close[80]; /* (a dialog opened from the Manage view closes back to it) */
+    snprintf(close, sizeof close, "/media/watch/%016llx%s", (unsigned long long)f->id,
+             media_manage_film_view(c, f) ? "?manage=1" : "");
+    if (str_eq(ctx_q(c, "pic"), "1") && can_set_art(c, f->id))
         art_modal(c, b, f->id, f->name.title, f->name.year, f->name.kind == MEDIA_OTHER ? T("Video") : NULL, f->poster,
                   close);
-    }
-    if (str_eq(ctx_q(c, "remove"), "1") && can_remove(c, f)) {
-        char close[64];
-        snprintf(close, sizeof close, "/media/watch/%016llx", (unsigned long long)f->id);
-        remove_modal(c, b, f, close);
-    }
+    if (str_eq(ctx_q(c, "remove"), "1") && can_remove(c, f)) remove_modal(c, b, f, close);
     media_manage_watch_dialog(c, b, f); /* ?fix=1 */
     if (f->name.kind == MEDIA_MOVIE) media_cats_modal(c, b, &work, title, here); /* ?cats=1 */
 }
@@ -2352,16 +2363,7 @@ static void kids_card(Buf *b) {
     ui_card_end(b);
 }
 
-static void page_settings(Ctx *c, Buf *b) {
-    const MediaIndex *ix = media_lib();
-    ctx_title(c, "%s", T("Library settings"));
-    buf_puts(b, "<a class=\"media-back\" href=\"/media\">");
-    ui_icon(b, "left");
-    H(b, "%s</a>", T("Watch"));
-    ui_head(b, T("Library"), T("Where your movies and series live"));
-    ui_head_end(b);
-    buf_puts(b, "<div class=\"grid2\">");
-
+static void folders_card(Ctx *c, Buf *b, const MediaIndex *ix) {
     ui_card(b, T("Folders"), NULL, NULL);
     if (is_admin(c)) {
         ui_form(b, "media.roots", "stack");
@@ -2392,21 +2394,19 @@ static void page_settings(Ctx *c, Buf *b) {
         buf_puts(b, "</p>");
     }
     ui_card_end(b);
-    media_drives_card(c, b); /* (issue #74: USB disks - new ones, and the library's own) */
+}
 
-    if (is_admin(c) && ix->nroots) {
-        ui_card(b, T("Add videos"), "/media/upload", T("Upload"));
-        H(b, "<p class=\"muted\">%s</p>",
-          T("Send movies and series from a laptop or PC to the library - whole folders at a time, picking up where it "
-            "left off if the connection drops."));
-        upload_summary(c, b);
-        ui_card_end(b);
-    }
-    convert_card(c, b);
-    convert_h264_card(c, b); /* (2.6: HEVC made H.264 - by series, on Hemma's computer or this device) */
-    subtake_card(c, b); /* (admins: the subtitles inside the MKVs, taken out by themselves) */
-    media_lookup_card(c, b); /* (admins: categories looked up online - lookup.c, 1.4) */
+static void add_videos_card(Ctx *c, Buf *b, const MediaIndex *ix) {
+    if (!is_admin(c) || !ix->nroots) return;
+    ui_card(b, T("Add videos"), "/media/upload", T("Upload"));
+    H(b, "<p class=\"muted\">%s</p>",
+      T("Send movies and series from a laptop or PC to the library - whole folders at a time, picking up where it "
+        "left off if the connection drops."));
+    upload_summary(c, b);
+    ui_card_end(b);
+}
 
+static void status_card(Ctx *c, Buf *b, const MediaIndex *ix) {
     ui_card(b, T("Status"), NULL, NULL);
     buf_puts(b, "<dl class=\"media-stats\">");
     H(b, "<div><dt>%s</dt><dd>%d</dd></div><div><dt>%s</dt><dd>%d</dd></div>"
@@ -2440,13 +2440,9 @@ static void page_settings(Ctx *c, Buf *b) {
     if (can_rescan(c)) ui_act(b, "media.rescan", "btn", T("Rescan now"), NULL, NULL, NULL);
     if (is_admin(c)) rescanners_form(b);
     ui_card_end(b);
-    media_devices_card(c, b); /* (why the rest doesn't play everywhere; admins: each device and what it can't - 2.5) */
-    left_card(c, b, ix);
-    noyear_card(c, b, ix);
-    parts_card(c, b, ix);
-    history_card(c, b);
-    media_manage_room_card(c, b); /* (admins: What takes room - manage.c) */
+}
 
+static void playback_card(Ctx *c, Buf *b) {
     if (c->me) {
         ui_card(b, T("Playback"), NULL, NULL);
         const char *cur = pref(c->me->id, "media.sublang", "");
@@ -2481,14 +2477,14 @@ static void page_settings(Ctx *c, Buf *b) {
         ui_form_end(b);
         ui_card_end(b);
     }
+}
 
-    if (is_admin(c)) kids_card(b);
-
+static void plays_where_card(Buf *b) {
     ui_card(b, T("What plays where"), NULL, NULL);
     /* plain words first, the formats folded away (issue #62) */
     H(b, "<p class=\"muted media-plays\">%r</p>",
       T("Most videos play straight away. Some - DVD rips especially - need converting first: one button (<i>Play "
-        "everywhere</i> above) makes a copy that plays on every phone, computer and TV."));
+        "everywhere</i>, under Converting) makes a copy that plays on every phone, computer and TV."));
     /* (each item's words in ONE span: the list items are column flexboxes, so loose text, <i> and <b> each took a
        row of their own - "Plays on newer devices" sat apart from its sentence) */
     H(b, "<ul class=\"media-tips\"><li><span class=\"badge ok\">%s</span> <span>%r</span></li>", T("Plays in browsers"),
@@ -2508,8 +2504,150 @@ static void page_settings(Ctx *c, Buf *b) {
       T("<b>Needs conversion:</b> MPEG-2 (DVD rips), AVI/XviD, DTS sound. Hemma converts MKV files with MPEG-2, H.264, "
         "HEVC or AV1 video and Dolby, DTS or AAC sound itself, and keeps their subtitles next to them."));
     ui_card_end(b);
+}
+
+/* Library settings in tabs (2.7; owner, 2026-11-01: "more tabs, less scrolling, so we can give easier info and more
+   better info" - it was one page of up to 18 cards): each tab its own address (media.h MEDIA_SETTINGS_*); Overview's
+   "Needs a look" names what wants an admin and links its tab. Converting, Manage and Online are admins' only: asked by
+   anyone else, Overview. */
+enum { TAB_OVERVIEW, TAB_CONVERTING, TAB_MANAGE, TAB_FOLDERS, TAB_ONLINE, TAB_DEVICES };
+static const struct {
+    const char *path, *label;
+    bool admin;
+} SET_TABS[] = {{MEDIA_SETTINGS, N_("Overview"), false},   {MEDIA_SETTINGS_CONVERTING, N_("Converting"), true},
+                {MEDIA_SETTINGS_MANAGE, N_("Manage"), true}, {MEDIA_SETTINGS_FOLDERS, N_("Folders"), false},
+                {MEDIA_SETTINGS_ONLINE, NC("settings tab", "Online"), true}, {MEDIA_SETTINGS_DEVICES, N_("Devices"), false}};
+
+static void look(Buf *b, const char *id, const char *href, const char *text) { /* one "Needs a look" row, to its tab */
+    H(b, "<li class=\"row\" id=\"media-look-%s\"><a class=\"grow\" href=\"%s\">%s</a>", id, href, text);
+    ui_icon(b, "right");
+    buf_puts(b, "</li>");
+}
+
+/* Overview: what wants an admin, each a row to the tab where it's done */
+static void look_card(Ctx *c, Buf *b, const MediaIndex *ix) {
+    if (!is_admin(c)) return;
+    ui_card(b, T("Needs a look"), NULL, NULL);
+    buf_puts(b, "<ul class=\"rows media-look\">");
+    size_t before = b->len;
+    char t[200];
+    if (!ix->nroots) look(b, "folders", MEDIA_SETTINGS_FOLDERS, T("Add the folders with your videos"));
+    if (media_drives_attention()) look(b, "disk", MEDIA_SETTINGS_FOLDERS, T("A disk wants a look"));
+    ConvertSummary cs;
+    convert_summary(&cs);
+    if (cs.busy) {
+        snprintf(t, sizeof t, TN(cs.busy, "Converting: %d video to go", "Converting: %d videos to go"), cs.busy);
+        look(b, "busy", MEDIA_SETTINGS_CONVERTING, t);
+    } else if (cs.need) {
+        snprintf(t, sizeof t, TN(cs.need, "%d video needs a copy to play everywhere", "%d videos need a copy to play everywhere"),
+                 cs.need);
+        look(b, "need", MEDIA_SETTINGS_CONVERTING, t);
+    }
+    if (cs.failed) {
+        snprintf(t, sizeof t, TN(cs.failed, "%d conversion failed", "%d conversions failed"), cs.failed);
+        look(b, "failed", MEDIA_SETTINGS_CONVERTING, t);
+    }
+    if (cs.noroom) {
+        snprintf(t, sizeof t, TN(cs.noroom, "%d video didn't fit on the drive to convert", "%d videos didn't fit on the drive to convert"),
+                 cs.noroom);
+        look(b, "noroom", MEDIA_SETTINGS_CONVERTING, t);
+    }
+    int noyear = 0;
+    for (int i = 0; i < ix->nmovies; i++) noyear += !ix->files[ix->movies[i]].name.year;
+    if (noyear) {
+        snprintf(t, sizeof t, TN(noyear, "%d film has no year", "%d films have no year"), noyear);
+        look(b, "noyear", MEDIA_SETTINGS_MANAGE, t);
+    }
+    if (ix->nleft_all) {
+        snprintf(t, sizeof t, TN(ix->nleft_all, "%d video is left out of the library", "%d videos are left out of the library"),
+                 ix->nleft_all);
+        look(b, "left", MEDIA_SETTINGS_MANAGE, t);
+    }
+    if (ix->nparts_all) {
+        snprintf(t, sizeof t, TN(ix->nparts_all, "%d upload never finished", "%d uploads never finished"), ix->nparts_all);
+        look(b, "parts", MEDIA_SETTINGS_MANAGE, t);
+    }
+    bool away = false;
+    int lost = media_history_lost(NULL, 0, &away);
+    if (lost) {
+        snprintf(t, sizeof t, TN(lost, "%d watched video is gone from the library", "%d watched videos are gone from the library"),
+                 lost);
+        look(b, "history", MEDIA_SETTINGS_MANAGE, t);
+    }
+    int all = 0, mine = media_devices_on_all(c, &all);
+    if (mine >= 0 && mine < all) {
+        snprintf(t, sizeof t,
+                 TN(all - mine, "%d video doesn't play on every device of yours", "%d videos don't play on every device of yours"),
+                 all - mine);
+        look(b, "devices", MEDIA_SETTINGS_DEVICES, t);
+    }
+    if (b->len == before) H(b, "<li class=\"row muted\">%s</li>", T("Nothing needs a look right now."));
+    buf_puts(b, "</ul>");
+    ui_card_end(b);
+}
+
+static void page_settings(Ctx *c, Buf *b) {
+    const MediaIndex *ix = media_lib();
+    int tab = TAB_OVERVIEW;
+    for (int i = 0; i < countof(SET_TABS); i++)
+        if (str_eq(c->path, SET_TABS[i].path) && (!SET_TABS[i].admin || is_admin(c))) tab = i;
+    ctx_title(c, "%s", T("Library settings"));
+    buf_puts(b, "<a class=\"media-back\" href=\"/media\">");
+    ui_icon(b, "left");
+    H(b, "%s</a>", T("Watch"));
+    ui_head(b, T("Library settings"), T("Where your movies and series live"));
+    ui_head_end(b);
+    /* (a phone shows four or so: the row opens at the tab shown - wire.js data-start) */
+    H(b, "<nav class=\"seg media-set-tabs\" data-start=\"media-set-%d\" aria-label=\"%s\">", tab, T("Library settings"));
+    for (int i = 0; i < countof(SET_TABS); i++) {
+        if (SET_TABS[i].admin && !is_admin(c)) continue;
+        H(b, "<a id=\"media-set-%d\" href=\"%s\"%r>%s</a>", i, SET_TABS[i].path,
+          i == tab ? " class=\"on\" aria-current=\"page\"" : "", T(SET_TABS[i].label));
+    }
+    buf_puts(b, "</nav><div class=\"grid2\">");
+    switch (tab) {
+    case TAB_OVERVIEW:
+        status_card(c, b, ix);
+        look_card(c, b, ix);
+        break;
+    case TAB_CONVERTING: {
+        size_t before = b->len;
+        convert_card(c, b);
+        convert_h264_card(c, b); /* (2.6: HEVC made H.264 - by series, on Hemma's computer or this device) */
+        if (b->len == before) {
+            ui_card(b, T("Play everywhere"), NULL, NULL);
+            H(b, "<p class=\"muted\">%s</p>",
+              T("Nothing to convert: every video plays everywhere, or is in a format Hemma can't convert yet."));
+            ui_card_end(b);
+        }
+        convert_power_card(c, b); /* (2.7: how hard to work - Hemma's computer, and this device) */
+        subtake_card(c, b);       /* (admins: the subtitles inside the MKVs, taken out by themselves) */
+        break;
+    }
+    case TAB_MANAGE:
+        media_manage_library_card(c, b); /* (every series and film, each to its Manage - manage.c) */
+        noyear_card(c, b, ix);
+        left_card(c, b, ix);
+        parts_card(c, b, ix);
+        history_card(c, b);
+        break;
+    case TAB_FOLDERS:
+        folders_card(c, b, ix);
+        media_drives_card(c, b); /* (issue #74: USB disks - new ones, and the library's own) */
+        add_videos_card(c, b, ix);
+        if (is_admin(c)) kids_card(b);
+        break;
+    case TAB_ONLINE:
+        media_lookup_card(c, b); /* (admins: categories and pictures looked up online - lookup.c, 1.4, 2.5) */
+        break;
+    case TAB_DEVICES:
+        media_devices_card(c, b); /* (why the rest doesn't play everywhere; admins: each device and what it can't - 2.5) */
+        playback_card(c, b);
+        plays_where_card(b);
+        break;
+    }
     buf_puts(b, "</div>");
-    media_drives_dialog(c, b); /* (?format=<disk>) */
+    if (tab == TAB_FOLDERS) media_drives_dialog(c, b); /* (?format=<disk>) */
 }
 
 static void page(Ctx *c, Buf *b) {
@@ -2522,7 +2660,7 @@ static void page(Ctx *c, Buf *b) {
     else if (str_starts(p, "/watch/")) page_watch(c, b, p + 7);
     else if (str_eq(p, "/books")) media_books_page(c, b);
     else if (str_starts(p, "/book/")) media_book_page(c, b, p + 6);
-    else if (str_eq(p, "/settings")) page_settings(c, b);
+    else if (str_eq(p, "/settings") || str_starts(p, "/settings/")) page_settings(c, b); /* (2.7: its tabs) */
     else if (str_eq(p, "/upload")) upload_page(c, b);
     else {
         ctx_title(c, "%s", T("Watch"));
@@ -2594,7 +2732,7 @@ static void widget(Ctx *c, Buf *b, int where) {
             ui_card_end(b);
             return;
         }
-        ui_card(b, T("Watch"), "/media/settings", T("Set up"));
+        ui_card(b, T("Watch"), MEDIA_SETTINGS_FOLDERS, T("Set up"));
         H(b, "<p class=\"muted\">%s</p>",
           T("Point Hemma at the drive with your movies and series, and everyone can watch them on any screen at home — "
             "offline."));
@@ -3052,6 +3190,7 @@ static const Action actions[] = {
     {"media.rescan", act_rescan}, {"media.roots", act_roots}, {"media.roots_add", act_roots_add},       {"media.prefs", act_prefs, .may = ACT_ALL},
     {"media.upload_stop", upload_act_stop}, {"media.upload_preview", upload_act_preview, true}, {"media.art_remove", act_art_remove},
     {"media.convert", convert_act_start},   {"media.convert_stop", convert_act_stop}, {"media.remove", act_remove},
+    {"media.power", convert_act_power}, /* (2.7: how hard conversions work - convert.c) */
     {"media.forget", act_forget, false, true, ACT_ALL}, {"media.kids", act_kids},
     {"media.drop_originals", act_drop_originals}, {"media.drop_auto", act_drop_auto},
     {"media.rescanners", act_rescanners}, {"media.parts_remove", act_parts_remove},
@@ -3169,7 +3308,7 @@ static void side(Ctx *c, Buf *b) {
         gb(used, us, sizeof us);
         gb(g_disks[i].total, tot, sizeof tot);
         snprintf(width, sizeof width, "%d%%", pct);
-        H(b, "<a class=\"media-disk%r\" href=\"/media/settings\" title=\"", level);
+        H(b, "<a class=\"media-disk%r\" href=\"" MEDIA_SETTINGS_MANAGE "?sort=size\" title=\"", level);
         H(b, T("Space on the disk with the library (%s)"), g_disks[i].name);
         H(b, "\"><span class=\"media-disk-l\"><span>%s%s%s</span><b>", T("Storage"), g_ndisks > 1 ? " · " : "",
           g_ndisks > 1 ? g_disks[i].name : "");

@@ -243,7 +243,7 @@ TEST(media_upload_pages_speak_swedish_and_spanish) {
     CHECK_HAS(page, "inte tillräckligt med plats på disken"); /* (a worker's reason) */
     CHECK_HAS(page, "skickades som den var: Can&#39;t convert V_MPEGH/ISO/HEVC video yet"); /* (the browser's words) */
     pref_set(adam_id, PREF_LANG, "");
-    static const char *const pages[] = {"/media/upload", "/media/settings"};
+    static const char *const pages[] = {"/media/upload", "/media/settings/folders"};
     CHECK_INT(untranslated(adam_id, pages, 2, allow), 0);
     CHECK_INT(untranslated(maja_id, up, 1, allow), 0); /* (Adam's upload, as another admin sees it) */
 
@@ -418,8 +418,8 @@ TEST(media_convert_card_speaks_swedish_and_spanish) {
     media_scan_sync();
     CHECK_INT(media_lib()->nepisodes, 3);
     static const char *const allow[] = {"Adam", "A", "Show S01E01", "Show S01E02", "Show S01E03", SAME_EVERYWHERE, NULL};
-    static const char *const settings[] = {"/media/settings"};
-    const char *page = th_page(adam, "/media/settings");
+    static const char *const settings[] = {"/media/settings/converting"};
+    const char *page = th_page(adam, "/media/settings/converting");
     CHECK_HAS(page, "Convert 3 videos");
     CHECK_HAS(page, "1 video has two versions");
     CHECK_INT(untranslated(adam, settings, 1, allow), 0);
@@ -431,7 +431,7 @@ TEST(media_convert_card_speaks_swedish_and_spanish) {
     CHECK(t.ok);
     CHECK_HAS(t.toast, "Konverterar 2 videor, 1 åt gången - 1 till får inte plats på disken");
     pref_set(adam, PREF_LANG, "es");
-    page = th_page(adam, "/media/settings");
+    page = th_page(adam, "/media/settings/converting");
     CHECK_HAS(page, "1 vídeo no cupo en el disco: Show S01E03 necesita hasta");
     pref_set(adam, PREF_LANG, "");
     CHECK_INT(untranslated(adam, settings, 1, allow), 0);
@@ -441,7 +441,7 @@ TEST(media_convert_card_speaks_swedish_and_spanish) {
     convert_test_finish(false);
     CHECK(convert_test_start() != NULL);
     convert_test_finish(true);
-    page = th_page(adam, "/media/settings");
+    page = th_page(adam, "/media/settings/converting");
     CHECK_HAS(page, "1 converted, 1 failed");
     /* (+ the test's own reason for the failure: data, like the av library's English) */
     static const char *const failed[] = {"Adam", "A", "The", "test", "said", "so", "Show", SAME_EVERYWHERE, NULL};
@@ -532,8 +532,8 @@ TEST(media_disks_speak_swedish_and_spanish) {
     look(&m);
     const char *allow[] = {"Adam",     "A",   "Film disk",     "Expansion HDD", "Blank One",
                            "Mac Disk", m.mnt, SAME_EVERYWHERE, NULL};
-    static const char *const new_disks[] = {"/media/settings", "/media/settings?format=sdc", "/media", "/system"};
-    CHECK_HAS(th_page(adam, "/media/settings"), "New disk found: Film disk");
+    static const char *const new_disks[] = {"/media/settings/folders", "/media/settings/folders?format=sdc", "/media", "/system"};
+    CHECK_HAS(th_page(adam, "/media/settings/folders"), "New disk found: Film disk");
     CHECK_HAS(th_page(adam, "/media"), "id=\"media-drive-offer\"");
     CHECK_INT(untranslated(adam, new_disks, countof(new_disks), allow), 0);
 
@@ -551,8 +551,8 @@ TEST(media_disks_speak_swedish_and_spanish) {
     t = th_act(adam, "media.drive_use", "uuid=5E2A-1B3C");
     CHECK_HAS(t.toast, "El programa auxiliar de discos está ocupado");
     pref_set(adam, PREF_LANG, "");
-    static const char *const settings[] = {"/media/settings"};
-    CHECK_HAS(th_page(adam, "/media/settings"), "Setting up the disk");
+    static const char *const settings[] = {"/media/settings/folders"};
+    CHECK_HAS(th_page(adam, "/media/settings/folders"), "Setting up the disk");
     CHECK_INT(untranslated(adam, settings, 1, allow), 0);
 
     /* the helper did it: ready, mounted, in the library */
@@ -564,8 +564,8 @@ TEST(media_disks_speak_swedish_and_spanish) {
     snprintf(line, sizeof line, "used %lld 5E2A-1B3C %s\n", (long long)now_sec() + 1, m.mnt);
     put(m.ans, "result", line);
     look(&m);
-    CHECK_HAS(th_page(adam, "/media/settings"), "<b>Film disk is ready.</b>");
-    CHECK_HAS(th_page(adam, "/media/settings"), " free of ");
+    CHECK_HAS(th_page(adam, "/media/settings/folders"), "<b>Film disk is ready.</b>");
+    CHECK_HAS(th_page(adam, "/media/settings/folders"), " free of ");
     CHECK_INT(untranslated(adam, settings, 1, allow), 0);
     const Activity *a = tbl_count(&T_activity) ? tbl_at(&T_activity, tbl_count(&T_activity) - 1) : NULL;
     CHECK(a && strstr(a->text, "Adam added the movie disk \"Film disk\"")); /* (Latest, in the reader's language) */
@@ -582,13 +582,13 @@ TEST(media_disks_speak_swedish_and_spanish) {
     snprintf(line, sizeof line, "refused %lld - - the disk is in use\n", (long long)now_sec() + 2);
     put(m.ans, "result", line);
     look(&m);
-    CHECK_HAS(th_page(adam, "/media/settings"), "the disk is in use. Nothing on the disk was changed.");
+    CHECK_HAS(th_page(adam, "/media/settings/folders"), "the disk is in use. Nothing on the disk was changed.");
     CHECK_INT(untranslated(adam, settings, 1, allow), 0);
     put(m.ans, "disks", "");
     snprintf(line, sizeof line, "forgotten %lld 5E2A-1B3C %s\n", (long long)now_sec() + 3, m.mnt);
     put(m.ans, "result", line);
     look(&m);
-    CHECK_HAS(th_page(adam, "/media/settings"), "<b>Forgotten.</b>");
+    CHECK_HAS(th_page(adam, "/media/settings/folders"), "<b>Forgotten.</b>");
     CHECK_INT(untranslated(adam, settings, 1, allow), 0);
 
     /* one of Hemma's disks missing; the helper silent for a quarter of an hour (asked before a restart) */
@@ -608,17 +608,17 @@ TEST(media_disks_speak_swedish_and_spanish) {
     th_halt();
     th_boot_in(data);
     look(&m);
-    const char *h = th_page(adam, "/media/settings");
+    const char *h = th_page(adam, "/media/settings/folders");
     CHECK_HAS(h, "missing: plug it back in");
     CHECK_HAS(h, "The disk helper didn't answer");
     CHECK_HAS(th_page(adam, "/system"), "The movie disk &quot;Film disk&quot;");
-    static const char *const gone[] = {"/media/settings", "/system"};
+    static const char *const gone[] = {"/media/settings/folders", "/system"};
     CHECK_INT(untranslated(adam, gone, countof(gone), allow), 0);
 
     /* without the helper: how to get it */
     media_test_drive_dirs(NULL, NULL);
     media_drives_tick(now_ms());
-    CHECK_HAS(th_page(adam, "/media/settings"), "needs its disk helper");
+    CHECK_HAS(th_page(adam, "/media/settings/folders"), "needs its disk helper");
     CHECK_INT(untranslated(adam, settings, 1, allow), 0);
     th_halt();
 }

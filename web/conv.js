@@ -5,7 +5,9 @@
 //   in:  {file, wasm, ram, part}  a File, the module's URL, and whether the copy waits in memory (else in a
 //                            Blob, which the browser may keep on its disk) - sent in pieces of `part` bytes;
 //                            (2.6) file = {remote, size, h264}: a library file read from the server (Range
-//                            requests), its HEVC made H.264 - "convert on this device"
+//                            requests), its HEVC made H.264 - "convert on this device"; (2.7) h264: an upload's too
+//                            (the form's "Make HEVC videos play everywhere too" box); (2.7) cut = [from, to] ms: only
+//                            that part of its picture (conv_part: Full throttle, the server joins the parts)
 //        {file, wasm, subs}  only the file's subtitles (a video the library has: it stays behind)
 //        {put, at}           send the copy, from byte `at`, to that address (PUTs)
 //   out: {pm, fed}           progress, 0..1000, and the original's bytes the converter has taken in so far
@@ -111,7 +113,7 @@ self.onmessage = async (e) => {
     postMessage(await send(e.data.put, e.data.at));
     return;
   }
-  const { file, wasm, ram, part, subs: subsOnly, flaky } = e.data;
+  const { file, wasm, ram, part, subs: subsOnly, flaky, h264, cut } = e.data;
   if (part > 0) PART = part;
   // Reading the original can fail for a while - a browser short of memory for the read (copies held in
   // memory; 1.3: ten Simpsons and three South Park episodes went up unconverted, "readAsArrayBuffer ...
@@ -222,7 +224,9 @@ self.onmessage = async (e) => {
     const x = instance.exports;
     wmem = x.memory;
     x._initialize();
-    const rc = subsOnly ? x.conv_subs_only(file.size) : x.conv_run(file.size, 0, 0, file.h264 ? 1 : 0);
+    const rc = subsOnly ? x.conv_subs_only(file.size)
+      : cut ? x.conv_part(file.size, 0, cut[0], cut[1]) // (2.7) one part of it, made side by side (Full throttle)
+      : x.conv_run(file.size, 0, 0, file.h264 || h264 ? 1 : 0);
     win = null;
     const text = (p) => {
       const b = bytes();

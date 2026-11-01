@@ -264,7 +264,7 @@ TEST(media_settings_validate_folders) {
     ThResult denied = th_act(eva, "media.roots", "roots=C%3A%2F");
     CHECK(!denied.ok);
     CHECK_HAS(denied.toast, "Only an admin");
-    CHECK(!strstr(th_page(eva, "/media/settings"), "name=\"roots\""));
+    CHECK(!strstr(th_page(eva, "/media/settings/folders"), "name=\"roots\""));
     CHECK(!th_act(adam, "media.roots", "roots=Z%3A%2Fdefinitely%2Fnot%2Fhere").ok);
     CHECK_STR(setting("media.roots", ""), "");
     char root[512], form[700];
@@ -317,11 +317,11 @@ TEST(media_widget_invites_setup_without_folders) {
     int eva = th_person("Eva");
     const char *html = th_page(adam, "/");
     CHECK_HAS(html, "Point Hemma at the drive");
-    CHECK_HAS(html, "\"/media/settings\">Set up</a>");
+    CHECK_HAS(html, "\"/media/settings/folders\">Set up</a>");
     html = th_page(eva, "/"); /* issue #58: "Set up" led members to a page they can't change */
-    CHECK(!strstr(html, "\"/media/settings\">Set up</a>"));
+    CHECK(!strstr(html, "\"/media/settings/folders\">Set up</a>"));
     CHECK_HAS(html, "Ask Adam (admin) to add the movie folders.");
-    CHECK_HAS(th_page(eva, "/media/settings"), "An admin chooses which folders are in the library: ask Adam (admin).");
+    CHECK_HAS(th_page(eva, "/media/settings/folders"), "An admin chooses which folders are in the library: ask Adam (admin).");
     th_halt();
 }
 
@@ -915,9 +915,9 @@ TEST(media_admins_remove_films_and_their_own_folders) {
     uint64_t hp_id = hp->id, ep_id = ep->id;
 
     /* the button and the dialog are the admin's, for films and other videos (episodes belong to their series) */
-    CHECK_HAS(th_page(adam, url("/media/watch/%s", hp_id)), "?remove=1");
-    CHECK(!strstr(th_page(eva, url("/media/watch/%s", hp_id)), "?remove=1"));
-    CHECK(!strstr(th_page(adam, url("/media/watch/%s", ep_id)), "?remove=1"));
+    CHECK_HAS(th_page(adam, url("/media/watch/%s?manage=1", hp_id)), "?manage=1&amp;remove=1"); /* (2.7: in its Manage view) */
+    CHECK(!strstr(th_page(eva, url("/media/watch/%s?manage=1", hp_id)), "remove=1"));
+    CHECK(!strstr(th_page(adam, url("/media/watch/%s?manage=1", ep_id)), "remove=1"));
     const char *dlg = th_page(adam, url("/media/watch/%s?remove=1", hp_id));
     CHECK_HAS(dlg, "Its folder <code class=\"media-code\">Movies/Hocus Pocus (1993) (1080p BluRay x265) REPACK</code> goes "
                    "with everything in it: 5 files");
@@ -1036,7 +1036,7 @@ TEST(media_keeps_only_the_most_compatible_version) {
     CHECK_INT(subs_of(big_id), 1);
 
     /* the library settings offer it (admins only) */
-    const char *page = th_page(adam, "/media/settings");
+    const char *page = th_page(adam, "/media/settings/converting");
     CHECK_HAS(page, "2 videos have two versions");
     CHECK_HAS(page, "Keep only the most compatible version");
     CHECK_HAS(page, "name=\"on\" value=\"1\" data-auto>");
@@ -1281,7 +1281,7 @@ TEST(media_folders_not_for_children) {
     CHECK_INT(media_lib_for(&c)->nmovies, 2);
     app_ctx_free(&c);
     /* the admin's views */
-    h = th_page(adam, "/media/settings");
+    h = th_page(adam, "/media/settings/folders");
     CHECK_HAS(h, "Not for children");
     CHECK_HAS(h, "Movies/Inception (2010)");
     h = th_page(adam, "/media/browse?p=0:Movies");
@@ -1335,7 +1335,7 @@ TEST(media_offers_the_folders_the_installer_knows) {
     CHECK_HAS(h, a);
     CHECK_HAS(h, disk);
     CHECK(!strstr(h, "/no/such/folder"));
-    h = th_page(adam, "/media/settings");
+    h = th_page(adam, "/media/settings/folders");
     CHECK_HAS(h, "from the installer");
     buf_puts(&form, "dir=");
     url_encode(&form, a, false);
@@ -1344,7 +1344,7 @@ TEST(media_offers_the_folders_the_installer_knows) {
     CHECK_STR(setting("media.roots", ""), a);
     ThResult r = th_act(adam, "media.roots_add", buf_cstr(&form));
     CHECK_HAS(r.toast, "in the library already");
-    h = th_page(adam, "/media/settings");
+    h = th_page(adam, "/media/settings/folders");
     char label[600];
     snprintf(label, sizeof label, "aria-label=\"Add %s\"", a);
     CHECK(!strstr(h, label)); /* (taken) */

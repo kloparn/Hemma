@@ -410,11 +410,22 @@ html[data-nodir] .media-up-folder { display: none; } /* (wire.js: no folder pick
 .media-minis .media-going-x button { width: 24px; height: 24px; }
 .media-minis .media-going-x .i { width: 13px; height: 13px; }
 
-/* Watch's tabs (Home Movies Series Live TV Folders): on a narrow phone they scroll sideways
-   rather than push the page wider */
-.media-tabs { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
-.media-tabs::-webkit-scrollbar { display: none; }
-.media-tabs a { white-space: nowrap; }
+/* Watch's tabs (Home Movies Series Live TV Folders), and (2.7) Library settings' (Overview Converting Manage Folders
+   Online Devices): on a narrow phone they scroll sideways rather than push the page wider */
+.media-tabs, .media-set-tabs { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.media-tabs::-webkit-scrollbar, .media-set-tabs::-webkit-scrollbar { display: none; }
+.media-tabs a, .media-set-tabs a { white-space: nowrap; }
+.media-set-tabs { margin-bottom: 16px; }
+
+/* (2.7) Library settings: Overview's "Needs a look" rows (each to its tab); the Manage tab's whole library - a search,
+   A-Z or biggest first; a film's Manage view (its files) */
+.media-look .row a { font-weight: 600; }
+.media-look .row .i { color: var(--muted); flex: none; }
+.media-lib-find { margin: 0 0 10px; }
+.media-lib-find input { width: 100%; background: var(--panel); border-radius: 12px; }
+.media-lib-sort { margin-bottom: 10px; }
+.media-lib .media-ep-n .i { width: 18px; height: 18px; }
+.media-files { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
 @media (max-width: 600px) {
   .media-tools { flex-wrap: wrap; }
   .media-search { max-width: none; min-width: 0; flex-basis: 100%; }
@@ -665,3 +676,10 @@ html[data-nodir] .media-up-folder { display: none; } /* (wire.js: no folder pick
 .media-devs.ok, .media-ok { color: var(--ok); }
 .media-why-list, .media-devices { margin: 6px 0 12px; padding-left: 18px; }
 .media-why-list li, .media-devices li { margin: 4px 0; }
+
+/* (2.7) How hard to work: each machine's three choices, what each means there under it */
+.media-power-h { margin: 14px 0 6px; font-size: 15px; }
+.media-power { gap: 6px; }
+.media-power-opt { align-items: flex-start; }
+.media-power-opt input { margin-top: 3px; flex: none; } /* (a long description beside it: it kept shrinking) */
+.media-power-opt span { display: flex; flex-direction: column; gap: 2px; }

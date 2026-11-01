@@ -283,6 +283,67 @@ test('an MKV with an XviD picture is converted here too', async ({ page }) => {
   for (const box of ['avc1', 'avcC', 'mp4a']) expect(mp4).toContain(box); /* (made H.264, the MP3 copied) */
 });
 
+// 2.7 (the owner: "Yes, off by default"): with "Make HEVC videos play everywhere too" ticked, an HEVC upload is made
+// H.264 on the sending computer - one pass, not up, back down and up again with "On this device" afterwards. Without the
+// box (the 2.6 default) the HEVC picture is copied as it is: 'hvc1'.
+test('an HEVC upload is made H.264 when the box is ticked', async ({ page }) => {
+  const run = async (name, tick) => {
+    const from = path.join(WORK, 'mkv-up', `${name} S01E01.mkv`);
+    fs.mkdirSync(path.dirname(from), { recursive: true });
+    fs.copyFileSync(path.join(WORK, 'mkv', 'hevc-random-10bit-aac.mkv'), from);
+    await page.goto('/media/upload');
+    test.skip(!(await page.locator('form[data-wasm]').count()), 'this Hemma has no converter for browsers (av.wasm)');
+    await page.locator('input[name=files]').setInputFiles(from);
+    await expect(page.locator('.media-up-group', { hasText: name })).toContainText(`${name} · S01E01`);
+    if (tick) {
+      await page.locator('#media-up-more summary').click();
+      await page.locator('input[name=h264]').check();
+    }
+    await page.locator('#media-up-start').click();
+    const copy = path.join(LIBRARY, 'Series', name, 'Season 1', `${name} S01E01.web.mp4`);
+    await expect.poll(() => fs.existsSync(copy), { message: 'the copy arrives', timeout: 60_000 }).toBe(true);
+    await expect(page.locator('.media-up h3')).toContainText('Finished · 1 file sent');
+    return fs.readFileSync(copy).toString('latin1');
+  };
+  const made = await run('Hevcup', true);
+  for (const box of ['avc1', 'avcC', 'mp4a']) expect(made).toContain(box); /* (made H.264, the AAC copied) */
+  expect(made).not.toContain('hvcC');
+  const copied = await run('Hevckeep', false);
+  expect(copied).toContain('hvcC'); /* (the HEVC copied as it is) */
+});
+
+// 2.7 (the owner: "Full throttle ... processes the videos in the most effective way"): this device on Full throttle,
+// fewer videos than it makes at once - one video made in parts side by side in its own workers (the server's plan says
+// which: {"part": [from, to]}, here parts of 300 ms - server.mjs), each sent to its own file, and the server joins them
+// into the copy. The copy is H.264; no part is left behind.
+test('a library HEVC video is made in parts on this device on full throttle', async ({ page }) => {
+  const dir = path.join(LIBRARY, 'Series', 'Partshow', 'Season 1'), from = path.join(dir, 'Partshow S01E01.mkv');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.copyFileSync(path.join(WORK, 'mkv', 'hevc-three-keyframes-aac.mkv'), from);
+  await page.goto('/media/upload');
+  test.skip(!(await page.locator('form[data-wasm]').count()), 'this Hemma has no converter for browsers (av.wasm)');
+  await act(page, 'media.power', { where: 'here', tier: 'full' });
+  await act(page, 'media.rescan', {});
+  const row = page.locator('li.row', { hasText: 'Partshow' });
+  await expect.poll(async () => {
+    await page.goto('/media'); /* (Watch's pages carry the question its browser answers - its cores too) */
+    await page.waitForLoadState('networkidle');
+    await page.goto('/media/settings/converting');
+    return (await row.count()) && row.locator('form[data-here][data-workers]').count();
+  }, { message: 'listed, with how many this device makes at once', timeout: 30_000 }).toBeGreaterThan(0);
+  test.skip(Number(await row.locator('form[data-here]').getAttribute('data-workers')) < 2, 'a device of one core: no parts');
+  const puts = [];
+  page.on('request', (r) => { if (r.method() === 'PUT') puts.push(r.url()); });
+  await row.locator('form[data-here] button').click();
+  const copy = path.join(dir, 'Partshow S01E01.web.mp4');
+  await expect.poll(() => fs.existsSync(copy), { message: 'the joined copy arrives', timeout: 60_000 }).toBe(true);
+  const mp4 = fs.readFileSync(copy).toString('latin1');
+  for (const box of ['avc1', 'avcC', 'mp4a']) expect(mp4).toContain(box); /* (made H.264, the AAC copied) */
+  expect(puts.some((u) => /\/1\?/.test(u))).toBe(true); /* (a part went: entry 1 - the video itself is entry 0) */
+  expect(fs.readdirSync(dir).filter((n) => n.endsWith('.conv.part'))).toEqual([]);
+  await act(page, 'media.power', { where: 'here', tier: 'medium' });
+});
+
 // 2.6 (the owner: "select a series i want to convert ... where they can pick 'on hemma device' or 'on logged device'"): a
 // library video whose picture is HEVC is made H.264 in this browser - the very file read from the server, its copy sent
 // back beside the original as an upload's copy would be.
@@ -293,7 +354,7 @@ test('a library HEVC video is made H.264 on this device', async ({ page }) => {
   await act(page, 'media.rescan', {});
   const row = page.locator('li.row', { hasText: 'Hevcshow' });
   await expect.poll(async () => {
-    await page.goto('/media/settings');
+    await page.goto('/media/settings/converting');
     return row.count();
   }, { message: 'the scan lists it with the HEVC videos', timeout: 30_000 }).toBeGreaterThan(0);
   test.skip(!(await row.locator('form[data-here][data-wasm]').count()), 'this Hemma has no converter for browsers (av.wasm)');
@@ -317,7 +378,7 @@ test('converting a library video here waits out a dropped network', async ({ pag
   await act(page, 'media.rescan', {});
   const row = page.locator('li.row', { hasText: 'Netshow' });
   await expect.poll(async () => {
-    await page.goto('/media/settings');
+    await page.goto('/media/settings/converting');
     return row.count();
   }, { message: 'the scan lists it with the HEVC videos', timeout: 30_000 }).toBeGreaterThan(0);
   test.skip(!(await row.locator('form[data-here][data-wasm]').count()), 'this Hemma has no converter for browsers (av.wasm)');

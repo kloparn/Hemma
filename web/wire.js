@@ -683,10 +683,11 @@
     if (!library && !files.length) { toast(2, f.dataset.empty || T('Choose a folder or some files first')); return; }
     const base = f.dataset.upload, body = {};
     for (const [k, v] of pairs(new FormData(f))) body[k] = v;
-    // the page says where (if it has them); data-part: the pieces a copy in memory goes in (tests: small ones)
+    // the page says where (if it has them); data-part: the pieces a copy in memory goes in (tests: small ones);
+    // data-workers (2.7): how many at once - the server's, by this device's cores and its person's power tier
     // data-flaky (tests only): each job's first try fails that many reads, as a browser short of memory did
     const use = { worker: f.dataset.convert, wasm: f.dataset.wasm, part: Number(f.dataset.part) || 0,
-      flaky: Number(f.dataset.flaky) || 0 };
+      flaky: Number(f.dataset.flaky) || 0, workers: Number(f.dataset.workers) || 0 };
     netPause = Number(f.dataset.netpause) || 5000;
     if (!canConvert || !use.worker || !use.wasm) {
       if (library) { toast(2, T('This browser can\'t convert videos')); return; }
@@ -712,8 +713,10 @@
       // {i, f} = convert file f here first, then send the copy as entry i (the server says how);
       // {i, f, subs: 1} = only read file f's subtitles, and send those (it stays behind)
       const copies = plan.todo.filter((t) => !Array.isArray(t)), plain = plan.todo.filter((t) => Array.isArray(t));
-      const room = Math.min(32, Math.max(2, Number(body.room) || 8)) * 2 ** 30; // the form's "room" (GB)
-      made = converter(base, plan.batch, files, copies, { ...use, ram: body.ram === '1' }, room);
+      // the room the copies under way may take: the server's (2.7: the person's setting, or what their power tier's
+      // workers need) - else the form's "room" (GB)
+      const room = plan.room > 0 ? plan.room : Math.min(256, Math.max(2, Number(body.room) || 8)) * 2 ** 30;
+      made = converter(base, plan.batch, files, copies, { ...use, ram: body.ram === '1', h264: body.h264 === '1' }, room);
       // One file at a time, never idle while something can go (1.3; owner: "be always at that limit"): what
       // the converters finished first, then the files that go as they are (in the plan's order: a VobSub's
       // .sub before its .idx), else wait for the next copy. Copies used to go in the list's order, and the
@@ -776,7 +779,7 @@
     }
   }
 
-  // Copies made here, a few at a time (half the cores, at most 8; a phone one): what's being made and
+  // Copies made here, a few at a time (2.7: data-workers, by the power tier; else half the cores): what's being made and
   // what waits to be sent come from originals of `room` bytes at most (the form's choice; one always
   // may) - copies are no bigger, so that's what this device may hold of them: on its disk, or with
   // use.ram in its memory (conv.js). A finished copy stays in its worker, which sends it (m.send) and
@@ -791,7 +794,9 @@
   const RAM_MAX = 8 * 2 ** 30, AGAIN = 2;
   function converter(base, batch, files, jobs, use, room) {
     const phone = /Mobi|Android|iPhone|iPad/.test(navigator.userAgent);
-    const width = phone ? 1 : Math.max(1, Math.min(8, Math.floor((navigator.hardwareConcurrency || 2) / 2)));
+    // (2.7) the server's number when it knows this device (data-workers), else half the cores, at most 8; a phone one
+    const width = use.workers > 0 ? use.workers
+      : phone ? 1 : Math.max(1, Math.min(8, Math.floor((navigator.hardwareConcurrency || 2) / 2)));
     const workers = new Map(), finished = []; // finished: {k, m}, in the order they came
     const ready = new Map(); // job -> the worker holding its finished copy, until it's sent
     const seen = new Map(); // job -> [progress, when the server last heard it]
@@ -802,7 +807,8 @@
     // failing at the same read every time (a disk's bad spot cutting the stream) gives up after NET_WAIT, as before
     const netSince = new Map(), netAt = new Map();
     let next = 0, taken = 0, halted = '', waiting = null;
-    const source = (k) => (jobs[k].subs ? 0 : files[jobs[k].f].size); // (reading subtitles keeps nothing)
+    // (2.7: a part of a video, its share of it - the server says: Full throttle makes one video in parts side by side)
+    const source = (k) => (jobs[k].subs ? 0 : jobs[k].part ? jobs[k].share || 0 : files[jobs[k].f].size); // (reading subtitles keeps nothing)
     const ahead = () => [...workers.keys(), ...ready.keys()].reduce((n, k) => n + source(k), 0);
     const held = () => [...inRam.values()].reduce((n, b) => n + b, 0);
     const wake = () => { if (waiting) { const w = waiting; waiting = null; w(); } };
@@ -888,7 +894,7 @@
       w.onerror = (e) => { e.preventDefault(); finish(k, { error: T('The converter stopped') }); };
       const ram = !!use.ram && !job.subs && held() + source(k) <= RAM_MAX;
       if (ram) inRam.set(k, source(k));
-      w.postMessage({ file: files[job.f], wasm: use.wasm, ram, part: use.part, subs: !!job.subs,
+      w.postMessage({ file: files[job.f], wasm: use.wasm, ram, part: use.part, subs: !!job.subs, h264: !!use.h264, cut: job.part,
         flaky: tries.has(k) ? 0 : use.flaky });
     }
     function pump() {
@@ -1312,7 +1318,9 @@
     if (!el) return;
     const v = document.createElement('video');
     const said = (t) => { const r = v.canPlayType(t); return r === 'probably' ? 'y' : r === 'maybe' ? 'm' : 'n'; };
-    capsSent = send({ t: 'live', a: 'media.caps', url: here(), f: [['caps', el.dataset.caps.split('|').map(said).join('')]] });
+    // (2.7) with its logical cores: how many videos "On this device" converts at once is the server's to say per tier
+    capsSent = send({ t: 'live', a: 'media.caps', url: here(),
+      f: [['caps', el.dataset.caps.split('|').map(said).join('')], ['cores', String(navigator.hardwareConcurrency || 0)]] });
   }
 
   // A video or a book taken off the page (another page came) lets go of its file - a paused one too: it kept it,

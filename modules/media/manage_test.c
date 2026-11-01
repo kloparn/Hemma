@@ -244,8 +244,9 @@ TEST(manage_fixes_a_films_title_and_year) {
     media_watch_report(eva, hp_id, 300, 1200, false, now_ms());
 
     /* the button and the dialog are the admins' */
-    CHECK_HAS(th_page(adam, url("/media/watch/%s", hp_id)), "?fix=1");
-    CHECK(!strstr(th_page(eva, url("/media/watch/%s", hp_id)), "?fix=1"));
+    CHECK_HAS(th_page(adam, url("/media/watch/%s", hp_id)), "?manage=1\"");          /* (2.7: Manage, then Fix title in it) */
+    CHECK_HAS(th_page(adam, url("/media/watch/%s?manage=1", hp_id)), "?manage=1&amp;fix=1");
+    CHECK(!strstr(th_page(eva, url("/media/watch/%s", hp_id)), "manage=1"));
     const char *dlg = th_page(adam, url("/media/watch/%s?fix=1", hp_id));
     CHECK_HAS(dlg, "Fix the title");
     CHECK_HAS(dlg, "data-a=\"media.fix_title\"");
@@ -468,32 +469,45 @@ TEST(manage_renames_carry_every_subtitle_along) {
     th_halt();
 }
 
-TEST(manage_shows_what_takes_room_biggest_first) {
+/* (2.7) Library settings' Manage tab: every series and film, A-Z or biggest first (what "What takes room" showed:
+   originals and copies together), each to its Manage; a search finds one; admins only. Watch's header links it. */
+TEST(manage_lists_the_whole_library_az_or_biggest_first) {
     int adam, eva;
     boot(&adam, &eva);
-    put("Movies/Wee (2003)/Wee (2003).mkv", "too small to list");
-    setting_set("media.roots", g_root);
-    media_scan_sync();
-    CHECK(!strstr(th_page(adam, "/media/settings"), "What takes room")); /* (nothing takes room yet) */
     enum { MB = 1 << 20 };
     char *big = xmalloc(4 * MB);
     memset(big, 'x', 4 * MB);
+    put("Movies/Wee (2003)/Wee (2003).mkv", "tiny");
     put_data("Series/Garden/Season 1/Garden.S01E01.mkv", big, 3 * MB / 2);
     put_data("Series/Garden/Season 1/Garden.S01E02.mkv", big, 3 * MB / 2);
     put_data("Movies/Bigfoot (2001)/Bigfoot (2001).mkv", big, 5 * MB / 2);
     put_data("Movies/Tiny (2002)/Tiny (2002).mkv", big, 100);
     put_data("Movies/Tiny (2002)/Tiny (2002).web.mp4", big, 7 * MB / 2);
     free(big);
+    setting_set("media.roots", g_root);
     media_scan_sync();
-    const char *page = th_page(adam, "/media/settings");
-    CHECK_HAS(page, "What takes room");
-    const char *tiny = strstr(page, "<b>Tiny</b>"), *garden = strstr(page, "<b>Garden</b>"), *bigfoot = strstr(page, "<b>Bigfoot</b>");
-    CHECK(tiny && garden && bigfoot);
-    CHECK(tiny < garden && garden < bigfoot); /* 3.5 MB with its copy, 3 MB, 2.5 MB */
-    CHECK(!strstr(page, "<b>Wee</b>"));
+    CHECK_HAS(th_page(adam, "/media"), "href=\"/media/settings/manage\""); /* (Watch's header: Manage) */
+    CHECK(!strstr(th_page(eva, "/media"), "href=\"/media/settings/manage\""));
+    const char *page = th_page(adam, "/media/settings/manage");
+    CHECK_HAS(page, "Your library");
+    const char *bigfoot = strstr(page, "<b>Bigfoot</b>"), *garden = strstr(page, "<b>Garden</b>"),
+               *tiny = strstr(page, "<b>Tiny</b>"), *wee = strstr(page, "<b>Wee</b>");
+    CHECK(bigfoot && garden && tiny && wee);
+    CHECK(bigfoot < garden && garden < tiny && tiny < wee); /* A-Z */
     const MediaSeries *s = series_named("Garden");
     if (s) CHECK_HAS(page, url("/media/series/%s?manage=1\"", s->id));
-    CHECK(!strstr(th_page(eva, "/media/settings"), "What takes room"));
+    const MediaFile *film = find("Movies/Bigfoot (2001)/Bigfoot (2001).mkv");
+    if (film) CHECK_HAS(page, url("/media/watch/%s?manage=1\"", film->id)); /* (a film's own Manage view) */
+    page = th_page(adam, "/media/settings/manage?sort=size");
+    tiny = strstr(page, "<b>Tiny</b>"), garden = strstr(page, "<b>Garden</b>"), bigfoot = strstr(page, "<b>Bigfoot</b>");
+    wee = strstr(page, "<b>Wee</b>");
+    CHECK(tiny && garden && bigfoot && wee);
+    CHECK(tiny < garden && garden < bigfoot && bigfoot < wee); /* 3.5 MB with its copy, 3 MB, 2.5 MB, 4 bytes */
+    page = th_page(adam, "/media/settings/manage?q=GARD");
+    CHECK_HAS(page, "<b>Garden</b>");
+    CHECK(!strstr(page, "<b>Tiny</b>"));
+    CHECK_HAS(th_page(adam, "/media/settings/manage?q=zzz"), "Nothing in the library goes by that name.");
+    CHECK(!strstr(th_page(eva, "/media/settings/manage"), "Your library")); /* (admins: a member gets Overview) */
     th_halt();
 }
 
@@ -676,9 +690,9 @@ TEST(manage_speaks_swedish_and_spanish) {
     for (int i = 0; i < ix->nextras; i++)
         if (ix->files[ix->extras[i]].role == MF_BONUS) bonus = &ix->files[ix->extras[i]];
     CHECK(bonus != NULL);
-    CHECK_HAS(th_page(adam, "/media/settings"), "What takes room");
+    CHECK_HAS(th_page(adam, "/media/settings/manage"), "Your library");
     uint64_t e1_id = e1->id, flower_id = flower->id;
-    static char urls[16][300];
+    static char urls[24][300];
     int n = 0;
     uint64_t g = garden->id;
     snprintf(urls[n++], 300, "/media/series/%016llx", (unsigned long long)g);
@@ -699,7 +713,14 @@ TEST(manage_speaks_swedish_and_spanish) {
     }
     snprintf(urls[n++], 300, "/media/watch/%016llx", (unsigned long long)flower->id);
     snprintf(urls[n++], 300, "/media/watch/%016llx?fix=1", (unsigned long long)flower->id);
+    snprintf(urls[n++], 300, "/media/watch/%016llx?manage=1", (unsigned long long)flower->id); /* (2.7: its Manage) */
+    snprintf(urls[n++], 300, "/media/watch/%016llx?manage=1&fix=1", (unsigned long long)flower->id);
+    snprintf(urls[n++], 300, "/media/watch/%016llx?manage=1&remove=1", (unsigned long long)flower->id);
+    snprintf(urls[n++], 300, "/media/watch/%016llx", (unsigned long long)e1->id); /* (an episode's: Manage) */
     str_copy(urls[n++], 300, "/media/settings");
+    str_copy(urls[n++], 300, "/media/settings/manage");
+    str_copy(urls[n++], 300, "/media/settings/manage?sort=size");
+    str_copy(urls[n++], 300, "/media/settings/manage?q=zzz");
     /* data: people, the shows, films and episodes, and the library folder */
     /* (an extra's file name is its name: "Rip S01 (C2_t08.mkv)"; Library settings names the subtitle languages, each
        in its own words; "Film" and "Series" read the same in Swedish or Spanish) */

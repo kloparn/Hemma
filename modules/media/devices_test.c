@@ -97,42 +97,42 @@ TEST(devices_say_what_they_play) {
         CHECK(str_starts(list, "data-caps=\"video/mp4; codecs=&quot;avc1.640028&quot;|"));
     }
     /* before any device: why the rest doesn't play everywhere, and none listed */
-    h = th_page(adam, "/media/settings");
+    h = th_page(adam, "/media/settings/devices");
     CHECK_HAS(h, "What your devices play");
     CHECK_HAS(h, "<li><b>1</b> · HEVC needs hardware support");
     CHECK_HAS(h, "<li><b>1</b> · Dolby sound");
     CHECK_HAS(h, "None yet");
-    CHECK(!strstr(h, "Play on your devices"));
+    CHECK(!strstr(th_page(adam, "/media/settings"), "Play on your devices")); /* (Overview's Status) */
     /* answers that aren't one: nothing kept */
     CHECK(th_act(adam, "media.caps", "caps=yyy").ok);
     char bad[80];
     snprintf(bad, sizeof bad, "%s", answer(""));
     bad[6] = 'x';
     CHECK(th_act(adam, "media.caps", bad).ok);
-    CHECK_HAS(th_page(adam, "/media/settings"), "None yet");
+    CHECK_HAS(th_page(adam, "/media/settings/devices"), "None yet");
     /* a PC's browser: everything but Dolby in an MP4 */
     CHECK(th_act(adam, "media.caps", answer("ac3 maybe")).ok);
-    h = th_page(adam, "/media/settings");
-    CHECK_HAS(h, "Play on your devices");
+    h = th_page(adam, "/media/settings/devices");
     CHECK_HAS(h, "<b>Adam</b>");
     CHECK_HAS(h, "plays 2 of 3");
     CHECK_HAS(h, "not 1 Dolby sound");
     CHECK_HAS(h, "2 of 3 videos play on this device.");
     CHECK_HAS(h, "Each one that opened Watch in the last 30 days:");
+    CHECK_HAS(th_page(adam, "/media/settings"), "Play on your devices"); /* (Overview's Status) */
     CHECK_HAS(th_page(adam, watch("Fresh (2020).mp4")), "Plays on the one device of yours"); /* (the watch page) */
     CHECK_HAS(th_page(adam, watch("Loud (2002).mp4")), "Doesn't play on: Adam");
     CHECK(!strstr(th_page(adam, watch("Plain (2001).mp4")), "media-devs")); /* (plays everywhere: nothing to say) */
     /* a TV's (a display account's): no HEVC, but Dolby; the same answer again is no new device */
     CHECK(th_act(tv, "media.caps", answer("hevc")).ok);
     CHECK(th_act(tv, "media.caps", answer("hevc")).ok);
-    h = th_page(adam, "/media/settings");
+    h = th_page(adam, "/media/settings/devices");
     CHECK_HAS(h, "<b>Living room TV</b>");
     CHECK_HAS(h, "not 1 HEVC (x265)");
     CHECK_HAS(h, "1 of 3 videos play on every one of these 2 devices.");
-    CHECK_HAS(h, "<dt>Play on your devices</dt><dd>1 of 3</dd>");
+    CHECK_HAS(th_page(adam, "/media/settings"), "<dt>Play on your devices</dt><dd>1 of 3</dd>");
     CHECK_HAS(th_page(adam, watch("Fresh (2020).mp4")), "Doesn't play on: Living room TV");
     /* members see why, not the household's devices */
-    h = th_page(eva, "/media/settings");
+    h = th_page(eva, "/media/settings/devices");
     CHECK_HAS(h, "What your devices play");
     CHECK(!strstr(h, "The household's devices"));
     /* what plays where: the container too */
@@ -152,6 +152,6 @@ TEST(devices_say_what_they_play) {
     /* someone leaves: their devices go */
     Forget f = {.person = tv, .apply = true};
     CHECK_INT(media_devices_forget(&f), 1);
-    CHECK(!strstr(th_page(adam, "/media/settings"), "Living room TV"));
+    CHECK(!strstr(th_page(adam, "/media/settings/devices"), "Living room TV"));
     th_halt();
 }

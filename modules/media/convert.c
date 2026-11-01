@@ -28,8 +28,9 @@
 #include "remove.h"
 #include "room.h"
 #include "upload.h"
+#include "media.h"
 
-#define MAX_WORKERS 12
+#define MAX_WORKERS 32 /* (2.7: Full on a big computer - one video a core) */
 
 /* ===================================================================== what */
 
@@ -75,6 +76,8 @@ void convert_web_path(const char *src, char *out, size_t cap) {
 }
 
 void convert_part_path(const char *dst, char *out, size_t cap) { snprintf(out, cap, "%s.conv.part", dst); }
+
+void convert_piece_path(const char *dst, int k, char *out, size_t cap) { snprintf(out, cap, "%s.p%d.conv.part", dst, k); }
 
 const MediaFile *convert_h264_from(const MediaFile *f) {
     if (!f || f->type != MF_VIDEO || f->role == MF_WEBCOPY || f->role == MF_PLAYALL) return NULL;
@@ -239,15 +242,29 @@ int convert_save_subs(const char *video, const AvConvSub *subs, int n) {
     return saved;
 }
 
+/* (2.7) the parts of a copy made in parts, read for the join */
+typedef struct {
+    FILE *f;
+} PieceIo;
+
+static bool piece_read(void *ctx, int64_t off, void *dst, size_t n) { return file_pread(((PieceIo *)ctx)->f, off, dst, n); }
+
+static void remove_pieces(const char *dst, int n) {
+    char path[1100];
+    for (int k = 0; k < n; k++) convert_piece_path(dst, k, path, sizeof path), file_remove(path);
+}
+
 bool convert_file(ConvertJob *j) {
     j->err[0] = j->what[0] = '\0';
     j->subs = 0;
     atomic_store(&j->permille, 0);
     atomic_store(&j->out_mb, 0);
     char part[1100];
-    convert_part_path(j->dst, part, sizeof part);
+    bool piece = j->piece_to > 0; /* (2.7: one part of the picture, kept for the join) */
+    if (piece) convert_piece_path(j->dst, j->piece, part, sizeof part);
+    else convert_part_path(j->dst, part, sizeof part);
     j->replace &= str_ends(j->dst, ".web.mp4"); /* (what's replaced is a copy - never anything else) */
-    if (!j->replace && path_stat(j->dst, NULL, NULL, NULL)) { /* made since it was queued (by hand?): that one stays */
+    if (!piece && !j->replace && path_stat(j->dst, NULL, NULL, NULL)) { /* made since it was queued (by hand?): that one stays */
         str_copy(j->err, sizeof j->err, N_("Its play-everywhere copy is there already"));
         return false;
     }
@@ -270,23 +287,47 @@ bool convert_file(ConvertJob *j) {
                     .audio_kbps = j->audio_kbps,
                     .limit_ns = j->limit_ns,
                     .h264 = j->h264,
-                    .want_subs = true,
+                    .piece_from = j->piece_from,
+                    .piece_to = j->piece_to,
+                    .want_subs = !piece,
                     .stop = &io.halt,
                     .progress = on_progress,
                     .progress_ctx = &io};
-    bool ok = av_convert(&av);
+    /* (2.7) the join: the parts' files, read as they are */
+    PieceIo pio[AV_CONV_MAX_PIECES] = {{0}};
+    MkvReader readers[AV_CONV_MAX_PIECES];
+    bool opened = true;
+    int np = CLAMP(j->npieces, 0, AV_CONV_MAX_PIECES);
+    for (int k = 0; k < np; k++) {
+        char path[1100];
+        int64_t psize = 0;
+        convert_piece_path(j->dst, k, path, sizeof path);
+        pio[k].f = path_stat(path, &psize, NULL, NULL) ? file_open(path, "rb") : NULL;
+        opened &= pio[k].f != NULL;
+        readers[k] = (MkvReader){&pio[k], psize, piece_read};
+    }
+    if (np) av.pieces = readers, av.npieces = np;
+    bool ok = opened && av_convert(&av);
+    for (int k = 0; k < np; k++)
+        if (pio[k].f) fclose(pio[k].f);
     /* next to the original (the library gives them to its copy too) - also when the file was refused for
        what it holds: then the converter took out just its subtitles, and the original still has them */
     j->subs = convert_save_subs(j->src, av.subs, av.nsubs);
     av_convert_free(&av);
     str_copy(j->what, sizeof j->what, av.what);
-    if (!ok) str_copy(j->err, sizeof j->err, av.err);
+    if (!opened) str_copy(j->err, sizeof j->err, N_("A part of the copy went missing"));
+    else if (!ok) str_copy(j->err, sizeof j->err, av.err);
     if (ok && (fflush(io.dst) != 0 || !file_sync(io.dst))) { /* (a stopped or failed one goes: no fsync) */
         str_copy(j->err, sizeof j->err, N_("Couldn't save the new file"));
         ok = false;
     }
     fclose(io.dst);
     fclose(io.src);
+    if (np) remove_pieces(j->dst, np); /* (joined, or not: the parts are done with either way) */
+    if (piece) {
+        if (!ok) file_remove(part);
+        return ok;
+    }
     if (ok && !j->replace && path_stat(j->dst, NULL, NULL, NULL)) { /* never over a copy that arrived meanwhile */
         str_copy(j->err, sizeof j->err, N_("Another play-everywhere copy arrived meanwhile - that one stays"));
         ok = false;
@@ -318,7 +359,35 @@ typedef struct {
     int64_t spare, held; /* CQ_NOROOM: the room there was on its disk then (the words come when shown) */
     int64_t started, ended; /* unix seconds */
     bool settled; /* done, and its original dealt with ("delete each original once its copy is made") */
+    /* (2.7) Full throttle: made in parts side by side (split) - nparts jobs, next_part the next a worker takes, how many
+       are done or failed; the worker finishing the last joins them (job, npieces). dur_ms = its length (the scan's) */
+    ConvertJob *parts;
+    int nparts, next_part, parts_done, parts_failed;
+    bool joining;
+    int64_t dur_ms;
 } ConvItem;
+
+#define PART_MIN_S CONVERT_PART_MIN_S /* (2.7) convert.h */
+
+static void item_free(ConvItem *it) {
+    free(it->parts);
+    free(it);
+}
+
+/* (2.7) what a video made in parts has done: its parts (the first 90%), then the join; else its job's. g_cl held, or
+   a worker's own reading (atomics) */
+static int item_permille(const ConvItem *it) {
+    if (!it->nparts) return atomic_load(&it->job.permille);
+    int64_t sum = 0;
+    for (int k = 0; k < it->nparts; k++) sum += atomic_load(&it->parts[k].permille);
+    return (int)(sum * 9 / (10 * it->nparts)) + (it->joining ? atomic_load(&it->job.permille) / 10 : 0);
+}
+
+static int64_t item_out_mb(const ConvItem *it) { /* what it wrote so far: its parts' and the join's */
+    int64_t mb = atomic_load(&it->job.out_mb);
+    for (int k = 0; k < it->nparts; k++) mb += atomic_load(&it->parts[k].out_mb);
+    return mb;
+}
 
 /* Items are allocated one by one so a worker's item never moves; only waiting
    and finished ones are ever freed. Lock order: g_pick, then upload.c's lock, then g_cl -
@@ -340,7 +409,7 @@ static int running_holds(MediaHold *out, int max, const ConvItem *skip) {
         const ConvItem *it = g_items[i];
         if (it->state != CQ_RUNNING || it == skip) continue;
         str_copy(out[n].root, sizeof out[n].root, it->root);
-        out[n].bytes = MAX(it->need - ((int64_t)atomic_load(&it->job.out_mb) << 20), 0);
+        out[n].bytes = MAX(it->need - (item_out_mb(it) << 20), 0);
         n++;
     }
     return n;
@@ -374,7 +443,7 @@ bool convert_give_way(const char *path) {
         making |= hit && it->state == CQ_RUNNING;
         if (hit && it->state == CQ_WAITING) {
             log_info("convert: %s left the queue - its copy comes by upload", it->name);
-            free(it);
+            item_free(it);
         } else g_items[w++] = it;
     }
     g_nitems = w;
@@ -384,12 +453,16 @@ bool convert_give_way(const char *path) {
 
 void convert_drop_leftover(const char *path) {
     char part[1100];
-    bool mine = false;
+    bool mine = upload_has_part(path); /* (2.7: a device's part, waiting for its join - asked before g_cl: the lock order) */
     lock_take(&g_cl); /* (held while deleting: nothing can be queued for it in between) */
     for (int i = 0; i < g_nitems && !mine; i++) {
         if (g_items[i]->state > CQ_RUNNING) continue;
         convert_part_path(g_items[i]->job.dst, part, sizeof part);
         mine = str_ieq(part, path);
+        for (int k = 0; k < g_items[i]->nparts && !mine; k++) { /* (2.7: its parts, made side by side) */
+            convert_piece_path(g_items[i]->job.dst, k, part, sizeof part);
+            mine = str_ieq(part, path);
+        }
     }
     if (!mine && file_remove(path)) log_info("convert: removed %s, left over from a conversion that never finished", path);
     lock_give(&g_cl);
@@ -488,7 +561,74 @@ static bool still_fits(const ConvItem *it) {
    waits for them: their hold goes when they finish, and copies come out smaller than their
    originals. With none, there is nothing to wait for: what's left is set aside as "no room"
    (not tried, not churned through). */
-static ConvItem *pick(void) {
+static int workers_wanted(void);
+static atomic_int g_power;
+
+/* (2.7) parts handed out and not finished, and parts still to hand out - of the videos made in parts. g_cl held */
+static int parts_busy(void) {
+    int n = 0;
+    for (int i = 0; i < g_nitems; i++)
+        if (g_items[i]->state == CQ_RUNNING && g_items[i]->nparts)
+            n += g_items[i]->next_part - g_items[i]->parts_done - g_items[i]->parts_failed;
+    return n;
+}
+static int parts_waiting(void) {
+    int n = 0;
+    for (int i = 0; i < g_nitems; i++) {
+        const ConvItem *it = g_items[i];
+        if (it->state == CQ_RUNNING && it->nparts && !it->parts_failed) n += it->nparts - it->next_part;
+    }
+    return n;
+}
+
+/* (2.7; owner: "Full throttle ... processes the videos in the most effective way") A video being made H.264 from HEVC,
+   on Full throttle, when fewer are waiting than workers could take: made in parts side by side - one more per idle
+   worker, each at least PART_MIN_S long, AV_CONV_MAX_PIECES at most. The worker takes part 0 (returned), the tick starts
+   workers for the rest; -1 = made whole, as ever. Its copy and its parts take room together: its need doubles. */
+static int split(ConvItem *it) {
+    if (atomic_load(&g_power) != CONVERT_FULL || !it->job.h264 || it->dur_ms < 2 * PART_MIN_S * 1000LL) return -1;
+    lock_take(&g_cl);
+    int busy = parts_busy() + parts_waiting(); /* (videos made whole count one each - this one too) */
+    for (int i = 0; i < g_nitems; i++) busy += g_items[i]->state == CQ_RUNNING && !g_items[i]->nparts;
+    int idle = workers_wanted() - busy - count_state(CQ_WAITING);
+    int n = (int)MIN((int64_t)MIN(1 + idle, AV_CONV_MAX_PIECES), it->dur_ms / (PART_MIN_S * 1000LL));
+    ConvertJob *parts = n >= 2 ? calloc((size_t)n, sizeof *parts) : NULL;
+    if (parts) {
+        int64_t len = it->dur_ms * 1000000LL;
+        for (int k = 0; k < n; k++) {
+            ConvertJob *p = &parts[k];
+            str_copy(p->src, sizeof p->src, it->job.src);
+            str_copy(p->dst, sizeof p->dst, it->job.dst);
+            p->quality = it->job.quality, p->audio_kbps = it->job.audio_kbps, p->h264 = true, p->stop = it->job.stop;
+            p->piece = k;
+            p->piece_from = len / n * k;
+            p->piece_to = k == n - 1 ? AV_CONV_TO_END : len / n * (k + 1);
+        }
+        it->parts = parts, it->nparts = n, it->next_part = 1;
+        it->need *= 2;
+    }
+    lock_give(&g_cl);
+    if (!parts) return -1;
+    log_info("convert: %s in %d parts side by side (full throttle)", it->name, n);
+    return 0;
+}
+
+static ConvItem *pick(int *part) {
+    *part = -1;
+    lock_take(&g_cl);
+    if (g_running > workers_wanted()) { /* (2.7: a lower power tier was chosen - this worker stops after its video) */
+        g_running--;
+        lock_give(&g_cl);
+        return NULL;
+    }
+    for (int i = 0; i < g_nitems && !atomic_load(&g_cstop); i++) { /* (2.7) a part of a video under way, first */
+        ConvItem *it = g_items[i];
+        if (it->state != CQ_RUNNING || !it->nparts || it->parts_failed || it->next_part >= it->nparts) continue;
+        *part = it->next_part++;
+        lock_give(&g_cl);
+        return it;
+    }
+    lock_give(&g_cl);
     for (;;) {
         lock_take(&g_pick);
         MediaHold holds[MEDIA_MAX_HOLDS];
@@ -533,15 +673,49 @@ static ConvItem *pick(void) {
         }
         lock_give(&g_pick);
         free(w);
+        if (it) *part = split(it); /* (2.7: Full throttle - part 0 of it, or the whole) */
         if (it || !again) return it;
         for (int t = 0; fits < 0 && t < 2000 && !atomic_load(&g_cstop); t += 100) plat_sleep_ms(100);
     }
 }
 
+/* (2.7) a part done (or not): counted; the last one to finish joins the parts - or, one having failed or the queue
+   stopped, the video failed and its parts go. True when this worker is to join them. */
+static bool part_finished(ConvItem *it, int part, bool ok) {
+    lock_take(&g_cl);
+    if (ok) it->parts_done++;
+    else {
+        if (!it->parts_failed) str_copy(it->job.err, sizeof it->job.err, it->parts[part].err);
+        it->parts_failed++;
+    }
+    bool stopping = atomic_load(&g_cstop) != 0;
+    bool last = it->parts_done + it->parts_failed == it->next_part &&
+                (it->parts_failed || stopping || it->next_part == it->nparts);
+    bool join = last && !it->parts_failed && !stopping;
+    if (last && !join) {
+        if (!it->parts_failed) str_copy(it->job.err, sizeof it->job.err, N_("Stopped"));
+        it->state = CQ_FAILED;
+        it->ended = now_sec();
+    }
+    if (join) it->joining = true;
+    lock_give(&g_cl);
+    if (last && !join) {
+        remove_pieces(it->job.dst, it->nparts);
+        log_warn("convert: %s - %s (made in %d parts)", it->job.src, it->job.err, it->nparts);
+    }
+    return join;
+}
+
 static void worker(void *arg) {
     (void)arg;
     thread_background(); /* the household's pages come first */
-    for (ConvItem *it; (it = pick()) != NULL;) {
+    int part;
+    for (ConvItem *it; (it = pick(&part)) != NULL;) {
+        if (part >= 0) { /* (2.7) a part of it, made side by side with the others */
+            bool done = convert_file(&it->parts[part]);
+            if (!part_finished(it, part, done)) continue;
+            it->job.npieces = it->nparts; /* (the last part: this worker joins them) */
+        }
         log_info("convert: %s", it->job.src);
         bool ok = convert_file(&it->job);
         if (ok)
@@ -614,7 +788,7 @@ static Enq enqueue(const MediaFile *f, bool h264) {
         int w = 0; /* its earlier failure (or "no room") is history once it's queued again */
         for (int i = 0; i < g_nitems; i++) {
             ConvItem *it = g_items[i];
-            if (it->id == f->id && it->state >= CQ_FAILED) free(it);
+            if (it->id == f->id && it->state >= CQ_FAILED) item_free(it);
             else g_items[w++] = it;
         }
         g_nitems = w;
@@ -628,6 +802,7 @@ static Enq enqueue(const MediaFile *f, bool h264) {
         it->state = CQ_WAITING;
         it->need = h264 ? h264_need(f, size) : size;
         it->job.h264 = h264, it->job.replace = replace;
+        it->dur_ms = media_playable(f)->probe.duration_ms; /* (2.7: a long one may be made in parts) */
         str_copy(it->root, sizeof it->root, media_lib()->roots[f->root]);
         const MediaSeries *s = f->series ? media_series(f->series) : NULL;
         if (s && f->name.kind == MEDIA_EPISODE)
@@ -646,7 +821,7 @@ static void drop_items(int which) {
     for (int i = 0; i < g_nitems; i++) {
         ConvItem *it = g_items[i];
         bool drop = which == CQ_WAITING ? it->state == CQ_WAITING : it->state >= CQ_DONE;
-        if (drop) free(it);
+        if (drop) item_free(it);
         else g_items[w++] = it;
     }
     g_nitems = w;
@@ -673,9 +848,44 @@ static int set_aside(char *why, size_t cap) {
     return out;
 }
 
-static int workers_wanted(void) {
-    int n = plat_cpu_count() - 2; /* leave room for the household */
+/* ---- how hard conversions work (2.7; owner, 2026-11-01: "three tiers of processing the videos to play everywhere -
+   low-power (~30%) - Medium-power (60%) - Full throttle (95%~100%) ... and to also think about the users choice", "a
+   small description on what it would mean per machine, like how many cores would be used, how it processes it") ----
+   Hemma's computer: setting media.power; a person's own devices ("On this device", the upload form): pref
+   media.power_here. Medium is the default - what Hemma did before, about. */
+
+static atomic_int g_power = CONVERT_MEDIUM; /* (media.power, for the workers: set on the loop by convert_tick/the action) */
+
+int convert_power_of(const char *s) {
+    return str_eq(s, "low") ? CONVERT_LOW : str_eq(s, "full") ? CONVERT_FULL : CONVERT_MEDIUM;
+}
+
+static const char *power_name(int tier) { return tier == CONVERT_LOW ? "low" : tier == CONVERT_FULL ? "full" : "medium"; }
+
+int convert_power_workers(int tier, int cores, bool phone) {
+    if (cores < 1) cores = 1;
+    if (phone) return tier == CONVERT_FULL ? MIN(2, cores) : 1; /* (a phone: warm in a hand, its battery) */
+    int n = tier == CONVERT_LOW ? (cores * 3 + 5) / 10 : tier == CONVERT_FULL ? cores : (cores * 6 + 5) / 10;
     return CLAMP(n, 1, MAX_WORKERS);
+}
+
+static int workers_wanted(void) { return convert_power_workers(atomic_load(&g_power), plat_cpu_count(), false); }
+
+/* as many workers as the tier allows and the queue has work for (those over it stop after their video: pick);
+   how many run now */
+static int spawn_workers(void) {
+    lock_take(&g_cl);
+    int want = MIN(workers_wanted(), g_running + count_state(CQ_WAITING) + parts_waiting()); /* (2.7: and parts) */
+    while (!app_testing() && g_running < want) { /* (tests start them with convert_test_start) */
+        g_running++;
+        if (!thread_spawn(worker, NULL)) {
+            g_running--;
+            break;
+        }
+    }
+    int at_once = MAX(g_running, 1);
+    lock_give(&g_cl);
+    return at_once;
 }
 
 static void settle_finished(void);
@@ -726,17 +936,7 @@ void convert_act_start(Ctx *c, Fields *f) {
     char why[600] = "";
     if (idle && added) noroom = set_aside(why, sizeof why);
 
-    lock_take(&g_cl);
-    int want = MIN(workers_wanted(), g_running + count_state(CQ_WAITING));
-    while (!app_testing() && g_running < want) { /* (tests start them with convert_test_start) */
-        g_running++;
-        if (!thread_spawn(worker, NULL)) {
-            g_running--;
-            break;
-        }
-    }
-    int at_once = MAX(g_running, 1);
-    lock_give(&g_cl);
+    int at_once = spawn_workers();
 
     if (noroom && noroom == added) {
         if (noroom == 1) ctx_fail(c, T("Not enough room on the drive: %s"), why);
@@ -842,13 +1042,18 @@ static void settle_finished(void) {
 }
 
 void convert_tick(int64_t now) {
+    atomic_store(&g_power, convert_power_of(setting("media.power", ""))); /* (2.7: the workers read it) */
+    lock_take(&g_cl);
+    bool parts = parts_waiting() > 0;
+    lock_give(&g_cl);
+    if (parts) spawn_workers(); /* (2.7) a video split into parts: workers for them, started here, on the loop */
     settle_finished();
     uint64_t sig = 0; /* (unsigned: it wraps, by design) */
     int done = 0, running;
     lock_take(&g_cl);
     running = g_running;
     for (int i = 0; i < g_nitems; i++) {
-        sig = sig * 31 + (uint64_t)g_items[i]->state * 7 + (uint64_t)atomic_load(&g_items[i]->job.permille) / 10; /* every 1% */
+        sig = sig * 31 + (uint64_t)g_items[i]->state * 7 + (uint64_t)item_permille(g_items[i]) / 10; /* every 1% */
         done += g_items[i]->state == CQ_DONE;
     }
     lock_give(&g_cl);
@@ -879,7 +1084,7 @@ void convert_stop(void) {
     }
     if (n) return; /* a worker still on its way out keeps its item */
     lock_take(&g_cl); /* a fresh queue for the next start */
-    for (int i = 0; i < g_nitems; i++) free(g_items[i]);
+    for (int i = 0; i < g_nitems; i++) item_free(g_items[i]);
     g_nitems = g_done_seen = 0;
     lock_give(&g_cl);
     g_shown = 0;
@@ -891,7 +1096,8 @@ const char *convert_test_start(void) {
     lock_take(&g_cl);
     g_running++; /* as a worker would be */
     lock_give(&g_cl);
-    ConvItem *it = pick(); /* (NULL: it counted the "worker" out) */
+    int part;
+    ConvItem *it = pick(&part); /* (NULL: it counted the "worker" out) */
     if (!it) return NULL;
     lock_take(&g_cl);
     g_running--; /* it stays running without one, until convert_test_finish */
@@ -919,6 +1125,17 @@ static void gb_text(int64_t bytes, char *out, size_t cap) { /* "12 GB", "1.5 GB"
     snprintf(out, cap, gb >= 10 ? "%.0f GB" : "%.1f GB", gb);
     char *dot = strchr(out, '.');
     if (dot) *dot = i18n_decimal();
+}
+
+void convert_summary(ConvertSummary *s) {
+    memset(s, 0, sizeof *s);
+    const MediaIndex *ix = media_lib();
+    for (int i = 0; i < ix->nfiles; i++) s->need += bulk_need(&ix->files[i]);
+    lock_take(&g_cl);
+    s->busy = count_state(CQ_WAITING) + count_state(CQ_RUNNING);
+    s->failed = count_state(CQ_FAILED);
+    s->noroom = count_state(CQ_NOROOM);
+    lock_give(&g_cl);
 }
 
 void convert_card(Ctx *c, Buf *b) {
@@ -950,9 +1167,13 @@ void convert_card(Ctx *c, Buf *b) {
         for (int i = 0; i < g_nitems; i++) {
             const ConvItem *it = g_items[i];
             if (it->state != CQ_RUNNING) continue;
-            H(b, "<li class=\"row\"><span class=\"grow\">%s</span><progress class=\"media-up-bar\" max=\"1000\" value=\"%d\">"
-                 "</progress></li>",
-              it->name, atomic_load(&it->job.permille));
+            H(b, "<li class=\"row\"><span class=\"grow\">%s", it->name);
+            if (it->nparts) { /* (2.7: Full throttle - several cores on it) */
+                buf_puts(b, " <small class=\"muted\">");
+                H(b, TN(it->nparts, "in %d part", "in %d parts"), it->nparts);
+                buf_puts(b, "</small>");
+            }
+            H(b, "</span><progress class=\"media-up-bar\" max=\"1000\" value=\"%d\"></progress></li>", item_permille(it));
         }
         buf_puts(b, "</ul>");
     } else if (need) {
@@ -1071,13 +1292,133 @@ void convert_h264_buttons(Ctx *c, Buf *b, const char *what, int count) {
     ui_form_end(b);
     if (upload_can_convert()) { /* (wire.js: the browser's converter, its copies sent like an upload's) */
         buf_puts(b, "<form class=\"inline media-h264-dev\" data-upload=\"/media/upload\" data-here=\"1\"");
-        upload_converter_attrs(b);
+        upload_converter_attrs(c, b);
         H(b, "><input type=\"hidden\" name=\"here\" value=\"%s\"><input type=\"hidden\" name=\"conv\" value=\"1\">%r"
              "<button class=\"btn primary\">%s</button></form>",
           what, c->me && upload_ram_chosen(c->me->id) ? "<input type=\"hidden\" name=\"ram\" value=\"1\">" : "",
           T("On this device")); /* (copies in memory, or in Blobs, as the upload form's box says) */
     }
     buf_puts(b, "</span>");
+}
+
+/* ---- the power tiers' card and action (2.7) ---- */
+
+#define PREF_POWER_HERE "media.power_here"
+static const char *const POWER_LABEL[] = {N_("Low power"), N_("Medium power"), N_("Full throttle")};
+
+int convert_device_tier(Ctx *c) { return c->me ? convert_power_of(pref(c->me->id, PREF_POWER_HERE, "")) : CONVERT_MEDIUM; }
+
+static int g_test_cores; /* (tests: every device has this many cores - convert_test_device_cores) */
+void convert_test_device_cores(int cores) { g_test_cores = cores; }
+
+int convert_device_workers(Ctx *c) {
+    bool phone = false;
+    int cores = !c->me ? 0 : g_test_cores ? g_test_cores : media_device_cores(c, &phone, NULL, 0);
+    return cores > 0 ? convert_power_workers(convert_power_of(pref(c->me->id, PREF_POWER_HERE, "")), cores, phone) : 0;
+}
+
+/* one machine's three choices, each saying what it means there: how many cores, how it goes about it */
+static void power_choices(Buf *b, const char *where, int tier, int cores, bool phone) {
+    ui_form(b, "media.power", "stack media-power");
+    ui_hidden(b, "where", where);
+    for (int t = CONVERT_LOW; t <= CONVERT_FULL; t++) {
+        int n = convert_power_workers(t, cores, phone);
+        H(b, "<label class=\"check media-power-opt\"><input type=\"radio\" name=\"tier\" value=\"%s\" data-auto%r>"
+             "<span><b>%s</b><small class=\"muted\">",
+          power_name(t), t == tier ? " checked" : "", T(POWER_LABEL[t]));
+        if (cores <= 0) /* (a device that hasn't said yet) */
+            H(b, "%s",
+              t == CONVERT_LOW      ? T("About a third of this device's cores, one video each.")
+              : t == CONVERT_MEDIUM ? T("About two thirds of its cores, one video each. The default.")
+                                    : T("All of its cores, a video split into parts when fewer are left than cores."));
+        else if (phone)
+            H(b, TN(n, "%d video at a time: a phone gets warm, and it's its battery.",
+                    "%d videos at a time: a phone gets warm, and it's its battery."),
+              n);
+        else if (t == CONVERT_LOW)
+            H(b, TN(cores, "%d of its %d core, one video each: the rest stays free for everything else.",
+                    "%d of its %d cores, one video each: the rest stays free for everything else."),
+              n, cores);
+        else if (t == CONVERT_MEDIUM)
+            H(b, TN(cores, "%d of its %d core, one video each. The default.", "%d of its %d cores, one video each. The default."),
+              n, cores);
+        else
+            H(b, TN(cores,
+                    "All %d core. When fewer videos are left than that, one being re-encoded is split into parts made side "
+                    "by side, so none waits. The computer is busy - and warm - while it works.",
+                    "All %d cores. When fewer videos are left than that, one being re-encoded is split into parts made side "
+                    "by side, so none waits. The computer is busy - and warm - while it works."),
+              cores);
+        buf_puts(b, "</small></span></label>");
+    }
+    H(b, "<noscript><button class=\"btn\">%s</button></noscript>", T("Save"));
+    ui_form_end(b);
+}
+
+void convert_power_card(Ctx *c, Buf *b) {
+    if (!is_admin(c)) return;
+    ui_card(b, T("How hard to work"), NULL, NULL);
+    H(b, "<p class=\"muted media-small\">%s</p>",
+      T("Converting is heavy work. Choose how much of each computer it may take: Hemma's own, and the one you're using "
+        "now - for On this device and the copies your uploads make."));
+    int cores = plat_cpu_count();
+    buf_puts(b, "<h3 class=\"media-power-h\">");
+    H(b, TN(cores, "Hemma's computer · %d core", "Hemma's computer · %d cores"), cores);
+    buf_puts(b, "</h3>");
+    power_choices(b, "server", convert_power_of(setting("media.power", "")), cores, false);
+    if (upload_can_convert() && c->me) { /* (the browser's converter is built in) */
+        bool phone = false;
+        char agent[64];
+        int dc = media_device_cores(c, &phone, agent, sizeof agent);
+        Buf name = {0};
+        i18n_unpack(&name, agent);
+        buf_puts(b, "<h3 class=\"media-power-h\">");
+        if (dc) H(b, TN(dc, "This device · %s · %d core", "This device · %s · %d cores"), buf_cstr(&name), dc);
+        else H(b, T("This device · %s"), buf_cstr(&name));
+        buf_puts(b, "</h3>");
+        buf_free(&name);
+        power_choices(b, "here", convert_power_of(pref(c->me->id, PREF_POWER_HERE, "")), dc, phone);
+        /* (owner: "make the user be able to run it much higher") the room its copies under way may take - the upload
+           form's slider too; the tier gets at least what its workers need whatever it says (the plan's "room") */
+        int lo = 0, hi = 0, gb = upload_room_gb(c->me->id, &lo, &hi);
+        ui_form(b, "media.power", "stack media-power-room");
+        ui_hidden(b, "where", "here");
+        buf_puts(b, "<label class=\"field\"><span>");
+        H(b, T("Room on this device for copies being made: <b id=\"media-power-room-n\">%d</b> GB"), gb);
+        H(b,
+          "</span><input type=\"range\" name=\"room\" min=\"%d\" max=\"%d\" step=\"1\" value=\"%d\" data-auto "
+          "data-show=\"media-power-room-n\" aria-describedby=\"media-power-room-h\"><small class=\"muted\" "
+          "id=\"media-power-room-h\">%s</small></label>",
+          lo, hi, gb,
+          T("They wait on this device's disk, or in its memory, until they're sent. Whatever it says, each tier gets "
+            "what its cores need at once; more lets uploads convert further ahead."));
+        ui_form_end(b);
+    }
+    ui_card_end(b);
+}
+
+/* media.power where=server|here tier=low|medium|full (admins: they're the ones who convert) */
+void convert_act_power(Ctx *c, Fields *f) {
+    if (!is_admin(c)) {
+        ctx_fail(c, "%s", T("Only an admin can convert videos"));
+        return;
+    }
+    if (str_eq(fields_str(f, "where"), "here") && fields_str(f, "room")[0]) { /* (the room slider: GB) */
+        upload_set_room(c->me->id, atoi(fields_str(f, "room")));
+        ctx_ok(c, T("Room on this device: %d GB"), upload_room_gb(c->me->id, NULL, NULL));
+        return;
+    }
+    int tier = convert_power_of(fields_str(f, "tier"));
+    if (str_eq(fields_str(f, "where"), "here")) {
+        pref_set(c->me->id, PREF_POWER_HERE, power_name(tier));
+        ctx_ok(c, T("This device: %s"), T(POWER_LABEL[tier]));
+        return;
+    }
+    setting_set("media.power", power_name(tier));
+    atomic_store(&g_power, tier);
+    spawn_workers(); /* (a higher tier: more start now; a lower one: those over it stop after their video) */
+    log_info("convert: %s chose %s for Hemma's computer (%d at a time)", c->me->name, power_name(tier), workers_wanted());
+    ctx_ok(c, T("Hemma's computer: %s"), T(POWER_LABEL[tier]));
 }
 
 void convert_h264_card(Ctx *c, Buf *b) {

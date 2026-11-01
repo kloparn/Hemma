@@ -54,6 +54,8 @@
    viewer one of them (media_view, mediainfo.h). A track that goes undecodable part-way is dropped while another
    lives. */
 #define AV_CONV_MAX_AUDIO 8
+#define AV_CONV_TO_END INT64_MAX /* (2.7) a part that runs to the video's end (AvConvJob.piece_to) */
+#define AV_CONV_MAX_PIECES 32   /* (2.7) parts one video is made in, at most */
 
 /* Every format the converter takes, by Matroska CodecID - the one place its checks look (av_conv_codec).
    Formats grow when real files need them (owner, 2026-10-21; docs/decisions/0006): a new one goes in this
@@ -103,6 +105,14 @@ typedef struct {
     bool h264;            /* 2.6: the copy's picture must be H.264, which plays everywhere: HEVC is decoded and re-encoded
                              (else copied as 'hvc1', which plays on newer devices only), AV1 refused as `unsupported`,
                              and an MP4 that isn't H.264 is never as_is */
+    /* 2.7, Full throttle - one video over several cores: HEVC made H.264 (h264) in parts side by side, then joined.
+       A PART (piece_to > 0): only the picture from piece_from to piece_to (ns after the video's first picture;
+       AV_CONV_TO_END = to its end) is made, decoded from the keyframe before it, into an MP4 of that picture alone that
+       starts where it starts (an empty edit) - its first picture a keyframe. THE JOIN (npieces > 0): the picture is taken
+       as it is from those parts, in order, and the sound and subtitles from `in` - as one conversion of the whole. */
+    int64_t piece_from, piece_to;
+    const MkvReader *pieces;
+    int npieces;
     bool want_subs;       /* hand back the subtitle tracks (subs) */
     bool skip_refused_subs; /* with want_subs: no subtitles-only pass after an `unsupported` refusal (the browser:
                                the original goes to the server then, which takes them out itself) */

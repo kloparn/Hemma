@@ -435,8 +435,8 @@ static void settle_result(void) {
     if (str_eq(g_state, "used")) {
         if (media_root_add(g_res_path)) {
             log_info("disks: the movie disk \"%s\" (%s) is a library folder now", label, g_res_path);
-            if (p) activity_add(who, "💽", "/media/settings", N_("%s added the movie disk \"%s\""), p->name, label);
-            else activity_add(who, "💽", "/media/settings", N_("Someone added the movie disk \"%s\""), label);
+            if (p) activity_add(who, "💽", MEDIA_SETTINGS_FOLDERS, N_("%s added the movie disk \"%s\""), p->name, label);
+            else activity_add(who, "💽", MEDIA_SETTINGS_FOLDERS, N_("Someone added the movie disk \"%s\""), label);
         }
     } else if (media_root_drop(g_res_path)) {
         log_info("disks: the movie disk at %s was forgotten - its library folder went with it", g_res_path);
@@ -605,7 +605,7 @@ static void new_rows(Buf *b) {
                  "class=\"muted\">%s · %s</small></div>",
               d->kname, drive_name(d), size, T("empty: nothing on it Hemma can read"));
             if (g_present)
-                H(b, "<a class=\"btn sm\" href=\"/media/settings?format=%u\">%s</a>", d->kname, T("Format for Hemma"));
+                H(b, "<a class=\"btn sm\" href=\"" MEDIA_SETTINGS_FOLDERS "?format=%u\">%s</a>", d->kname, T("Format for Hemma"));
             buf_puts(b, "</li>");
             continue;
         }
@@ -662,12 +662,18 @@ static void mine_rows(Buf *b) {
     }
 }
 
+/* (2.7) Library settings' Overview: a disk wants a look - a new one, a result not yet seen, the helper at work or silent */
+bool media_drives_attention(void) {
+    int64_t now = now_sec();
+    bool notice = g_state[0] && !str_eq(g_state, "working") && g_res_at > setting_int(SET_SEEN, 0);
+    return count_new() || notice || working(now) || silent(now);
+}
+
 void media_drives_card(Ctx *c, Buf *b) {
     if (!is_admin(c)) return;
     int64_t now = now_sec();
     int fresh = count_new();
-    bool notice = g_state[0] && !str_eq(g_state, "working") && g_res_at > setting_int(SET_SEEN, 0);
-    if (!fresh && !g_nmine && !notice && !working(now) && !silent(now)) {
+    if (!g_nmine && !media_drives_attention()) {
         bool any = false; /* unusable disks still say why */
         for (int i = 0; i < g_ndrives && !any; i++) any = offered(&g_drives[i]) && !in_use(&g_drives[i]);
         if (!any) return;
@@ -705,7 +711,7 @@ void media_drives_dialog(Ctx *c, Buf *b) {
     if (!d) return;
     char size[24];
     media_drive_size(d->bytes, size, sizeof size);
-    ui_modal(b, T("Format for Hemma"), "/media/settings");
+    ui_modal(b, T("Format for Hemma"), MEDIA_SETTINGS_FOLDERS);
     buf_puts(b, "<p>");
     H(b,
       T("<b>%s</b> (%s) gets a new, empty file system for movies (ext4). Hemma sees nothing on it now - but if it ever "
@@ -719,7 +725,7 @@ void media_drives_dialog(Ctx *c, Buf *b) {
     ui_hidden(b, "bytes", bytes);
     H(b, /* (the word typed stays ERASE in every language: media_drives_act_format asks for it) */
       "<label class=\"field\"><span>%s</span><input name=\"confirm\" autocomplete=\"off\" autocapitalize=\"characters\" "
-      "spellcheck=\"false\" required></label><div class=\"modal-f\"><a class=\"btn\" href=\"/media/settings\">%s</a>"
+      "spellcheck=\"false\" required></label><div class=\"modal-f\"><a class=\"btn\" href=\"" MEDIA_SETTINGS_FOLDERS "\">%s</a>"
       "<button class=\"btn danger\">%s</button></div>",
       T("Type ERASE to format it"), T("Keep it as it is"), T("Format and use it"));
     ui_form_end(b);
@@ -762,11 +768,11 @@ void media_drives_health(Health *h) {
                    v ? T("Hemma asks for it to be mounted by itself - give it a minute.")
                      : T("Plug it back in: Hemma finds it again by itself. Not using it any more? Forget it under Watch "
                          "→ Library settings."),
-                   "/media/settings");
+                   MEDIA_SETTINGS_FOLDERS);
     }
     if (g_present && silent(now)) {
         snprintf(todo, sizeof todo, T("On the Pi: %s"), "sudo systemctl enable --now hemma-disks.path");
-        health_add(h, HEALTH_WARN, T("Disk helper"), T("The disk helper didn't answer."), todo, "/media/settings");
+        health_add(h, HEALTH_WARN, T("Disk helper"), T("The disk helper didn't answer."), todo, MEDIA_SETTINGS_FOLDERS);
     }
     for (int i = 0; i < g_ndrives; i++) {
         const Drive *dr = &g_drives[i];
@@ -775,7 +781,7 @@ void media_drives_health(Health *h) {
         if (blank(dr)) {
             snprintf(d, sizeof d, T("An empty USB disk is plugged in: %s (%s)."), drive_name(dr), size);
             health_add(h, HEALTH_INFO, T("New disk found"), d,
-                       g_present ? T("Format it for movies under Watch → Library settings.") : NULL, "/media/settings");
+                       g_present ? T("Format it for movies under Watch → Library settings.") : NULL, MEDIA_SETTINGS_FOLDERS);
             continue;
         }
         for (int k = 0; k < dr->nvol; k++) {
@@ -783,7 +789,7 @@ void media_drives_health(Health *h) {
             vol_title(dr, &dr->vol[k], title, sizeof title);
             snprintf(d, sizeof d, T("A USB disk is plugged in: %s (%s, %s)."), title, fs_name(dr->vol[k].fstype), size);
             health_add(h, HEALTH_INFO, T("New disk found"), d,
-                       g_present ? T("Use it for movies under Watch → Library settings.") : NULL, "/media/settings");
+                       g_present ? T("Use it for movies under Watch → Library settings.") : NULL, MEDIA_SETTINGS_FOLDERS);
             break;
         }
     }
@@ -856,7 +862,7 @@ void media_drives_act_format(Ctx *c, Fields *f) {
     }
     log_info("disks: %s asked for the empty disk %s (%s) to be formatted for movies", c->me->name, d->name, d->kname);
     ctx_ok(c, T("Formatting \"%s\"…"), drive_name(d));
-    ctx_redirect(c, "/media/settings");
+    ctx_redirect(c, MEDIA_SETTINGS_FOLDERS);
 }
 
 void media_drives_act_forget(Ctx *c, Fields *f) {

@@ -18,7 +18,8 @@
  * and calls _initialize(), then conv_run(size, quality, audio_kbps, h264) (h264: 2.6, AvConvJob.h264 - HEVC made H.264):
  *   1 = done, 0 = failed, 2 = the file holds something we can't convert (send the original);
  *   3 = (2.5) an MP4/MOV that plays everywhere as it is: nothing made, send the original - without a word;
- *   conv_err() says why (UTF-8, NUL-terminated).
+ *   conv_err() says why (UTF-8, NUL-terminated). (2.7) conv_part(size, quality, from_ms, to_ms): one part of an HEVC
+ *   picture made H.264 alone (to_ms < 0 = to its end) - Full throttle, its parts made side by side, joined by the server.
  * After a 1, the file's subtitle tracks: conv_subs() of them, each with conv_sub_kind(i) (0 = text,
  *   1 = PGS, 2 = VobSub), conv_sub_lang(i), conv_sub_name(i) (NUL-terminated) and conv_sub_forced(i);
  *   text: conv_sub_text(i) / conv_sub_len(i) (SRT, UTF-8); pictures: conv_sub_data(i) / conv_sub_size(i)
@@ -160,6 +161,32 @@ EXPORT("conv_run") int conv_run(double size, int quality, int audio_kbps, int h2
     av_convert_free(&g_job);
     if (!g_job.err[0]) strcpy(g_job.err, "Couldn't hand the copy to the page");
     return g_job.as_is ? 3 : g_job.unsupported ? 2 : 0;
+}
+
+/* (2.7) Full throttle on this device: one part of an HEVC video's picture made H.264 (AvConvJob.piece_from/_to, from and
+   to in ms after its first picture; to < 0 = its end) - an MP4 of that picture alone, for the server to join. As
+   conv_run's answers. */
+EXPORT("conv_part") int conv_part(double size, int quality, double from_ms, double to_ms) {
+    static int64_t total;
+    total = (int64_t)size;
+    if (!g_out && !(g_out = malloc(OUTBUF))) return 0;
+    g_nout = 0;
+    g_flushed = 0;
+    for (int i = 0; i < NBLOCKS; i++) g_blocks[i].at = -1, g_blocks[i].used = 0;
+    av_convert_free(&g_job);
+    memset(&g_job, 0, sizeof g_job);
+    g_job.in = (MkvReader){&total, total, src_read};
+    g_job.out = (Mp4Out){NULL, dst_write, dst_write_at};
+    g_job.quality = quality;
+    g_job.h264 = true;
+    g_job.piece_from = from_ms > 0 ? (int64_t)from_ms * 1000000 : 0;
+    int64_t to = (int64_t)to_ms * 1000000;
+    g_job.piece_to = to_ms < 0 ? AV_CONV_TO_END : to > 0 ? to : 1;
+    g_job.progress = on_progress;
+    bool ok = av_convert(&g_job) && flush_out();
+    if (ok) return 1;
+    if (!g_job.err[0]) strcpy(g_job.err, "Couldn't hand the copy to the page");
+    return g_job.unsupported ? 2 : 0;
 }
 
 /* Only the subtitles (1.3: a video the library has already gives the subtitles it lacks): 1 = read (conv_subs()

@@ -998,7 +998,7 @@ static void cats_one(Buf *b, const MediaWork *w) {
     }
     buf_puts(b, "</p>");
     if (!on || (film && !setting(SETTING_KEY, "")[0])) {
-        H(b, "<p class=\"muted media-small\">%s <a href=\"/media/settings\">%s</a></p>",
+        H(b, "<p class=\"muted media-small\">%s <a href=\"" MEDIA_SETTINGS_ONLINE "\">%s</a></p>",
           !on ? T("Switch it on to look titles up by their name or by an id you give.")
               : T("Films are looked up at OMDb, which needs a key."),
           T("Library settings"));

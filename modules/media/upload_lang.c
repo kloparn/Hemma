@@ -691,5 +691,90 @@ static const Tr TR[] = {
     {"All of them", "Alla", "Todos"},
     {"Nothing there needs converting any more", "Inget där behöver konverteras längre", "Ya no hay nada que convertir ahí"},
     {"Converting on this device", "Konverterar på den här enheten", "Convirtiendo en este dispositivo"},
+    /* 2.7: how hard to work - the power tiers */
+    {"Low power", "Låg effekt", "Potencia baja"},
+    {"Medium power", "Mellaneffekt", "Potencia media"},
+    {"Full throttle", "Full fart", "A toda máquina"},
+    {"About a third of this device's cores, one video each.", "Ungefär en tredjedel av enhetens kärnor, en video var.",
+     "Más o menos un tercio de los núcleos de este dispositivo, un vídeo cada uno."},
+    {"About two thirds of its cores, one video each. The default.",
+     "Ungefär två tredjedelar av kärnorna, en video var. Standard.",
+     "Más o menos dos tercios de sus núcleos, un vídeo cada uno. Lo normal."},
+    {"All of its cores, a video split into parts when fewer are left than cores.",
+     "Alla kärnor, och en video delas upp i delar när färre är kvar än kärnor.",
+     "Todos sus núcleos, y un vídeo se parte en trozos cuando quedan menos que núcleos."},
+    {"%d video at a time: a phone gets warm, and it's its battery.",
+     "%d video åt gången: en telefon blir varm, och det är dess batteri.",
+     "%d vídeo a la vez: un móvil se calienta, y es su batería."},
+    {"%d videos at a time: a phone gets warm, and it's its battery.",
+     "%d videor åt gången: en telefon blir varm, och det är dess batteri.",
+     "%d vídeos a la vez: un móvil se calienta, y es su batería."},
+    {"%d of its %d core, one video each: the rest stays free for everything else.",
+     "%d av dess %d kärna, en video var: resten är ledigt för allt annat.",
+     "%d de su %d núcleo, un vídeo cada uno: el resto queda libre para todo lo demás."},
+    {"%d of its %d cores, one video each: the rest stays free for everything else.",
+     "%d av dess %d kärnor, en video var: resten är ledigt för allt annat.",
+     "%d de sus %d núcleos, un vídeo cada uno: el resto queda libre para todo lo demás."},
+    {"%d of its %d core, one video each. The default.", "%d av dess %d kärna, en video var. Standard.",
+     "%d de su %d núcleo, un vídeo cada uno. Lo normal."},
+    {"%d of its %d cores, one video each. The default.", "%d av dess %d kärnor, en video var. Standard.",
+     "%d de sus %d núcleos, un vídeo cada uno. Lo normal."},
+    {"All %d core. When fewer videos are left than that, one being re-encoded is split into parts made side by side, so "
+     "none waits. The computer is busy - and warm - while it works.",
+     "Alla %d kärna. När färre videor är kvar än så delas en som kodas om upp i delar som görs sida vid sida, så att "
+     "ingen väntar. Datorn är upptagen - och varm - medan den jobbar.",
+     "Todos sus %d núcleo. Cuando quedan menos vídeos que eso, uno que se recodifica se parte en trozos que se hacen a "
+     "la vez, así ninguno espera. El ordenador está ocupado - y caliente - mientras trabaja."},
+    {"All %d cores. When fewer videos are left than that, one being re-encoded is split into parts made side by side, "
+     "so none waits. The computer is busy - and warm - while it works.",
+     "Alla %d kärnor. När färre videor är kvar än så delas en som kodas om upp i delar som görs sida vid sida, så att "
+     "ingen väntar. Datorn är upptagen - och varm - medan den jobbar.",
+     "Todos sus %d núcleos. Cuando quedan menos vídeos que eso, uno que se recodifica se parte en trozos que se hacen "
+     "a la vez, así ninguno espera. El ordenador está ocupado - y caliente - mientras trabaja."},
+    {"How hard to work", "Hur hårt den jobbar", "Cuánto trabaja"},
+    {"Converting is heavy work. Choose how much of each computer it may take: Hemma's own, and the one you're using now "
+     "- for On this device and the copies your uploads make.",
+     "Att konvertera är tungt arbete. Välj hur mycket av varje dator det får ta: Hemmas egen, och den du använder nu - "
+     "för På den här enheten och kopiorna dina uppladdningar gör.",
+     "Convertir es un trabajo pesado. Elige cuánto de cada ordenador puede usar: el de Hemma, y el que usas ahora - "
+     "para En este dispositivo y las copias que hacen tus subidas."},
+    {"Hemma's computer · %d core", "Hemmas dator · %d kärna", "El ordenador de Hemma · %d núcleo"},
+    {"Hemma's computer · %d cores", "Hemmas dator · %d kärnor", "El ordenador de Hemma · %d núcleos"},
+    {"This device · %s · %d core", "Den här enheten · %s · %d kärna", "Este dispositivo · %s · %d núcleo"},
+    {"This device · %s · %d cores", "Den här enheten · %s · %d kärnor", "Este dispositivo · %s · %d núcleos"},
+    {"This device · %s", "Den här enheten · %s", "Este dispositivo · %s"},
+    {"This device: %s", "Den här enheten: %s", "Este dispositivo: %s"},
+    {"Hemma's computer: %s", "Hemmas dator: %s", "El ordenador de Hemma: %s"},
+    /* 2.7: HEVC made H.264 while uploading */
+    {"Make HEVC videos play everywhere too (H.264)", "Gör så att HEVC-videor också spelas överallt (H.264)",
+     "Haz que los vídeos HEVC también se reproduzcan en todas partes (H.264)"},
+    {"HEVC (x265) videos are re-encoded to H.264 before they're sent, instead of copied as they are: every device plays "
+     "them then, but it's slow - an episode takes about as long as it lasts, or longer, on each core.",
+     "HEVC-videor (x265) kodas om till H.264 innan de skickas, i stället för att kopieras som de är: då spelas de på alla "
+     "enheter, men det går långsamt - ett avsnitt tar ungefär så lång tid som det varar, eller mer, på varje kärna.",
+     "Los vídeos HEVC (x265) se recodifican a H.264 antes de enviarse, en vez de copiarse tal cual: así se reproducen en "
+     "todos los dispositivos, pero es lento - un episodio tarda más o menos lo que dura, o más, en cada núcleo."},
+    {"No device of yours has opened Watch yet.", "Ingen av dina enheter har öppnat Titta än.",
+     "Ninguno de tus dispositivos ha abierto Ver todavía."},
+    {"Every device of yours that has opened Watch plays HEVC already.",
+     "Alla dina enheter som har öppnat Titta spelar redan HEVC.",
+     "Todos tus dispositivos que han abierto Ver ya reproducen HEVC."},
+    {"These can't play HEVC: %s.", "Dessa kan inte spela HEVC: %s.", "Estos no pueden reproducir HEVC: %s."},
+    /* 2.7: one video made in parts side by side (Full throttle) */
+    {"A part of the copy went missing", "En del av kopian försvann", "Falta una parte de la copia"},
+    {"in %d part", "i %d del", "en %d parte"},
+    {"in %d parts", "i %d delar", "en %d partes"},
+    {"a part of its copy couldn't be made", "en del av dess kopia gick inte att göra", "no se pudo hacer una parte de su copia"},
+    /* 2.7: the room a device's copies under way may take, set with its power tier */
+    {"Room on this device for copies being made: <b id=\"media-power-room-n\">%d</b> GB",
+     "Plats på den här enheten för kopior som görs: <b id=\"media-power-room-n\">%d</b> GB",
+     "Espacio en este dispositivo para copias en curso: <b id=\"media-power-room-n\">%d</b> GB"},
+    {"They wait on this device's disk, or in its memory, until they're sent. Whatever it says, each tier gets what its "
+     "cores need at once; more lets uploads convert further ahead.",
+     "De väntar på enhetens disk, eller i dess minne, tills de skickas. Vad det än står får varje nivå det som dess "
+     "kärnor behöver på en gång; mer låter uppladdningar konvertera längre i förväg.",
+     "Esperan en el disco de este dispositivo, o en su memoria, hasta que se envían. Diga lo que diga, cada nivel tiene "
+     "lo que sus núcleos necesitan a la vez; más deja que las subidas conviertan más por adelantado."},
+    {"Room on this device: %d GB", "Plats på den här enheten: %d GB", "Espacio en este dispositivo: %d GB"},
 };
 TRANSLATIONS(media_upload, TR)

@@ -308,11 +308,11 @@ TEST(cats_lookup_card_and_ids_for_admins) {
     int eva = th_person("Eva");
     /* offline: the box is greyed, and can't be switched on */
     media_lookup_test_online(-1);
-    const char *h = th_page(adam, "/media/settings");
+    const char *h = th_page(adam, "/media/settings/online");
     CHECK_HAS(h, "Categories from the internet");
     CHECK_HAS(h, "reach the internet right now");
     CHECK_HAS(h, "name=\"on\" value=\"1\" data-auto disabled");
-    CHECK(!strstr(th_page(eva, "/media/settings"), "Categories from the internet"));
+    CHECK(!strstr(th_page(eva, "/media/settings/online"), "Categories from the internet"));
     CHECK(!th_act(adam, "media.lookup", "on=1").ok);
     /* online: on, with a key; a bad key is refused */
     media_lookup_test_online(1);
@@ -497,15 +497,15 @@ TEST(pictures_card_and_links_for_admins) {
     int eva = th_person("Eva");
     fetch_test_curl("/usr/bin/curl");
     media_lookup_test_online(-1);
-    const char *h = th_page(adam, "/media/settings");
+    const char *h = th_page(adam, "/media/settings/online");
     CHECK_HAS(h, "Pictures from the internet");
     CHECK(!th_act(adam, "media.lookup_art", "on=1").ok); /* (offline: it can't be switched on) */
-    CHECK(!strstr(th_page(eva, "/media/settings"), "Pictures from the internet"));
+    CHECK(!strstr(th_page(eva, "/media/settings/online"), "Pictures from the internet"));
     media_lookup_test_online(1);
     CHECK(!th_act(eva, "media.lookup_art", "on=1").ok);
     CHECK(th_act(adam, "media.lookup_art", "on=1").ok);
     CHECK_INT(setting_int("media.lookup_art", 0), 1);
-    CHECK_HAS(th_page(adam, "/media/settings"), "With a picture: 0 of 2 series");
+    CHECK_HAS(th_page(adam, "/media/settings/online"), "With a picture: 0 of 2 series");
     /* Manage: what its picture is, and a field for the right one's link (categories off: nothing about them) */
     char page[96], form[300], host[64], path[700], dest[700];
     snprintf(page, sizeof page, "/media/series/%016llx?manage=1", (unsigned long long)series_named("Garden Show")->id);
@@ -562,7 +562,7 @@ TEST(pictures_card_and_links_for_admins) {
     fetch_test_curl("");
     snprintf(form, sizeof form, "work=%s&id=", inc.key);
     CHECK(!th_act(adam, "media.art_id", form).ok);
-    CHECK_HAS(th_page(adam, "/media/settings"), "needs the program curl");
+    CHECK_HAS(th_page(adam, "/media/settings/online"), "needs the program curl");
     th_halt();
     fetch_test_curl(NULL);
 }

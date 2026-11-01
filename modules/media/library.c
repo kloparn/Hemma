@@ -698,6 +698,8 @@ static int title_cmp(const char *a, const char *b) {
     return strcmp(px, py);
 }
 
+int media_title_cmp(const char *a, const char *b) { return title_cmp(a, b); }
+
 /* One episode or film in two files: part 2 after part 1 (or after the one naming no part), whatever their names
    say after that (1.4: "Dark Side Pt. 2 [..." sorted before "Dark Side [...", and "Next episode" played it first) */
 static int part_cmp(const MediaFile *a, const MediaFile *b) {

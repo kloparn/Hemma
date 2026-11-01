@@ -150,17 +150,17 @@ TEST(media_drives_offers_new_disks_and_asks_the_helper) {
     Machine m;
     machine(&m);
     helper(&m);
-    const char *h = th_page(adam, "/media/settings");
+    const char *h = th_page(adam, "/media/settings/folders");
     CHECK_HAS(h, "New disk found: Film disk");
     CHECK_HAS(h, "exFAT · 1.0 TB · Expansion HDD");
     CHECK_HAS(h, "data-a=\"media.drive_use\"");
     CHECK_HAS(h, "name=\"uuid\" value=\"5E2A-1B3C\"");
     CHECK_HAS(h, "Blank One");
-    CHECK_HAS(h, "href=\"/media/settings?format=sdc\"");
+    CHECK_HAS(h, "href=\"/media/settings/folders?format=sdc\"");
     CHECK_HAS(h, "APFS (a Mac"); /* (escaped: Mac&#39;s) */
     CHECK(!strstr(h, "WDC WD20EFPX")); /* (in use, set up by hand: none of Hemma's business) */
     CHECK(!strstr(h, "mmcblk0"));
-    CHECK(!strstr(th_page(eva, "/media/settings"), "media.drive_use"));
+    CHECK(!strstr(th_page(eva, "/media/settings/folders"), "media.drive_use"));
     CHECK_HAS(th_page(adam, "/system"), "A USB disk is plugged in: Film disk (exFAT, 1.0 TB).");
     /* the first-run page offers it with one tap */
     CHECK_HAS(th_page(adam, "/media"), "id=\"media-drive-offer\"");
@@ -174,7 +174,7 @@ TEST(media_drives_offers_new_disks_and_asks_the_helper) {
     char req[120];
     request(&m, req, sizeof req);
     CHECK_STR(req, "use 5E2A-1B3C");
-    CHECK_HAS(th_page(adam, "/media/settings"), "Setting up the disk");
+    CHECK_HAS(th_page(adam, "/media/settings/folders"), "Setting up the disk");
     r = th_act(adam, "media.drive_use", "uuid=5E2A-1B3C");
     CHECK(!r.ok);
     CHECK_HAS(r.toast, "busy");
@@ -195,13 +195,13 @@ TEST(media_drives_offers_new_disks_and_asks_the_helper) {
     int nroots = media_roots(roots, MEDIA_MAX_ROOTS);
     CHECK_INT(nroots, 1);
     CHECK_STR(roots[0], mnt);
-    h = th_page(adam, "/media/settings");
+    h = th_page(adam, "/media/settings/folders");
     CHECK_HAS(h, "<b>Film disk is ready.</b>");
     CHECK_HAS(h, "id=\"media-mine-5E2A-1B3C\"");
     CHECK(!strstr(h, "New disk found: Film disk"));
     CHECK_HAS(th_page(adam, "/"), "added the movie disk"); /* (Latest) */
     CHECK(th_act(adam, "media.drive_seen", "").ok);
-    CHECK(!strstr(th_page(adam, "/media/settings"), "is ready.</b>"));
+    CHECK(!strstr(th_page(adam, "/media/settings/folders"), "is ready.</b>"));
     /* the answer again (a restart reads it once more): nothing twice */
     media_test_drive_dirs(m.ask, m.ans);
     media_drives_tick(now_ms());
@@ -217,7 +217,7 @@ TEST(media_drives_offers_new_disks_and_asks_the_helper) {
     media_test_drives(m.sys, m.udev, m.minfo);
     media_drives_tick(now_ms());
     CHECK_HAS(th_page(adam, "/system"), "The movie disk &quot;Film disk&quot;");
-    CHECK_HAS(th_page(adam, "/media/settings"), "missing: plug it back in");
+    CHECK_HAS(th_page(adam, "/media/settings/folders"), "missing: plug it back in");
     /* plugged in again, not mounted (a Pi doesn't by itself after its start): Hemma asks */
     snprintf(d, sizeof d, "%s/sdb", m.sys);
     put(d, "dev", "8-16");
@@ -251,12 +251,12 @@ TEST(media_drives_formats_only_an_empty_disk_typed_erase) {
     Machine m;
     machine(&m);
     helper(&m);
-    const char *h = th_page(adam, "/media/settings?format=sdc");
+    const char *h = th_page(adam, "/media/settings/folders?format=sdc");
     CHECK_HAS(h, "role=\"dialog\"");
     CHECK_HAS(h, "<b>Blank One</b> (500 GB)");
     CHECK_HAS(h, "Type ERASE to format it");
-    CHECK(!strstr(th_page(adam, "/media/settings?format=sdb"), "role=\"dialog\"")); /* (not empty) */
-    CHECK(!strstr(th_page(adam, "/media/settings?format=mmcblk0"), "role=\"dialog\""));
+    CHECK(!strstr(th_page(adam, "/media/settings/folders?format=sdb"), "role=\"dialog\"")); /* (not empty) */
+    CHECK(!strstr(th_page(adam, "/media/settings/folders?format=mmcblk0"), "role=\"dialog\""));
     char bytes[40];
     snprintf(bytes, sizeof bytes, "%lld", 976773168LL * 512);
     char form[200];
@@ -271,7 +271,7 @@ TEST(media_drives_formats_only_an_empty_disk_typed_erase) {
     snprintf(form, sizeof form, "disk=sdc&bytes=%s&confirm=erase", bytes);
     r = th_act(adam, "media.drive_format", form);
     CHECK(r.ok);
-    CHECK_STR(r.redirect, "/media/settings");
+    CHECK_STR(r.redirect, "/media/settings/folders");
     char req[120], want[120];
     request(&m, req, sizeof req);
     snprintf(want, sizeof want, "format sdc %s", bytes);
@@ -287,7 +287,7 @@ TEST(media_drives_without_the_helper_say_how) {
     media_test_drives(m.sys, m.udev, m.minfo);
     media_test_drive_dirs(NULL, NULL);
     media_drives_tick(now_ms());
-    const char *h = th_page(adam, "/media/settings");
+    const char *h = th_page(adam, "/media/settings/folders");
     CHECK_HAS(h, "New disk found: Film disk");
     CHECK_HAS(h, "needs its disk helper");
     CHECK(!strstr(h, "data-a=\"media.drive_use\""));
@@ -309,7 +309,7 @@ TEST(media_drives_leave_a_machine_without_usb_disks_alone) {
     media_test_drives(m.sys, m.udev, m.minfo);
     media_test_drive_dirs(NULL, NULL);
     media_drives_tick(now_ms());
-    CHECK(!strstr(th_page(adam, "/media/settings"), "media-drive"));
+    CHECK(!strstr(th_page(adam, "/media/settings/folders"), "media-drive"));
     CHECK(!strstr(th_page(adam, "/system"), "New disk found"));
     th_halt();
 }

@@ -44,6 +44,7 @@ void media_drives_start(void);
 void media_drives_stop(void);
 void media_drives_tick(int64_t now_ms);
 void media_drives_card(Ctx *c, Buf *b);     /* Library settings (admins) */
+bool media_drives_attention(void);          /* (2.7) a disk wants an admin's look: Library settings' Overview says so */
 void media_drives_dialog(Ctx *c, Buf *b);   /* ?format=<disk>: the typed confirmation */
 bool media_drives_offer(Ctx *c, Buf *b);    /* Watch's first-run page: a new disk, one tap (true = shown) */
 void media_drives_health(Health *h);

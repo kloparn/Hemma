@@ -18,7 +18,8 @@ execFileSync(path.join(ROOT, 'build', `test${exe}`), ['conv_fuzz_seeds'], {
   cwd: ROOT, stdio: 'inherit', env: { ...process.env, HEMMA_FUZZ_SEEDS: path.join(WORK, 'mkv') },
 });
 fs.writeFileSync(path.join(WORK, 'hemma.env'),
-  `HEMMA_ADMIN_USER=${ADMIN.user}\nHEMMA_ADMIN_PASSWORD=${ADMIN.password}\nHEMMA_ADMIN_NAME=${ADMIN.name}\n`);
+  `HEMMA_ADMIN_USER=${ADMIN.user}\nHEMMA_ADMIN_PASSWORD=${ADMIN.password}\nHEMMA_ADMIN_NAME=${ADMIN.name}\n` +
+  'HEMMA_TEST_PART_MS=300\n'); // (2.7: Full throttle makes a video in parts of 300 ms - the clips last a second)
 
 const hemma = spawn(path.join(ROOT, 'build', `hemma${exe}`),
   ['--host', '127.0.0.1', '--port', String(PORT), '--data', path.join(WORK, 'data'), '--env', path.join(WORK, 'hemma.env')],

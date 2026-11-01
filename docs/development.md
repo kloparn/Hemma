@@ -135,7 +135,9 @@ bash tools/ci/local.sh test            # Linux: this checkout (asan, fuzz [secon
 ```
 
 On Windows it runs in WSL: `.\build.ps1 ci [test|asan|fuzz]` packs the checkout and hands it
-over (`$env:HEMMA_WSL` picks the distribution). Setting WSL up, once (admin rights and a restart;
+over (`$env:HEMMA_WSL` picks the distribution). `.\build.ps1 check` runs every check at once - the
+WSL jobs (test, asan), the Windows suite, the browser tests and eslint, side by side - and prints one
+summary, each job's output in `build\check`: a few minutes instead of the sum of them. Setting WSL up, once (admin rights and a restart;
 the distribution's disk can live on another drive):
 
 ```powershell

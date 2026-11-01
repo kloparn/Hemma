@@ -741,7 +741,7 @@ TEST(media_progress_follows_renamed_and_reorganised_videos) {
     CHECK(media_watch_get(adam, g2) != NULL); /* stays put */
     CHECK_INT(media_history_lost(labels, 4, &away), 1);
     CHECK_STR(labels[0], "Garden (2019)");
-    CHECK_HAS(th_page(adam, "/media/settings"), "Watch history without its video");
+    CHECK_HAS(th_page(adam, "/media/settings/manage"), "Watch history without its video");
     if (module_find("system")) CHECK_HAS(th_page(adam, "/system"), "couldn&#39;t be matched to one in the library: Garden (2019).");
     CHECK(th_act(adam, "media.history_forget", "").ok);
     CHECK(media_watch_get(adam, g2) == NULL);
@@ -845,11 +845,11 @@ TEST(media_library_lists_what_it_leaves_out) {
         if (str_ends(l->rel, "sample-harbour.mkv")) CHECK_INT(l->why, MEDIA_LEFT_SAMPLE);
         else CHECK(str_ends(l->rel, "Harbour-trailer.mkv") && l->why == MEDIA_LEFT_NAMED);
     }
-    const char *h = th_page(adam, "/media/settings");
+    const char *h = th_page(adam, "/media/settings/manage");
     CHECK_HAS(h, "Left out");
     CHECK_HAS(h, "sample-harbour.mkv");
     CHECK_HAS(h, "runs under 10 minutes");
-    CHECK(!strstr(th_page(eva, "/media/settings"), "Left out")); /* (admins look after the library) */
+    CHECK(!strstr(th_page(eva, "/media/settings/manage"), "Left out")); /* (admins look after the library) */
     /* the next start, from the cache: the same */
     media_lib_start();
     CHECK(by_rel("Movies/Sample Film (2021)/Sample Film (2021).mkv") != NULL);
@@ -894,13 +894,13 @@ TEST(media_library_lists_unfinished_uploads) {
     setting_set("media.roots", root);
     media_scan_sync();
     CHECK_INT(media_lib()->nparts_all, 0); /* written lately: it may still be resumed */
-    CHECK(!strstr(th_page(adam, "/media/settings"), "Unfinished uploads"));
+    CHECK(!strstr(th_page(adam, "/media/settings/manage"), "Unfinished uploads"));
     g_fake_now = now_sec() + 8 * 86400; /* a week later, untouched */
     media_scan_sync();
     CHECK_INT(media_lib()->nparts_all, 1);
     CHECK_STR(media_lib()->parts[0].rel, "Movies/B (2021)/B (2021).mkv.hemma-part");
     CHECK(media_lib()->parts_bytes == 11);
-    const char *h = th_page(adam, "/media/settings");
+    const char *h = th_page(adam, "/media/settings/manage");
     CHECK_HAS(h, "Unfinished uploads");
     CHECK_HAS(h, "B (2021).mkv.hemma-part");
     CHECK_HAS(h, "media.parts_remove");

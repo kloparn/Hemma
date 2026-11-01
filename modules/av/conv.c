@@ -117,6 +117,18 @@ typedef struct {
     size_t npend, cpend;
     int64_t pend_index;
     bool pend_key, have_pend;
+    /* (2.7) a part (AvConvJob.piece_to): the pictures from pfrom to pto (pts) only; pdone once one at or past pto came
+       out (all before it are out then), pfirst = the first one's place (the part's empty edit). The join
+       (AvConvJob.npieces): the parts' pictures as they are - pmkv the part being read, pk its index */
+    bool piece, pdone, joining;
+    int64_t pfrom, pto, pfirst;
+    Mkv *pmkv;
+    int pk;
+    const MkvTrack *pvt;
+    MkvFrame pfr; /* the part's next picture, waiting for its time (phave) */
+    bool phave;
+    uint8_t avcc[512]; /* the encoder's settings record: every part's must be the same */
+    size_t navcc;
     /* video copy */
     int64_t *vpts; /* every video pts in file order (decode order) */
     int nvpts, vi;
@@ -434,7 +446,9 @@ static bool encode_out(Conv *c, const DeintOut *o) {
     H264Picture pic = {o->y, o->u, o->v, o->stride_y, o->stride_c, o->stride_c, o->index};
     H264Packet pk;
     if (!h264enc_encode(c->enc, &pic, &pk)) return fail(c, "The H.264 encoder stopped", NULL);
-    return put_video(c, pk.data, pk.size, c->m4 || c->hv ? place_of(c, o->pts) : o->index, pk.idr);
+    int64_t place = c->m4 || c->hv ? place_of(c, o->pts) : o->index;
+    if (c->piece && c->pfirst < 0) c->pfirst = place; /* (2.7: where the part starts) */
+    return put_video(c, pk.data, pk.size, place, pk.idr);
 }
 
 /* ---- the picture decoder: MPEG-2/-1, or (2.5) MPEG-4 Part 2, or (2.6) HEVC, its frames as MPEG-2's ---- */
@@ -487,6 +501,10 @@ static bool decoded(Conv *c) {
     while (!c->failed && vdec_frame(c, &pf)) {
         if (pf.pts != MKV_NOPTS && pf.pts >= c->vt->end && end_after(c->vt, c->v0) > 0) continue; /* (2.6.1) past an
                                                                     MP4's edit list: decoded for the others, never shown */
+        if (c->piece && pf.pts != MKV_NOPTS) { /* (2.7) a part: before it, decoded for the others; past it, done */
+            if (pf.pts >= c->pto) c->pdone = true;
+            if (pf.pts < c->pfrom || pf.pts >= c->pto) continue;
+        }
         if (pf.width != c->w || pf.height != c->h) { /* a later sequence header changed the size: the
                                                         deinterlacer and the encoder are set up for one */
             char sizes[64];
@@ -1343,6 +1361,7 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         c->enc = h264enc_new(&hp);
         if (!c->di || !c->enc) return fail(c, "Can't set up the converter for this picture size", NULL);
         size_t n = h264enc_avcc(c->enc, avcc, sizeof avcc);
+        if (n <= sizeof c->avcc) memcpy(c->avcc, avcc, n), c->navcc = n; /* (2.7: the join checks every part has it) */
         vt.codec = MP4_H264;
         vt.timescale = c->m4 || c->hv ? 90000 : (uint32_t)c->out_num;
         vt.config = avcc;
@@ -1397,15 +1416,105 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
     return true;
 }
 
+/* ---- (2.7) one video over several cores: parts, then the join ---- */
+
+/* A part starts at the picture keyframe at or before its start: seek there - further back while the first keyframe found
+   comes after it - and leave *fr on that keyframe */
+static bool piece_start(Conv *c, MkvFrame *fr) {
+    for (int64_t back = 0;; back = back ? back * 2 : 10 * NS) {
+        bool from_start = back >= MAX_TS || c->pfrom - back <= c->v0;
+        if (from_start) mkv_rewind(c->mkv);
+        else mkv_seek(c->mkv, c->pfrom - back, c->vt->number);
+        int r;
+        while ((r = next_frame(c, fr)) > 0 && !(fr->track == c->vt->number && fr->key))
+            if (stopped(c)) return fail(c, "Stopped", NULL);
+        if (r < 0) return fail(c, "Couldn't read the original (disk error?)", NULL);
+        if (r > 0 && (from_start || fr->pts == MKV_NOPTS || fr->pts <= c->pfrom)) return true;
+        if (from_start) return fail(c, "There's no picture to start the part at", NULL);
+    }
+}
+
+/* A part: decoded from that keyframe until a picture at or past its end came out; only its own pictures encoded (the
+   first a keyframe: a new encoder), and the file starts where they do (its empty edit) */
+static bool piece_pass(Conv *c) {
+    MkvFrame fr;
+    if (!restart_decoder(c) || !piece_start(c, &fr)) return false;
+    int64_t span = (c->pto == INT64_MAX ? c->v0 + c->duration : c->pto) - c->pfrom;
+    int r = 1;
+    for (bool first = true; !c->failed && !c->pdone; first = false) {
+        if (!first && (r = next_frame(c, &fr)) <= 0) break;
+        if (stopped(c)) return fail(c, "Stopped", NULL);
+        if (fr.track != c->vt->number) continue;
+        vdec_decode(c, fr.data, fr.size, fr.pts);
+        decoded(c);
+        if (fr.pts != MKV_NOPTS && span > 0) set_progress(c, (int)CMIN(999, CMAX(0, (fr.pts - c->pfrom) * 1000 / span)));
+    }
+    if (r < 0) return fail(c, "Couldn't read the original (disk error?)", NULL);
+    if (!c->pdone) { /* (to the end: what's still in the decoder) */
+        vdec_flush(c);
+        decoded(c);
+    }
+    deint_flush(c->di);
+    DeintOut o;
+    while (!c->failed && deint_pull(c->di, &o)) encode_out(c, &o);
+    uint32_t last = (uint32_t)CMAX(1, at_tick(c->vgap));
+    if (c->failed || (c->have_pend && !put_sample(c, c->vtrack, c->pend, c->npend, last, 0, c->pend_key))) return false;
+    if (c->pfirst < 0) return fail(c, "The part has no picture in it", NULL);
+    mp4_set_delay(c->mp4, c->vtrack, c->pfirst);
+    return true;
+}
+
+/* The join: the parts' pictures up to `upto` (ns after the first picture; INT64_MAX = all the rest), each as it was made,
+   in order - a part's settings record must be the encoder's (the same settings make the same one) */
+static bool feed_pieces(Conv *c, int64_t upto) {
+    while (!c->failed) {
+        if (!c->pmkv) {
+            if (c->pk >= c->j->npieces) return true;
+            char err[160] = "";
+            c->pmkv = mkv_open(&c->j->pieces[c->pk], err, sizeof err);
+            c->pvt = c->pmkv ? mkv_find_track(c->pmkv, MKV_VIDEO) : NULL;
+            if (!c->pvt) return fail(c, "A part of the picture couldn't be read: %s", err[0] ? err : "no picture in it");
+            if (c->pvt->priv_len != c->navcc || memcmp(c->pvt->priv, c->avcc, c->navcc))
+                return fail(c, "A part of the picture was made with other settings", NULL);
+            c->phave = false;
+        }
+        if (!c->phave) {
+            int r = mkv_next(c->pmkv, &c->pfr);
+            if (r < 0) return fail(c, "A part of the picture couldn't be read", NULL);
+            if (r == 0) {
+                mkv_close(c->pmkv);
+                c->pmkv = NULL;
+                c->pk++;
+                continue;
+            }
+            if (c->pfr.track != c->pvt->number) continue;
+            c->phave = true;
+        }
+        if (upto != INT64_MAX && c->pfr.pts != MKV_NOPTS && c->pfr.pts > upto) return true;
+        int64_t place = c->pfr.pts != MKV_NOPTS && c->pfr.pts >= 0 && c->pfr.pts < MAX_TS ? at_tick(c->pfr.pts) : c->vprev + 1;
+        if (!c->have_pend || place > c->vprev) { /* (places only go forward: an overlap is left out) */
+            if (!put_video(c, c->pfr.data, c->pfr.size, place, c->pfr.key)) return false;
+            c->vprev = place;
+        }
+        c->phave = false;
+    }
+    return false;
+}
+
 static bool main_pass(Conv *c) {
     MkvFrame fr;
+    if (c->piece) return piece_pass(c);
     mkv_rewind(c->mkv);
-    if (c->vcode && !restart_decoder(c)) return false; /* start over with a fresh decoder: the survey consumed frames */
+    if (c->vcode && !c->joining && !restart_decoder(c)) return false; /* start over with a fresh decoder: the survey consumed frames */
     int r = 0;
     while (!c->failed && (r = next_frame(c, &fr)) > 0) {
         if (stopped(c)) return fail(c, "Stopped", NULL);
+        /* (2.7) the join: the parts' pictures in step with the sound, the original's picture left as it is */
+        if (c->joining && fr.pts != MKV_NOPTS && !feed_pieces(c, fr.pts - c->v0)) return false;
         if (fr.track == c->vt->number) {
-            if (c->vcode) {
+            if (c->joining) { /* (its picture is the parts') */
+                ;
+            } else if (c->vcode) {
                 vdec_decode(c, fr.data, fr.size, fr.pts);
                 decoded(c);
             } else {
@@ -1430,7 +1539,11 @@ static bool main_pass(Conv *c) {
     }
     if (c->failed) return false;
     if (r < 0) return fail(c, "Couldn't read the original (disk error?)", NULL);
-    if (c->vcode) { /* the last pictures still inside the decoder and the deinterlacer */
+    if (c->joining) { /* (2.7) the parts' last pictures */
+        if (!feed_pieces(c, INT64_MAX)) return false;
+        uint32_t last = (uint32_t)CMAX(1, at_tick(c->vgap));
+        if (c->have_pend && !put_sample(c, c->vtrack, c->pend, c->npend, last, 0, c->pend_key)) return false;
+    } else if (c->vcode) { /* the last pictures still inside the decoder and the deinterlacer */
         vdec_flush(c);
         decoded(c);
         deint_flush(c->di);
@@ -1603,17 +1716,37 @@ bool av_convert(AvConvJob *j) {
         else unsupported(c, "Its sound is %s, which the converter can't change yet", codec_words(first_audio->codec));
         /* (Vorbis, FLAC ... in an MKV: Chrome and Edge play them as they are - only TrueHD is silent) */
     }
-    if (j->want_subs) choose_subs(c);
+    if (!c->failed && (j->piece_to > 0 || j->npieces > 0)) { /* (2.7) a part, or the parts' join: HEVC made H.264 only */
+        if (!c->hv) unsupported(c, "Only HEVC made H.264 is made in parts", NULL);
+        else if (j->piece_to > 0 && j->npieces > 0) fail(c, "A part can't be a join too", NULL);
+        else if (j->npieces > 0 && (j->npieces > AV_CONV_MAX_PIECES || !j->pieces)) fail(c, "Too many parts", NULL);
+        c->piece = j->piece_to > 0;
+        c->joining = j->npieces > 0;
+        if (c->piece) c->naud = c->alive = 0; /* (a part: the picture alone) */
+    }
+    if (j->want_subs && !c->piece) choose_subs(c);
 
     Mpeg2Frame first = {0};
     DeintStats ds;
     memset(&ds, 0, sizeof ds);
     if (!c->failed) survey(c, &first, &ds);
+    if (!c->failed && c->piece) { /* (from the first picture: the survey found it) */
+        if (c->v0 == MKV_NOPTS) fail(c, "There's no picture to start the part at", NULL);
+        c->pfrom = c->v0 + CMAX(0, CMIN(j->piece_from, MAX_TS));
+        c->pto = j->piece_to >= MAX_TS ? INT64_MAX : c->v0 + j->piece_to;
+        c->pfirst = -1;
+        if (c->pto <= c->pfrom) fail(c, "The part has no length", NULL);
+    }
     if (!c->failed) {
         c->mp4 = mp4_new(&j->out, 0, index_room(c, &first));
         if (!c->mp4) fail(c, "Out of memory", NULL);
     }
     if (!c->failed) setup_tracks(c, &first, &ds);
+    if (!c->failed && c->joining) { /* (2.7: said, as a part of what was done) */
+        char parts[40];
+        snprintf(parts, sizeof parts, " (made in %d parts)", j->npieces);
+        append(j->what, sizeof j->what, parts);
+    }
     if (!c->failed && !mp4_begin(c->mp4)) fail(c, "Couldn't write the new file", NULL);
     if (!c->failed) main_pass(c);
     if (!c->failed && !mp4_finish(c->mp4)) fail(c, "Couldn't finish the new file (disk full?)", NULL);
@@ -1628,6 +1761,7 @@ bool av_convert(AvConvJob *j) {
     hand_subs(c, subs_ok);
 
     if (c->mp4) mp4_free(c->mp4);
+    if (c->pmkv) mkv_close(c->pmkv); /* (2.7: a part the join was reading) */
     mkv_close(c->mkv);
     if (c->dec) mpeg2_free(c->dec);
     if (c->dec4) mpeg4_free(c->dec4);
