@@ -4,6 +4,35 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.6.1 (2026-11-01)
+
+A copy ends where its original does: no pictures cut off, none added.
+
+### Fixed
+
+- **A copy's last pictures:** a copy whose picture Hemma copied (H.264 or HEVC with B-frames - most releases) stopped
+  about two pictures before its end, a twelfth of a second. Hemma's MP4 writer worked out how long to show the picture in the
+  order pictures are stored, not the order they're shown in. Every picture shows now; copies made before keep that
+  twelfth of a second off their end.
+- **What an MP4 hides stays hidden:** an MP4 can say that some of its pictures or sound aren't shown - an encoder's last
+  pictures, or a cut made without re-encoding. Hemma's converter showed them anyway: an episode's MP4 hid its last two
+  pictures, and its H.264 copy showed them. A copy now shows no more than its original.
+
+### For developers
+
+- modules/av/mp4.c: an edit list shows a track from `start` to where its last sample in presentation order ends
+  (`Trk.shown_end` = decode time + composition offset + length), no longer the sum of lengths less `start` - which, for
+  a copied picture with B-frames (`start` = the reordering), hid its last pictures. `Mp4Track.end` = media time where
+  showing stops (an edit list that ends early; 0 = to the end). mp4_test's edit list of 208.5 ms is 292 ms now.
+- modules/av/mkv_mp4.h: `MkvTrack.end` = where the last edit ends, on the frames' pts clock (ns; 0 = none, as in
+  Matroska).
+- modules/av/conv.c: a re-encoded picture at or past it is decoded (a shown one may be predicted from it) but not
+  encoded; a copy gets `Mp4Track.end` on each track's own clock - the picture's, AAC made from Dolby/DTS (after the
+  priming), Opus (after the pre-skip), AAC/MP3 copied - bounded by `end_after()`. Tests:
+  conv_leaves_out_what_an_mp4_edit_list_hides, mp4read_keeps_what_an_edit_list_hides_hidden; the mp4 fuzz seed
+  h264-ac3-edit-end.mp4.
+- The program is about 5 MB (4.7 MB for a Pi in 2.6): README and CLAUDE.md said 4 and 3.3.
+
 ## 2.6.0 (2026-10-31)
 
 HEVC (x265) videos can be made to play everywhere: Hemma's converter decodes HEVC now and makes an H.264 copy - on

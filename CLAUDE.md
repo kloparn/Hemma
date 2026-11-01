@@ -1103,7 +1103,11 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  (hevc_config with the CodecPrivate's hvcC; 10-bit comes as 8-bit planes too), AV1 refused "can only copy so far",
                  never as_is; wasm conv_run's 4th argument); without it HEVC is copied as ever. h264enc.* (Constrained
                  Baseline encoder, bit-exact vs Chrome; annexb=false + h264enc_avcc() for MP4; ~180 fps SD
-                 per PC core, ~7.6 fps per Pi 3 core). mp4.* (faststart via reserved moov, or fragmented), flac.*, deint.* (IVTC / yadif / bob /
+                 per PC core, ~7.6 fps per Pi 3 core). mp4.* (faststart via reserved moov, or fragmented; an edit list
+                 shows a track from Mp4Track.start to where its last sample IN PRESENTATION ORDER ends - Trk.shown_end;
+                 2.6.1: the sum of lengths less start had hidden a B-frame copy's last ~2 pictures - or to Mp4Track.end,
+                 an original's edit list end: MkvTrack.end (mkv_mp4.h), conv.c end_after(): re-encoded pictures past it
+                 decoded, not encoded; copied tracks get the same end on their own clock), flac.*, deint.* (IVTC / yadif / bob /
                  pass + analysis), aac.* (AAC-LC encoder, 48 kHz stereo 160 kbit/s for the converter;
                  aac_testdec.h = a small decoder for tests). conv.* = the converter (MkvReader in, Mp4Out
                  out, progress callback, `unsupported` = a codec it doesn't handle, err in words via codec_words;
@@ -1420,7 +1424,8 @@ build*/ data/ .env   generated / runtime / secrets (gitignored)
   `.flags` stamp sits next to the object). Test scratch folders go to `<build dir>/test-tmp/` and are
   removed after a passing run (kept, and named, after a failing one).
 - Size: release builds use -ffunction-sections/-fdata-sections + --gc-sections (macOS: -dead_strip) and no
-  unwind tables; SQLite is built -Os without its JSON functions (FTS5 stays). 2.6 -> 2.2 MB incl. gz twins.
+  unwind tables; SQLite is built -Os without its JSON functions (FTS5 stays). The program ~4.7 MB for a Pi in 2.6 (the
+  HEVC decoder +320 KB, in it and in av.wasm), ~2.5 MB as the release download (.tar.gz).
 - Dev mode (`--web web`): editing web/ or the CSS of a compiled-in module reloads open browsers.
 - PowerShell can swallow compiler errors: when a build fails without output, run it from Bash:
   `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./build.ps1 build 2>&1 | tail -30`.
@@ -2187,6 +2192,10 @@ admin asks - Library settings "Play everywhere from HEVC" (what's left, per seri
 an H.264 copy made on Hemma's computer (the queue) or on the admin's own device (a "here" upload batch reading the library
 video from Hemma); it replaces Hemma's HEVC copy, never an original. Copying HEVC stays the default (decision 0013). A big PR
 for the ~1,500-line aim: the decoder (~3,100 lines) and its tests are most of it, the owner's choice of one release.
+2.6.1 (branch fix/mp4-edit-list; found by the night's whole-file checks: Friends' H.264 copy showed 2 pictures its MP4 hid)
+= A COPY ENDS WHERE ITS ORIGINAL DOES: an MP4 original's edit-list end is kept (MkvTrack.end - hidden pictures decoded,
+not encoded; copies get the same end), and mp4.c's own edit lists no longer hide a B-frame copy's last ~2 pictures (every
+copied H.264/HEVC copy since copies began: ~83 ms off its end; copies already made keep that). Sizes: ~5 MB.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
@@ -2199,7 +2208,8 @@ Keep new work within what's been measured:
   HEVC -> H.264 (2.6): 1080p 10-bit ~1.6-1.8 s a second of video per PC core, native or as WebAssembly in Node (a
   22-min Friends episode ~36 min); ~36 MB a minute (about the HEVC's size), 39.6 dB; HEVC decoding alone ~45-55 fps.
   Peak memory 80-100 MB a 1080p job (glibc, 3 sources) - a Pi 3's 2 workers ~200 MB of its 1 GB. Copies 0.6-1.5x the HEVC.
-- The program: ~3.3 MB for the Pi (0.25.0 added ~300 KB of translations); the suite ~10 s on a 20-thread PC.
+- The program: ~4.7 MB for the Pi (2.6.0; av.wasm and its gzip twin inside, ~1.1 MB of it), "one ~5 MB program" in the
+  README and the GitHub description; the suite ~25 s on a 20-thread PC (874 tests).
 
 Owner decisions not in docs/decisions: the Network page's changes (device edits, owners, Wake-on-LAN, the
 presence window) are admin-only - members only look (2026-10-11); the sign-in page keeps its "Welcome back"

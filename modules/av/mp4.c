@@ -120,6 +120,8 @@ typedef struct {
     Bb data;                /* fragmented: this track's bytes in the current fragment */
     uint32_t chunk_samples; /* samples in the chunk being written */
     uint64_t duration;      /* ticks: sum of sample durations */
+    uint64_t shown_end;     /* (2.6.1) ticks: where the last sample to be shown ends (decode time + composition offset +
+                               length) - past `duration` by a B-frame stream's reordering */
     uint64_t frag_dts;      /* fragmented: decode time where the current fragment starts */
     bool any_cts, neg_cts, all_key;
     bool dropped; /* mp4_drop_track: left out of the moov */
@@ -354,6 +356,8 @@ bool mp4_sample(Mp4 *m, int track, const void *data, size_t n, uint32_t duration
     if (cts < 0) t->neg_cts = true;
     if (ok && key) ok = PUSH(t, sync, t->n_sizes);
     if (!key) t->all_key = false;
+    int64_t shown = (int64_t)t->duration + (int64_t)cts + (int64_t)duration;
+    if (shown > 0 && (uint64_t)shown > t->shown_end) t->shown_end = (uint64_t)shown;
     t->duration += duration;
     return ok || !(m->failed = true);
 }
@@ -364,9 +368,21 @@ static uint64_t to_movie(uint64_t ticks, uint32_t timescale) {
     return (ticks * MOVIE_TIMESCALE + timescale / 2) / timescale;
 }
 
+/* (2.6.1) media ticks to the end of what the track shows: its last picture in presentation order, not decode order. Before,
+   a copy with B-frames (start = the reordering) was shown until `duration` - start: its last two pictures or so hidden. */
+static uint64_t track_span(const Trk *t) { return t->shown_end > t->duration ? t->shown_end : t->duration; }
+
+static bool track_cut(const Trk *t) { /* (2.6.1) shown only up to t.end */
+    return t->t.end > t->t.start && (uint64_t)t->t.end < track_span(t);
+}
+
+static uint64_t track_media_shown(const Trk *t) { /* media ticks the edit list shows, from start */
+    uint64_t last = track_cut(t) ? (uint64_t)t->t.end : track_span(t);
+    return last > (uint64_t)t->t.start ? last - (uint64_t)t->t.start : 0;
+}
+
 static uint64_t track_movie_duration(const Trk *t) { /* what tkhd/edit lists show */
-    uint64_t media = t->duration > (uint64_t)t->t.start ? t->duration - (uint64_t)t->t.start : 0;
-    return to_movie(media + (uint64_t)t->t.delay, t->t.timescale);
+    return to_movie(track_media_shown(t) + (uint64_t)t->t.delay, t->t.timescale);
 }
 
 static void matrix(Bb *b) {
@@ -570,7 +586,7 @@ static void trak(Mp4 *m, Bb *b, const Trk *t, bool co64) {
     put32(b, video ? w << 16 : 0);
     put32(b, video ? hh << 16 : 0);
     end(b, h);
-    if (!(m->flags & MP4_FRAGMENTED) && (t->t.start || t->t.delay)) {
+    if (!(m->flags & MP4_FRAGMENTED) && (t->t.start || t->t.delay || track_cut(t))) {
         size_t e = box(b, "edts");
         size_t l = fullbox(b, "elst", 1, 0);
         put32(b, t->t.delay ? 2 : 1);
@@ -579,8 +595,7 @@ static void trak(Mp4 *m, Bb *b, const Trk *t, bool co64) {
             put64(b, (uint64_t)-1); /* empty edit */
             put32(b, 0x00010000);
         }
-        uint64_t media = t->duration > (uint64_t)t->t.start ? t->duration - (uint64_t)t->t.start : 0;
-        put64(b, to_movie(media, t->t.timescale));
+        put64(b, to_movie(track_media_shown(t), t->t.timescale));
         put64(b, (uint64_t)t->t.start);
         put32(b, 0x00010000);
         end(b, l);

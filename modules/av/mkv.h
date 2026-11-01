@@ -68,6 +68,8 @@ typedef struct {
     size_t strip_len;
     bool compressed; /* zlib/bzlib/lzo compressed or encrypted: frames are not usable as they are */
     char fourcc[5];  /* 2.5, an MP4/MOV's: its sample entry ("avc1", "hvc1", "mp4a", "ac-3" ...); "" in Matroska */
+    int64_t end;     /* 2.6.1, an MP4/MOV's: where its edit list stops showing it (ns, on the frames' pts clock) - a frame
+                        at or past it is there to be decoded, not shown (an encoder's last pictures, a cut); 0 = none */
 } MkvTrack;
 
 typedef struct {

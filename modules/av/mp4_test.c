@@ -327,7 +327,9 @@ TEST(mp4_writes_ctts_and_edit_lists_only_when_needed) {
     CHECK(path(&f, "moov/trak.0/edts/elst", &b));
     CHECK(b.p[0] == 1 && be32(b.p + 4) == 1);
     CHECK_INT(be64(b.p + 16), 2002); /* media time 2002 shows at 0 */
-    CHECK_INT(be64(b.p + 8), 209);   /* (7 x 1001 - 2002) / 24000 s = 208.5 ms */
+    CHECK_INT(be64(b.p + 8), 292);   /* from 2002 to where the last shown ends (8008 + 1001): 7007 / 24000 s = 292 ms
+                                        (2.6.1: it was 7 x 1001 - 2002 - the sum of lengths less the start - which hid
+                                        a B-frame stream's last pictures) */
     CHECK(path(&f, "moov/trak.1/edts/elst", &b));
     CHECK(be32(b.p + 4) == 2);
     CHECK_INT(be64(b.p + 8), 100);          /* 4800 / 48000 s of nothing first ... */
