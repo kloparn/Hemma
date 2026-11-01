@@ -613,7 +613,19 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  its biggest still to come; ordinary ones all they have left (a whole series' guesses at once refused
                  "All of them" on a disk with room). ?size= checks the copy's place is still there (gone: the HEVC copy
                  it replaces, or the original it goes beside - removed or renamed on Manage) else {"skip":true}; two
-                 videos making one .web.mp4 go once.
+                 videos making one .web.mp4 go once. A copy in place sets UpFile.settle: upload_tick then does what Hemma's
+                 own queue does with "Do that by itself after each conversion" ticked (2.7: convert_replace_original - the
+                 original stayed beside a device's copy). PARTS (2.7, Full throttle on the device - decision 0014):
+                 here_parts gives each long video (dur_ms / g_part_min_ms, CONVERT_PART_MIN_S 300 s; HEMMA_TEST_PART_MS in
+                 the browser tests) its share of the device's workers (convert_device_workers / videos) as part entries
+                 after the videos - part_of = 1 + its video's entry, part_k, cut_from/_to ms (-1 = the end), orig = its
+                 share; rel = convert_piece_path's "x.web.mp4.p<k>.conv.part" - sent as any copy (?size=, PUTs, resume);
+                 the plan's todo {"i","f","part":[from,to],"share"} (wire.js: conv.js `cut` -> wasm conv_part; `share`
+                 sizes it against the room slider); the video itself stays CV_WAIT, out of the todo, its pm their average
+                 (part_progress, 999 at most); upload_tick joins them on a thread (join_worker: convert_file with npieces,
+                 src = the library's file - no download again; b->workers held meanwhile), or fails the video when one
+                 couldn't be made. Parts aren't files of the upload (counts, rows, the log); upload_has_part keeps the
+                 scan's leftover sweep (convert_drop_leftover) off them.
   media/download.c + zip.c  DOWNLOADS (1.1; owner, 2026-10-21: grown-ups only - members and admins, never
                  children, guests or display accounts, media_grown_up; the version that plays everywhere; a season
                  or a series as ONE .zip): GET|HEAD /media/file/<id>?download=1 = the playable file +
@@ -640,8 +652,25 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  tabs, the season's card with its Remove first; per season
                  each episode/extra with its files (Original / Converted copy badges) and size, "Fix number"
                  (&fix=<id>), Remove (&rm=<id>); Remove season (&rm=season), Remove series (&rm=series)); the watch
-                 page's "Fix title" (?fix=1; films and other videos - a film without a year shows up as one);
-                 Library settings' "What takes room" (10 biggest series/films of 1 MB or more, originals + copies).
+                 page's "Fix title" (?fix=1; films and other videos - a film without a year shows up as one).
+                 MANAGE ONE TAP AWAY (2.7; owner, 2026-11-01: "easier to get to a manage page - currently it's not easy to
+                 understand how to get there"): Watch's header has a "Manage" button (admins, media_lib_head) to Library
+                 settings' Manage tab = media_manage_library_card: every series and film, A-Z (media_title_cmp) or
+                 ?sort=size (originals + copies: what "What takes room" showed - the sidebar's storage meter links it),
+                 ?q= (fold_find), LIB_ROWS 60, each to its Manage; every watch page's media_manage_watch_button = "Manage"
+                 (an episode: /media/series/<id>?manage=1&s=N#media-m-<id>; a film or other video: ?manage=1 =
+                 media_manage_film_view - the card media.c draws: media_manage_film_files, Fix title ?manage=1&fix=1,
+                 Picture, Remove; its dialogs close back to it; "Done" leaves it).
+                 LIBRARY SETTINGS IN TABS (2.7; owner: "more tabs, less scrolling, so we can give easier info and more
+                 better info"): media.c page_settings draws one of SET_TABS - media.h MEDIA_SETTINGS (Overview: Status +
+                 look_card "Needs a look": no folders, a disk (media_drives_attention), converting/failed/no room
+                 (convert_summary), films without a year, left out, unfinished uploads, lost history, videos some device
+                 can't play - each a row to its tab), _CONVERTING (convert_card, convert_h264_card, convert_power_card,
+                 subtake_card), _MANAGE (the library list, noyear/left/parts/history cards), _FOLDERS (folders, disks,
+                 Add videos, Not for children; ?format= dialog), _ONLINE (media_lookup_card), _DEVICES (devices card,
+                 Playback, What plays where). Converting/Manage/Online admins' only: anyone else asking gets Overview.
+                 nav.seg.media-set-tabs with data-start (a phone opens the row at the tab shown). Link the tab that
+                 holds a thing (health.c, drives.c, lookup.c, tv.c do).
                  REMOVING: remove.c media_purge_episode/_season/_series plan from the index (no disk work: the
                  dialog); media_purge_job + media_purge_run delete on a thread (one at a time, g_removing; tests
                  run it in the action): the item's files, then its OWN folders whole (a season's "Season N"; a show
@@ -746,6 +775,28 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  heavy-work sentence by plat_cpu_count() >= 8), manage.c (the whole series card; a season's when only
                  part of the series is HEVC) and the watch page (admins, that video). Tests: conv_test_hevc() /
                  conv_test_hevc_mp4() (convert_test.c) make the fixtures.
+                 HOW HARD TO WORK (2.7; owner, 2026-11-01: "three tiers of processing ... low-power (~30%) - Medium-power
+                 (60%) - Full throttle (95%~100%)", "a small description on what it would mean per machine, like how many
+                 cores would be used, how it processes it"; decision 0014): convert_power_workers(tier, cores, phone) =
+                 Low (cores*3+5)/10, Medium (cores*6+5)/10 (the default), Full all, CLAMP 1..MAX_WORKERS 32; a phone 1, Full
+                 2. Hemma's computer: setting media.power (g_power, kept by convert_tick; workers_wanted) - workers over a
+                 lowered tier stop after their video (pick), spawn_workers starts more; a person's devices: pref
+                 media.power_here -> convert_device_workers(c) = this session's device's cores (devices.c MediaDevice.cores,
+                 wire.js sends navigator.hardwareConcurrency with media.caps; media_device_cores also says phone by the
+                 agent) at that tier, 0 = not known -> upload_converter_attrs(c, b) puts data-workers on the converting forms
+                 (wire.js converter's width; else half the cores, at most 8). convert_power_card (Converting tab, admins):
+                 each machine's three radios (data-auto, action media.power where=server|here tier=low|medium|full), what
+                 each means there. convert_test_device_cores(n) in tests.
+                 FULL THROTTLE IN PARTS (2.7): pick's split(it) - Full, an h264 job, dur_ms >= 2 x PART_MIN_S
+                 (CONVERT_PART_MIN_S 300) - makes it nparts = MIN(1 + idle workers, AV_CONV_MAX_PIECES, dur / 5 min) jobs
+                 (ConvertJob.piece/piece_from/piece_to, written as convert_piece_path = "x.web.mp4.p<k>.conv.part"; its need
+                 doubles); pick hands out a running item's next part before a new item; part_finished: the last one to
+                 finish joins (it->joining, ConvertJob.npieces: convert_file reads the parts, removes them after) - a
+                 failed part or a stop fails the video and removes them. item_permille/item_out_mb add the parts up; the
+                 card says "in N parts"; convert_drop_leftover knows them (and a device's: upload_has_part). The tick
+                 starts workers for waiting parts (threads only from the loop: free_on_loop). Upload's device parts: see
+                 media/upload.c HERE BATCHES. The upload form's "h264" box (2.7, More options, off by default; says which
+                 devices can't play HEVC: devices.c media_devices_no_hevc) - wire.js use.h264 -> conv.js h264 for every job.
   media/subs.c   SUBTITLES (1.2; owner, 2026-10-23: "all the shows that have subs to be able to give subs"): SRT ->
                  WebVTT (/media/sub/<id>.vtt) and which file belongs to which video. media_sub_tags(video, sub,
                  &MediaSubTags{lang, sdh, forced, n}) reads a name: sdh/cc/hi = SDH, forced/foreign = forced; a
@@ -1101,7 +1152,14 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  pts (place_of; the last one and those without a time: the median gap of the first pictures, usual_gap).
                  HEVC the same way, but only with AvConvJob.h264 (2.6: the picture must end up H.264 - HEVC decoded
                  (hevc_config with the CodecPrivate's hvcC; 10-bit comes as 8-bit planes too), AV1 refused "can only copy so far",
-                 never as_is; wasm conv_run's 4th argument); without it HEVC is copied as ever. h264enc.* (Constrained
+                 never as_is; wasm conv_run's 4th argument); without it HEVC is copied as ever. 2.7: IN PARTS (Full throttle,
+                 decision 0014) - AvConvJob.piece_from/piece_to (ns after the first picture; AV_CONV_TO_END) = a PART:
+                 piece_start seeks to the keyframe at or before it (further back while the first found is after it),
+                 piece_pass decodes until a picture at or past its end comes out (decoded() drops the others), encodes only
+                 its own (a new encoder: the first a keyframe), the picture alone, mp4_set_delay = where it starts;
+                 AvConvJob.pieces/npieces = the JOIN: the original's picture skipped, feed_pieces puts the parts' samples
+                 in step with the sound (each part's avcC must be the encoder's: c->avcc), the sound and subtitles as
+                 ever, what += " (made in N parts)". HEVC made H.264 only (else unsupported). wasm conv_part. h264enc.* (Constrained
                  Baseline encoder, bit-exact vs Chrome; annexb=false + h264enc_avcc() for MP4; ~180 fps SD
                  per PC core, ~7.6 fps per Pi 3 core). mp4.* (faststart via reserved moov, or fragmented; an edit list
                  shows a track from Mp4Track.start to where its last sample IN PRESENTATION ORDER ends - Trk.shown_end;
@@ -1404,6 +1462,9 @@ build*/ data/ .env   generated / runtime / secrets (gitignored)
 ./build.ps1 test [flt]   # build + run every *_test.c, one process per core (flt = substring of test/file
                          #   name: one process)
 ./build.ps1 ci [job]     # CI's Linux jobs in WSL (tools/ci/local.sh): test | asan | fuzz [seconds]
+./build.ps1 check        # (2.7) EVERY check at once: WSL test + asan start first, then the Windows build, then the
+                         #   Windows suite (cores - 4), the browser tests and eslint side by side - one summary,
+                         #   logs in build/check (~3 min on 20 threads; one after another was ~5). Use it before a PR
 ./build.ps1 release      # optimised Windows build
 ./build.ps1 pi | pi32    # static Linux binaries for the Raspberry Pi (aarch64 | armv6), ~2.2 MB
 ./build.ps1 linux        # static x86-64 Linux (pi/pi32 also run on any ARM Linux)
@@ -1851,7 +1912,9 @@ to base/<batch>/<i>?at=<offset>, resuming from GET base/<batch>/<i>; a todo entr
 only the bytes before `end`; `{i, f}` = convert file f here first (web/conv.js Workers, half the cores,
 max 8, as far ahead as the room slider allows), POST ?size= / ?original=1, then PUT the result as entry i;
 `{i, f, subs: 1}` = only read f's subtitles and send those (1.3); `form[data-here]` (2.6) = no files of
-its own: the plan's `remote` list (library videos, read from Hemma by Range) is converted with `h264` and sent back - a toast
+its own: the plan's `remote` list (library videos, read from Hemma by Range) is converted with `h264` and sent back (2.7: a todo
+entry `{i, f, part: [from, to], share}` = only that part of the picture, conv.js `cut`; `data-workers` = how many at once, the
+server's by this device's cores and tier; an upload's `h264` box makes every job HEVC-to-H.264) - a toast
 when the browser can't convert, "keep this page open" while it works; a `reload` op (a new Hemma, a changed asset
 in dev mode) that comes while an upload runs waits for its end (reloadDue: the "leave the page?" question froze the page
 and its converting till someone answered - a night's work once); ONE file at a time, whatever is ready first
@@ -2196,6 +2259,13 @@ for the ~1,500-line aim: the decoder (~3,100 lines) and its tests are most of it
 = A COPY ENDS WHERE ITS ORIGINAL DOES: an MP4 original's edit-list end is kept (MkvTrack.end - hidden pictures decoded,
 not encoded; copies get the same end), and mp4.c's own edit lists no longer hide a B-frame copy's last ~2 pictures (every
 copied H.264/HEVC copy since copies began: ~83 ms off its end; copies already made keep that). Sizes: ~5 MB.
+2.7.0 (branch feat/update-admin-pages-and-convertion-logic; owner, 2026-11-01: "optimize the logic of our admin pages, using
+more tabs, less scrolling", "easier to get to a manage page", "three tiers of processing", "Everything in 2.7") = LIBRARY
+SETTINGS IN SIX TABS (Overview with Needs a look), MANAGE ONE TAP AWAY (Watch's header, every watch page, a film's own
+Manage view), HOW HARD TO WORK (Low/Medium/Full for Hemma's computer and each admin's devices) with FULL THROTTLE IN PARTS
+(one video over every core - on Hemma's computer and on a device, joined by the server; decision 0014), an upload box
+making HEVC H.264 on the way, and a device's copy taking its original's place as the queue's do. A big PR by the owner's
+choice.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling

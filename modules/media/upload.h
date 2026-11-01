@@ -31,6 +31,9 @@ void upload_test_free_space(int64_t bytes); /* tests: media_test_free_space (roo
    forgets it. */
 void upload_test_preview(int person, const char *form);
 void upload_test_pace_window(int ms); /* tests: how long the processing speed is measured over (-1: as shipped) */
+void upload_test_part_min(int64_t ms); /* (2.7) tests: a video made in parts on a device, parts this short (0: as shipped) */
+/* (2.7) a part of a video a device is making in parts (convert_piece_path's name): a scan leaves it be */
+bool upload_has_part(const char *path);
 
 /* ------------------------------------------------------------------ sorting (upload_sort.c)
    Hemma sorts an upload by the files' names (owner, 2026-10-21): an episode goes into
@@ -98,9 +101,10 @@ uint64_t upload_show_key(const char *name); /* a series name, folded: "70's Show
 /* A folder name made safe to store anywhere ("Star Wars: A New Hope" -> "Star Wars - A New Hope"):
    false when nothing is left of it. */
 bool upload_safe_name(const char *in, char *out, size_t cap);
-/* (2.6) the browser's converter is built in (av.wasm, conv.js), and a form's attributes that tell wire.js where */
+/* (2.6) the browser's converter is built in (av.wasm, conv.js), and a form's attributes that tell wire.js where - and
+   (2.7) data-workers: how many videos this device makes at once, by its person's power tier (none while unknown) */
 bool upload_can_convert(void);
-void upload_converter_attrs(Buf *b);
+void upload_converter_attrs(Ctx *c, Buf *b);
 /* (2.6) the person ticked the upload form's "keep copies in memory" ("ram"): "On this device" does as they chose */
 bool upload_ram_chosen(int person);
 /* (2.6) the person's own "On this device" batch as a card (while it runs, and a while after); false = none */

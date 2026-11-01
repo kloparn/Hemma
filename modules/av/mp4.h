@@ -94,6 +94,8 @@ int mp4_add_track(Mp4 *m, const Mp4Track *t); /* before mp4_begin; the track's i
 /* Replace a track's codec config (copied): e.g. the final FLAC STREAMINFO.
    Progressive: any time before mp4_finish. Fragmented: before mp4_begin. */
 bool mp4_set_config(Mp4 *m, int track, const uint8_t *config, size_t n);
+/* (2.7) progressive: the track starts `delay` ticks into the movie (an empty edit) - set any time before mp4_finish */
+bool mp4_set_delay(Mp4 *m, int track, int64_t delay);
 bool mp4_begin(Mp4 *m); /* progressive: ftyp + reservation + mdat header; fragmented: the init segment */
 /* Leave a track out of the moov (progressive: before mp4_finish; fragmented: before mp4_begin) - a sound that
    turned out undecodable part-way. Samples it already has stay in the mdat, referenced by nothing; it takes no

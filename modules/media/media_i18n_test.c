@@ -206,7 +206,13 @@ TEST(media_speaks_swedish_and_spanish) {
     str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/browse?p=0:Kino");
     str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/browse?p=0:Klipp");
     str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/browse?p=0:Klipp/Midsommar%202024");
-    str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/settings");
+    str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/settings"); /* (2.7: every tab) */
+    str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/settings/converting");
+    str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/settings/manage");
+    str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/settings/manage?sort=size");
+    str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/settings/folders");
+    str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/settings/online");
+    str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/settings/devices");
     str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/nope");
     str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/watch/0000000000000001");
     str_copy(g_urls[g_nurls++], sizeof g_urls[0], "/media/series/00000000000000aa");
@@ -216,7 +222,8 @@ TEST(media_speaks_swedish_and_spanish) {
     add_url("/media/series/%s?tv=1&back=%%2F", show->id);
     add_url("/media/watch/%s", flower->id);
     add_url("/media/watch/%s?pic=1", flower->id);
-    add_url("/media/watch/%s?remove=1", flower->id);
+    add_url("/media/watch/%s?manage=1", flower->id); /* (2.7: a film's Manage view) */
+    add_url("/media/watch/%s?manage=1&remove=1", flower->id);
     add_url("/media/watch/%s", inception->id);
     add_url("/media/watch/%s", ep1->id);
     add_url("/media/watch/%s?tv=1&back=%%2F", ep1->id);
@@ -227,7 +234,7 @@ TEST(media_speaks_swedish_and_spanish) {
 
     Buf r = {0};
     int n = untranslated(anna, &r); /* an admin: Library settings' every card, Remove, Picture */
-    str_copy(g_urls[0], sizeof g_urls[0], "/media/settings"); /* a member: who to ask */
+    str_copy(g_urls[0], sizeof g_urls[0], "/media/settings/folders"); /* a member: who to ask */
     g_nurls = 1;
     add_url("/media/watch/%s", inception->id);
     n += untranslated(eva, &r);
@@ -301,14 +308,14 @@ TEST(media_speaks_swedish_and_spanish_before_there_is_a_library) {
                                         "TVmaze", "OMDb", "omdbapi.com", "Wikipedia", NULL};
     Buf r = {0};
     int n = th_untranslated(anna, "/media", allow, &r) + th_untranslated(eva, "/media", allow, &r) +
-            th_untranslated(eva, "/media/settings", allow, &r) + th_untranslated(anna, "/media/movies", allow, &r);
+            th_untranslated(eva, "/media/settings/folders", allow, &r) + th_untranslated(anna, "/media/movies", allow, &r);
     /* the disks this machine has, offered with one tap (issue #27) */
     char disk[600];
     snprintf(disk, sizeof disk, "%s/usb", test_tmpdir());
     dir_make(disk);
     media_test_mounts(disk);
     n += th_untranslated(anna, "/media", allow, &r);
-    n += th_untranslated(anna, "/media/settings", allow, &r);
+    n += th_untranslated(anna, "/media/settings/folders", allow, &r);
     if (n) printf("%s", buf_cstr(&r));
     CHECK_INT(n, 0);
     buf_free(&r);

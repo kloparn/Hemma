@@ -31,6 +31,8 @@ int convert_h264_set(const char *what, const MediaFile **out, int cap);
 /* "dir/x.web.mp4" -> "dir/x.web.mp4.conv.part": the converter's own name for a copy being made,
    so an upload's "x.web.mp4.part" (resumable) is never mistaken for it, nor the other way round */
 void convert_part_path(const char *dst, char *out, size_t cap);
+/* (2.7) part k of a copy made in parts: "x.web.mp4.p3.conv.part" (a leftover one goes with a scan as any .conv.part) */
+void convert_piece_path(const char *dst, int k, char *out, size_t cap);
 
 typedef struct {
     char src[1024], dst[1024]; /* dst is written as convert_part_path(dst) and renamed when complete */
@@ -39,6 +41,10 @@ typedef struct {
     int64_t limit_ns;          /* stop after this much video (previews, tests); 0 = the whole file */
     bool h264;                 /* (2.6) the copy's picture must be H.264: HEVC decoded and re-encoded (AvConvJob.h264) */
     bool replace;              /* (2.6) dst may be there: Hemma's own .web.mp4 (HEVC), replaced once the new one is whole */
+    /* (2.7) Full throttle: part `piece` of the picture alone (piece_to > 0, as AvConvJob's), written as
+       convert_piece_path(dst, piece) and kept; or (npieces > 0) the join of parts 0..npieces-1 into dst, whose files then go */
+    int64_t piece_from, piece_to;
+    int piece, npieces;
     atomic_int *stop;          /* non-zero: give up soon (the .part is removed); NULL = never */
     atomic_int permille;       /* progress 0..1000, written by the worker */
     atomic_int out_mb;         /* written so far, in MB: what the copy already takes on the disk */
@@ -89,6 +95,24 @@ bool convert_queued(uint64_t id);           /* waiting or being converted */
 bool convert_busy(void);                    /* any video waiting or being converted (subtake.c gives way) */
 /* Still on the card: conversions set aside for lack of room, and failed ones (the System page). */
 void convert_trouble(int *noroom, int *failed);
+/* (2.7) What the Converting tab holds, for Library settings' Overview: videos Convert would make a copy of (need), and
+   the queue - waiting or running (busy), failed, set aside for lack of room. */
+typedef struct {
+    int need, busy, failed, noroom;
+} ConvertSummary;
+void convert_summary(ConvertSummary *s);
+
+/* (2.7) How hard conversions work: Low (~30% of the cores), Medium (~60%: the default), Full (all of them; a video being
+   re-encoded is split into parts when fewer are left than cores). Hemma's computer: setting media.power; a person's
+   devices ("On this device", the upload form): pref media.power_here - action media.power (where=server|here, tier). */
+enum { CONVERT_LOW, CONVERT_MEDIUM, CONVERT_FULL };
+int convert_power_of(const char *s);                          /* "low" "medium" "full" (else medium) */
+int convert_power_workers(int tier, int cores, bool phone);   /* videos at once on a machine of `cores` */
+int convert_device_workers(Ctx *c); /* this session's device at its person's tier; 0 = its cores not known yet */
+int convert_device_tier(Ctx *c);    /* its person's tier for their devices (pref media.power_here) */
+#define CONVERT_PART_MIN_S 300      /* a video is made in parts of 5 minutes at least (the keyframes they start at cost) */
+void convert_power_card(Ctx *c, Buf *b); /* Library settings' Converting tab (admins) */
+void convert_act_power(Ctx *c, Fields *f);
 /* The copy at dst lasts as long as the original (library id, file src): delete the original, its
    progress moves to the copy. What "delete each original once its copy is made" does per file. */
 bool convert_replace_original(uint64_t id, const char *src, const char *dst);
@@ -98,5 +122,6 @@ bool convert_replace_original(uint64_t id, const char *src, const char *dst);
    Returns its name ("Show S01E02") or NULL when none could start. */
 const char *convert_test_start(void);
 void convert_test_finish(bool ok); /* every running one: done (ok) or failed */
+void convert_test_device_cores(int cores); /* (2.7) every device has this many cores (0: as it said) */
 
 #endif

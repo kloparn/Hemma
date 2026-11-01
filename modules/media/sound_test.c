@@ -134,7 +134,7 @@ TEST(media_a_film_in_several_languages_asks_once_and_plays_yours) {
     CHECK(strstr(th_page(leo, page), "Which language"));
 
     /* Library settings: the choice, as picked */
-    html = th_page(eva, "/media/settings");
+    html = th_page(eva, "/media/settings/devices");
     CHECK_HAS(html, "Sound language");
     CHECK_HAS(html, "<option value=\"en\" selected>English</option>");
     /* (what /media/file/<id>?a=2 sends - that sound alone - is mp4view_test.c's, over a real socket) */

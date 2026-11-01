@@ -4,6 +4,8 @@
 #include "../../tests/harness.h"
 #include "../av/mp4.h"
 #include "convert.h"
+#include "media.h"
+#include "upload.h"
 #include "room.h"
 
 static MediaFile video(const char *container, const char *vcodec, const char *acodec) {
@@ -115,23 +117,30 @@ static void eb_small(Buf *b, uint32_t id, unsigned v) { /* v < 256 */
 /* MPEG-2 video and AC-3 sound in Matroska ("webm" doctype: in WebM), a minute long, `size`
    bytes: what the probe makes of a DVD rip - nothing a converter could read. Also used by
    upload_test.c. */
-static void rip_of(const char *root, const char *rel, const char *doctype, int64_t size, const char *vcodec, const char *acodec);
+static void rip_of(const char *root, const char *rel, const char *doctype, int64_t size, const char *vcodec, const char *acodec,
+                   double ms);
 void conv_test_rip(const char *root, const char *rel, const char *doctype, int64_t size) {
-    rip_of(root, rel, doctype, size, "V_MPEG2", "A_AC3");
+    rip_of(root, rel, doctype, size, "V_MPEG2", "A_AC3", 60000.0);
 }
 
 /* (2.6) an HEVC + AAC Matroska file, a minute long, as the probe sees an x265 release. Also used by upload_test.c. */
 void conv_test_hevc(const char *root, const char *rel, int64_t size) {
-    rip_of(root, rel, "matroska", size, "V_MPEGH/ISO/HEVC", "A_AAC");
+    rip_of(root, rel, "matroska", size, "V_MPEGH/ISO/HEVC", "A_AAC", 60000.0);
 }
 
-static void rip_of(const char *root, const char *rel, const char *doctype, int64_t size, const char *vcodec, const char *acodec) {
+/* (2.7) the same, `minutes` long: a film long enough to be made in parts */
+static void conv_test_hevc_long(const char *root, const char *rel, int64_t size, int minutes) {
+    rip_of(root, rel, "matroska", size, "V_MPEGH/ISO/HEVC", "A_AAC", minutes * 60000.0);
+}
+
+static void rip_of(const char *root, const char *rel, const char *doctype, int64_t size, const char *vcodec, const char *acodec,
+                   double ms) {
     Buf b = {0};
     size_t h = eb_open(&b, 0x1A45DFA3);
     eb_str(&b, 0x4282, doctype);
     eb_close(&b, h);
     size_t seg = eb_open(&b, 0x18538067), info = eb_open(&b, 0x1549A966);
-    double ms = 60000.0;
+    /* (ms: its length) */
     uint64_t u;
     memcpy(&u, &ms, 8);
     eb_id(&b, 0x4489);
@@ -207,7 +216,7 @@ TEST(convert_waits_for_room_and_sets_aside_what_cannot_fit) {
     CHECK(r.ok);
     CHECK_HAS(r.toast, "Converting 2 videos");
     CHECK_HAS(r.toast, "1 more doesn't fit on the drive");
-    const char *page = th_page(adam, "/media/settings");
+    const char *page = th_page(adam, "/media/settings/converting");
     CHECK_HAS(page, "Converting · 0 of 2 done");
     CHECK_HAS(page, "1 video didn't fit on the drive: Show S01E03 needs up to 20 KB, and the drive has 5 KB to spare "
                     "(Hemma keeps 1 GB free). Make room, then convert again.");
@@ -219,7 +228,7 @@ TEST(convert_waits_for_room_and_sets_aside_what_cannot_fit) {
     convert_test_finish(true);
     CHECK(started("Show S01E02")); /* ... and starts once E01 is done */
     convert_test_finish(true);
-    page = th_page(adam, "/media/settings");
+    page = th_page(adam, "/media/settings/converting");
     CHECK_HAS(page, "2 converted");
     CHECK_HAS(page, "Convert 3 videos"); /* (no copies were really made) */
 
@@ -231,7 +240,7 @@ TEST(convert_waits_for_room_and_sets_aside_what_cannot_fit) {
     media_test_free_space(MEDIA_RESERVE + 100);
     CHECK(started(NULL));
     CHECK(!convert_queued(e3));
-    CHECK_HAS(th_page(adam, "/media/settings"), "1 video didn't fit on the drive: Show S01E03 needs up to 20 KB");
+    CHECK_HAS(th_page(adam, "/media/settings/converting"), "1 video didn't fit on the drive: Show S01E03 needs up to 20 KB");
 
     /* asked for when it can't fit: said at once */
     r = th_act(adam, "media.convert", id_form(e3));
@@ -278,6 +287,8 @@ static void copy_in(const char *root, const char *rel, bool hevc) {
 static void made_copy(const char *root, const char *rel) { copy_in(root, rel, false); }
 /* (2.6) an HEVC MP4 a minute long: Hemma's 'hvc1' copy, or an original. Also used by upload_test.c. */
 void conv_test_hevc_mp4(const char *root, const char *rel) { copy_in(root, rel, true); }
+/* (2.7) an H.264 MP4 a minute long: a copy made of it. Also used by upload_test.c. */
+void conv_test_h264_mp4(const char *root, const char *rel) { copy_in(root, rel, false); }
 
 static bool there(const char *root, const char *rel) {
     char path[1024];
@@ -339,7 +350,7 @@ TEST(convert_tick_copes_with_a_long_queue) {
     CHECK(started("Many S01E01")); /* a running one first, 19 after it */
     convert_tick(now_ms());
     convert_tick(now_ms());
-    CHECK_HAS(th_page(adam, "/media/settings"), "Converting · 0 of 20 done");
+    CHECK_HAS(th_page(adam, "/media/settings/converting"), "Converting · 0 of 20 done");
     media_test_free_space(-1);
     th_halt();
 }
@@ -443,7 +454,7 @@ TEST(convert_makes_hevc_h264_where_it_belongs) {
     CHECK_INT(convert_h264_set(what, set, 8), 1);
     CHECK_INT(convert_h264_set("nonsense=1", set, 8), 0);
 
-    const char *page = th_page(adam, "/media/settings");
+    const char *page = th_page(adam, "/media/settings/converting");
     CHECK_HAS(page, "4 videos are HEVC (x265)");
     CHECK_HAS(page, "<input type=\"hidden\" name=\"h264\" value=\"1\">");
     CHECK_HAS(page, "id=\"media-h264-films\"");
@@ -457,11 +468,11 @@ TEST(convert_makes_hevc_h264_where_it_belongs) {
     snprintf(url, sizeof url, "/media/watch/%016llx", (unsigned long long)film->id);
     CHECK_HAS(th_page(adam, url), "Its picture is HEVC: an H.264 copy plays everywhere");
     pref_set(adam, "media.upload_ram", "1"); /* "On this device" keeps its copies in memory as the upload form's box says */
-    page = th_page(adam, "/media/settings");
+    page = th_page(adam, "/media/settings/converting");
     if (strstr(page, "data-here")) CHECK_HAS(page, "<input type=\"hidden\" name=\"ram\" value=\"1\">");
     int eva = th_person("Eva"); /* a member: none of it */
     CHECK(!strstr(th_page(eva, url), "Its picture is HEVC"));
-    CHECK(!strstr(th_page(eva, "/media/settings"), "name=\"h264\""));
+    CHECK(!strstr(th_page(eva, "/media/settings/converting"), "name=\"h264\""));
 
     snprintf(what, sizeof what, "h264=1&series=%016llx&season=1", (unsigned long long)e1->series);
     uint64_t id1 = e1->id, id2 = e2->id, id3 = s1->id;
@@ -470,6 +481,132 @@ TEST(convert_makes_hevc_h264_where_it_belongs) {
     CHECK(convert_queued(id1) && convert_queued(id2) && !convert_queued(id3));
     r = th_act(adam, "media.convert", "h264=1&films=1");
     CHECK_HAS(r.toast, "Converting 1 video");
+    th_halt();
+}
+
+/* (2.7) How hard to work: Low ~30% of the cores, Medium ~60% (the default), Full all of them - a phone one or two; for
+   Hemma's computer (setting media.power) and each admin's own devices (pref media.power_here: the "On this device" and
+   upload forms carry data-workers once the browser has said its cores - media.caps cores=) */
+TEST(convert_power_tiers_per_machine) {
+    CHECK_INT(convert_power_workers(CONVERT_LOW, 20, false), 6);
+    CHECK_INT(convert_power_workers(CONVERT_MEDIUM, 20, false), 12);
+    CHECK_INT(convert_power_workers(CONVERT_FULL, 20, false), 20);
+    CHECK_INT(convert_power_workers(CONVERT_LOW, 4, false), 1); /* a Raspberry Pi */
+    CHECK_INT(convert_power_workers(CONVERT_MEDIUM, 4, false), 2);
+    CHECK_INT(convert_power_workers(CONVERT_FULL, 4, false), 4);
+    CHECK_INT(convert_power_workers(CONVERT_LOW, 1, false), 1);
+    CHECK_INT(convert_power_workers(CONVERT_FULL, 64, false), 32); /* (MAX_WORKERS) */
+    CHECK_INT(convert_power_workers(CONVERT_MEDIUM, 8, true), 1); /* a phone */
+    CHECK_INT(convert_power_workers(CONVERT_FULL, 8, true), 2);
+    CHECK_INT(convert_power_of("full"), CONVERT_FULL);
+    CHECK_INT(convert_power_of("nonsense"), CONVERT_MEDIUM);
+
+    th_boot();
+    int adam = make_admin("Adam"), eva = th_person("Eva");
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    conv_test_hevc(root, "Movies/F (2020)/F (2020).mkv", 3000);
+    setting_set("media.roots", root);
+    media_scan_sync();
+    const char *page = th_page(adam, "/media/settings/converting");
+    CHECK_HAS(page, "How hard to work");
+    char cores[64];
+    snprintf(cores, sizeof cores, plat_cpu_count() == 1 ? "Hemma's computer · %d core" : "Hemma's computer · %d cores",
+             plat_cpu_count());
+    CHECK_HAS(page, cores);
+    CHECK_HAS(page, "name=\"tier\" value=\"medium\" data-auto checked");
+    CHECK(!strstr(th_page(eva, "/media/settings/converting"), "How hard to work"));
+    CHECK(!th_act(eva, "media.power", "where=server&tier=full").ok);
+    ThResult r = th_act(adam, "media.power", "where=server&tier=full");
+    CHECK(r.ok);
+    CHECK_HAS(r.toast, "Hemma's computer: Full throttle");
+    CHECK_STR(setting("media.power", ""), "full");
+    CHECK_HAS(th_page(adam, "/media/settings/converting"), "name=\"tier\" value=\"full\" data-auto checked");
+
+    /* this device: the forms say how many at once only once its browser has said its cores */
+    if (upload_can_convert()) {
+        char url[64];
+        const MediaFile *film = by_rel("Movies/F (2020)/F (2020).mkv");
+        snprintf(url, sizeof url, "/media/watch/%016llx", film ? (unsigned long long)film->id : 0ULL);
+        CHECK(!strstr(th_page(adam, url), "data-workers"));
+        char caps[300] = "caps=";
+        for (int i = 0; i < media_devices_test_ncaps(); i++) strcat(caps, "y");
+        strcat(caps, "&cores=20");
+        CHECK(th_act(adam, "media.caps", caps).ok);
+        CHECK_HAS(th_page(adam, url), "data-workers=\"12\""); /* (Medium: 12 of 20) */
+        CHECK(th_act(adam, "media.power", "where=here&tier=low").ok);
+        CHECK_STR(pref(adam, "media.power_here", ""), "low");
+        CHECK_HAS(th_page(adam, url), "data-workers=\"6\"");
+        CHECK_HAS(th_page(adam, "/media/settings/converting"), "· 20 cores");
+    }
+    th_halt();
+}
+
+bool conv_test_hevc_three(const char *path); /* av/conv_test.c (2.7): a real HEVC + AAC MKV, 0.9 s, keyframes at 0, 9, 18 */
+
+/* (2.7) Full throttle on Hemma's computer: a long HEVC video made H.264, fewer waiting than workers, is made in parts
+   side by side (pick: split) - the card says so; convert_file makes each part into its own file and joins them into the
+   copy, the parts' files gone after; one gone missing fails the join */
+TEST(convert_full_throttle_makes_a_video_in_parts) {
+    th_boot();
+    int adam = make_admin("Adam");
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    conv_test_hevc_long(root, "Movies/L (2020)/L (2020).mkv", 3000, 40);
+    setting_set("media.roots", root);
+    media_scan_sync();
+    media_test_free_space(1LL << 40);
+    const MediaFile *film = by_rel("Movies/L (2020)/L (2020).mkv");
+    CHECK(film != NULL);
+    CHECK(th_act(adam, "media.power", "where=server&tier=full").ok);
+    convert_tick(now_ms()); /* (the workers read the tier the tick keeps) */
+    char what[64];
+    snprintf(what, sizeof what, "h264=1&id=%016llx", film ? (unsigned long long)film->id : 0ULL);
+    ThResult r = th_act(adam, "media.convert", what);
+    CHECK_HAS(r.toast, "Converting 1 video");
+    CHECK(started("L"));
+    if (plat_cpu_count() >= 2) CHECK_HAS(th_page(adam, "/media/settings/converting"), " parts</small>");
+    convert_test_finish(true);
+
+    /* a part, a part, the join - by files */
+    char dir[512], src[600], dst[600], piece[700];
+    str_copy(dir, sizeof dir, test_tmpdir());
+    snprintf(src, sizeof src, "%s/S.mkv", dir);
+    snprintf(dst, sizeof dst, "%s/S.web.mp4", dir);
+    CHECK(conv_test_hevc_three(src));
+    static ConvertJob jp[2], jj;
+    for (int k = 0; k < 2; k++) {
+        str_copy(jp[k].src, sizeof jp[k].src, src);
+        str_copy(jp[k].dst, sizeof jp[k].dst, dst);
+        jp[k].h264 = true;
+        jp[k].piece = k;
+        jp[k].piece_from = k ? 300000000LL : 0;
+        jp[k].piece_to = k ? AV_CONV_TO_END : 300000000LL;
+        CHECK(convert_file(&jp[k]));
+        CHECK_STR(jp[k].err, "");
+        convert_piece_path(dst, k, piece, sizeof piece);
+        CHECK(path_stat(piece, NULL, NULL, NULL));
+    }
+    CHECK(!path_stat(dst, NULL, NULL, NULL)); /* (parts only, so far) */
+    str_copy(jj.src, sizeof jj.src, src);
+    str_copy(jj.dst, sizeof jj.dst, dst);
+    jj.h264 = true;
+    jj.npieces = 2;
+    CHECK(convert_file(&jj));
+    CHECK_STR(jj.err, "");
+    CHECK_HAS(jj.what, "(made in 2 parts)");
+    CHECK(path_stat(dst, NULL, NULL, NULL));
+    for (int k = 0; k < 2; k++) {
+        convert_piece_path(dst, k, piece, sizeof piece);
+        CHECK(!path_stat(piece, NULL, NULL, NULL)); /* the parts went */
+    }
+    CHECK(file_remove(dst));
+    CHECK(convert_file(&jp[0])); /* (part 1 missing: the join fails, and part 0 goes too) */
+    CHECK(!convert_file(&jj));
+    CHECK_STR(jj.err, "A part of the copy went missing");
+    convert_piece_path(dst, 0, piece, sizeof piece);
+    CHECK(!path_stat(piece, NULL, NULL, NULL));
+    CHECK(!path_stat(dst, NULL, NULL, NULL));
     th_halt();
 }
 

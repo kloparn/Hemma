@@ -233,6 +233,14 @@ bool mp4_set_config(Mp4 *m, int track, const uint8_t *config, size_t n) {
     return true;
 }
 
+/* (2.7) a track that starts later than its first sample says: an empty edit of `delay` ticks first - a part of a video
+   made on its own (av/conv.c) starts where it starts in the whole. Progressive only, any time before mp4_finish. */
+bool mp4_set_delay(Mp4 *m, int track, int64_t delay) {
+    if (track < 0 || track >= m->ntrk || (m->flags & MP4_FRAGMENTED) || m->finished || delay < 0) return false;
+    m->trk[track].t.delay = delay;
+    return true;
+}
+
 int mp4_add_track(Mp4 *m, const Mp4Track *tr) {
     if (m->begun || m->ntrk == MP4_MAX_TRACKS || !tr->timescale || tr->codec < MP4_H264 || tr->codec > MP4_OPUS) return -1;
     int i = m->ntrk;

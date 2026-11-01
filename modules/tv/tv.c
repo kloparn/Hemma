@@ -232,7 +232,7 @@ static void no_library(Ctx *c, Buf *b) {
     }
     ui_empty(b, "📼", T("Nothing to broadcast yet"),
              T("TV channels air the series and movies from your library. Point Hemma at your drive first."));
-    H(b, "<p class=\"center\"><a class=\"btn primary\" href=\"/media/settings\">%s</a></p>", T("Set up the library"));
+    H(b, "<p class=\"center\"><a class=\"btn primary\" href=\"" MEDIA_SETTINGS_FOLDERS "\">%s</a></p>", T("Set up the library"));
 }
 
 static void channel_form(Ctx *c, Buf *b, const Channel *ch) {

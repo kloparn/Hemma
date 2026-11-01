@@ -428,12 +428,12 @@ static const Tr TR[] = {
      "detectan automáticamente."},
     {"What plays where", "Vad spelas var", "Qué se reproduce dónde"},
     {"Most videos play straight away. Some - DVD rips especially - need converting first: one button (<i>Play "
-     "everywhere</i> above) makes a copy that plays on every phone, computer and TV.",
+     "everywhere</i>, under Converting) makes a copy that plays on every phone, computer and TV.",
      "De flesta videor spelas direkt. Vissa - särskilt DVD-rippar - behöver konverteras först: en knapp (<i>Spela "
-     "överallt</i> ovan) gör en kopia som spelas på alla telefoner, datorer och TV-apparater.",
+     "överallt</i>, under Konvertering) gör en kopia som spelas på alla telefoner, datorer och TV-apparater.",
      "La mayoría de los vídeos se reproducen enseguida. Algunos - sobre todo los ripeos de DVD - hay que convertirlos "
-     "primero: un botón (<i>Reproducir en todas partes</i> arriba) hace una copia que se reproduce en cualquier móvil, "
-     "ordenador y tele."},
+     "primero: un botón (<i>Reproducir en todas partes</i>, en Conversión) hace una copia que se reproduce en cualquier "
+     "móvil, ordenador y tele."},
     {"On every screen.", "På alla skärmar.", "En todas las pantallas."},
     {"On computers and most phones, but a TV's browser or an iPhone may refuse it. <i>Plays on newer devices</i>: "
      "most from the last few years.",
@@ -785,5 +785,43 @@ static const Tr TR[] = {
      "än en liten.",
      "Su imagen es HEVC: una copia H.264 se reproduce en todas partes. Es un trabajo pesado - un ordenador potente lo "
      "hace mucho más rápido que uno pequeño."},
+    /* 2.7: Library settings' tabs, Overview's "Needs a look", Watch's Manage */
+    {"Rename, fix, convert or remove series and films", "Byt namn på, rätta, konvertera eller ta bort serier och filmer",
+     "Renombra, corrige, convierte o quita series y películas"},
+    {"Overview", "Översikt", "Resumen"},
+    {"Converting", "Konvertering", "Conversión"},
+    {"settings tab\x04" "Online", "Online", "En línea"},
+    {"Add the folders with your videos", "Lägg till mapparna med dina videor", "Añade las carpetas con tus vídeos"},
+    {"A disk wants a look", "En disk behöver ses över", "Hay que revisar un disco"},
+    {"Converting: %d video to go", "Konverterar: %d video kvar", "Convirtiendo: falta %d vídeo"},
+    {"Converting: %d videos to go", "Konverterar: %d videor kvar", "Convirtiendo: faltan %d vídeos"},
+    {"%d video needs a copy to play everywhere", "%d video behöver en kopia för att spelas överallt",
+     "%d vídeo necesita una copia para reproducirse en todas partes"},
+    {"%d videos need a copy to play everywhere", "%d videor behöver en kopia för att spelas överallt",
+     "%d vídeos necesitan una copia para reproducirse en todas partes"},
+    {"%d conversion failed", "%d konvertering misslyckades", "%d conversión falló"},
+    {"%d conversions failed", "%d konverteringar misslyckades", "%d conversiones fallaron"},
+    {"%d video didn't fit on the drive to convert", "%d video fick inte plats på disken för att konverteras",
+     "%d vídeo no cupo en el disco para convertirlo"},
+    {"%d videos didn't fit on the drive to convert", "%d videor fick inte plats på disken för att konverteras",
+     "%d vídeos no cupieron en el disco para convertirlos"},
+    {"%d video is left out of the library", "%d video hålls utanför biblioteket", "%d vídeo se queda fuera de la biblioteca"},
+    {"%d videos are left out of the library", "%d videor hålls utanför biblioteket",
+     "%d vídeos se quedan fuera de la biblioteca"},
+    {"%d upload never finished", "%d uppladdning blev aldrig klar", "%d subida nunca terminó"},
+    {"%d uploads never finished", "%d uppladdningar blev aldrig klara", "%d subidas nunca terminaron"},
+    {"%d watched video is gone from the library", "%d sedd video är borta ur biblioteket",
+     "%d vídeo visto ya no está en la biblioteca"},
+    {"%d watched videos are gone from the library", "%d sedda videor är borta ur biblioteket",
+     "%d vídeos vistos ya no están en la biblioteca"},
+    {"%d video doesn't play on every device of yours", "%d video spelas inte på alla dina enheter",
+     "%d vídeo no se reproduce en todos tus dispositivos"},
+    {"%d videos don't play on every device of yours", "%d videor spelas inte på alla dina enheter",
+     "%d vídeos no se reproducen en todos tus dispositivos"},
+    {"Nothing needs a look right now.", "Inget behöver ses över just nu.", "Ahora no hay nada que revisar."},
+    {"Nothing to convert: every video plays everywhere, or is in a format Hemma can't convert yet.",
+     "Inget att konvertera: alla videor spelas överallt, eller är i ett format som Hemma inte kan konvertera än.",
+     "Nada que convertir: todos los vídeos se reproducen en todas partes, o están en un formato que Hemma aún no puede "
+     "convertir."},
 };
 TRANSLATIONS(media, TR)

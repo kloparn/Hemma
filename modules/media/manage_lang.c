@@ -152,5 +152,23 @@ static const Tr TR[] = {
      "%d episodios son HEVC: haz que se reproduzcan en todas partes -"},
     {"%d episode of these is HEVC -", "%d av de här avsnitten är HEVC -", "%d de estos episodios es HEVC -"},
     {"%d episodes of these are HEVC -", "%d av de här avsnitten är HEVC -", "%d de estos episodios son HEVC -"},
+    /* 2.7: Manage from every page, and the whole library in Library settings' Manage tab */
+    {"Fix its number, or remove it, its season or the series", "Rätta numret, eller ta bort det, säsongen eller hela serien",
+     "Corrige su número, o quítalo, su temporada o la serie"},
+    {"Its files, title, picture and removal", "Filerna, titeln, bilden och borttagning",
+     "Sus archivos, título, imagen y eliminación"},
+    {"Your library", "Ditt bibliotek", "Tu biblioteca"},
+    {"No series or films yet.", "Inga serier eller filmer än.", "Aún no hay series ni películas."},
+    {"Find a series or film", "Hitta en serie eller film", "Busca una serie o película"},
+    {"A-Z", "A-Ö", "De la A a la Z"},
+    {"Biggest first", "Störst först", "Las más grandes primero"},
+    {"Sizes count originals and their copies together.", "Storlekarna räknar original och kopior tillsammans.",
+     "Los tamaños cuentan los originales y sus copias juntos."},
+    {"Nothing in the library goes by that name.", "Inget i biblioteket heter så.", "Nada en la biblioteca se llama así."},
+    {"%d in HEVC", "%d i HEVC", "%d en HEVC"},
+    {"no year", "inget år", "sin año"},
+    {"in HEVC", "i HEVC", "en HEVC"},
+    {"%d more - search for it by name.", "%d till - sök efter den med namnet.", "%d más - búscala por su nombre."},
+    {"%d more - search for them by name.", "%d till - sök efter dem med namnet.", "%d más - búscalas por su nombre."},
 };
 TRANSLATIONS(media_manage, TR)

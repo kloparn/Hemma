@@ -19,6 +19,7 @@ replaces the old one, which stays here marked as such.
 | [0011](0011-an-android-app-as-a-thin-window.md) | An Android app: a thin window onto Hemma, served by Hemma itself | 2026-10-28 |
 | [0012](0012-pictures-and-https-through-curl.md) | Pictures may be fetched too; https goes through the computer's curl (amends 0009) | 2026-10-30 |
 | [0013](0013-heavy-conversions-on-the-device-you-choose.md) | HEVC is decoded; a heavy conversion runs where the admin chooses | 2026-10-31 |
+| [0014](0014-power-tiers-and-videos-in-parts.md) | How hard conversions work is chosen; Full throttle makes one video in parts | 2026-11-01 |
 
 New record: copy the shape of one of these (status, context, decision, consequences), number it
 next, add it to the table, and link it from the pull request that acts on it.

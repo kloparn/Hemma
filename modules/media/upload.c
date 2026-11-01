@@ -59,11 +59,13 @@
 #include <stdatomic.h>
 
 #include "../../core/assets.h"
+#include "../../core/env.h"
 #include "../../core/json.h"
 #include "../../core/ui.h"
 #include "convert.h"
 #include "room.h"
 #include "upload.h"
+#include "media.h"
 
 /* How much of the sending device's disk copies waiting to be sent may take, in GB (the form's slider,
    remembered per person; wire.js's converter keeps to it). More lets more slow conversions - DVD rips -
@@ -110,6 +112,15 @@ typedef struct {
        copy may take the place of the file there (Hemma's own HEVC .web.mp4) */
     uint64_t from, video;
     bool replace;
+    /* (2.7) its copy is in place: upload_tick does what Hemma's own queue does after a conversion - with "Do that by
+       itself after each conversion" ticked, the original goes (convert_replace_original's checks) */
+    bool settle;
+    /* (2.7) Full throttle on the device: a video made in parts side by side - its `parts` entries follow the videos,
+       each part_of = 1 + its video's entry, cut = its stretch (ms after the first picture; to -1 = the end), saved as
+       convert_piece_path(its copy, k); once they're all here, upload_tick has the server join them (joining) */
+    int parts, part_of, part_k;
+    int64_t cut_from, cut_to, dur_ms;
+    bool joining;
     /* SUBTITLES ONLY (1.3): a video that stays behind - the library has it (dupe), or its copy goes instead -
        still gives its subtitles: the browser reads them out of the original (file src) and sends them as
        entry i, saved next to `target`. A dupe's own subtitle files in the batch go next to the library's
@@ -193,9 +204,12 @@ bool upload_can_convert(void) { return asset_named("/av.wasm") && asset_named("/
 
 bool upload_ram_chosen(int person) { return str_eq(pref(person, PREF_UPLOAD_RAM, ""), "1"); }
 
-void upload_converter_attrs(Buf *b) {
+void upload_converter_attrs(Ctx *c, Buf *b) {
     const Asset *wasm = asset_named("/av.wasm"), *worker = asset_named("/conv.js");
-    if (wasm && worker) H(b, " data-convert=\"/static/conv.js?v=%s\" data-wasm=\"/static/av.wasm?v=%s\"", worker->etag, wasm->etag);
+    if (!wasm || !worker) return;
+    H(b, " data-convert=\"/static/conv.js?v=%s\" data-wasm=\"/static/av.wasm?v=%s\"", worker->etag, wasm->etag);
+    int n = convert_device_workers(c); /* (2.7: this device at its person's power tier) */
+    if (n > 0) H(b, " data-workers=\"%d\"", n);
 }
 
 static bool ieq3(const char *a, const char *b) {
@@ -902,7 +916,78 @@ static bool art_plan(Json *j, int at, Batch **out, char *err, size_t cap) {
    films, all) made H.264 by the browser that asks - each read from /media/file/<id>?src=1 (the plan's "remote" list),
    its copy sent back as the video's .web.mp4 like any upload's copy, taking the place of Hemma's own HEVC copy there.
    One library folder a batch (the first video's): the rest wait for the next one. */
-static bool here_plan(int me, Json *j, int at, Batch **out, char *err, size_t cap) {
+/* (2.7; owner: "Full throttle ... processes the videos in the most effective way on each tier") On Full throttle, fewer
+   videos than the device makes at once: each long one in parts side by side - its share of the device's workers, each
+   part at least CONVERT_PART_MIN_S long - every part an entry of its own after the videos (sent as any copy is, to its
+   own file), the video's entry joined from them by the server once they're all here (upload_tick). */
+static int64_t g_part_min_ms = CONVERT_PART_MIN_S * 1000LL; /* (tests: shorter - upload_test_part_min) */
+void upload_test_part_min(int64_t ms) { g_part_min_ms = ms > 0 ? ms : CONVERT_PART_MIN_S * 1000LL; }
+
+static void here_parts(Ctx *c, Batch *b) {
+    long told = strtol(env("HEMMA_TEST_PART_MS", ""), NULL, 10); /* (the browser tests' clips last a second: shorter) */
+    if (told > 0) g_part_min_ms = told;
+    int workers = convert_device_tier(c) == CONVERT_FULL ? convert_device_workers(c) : 0, queued = 0;
+    for (int k = 0; k < b->nfiles; k++) queued += b->files[k].state == UP_QUEUED;
+    int per = queued && workers > queued ? workers / queued : 1, extra = 0;
+    if (per < 2) return;
+    for (int k = 0; k < b->nfiles; k++) {
+        UpFile *u = &b->files[k];
+        int64_t p = MIN((int64_t)MIN(per, AV_CONV_MAX_PIECES), u->dur_ms / g_part_min_ms);
+        u->parts = u->state == UP_QUEUED && p >= 2 && strlen(u->rel) + 20 < sizeof u->rel ? (int)p : 0;
+        extra += u->parts;
+    }
+    if (!extra) return;
+    int nvideos = b->nfiles;
+    b->files = xrealloc(b->files, (size_t)(nvideos + extra) * sizeof *b->files);
+    memset(b->files + nvideos, 0, (size_t)extra * sizeof *b->files);
+    for (int k = 0; k < nvideos; k++) {
+        UpFile *u = &b->files[k];
+        for (int q = 0; q < u->parts; q++) {
+            UpFile *p = &b->files[b->nfiles++];
+            if (snprintf(p->rel, sizeof p->rel, "%s.p%d.conv.part", u->rel, q) >= (int)sizeof p->rel) /* (convert_piece_path's) */
+                p->rel[0] = '\0'; /* (never: room was checked above) */
+            str_copy(p->ext, sizeof p->ext, "mp4");
+            p->orig = u->orig / u->parts, p->from = u->from, p->src = u->src;
+            p->part_of = k + 1, p->part_k = q;
+            p->cut_from = u->dur_ms * q / u->parts;
+            p->cut_to = q == u->parts - 1 ? -1 : u->dur_ms * (q + 1) / u->parts;
+            p->state = UP_QUEUED, p->conv = CV_WAIT;
+        }
+        /* (the video itself: being made while they are - its progress theirs, part_progress - joined, never sent) */
+    }
+}
+
+/* (2.7) a part of a video a device is making in parts, at `path` (a live batch's, sent or not): not a leftover */
+bool upload_has_part(const char *path) {
+    bool mine = false;
+    lock_take(&g_lock);
+    for (int s = 0; s < MAX_BATCHES && !mine; s++) {
+        const Batch *b = g_batch[s];
+        for (int i = 0; b && i < b->nfiles && !mine; i++) {
+            if (!b->files[i].part_of) continue;
+            char full[1024];
+            join(full, sizeof full, b->root, b->files[i].rel);
+            mine = str_ieq(full, path);
+        }
+    }
+    lock_give(&g_lock);
+    return mine;
+}
+
+/* (2.7) a video made in parts: its progress is its parts' (a made one 1000), never going back - 999 at most, until joined */
+static void part_progress(Batch *b, int v) {
+    UpFile *video = &b->files[v];
+    int64_t sum = 0;
+    for (int q = 0; q < b->nfiles; q++) {
+        const UpFile *p = &b->files[q];
+        if (p->part_of == v + 1) sum += p->state == UP_DONE || p->conv == CV_READY ? 1000 : p->pm;
+    }
+    int pm = video->parts ? (int)CLAMP(sum / video->parts, 0, 999) : 0;
+    if (pm > video->pm) video->pm = pm;
+}
+
+static bool here_plan(Ctx *c, Json *j, int at, Batch **out, char *err, size_t cap) {
+    int me = c->me->id;
     char what[160] = "";
     json_string(j, at, what, sizeof what);
     enum { HERE_MAX = 4096 };
@@ -932,6 +1017,7 @@ static bool here_plan(int me, Json *j, int at, Batch **out, char *err, size_t ca
         str_copy(u->rel, sizeof u->rel, dst + rl + 1);
         str_copy(u->ext, sizeof u->ext, "mp4");
         u->orig = s->size, u->from = s->id, u->video = f->id, u->replace = replace, u->src = b->nfiles;
+        u->dur_ms = s->probe.duration_ms; /* (2.7: a long one may be made in parts) */
         if (convert_making(dst) || convert_queued(f->id) || claimed(b->root, me, u->rel)) {
             u->state = UP_SKIPPED;
             why_set(u, convert_queued(f->id) ? N_("Hemma is making its play-everywhere copy on the server right now")
@@ -947,6 +1033,7 @@ static bool here_plan(int me, Json *j, int at, Batch **out, char *err, size_t ca
         str_copy(err, cap, T("Nothing there needs converting any more"));
         return false;
     }
+    here_parts(c, b); /* (2.7: Full throttle - long ones in parts side by side) */
     *out = b;
     return true;
 }
@@ -1255,6 +1342,11 @@ static void todo_entry(Buf *out, const Batch *b, int i, int *k) {
         buf_printf(out, "%s{\"i\":%d,\"f\":%d,\"subs\":1}", (*k)++ ? "," : "", i, f->src);
         return;
     }
+    if (f->conv == CV_WAIT && f->part_of) { /* (2.7) only part [from, to] of file f's picture (ms; to -1 = the end) */
+        buf_printf(out, "%s{\"i\":%d,\"f\":%d,\"part\":[%lld,%lld],\"share\":%lld}", (*k)++ ? "," : "", i, f->src,
+                   (long long)f->cut_from, (long long)f->cut_to, (long long)f->orig);
+        return;
+    }
     if (f->conv == CV_WAIT) { /* the browser converts its file f, then sends the copy as entry i */
         buf_printf(out, "%s{\"i\":%d,\"f\":%d}", (*k)++ ? "," : "", i, f->src);
         return;
@@ -1280,7 +1372,7 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
         if (!art_plan(&j, art, &b, err, sizeof err)) goto out;
         batch_count(b);
     } else if (here >= 0) {
-        if (!here_plan(c->me->id, &j, here, &b, err, sizeof err)) goto out;
+        if (!here_plan(c, &j, here, &b, err, sizeof err)) goto out;
         batch_count(b);
     } else {
         Ask a = {.j = &j};
@@ -1389,7 +1481,7 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
     int k = 0;
     bool *listed_yet = xcalloc((size_t)b->nfiles + 1, sizeof *listed_yet);
     for (int i = 0; i < b->nfiles; i++) {
-        if ((b->files[i].state != UP_QUEUED && !b->files[i].subs) || listed_yet[i]) continue;
+        if ((b->files[i].state != UP_QUEUED && !b->files[i].subs) || listed_yet[i] || b->files[i].parts) continue; /* (2.7: a video in parts: they go instead) */
         int m = vobsub_mate(b, i); /* a VobSub's .sub goes before its .idx (the library takes it only beside one) */
         if (m >= 0 && !listed_yet[m] && b->files[m].state == UP_QUEUED && media_is_vobsub_data(b->files[m].rel)) {
             todo_entry(&out, b, m, &k);
@@ -1402,7 +1494,7 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
     buf_printf(&out, "],\"skipped\":%d,\"total\":%lld", b->skipped, (long long)b->total);
     if (here >= 0) { /* (2.6) where each "file" of the todo comes from: the library's, read by the browser */
         buf_puts(&out, ",\"remote\":[");
-        for (int i = 0; i < b->nfiles; i++) {
+        for (int i = 0; i < b->nfiles && !b->files[i].part_of; i++) { /* (2.7: the videos - their parts read them) */
             char fx[17];
             media_id_hex(b->files[i].from, fx);
             buf_printf(&out, "%s{\"u\":\"/media/file/%s?src=1\",\"s\":%lld,\"h264\":true}", i ? "," : "", fx,
@@ -1418,7 +1510,12 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
         b->ended = now_sec();
         lock_give(&g_lock);
     }
+    int nparts = 0; /* (2.7: parts of videos made side by side - not files of their own) */
+    for (int i = 0; i < b->nfiles; i++) nparts += b->files[i].part_of != 0;
     if (b->art) log_info("upload: %s sets the picture %s/%s", c->me->name, b->root, b->files[0].rel);
+    else if (nparts)
+        log_info("upload: %s plans %d files (%d skipped) into %s, in %d parts side by side", c->me->name,
+                 b->nfiles - b->skipped - nparts, b->skipped, b->root, nparts);
     else
         log_info("upload: %s plans %d files (%d skipped) into %s", c->me->name, b->nfiles - b->skipped, b->skipped,
                  b->root);
@@ -1568,8 +1665,9 @@ static void worker(void *arg) {
     if (complete) {
         uf->state = UP_DONE;
         uf->touched = now_sec();
-        b->done++;
-        g_files_saved += b->art == 0;
+        uf->settle = uf->from && uf->video; /* (2.7: a "here" copy - its original, on the loop: upload_tick) */
+        b->done += !uf->part_of; /* (2.7: a part of a video isn't a file of the upload - its video, joined, is) */
+        g_files_saved += b->art == 0 && !uf->part_of;
         g_pictures_saved += b->art != 0;
     } else if (stop && status != 410) {
         uf->state = UP_FAILED;
@@ -2198,6 +2296,7 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
         if (f && f->conv == CV_WAIT && f->state == UP_QUEUED && (f->pm < 1000 || pm >= 1000)) {
             f->pm = (int)CLAMP(pm, 0, 1000);
             pace_note(f, fed, now_ms());
+            if (f->part_of) part_progress(b, f->part_of - 1);
         } else if (f && f->subs && f->pm < 1000) { /* (only its subtitles: 1000 = all sent) */
             f->pm = (int)CLAMP(pm, 0, 1000);
             pace_note(f, fed, now_ms());
@@ -2235,6 +2334,7 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
             f->saved = 0;
             f->conv = CV_READY;
             f->pm = 1000;
+            if (f->part_of) part_progress(b, f->part_of - 1);
             file_remove(part); /* a copy from an earlier try: this one starts over */
             b->last = b->busy = now_sec();
             buf_puts(&out, "{\"at\":0}");
@@ -3149,6 +3249,11 @@ static void render_batch(Ctx *c, Buf *b, const Batch *u) {
     UpRow *rows = xcalloc((size_t)MAX(u->nfiles, 1), sizeof *rows);
     for (int i = 0; i < u->nfiles; i++) {
         const UpFile *f = &u->files[i];
+        if (f->part_of) { /* (2.7) a part of a video: not a file of the upload - its video's row says how far */
+            todo -= f->state != UP_SKIPPED;
+            ups += row_kind(f, c->now) == ROW_UP;
+            continue;
+        }
         copies += f->conv != CV_NONE;
         pending += f->conv == CV_WAIT && f->state == UP_QUEUED;
         as_is += f->conv == CV_ORIGINAL && !f->plays;
@@ -3369,7 +3474,7 @@ void upload_page(Ctx *c, Buf *b) {
       "<form class=\"stack media-up-form\" id=\"media-up-form\" data-upload=\"/media/upload\" "
       "data-preview=\"media.upload_preview\" data-empty=\"%s\"",
       T("Choose videos or a folder first"));
-    if (here) H(b, " data-convert=\"/static/conv.js?v=%s\" data-wasm=\"/static/av.wasm?v=%s\"", worker->etag, wasm->etag);
+    if (here) upload_converter_attrs(c, b); /* (2.7: with this device's data-workers) */
     if (pv && pv->no_year) { /* (2.4: "almost mandatory" - Start asks first while films lack their years) */
         char ask[200];
         snprintf(ask, sizeof ask, TN(pv->no_year, "%d film has no year. Upload it anyway?", "%d films have no year. Upload them anyway?"),
@@ -3436,6 +3541,20 @@ void upload_page(Ctx *c, Buf *b) {
     if (here) {
         H(b, "<label class=\"check\"><input type=\"checkbox\" name=\"conv\" value=\"1\" checked> %s</label>",
           T("Make videos play everywhere on this device first (recommended)"));
+        /* (2.7; owner: "Yes, off by default") HEVC made H.264 while uploading: one pass on the sending computer instead
+           of up, back down and up again with "On this device" later - slow, and not needed where every device plays HEVC */
+        char cant[200];
+        int n = media_devices_no_hevc(c, cant, sizeof cant);
+        H(b,
+          "<label class=\"check media-up-h264\"><input type=\"checkbox\" name=\"h264\" value=\"1\"><span><b>%s</b>"
+          "<small class=\"muted\">%s ",
+          T("Make HEVC videos play everywhere too (H.264)"),
+          T("HEVC (x265) videos are re-encoded to H.264 before they're sent, instead of copied as they are: every device "
+            "plays them then, but it's slow - an episode takes about as long as it lasts, or longer, on each core."));
+        if (n < 0) H(b, "%s", T("No device of yours has opened Watch yet."));
+        else if (!n) H(b, "%s", T("Every device of yours that has opened Watch plays HEVC already."));
+        else H(b, T("These can't play HEVC: %s."), cant);
+        buf_puts(b, "</small></span></label>");
         int room = (int)CLAMP(str_int_or(pref(c->me->id, PREF_UPLOAD_ROOM, ""), ROOM_DEFAULT), ROOM_MIN, ROOM_MAX);
         buf_puts(b, "<label class=\"field\"><span>"); /* (wire.js [data-show] keeps the number with the slider) */
         H(b, T("Room on this device for copies waiting to be sent: <b id=\"media-room-n\">%d</b> GB"), room);
@@ -3558,15 +3677,107 @@ void upload_start(void) {
     g_pace_window_ms = PACE_WINDOW_MS; /* (a test's setting doesn't outlive it) */
 }
 
+/* (2.7) A video made in parts on a device: the server joins them with its sound and subtitles (convert_file's join -
+   a remux of the picture, the sound as any conversion's), on a thread of its own, then it's done as a sent copy is. */
+typedef struct {
+    uint64_t batch;
+    int i, parts;
+    bool replace;
+    char src[1024], dst[1024];
+} Join;
+
+static void join_worker(void *arg) {
+    Join *jn = arg;
+    thread_background();
+    ConvertJob *cj = xcalloc(1, sizeof *cj); /* (its own: the thread's) */
+    str_copy(cj->src, sizeof cj->src, jn->src);
+    str_copy(cj->dst, sizeof cj->dst, jn->dst);
+    cj->h264 = true, cj->replace = jn->replace, cj->npieces = jn->parts;
+    bool ok = convert_file(cj);
+    if (ok) log_info("upload: joined %s (%s)", cj->dst, cj->what);
+    else log_warn("upload: couldn't join the parts of %s - %s", cj->dst, cj->err);
+    lock_take(&g_lock);
+    Batch *b = find(jn->batch);
+    if (b && jn->i < b->nfiles) {
+        UpFile *f = &b->files[jn->i];
+        f->joining = false;
+        f->touched = now_sec();
+        if (ok) {
+            f->state = UP_DONE;
+            f->settle = f->from && f->video;
+            b->done++;
+            g_files_saved++;
+        } else {
+            f->state = UP_FAILED;
+            why_set(f, cj->err);
+            b->failed++;
+        }
+        b->workers--;
+        b->last = b->busy = now_sec();
+    }
+    lock_give(&g_lock);
+    free(cj);
+    free_on_loop(jn); /* (the loop's) */
+    app_tick_soon();
+}
+
 void upload_tick(int64_t now) {
     uint64_t sig = 0; /* (unsigned: it wraps, by design) */
     int saved = 0, pictures = 0;
     bool active = false;
     int finished_person = 0, finished_files = 0;
+    struct {
+        uint64_t video;
+        char dst[1024];
+    } settle[8]; /* (2.7) "here" copies just in place (a few a tick: the rest the next) */
+    int nsettle = 0;
+    Join *joins[4]; /* (2.7) videos whose parts are all here: joined on threads */
+    uint64_t join_from[4];
+    int njoin = 0;
     lock_take(&g_lock);
     for (int s = 0; s < MAX_BATCHES; s++) {
         Batch *b = g_batch[s];
         if (!b) continue;
+        for (int i = 0; i < b->nfiles && njoin < countof(joins); i++) {
+            UpFile *f = &b->files[i];
+            if (!f->parts || f->state != UP_QUEUED || f->joining) continue;
+            int done = 0, bad = 0;
+            for (int q = 0; q < b->nfiles; q++) {
+                const UpFile *p = &b->files[q];
+                if (p->part_of != i + 1) continue;
+                done += p->state == UP_DONE;
+                bad += p->state == UP_FAILED || p->state == UP_SKIPPED;
+            }
+            if (bad && done + bad == f->parts) { /* (one couldn't be made, or its video went: the rest are no use) */
+                f->state = UP_FAILED;
+                why_set(f, N_("a part of its copy couldn't be made"));
+                b->failed++;
+                char dst[1024];
+                join(dst, sizeof dst, b->root, f->rel);
+                for (int q = 0; q < f->parts; q++) {
+                    char piece[1100];
+                    convert_piece_path(dst, q, piece, sizeof piece);
+                    file_remove(piece);
+                }
+                continue;
+            }
+            if (done < f->parts) continue;
+            Join *jn = xcalloc(1, sizeof *jn);
+            jn->batch = b->id, jn->i = i, jn->parts = f->parts, jn->replace = f->replace;
+            join(jn->dst, sizeof jn->dst, b->root, f->rel);
+            join_from[njoin] = f->from;
+            joins[njoin++] = jn;
+            f->joining = true;
+            b->workers++; /* (the batch stays while it's joined) */
+        }
+        for (int i = 0; i < b->nfiles && nsettle < countof(settle); i++) {
+            UpFile *f = &b->files[i];
+            if (!f->settle) continue;
+            f->settle = false;
+            settle[nsettle].video = f->video;
+            join(settle[nsettle].dst, sizeof settle[nsettle].dst, b->root, f->rel);
+            nsettle++;
+        }
         /* speed: smoothed over ~5 s, measured while bytes come - also across the pauses between a copy's pieces
            (each its own PUT, 1.3), which used to restart it every 16 MB */
         if (b->workers || (b->wrote && now_sec() - b->wrote <= 2)) {
@@ -3606,6 +3817,20 @@ void upload_tick(int64_t now) {
     saved = g_files_saved;
     pictures = g_pictures_saved;
     lock_give(&g_lock);
+    /* (2.7) a copy made on someone's device follows "Do that by itself after each conversion" as Hemma's own queue's do
+       (owner, 2026-11-01: "How do we make sure that does not happen" - the original stayed beside it): it takes its
+       original's place, with the same checks (as long as it, as compatible; never a .web.mp4) */
+    for (int k = 0; k < njoin; k++) { /* (2.7) the joins: the video read from where it is now */
+        const MediaFile *o = media_file(join_from[k]);
+        if (!o || !media_full_path(o, joins[k]->src, sizeof joins[k]->src)) joins[k]->src[0] = '\0';
+        if (app_testing() || !thread_spawn(join_worker, joins[k])) join_worker(joins[k]); /* (tests: at once) */
+    }
+    bool drop = nsettle && setting_int("media.drop_originals", 0) == 1;
+    for (int k = 0; k < nsettle && drop; k++) {
+        const MediaFile *o = media_file(settle[k].video);
+        char src[1024];
+        if (o && media_full_path(o, src, sizeof src)) convert_replace_original(o->id, src, settle[k].dst);
+    }
     if (pictures > g_pictures_seen) media_scan_start(); /* a new picture: show it now, not in 20 s */
     g_pictures_seen = pictures;
 

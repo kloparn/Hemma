@@ -266,6 +266,8 @@ void media_label(const MediaName *n, char *out, size_t cap);
    many videos, and up to max of their labels ("" = from before labels). *away: a library folder is
    missing or empty (an unplugged disk) - its videos may well come back. */
 int media_history_lost(char labels[][100], int max, bool *away);
+/* (2.7) titles in the library's order: folded, a leading "The" left out ("The Office" under O) */
+int media_title_cmp(const char *a, const char *b);
 int media_history_forget(void); /* drops it (nothing away): how many videos' history went */
 bool media_lib_away(void); /* the last scan found a library folder missing or empty (an unplugged disk) */
 

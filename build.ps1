@@ -6,6 +6,8 @@
     ./build.ps1 test [filter]   build + run tests    (one process per core; a filter = substring of a test
                                 or file name, run in one process)
     ./build.ps1 ci [job]        CI's Linux jobs in WSL (tools/ci/local.sh): test | asan | fuzz [seconds] [conv|mkv|mp4|ac3|dts|mpeg2|mpeg4|hevc|pgs|vobsub|tags]
+    ./build.ps1 check           every check at once: the Windows suite, WSL test + asan, the browser tests, eslint
+                                (one summary; logs in build/check)
     ./build.ps1 release         optimised build      -> build/hemma.exe
     ./build.ps1 pi              Raspberry Pi 64-bit  -> build/hemma-pi64   (static, aarch64)
     ./build.ps1 pi32            Raspberry Pi 32-bit  -> build/hemma-pi32   (static, armv6: every Pi)
@@ -295,13 +297,13 @@ function Build-Tests {
 
 # The whole suite in one process per core (test.exe --shard K/N), then one summary - what
 # tests/parallel.sh does for make test. A filter runs in one process, as before.
-function Invoke-Tests([string[]]$Filter) {
+function Invoke-Tests([string[]]$Filter, [int]$Jobs = 0, [switch]$Return) {
     if ($Filter) {
         & "./$B/test.exe" @Filter
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         return
     }
-    $n = if ($env:HEMMA_TEST_JOBS) { [int]$env:HEMMA_TEST_JOBS } else { [Environment]::ProcessorCount }
+    $n = if ($Jobs -gt 0) { $Jobs } elseif ($env:HEMMA_TEST_JOBS) { [int]$env:HEMMA_TEST_JOBS } else { [Environment]::ProcessorCount }
     $out = "$B/test-out"
     New-Item -ItemType Directory -Force $out | Out-Null
     $procs = @(for ($k = 0; $k -lt $n; $k++) {
@@ -325,14 +327,16 @@ function Invoke-Tests([string[]]$Filter) {
     }
     if ($failed -or $bad) {
         Write-Host "`n$failed of $run tests failed ($checks checks, $ms ms in $n processes)" -ForegroundColor Red
+        if ($Return) { return "$failed of $run tests failed" }
         exit 1
     }
     Write-Host "`nall $run tests passed ($checks checks, $ms ms in $n processes)" -ForegroundColor Green
+    if ($Return) { return "" }
 }
 
 # CI's Linux jobs (gcc + the suite, ASan + UBSan, the converter's fuzzer) in WSL: this checkout's files
 # go over as one tar, and tools/ci/local.sh runs the job in WSL's RAM disk (docs/development.md).
-function Invoke-CI([string[]]$JobArgs) {
+function Invoke-CI([string[]]$JobArgs, [switch]$Background) {
     if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
         throw "WSL isn't installed - see 'Checking before you push' in docs/development.md"
     }
@@ -348,8 +352,60 @@ function Invoke-CI([string[]]$JobArgs) {
     if ($LASTEXITCODE -ne 0) { throw "packing the tree failed" }
     $tar = (& wsl.exe @distro --exec wslpath -a (Join-Path $PSScriptRoot "$B/ci-src.tar")).Trim()
     $sh = (& wsl.exe @distro --exec wslpath -a (Join-Path $PSScriptRoot "tools/ci/local.sh")).Trim()
+    if ($Background) { # (check: started, not waited for - each job its own logs)
+        return @(foreach ($job in $JobArgs) {
+                $log = "$B/check/$job"
+                $p = Start-Process -FilePath "wsl.exe" -ArgumentList (@($distro) + @("--exec", "bash", $sh, $job, "--tar", $tar)) `
+                    -NoNewWindow -PassThru -RedirectStandardOutput "$log.out" -RedirectStandardError "$log.log"
+                $null = $p.Handle
+                @{ Name = "WSL $job"; Proc = $p; Logs = @("$log.out", "$log.log") }
+            })
+    }
     & wsl.exe @distro --exec bash $sh @JobArgs --tar $tar
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
+# Every check at once (owner, 2026-11-01: "when one test is run, we run on all envs at once"): CI's Linux jobs in WSL
+# (gcc + the suite, ASan + UBSan) start first, each in its own RAM-disk tree; meanwhile the Windows build; then the
+# Windows suite (a few cores left for Chrome), the browser tests and eslint side by side. One summary at the end; each
+# job's whole output in build/check/. Needs WSL, and tests/browser's npm ci done once.
+function Invoke-Check {
+    $start = Get-Date
+    Remove-Item -Recurse -Force "$B/check" -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force "$B/check" | Out-Null
+    $jobs = @(Invoke-CI @("test", "asan") -Background)
+    Build-Tests
+    Build-Target "win" $Debug
+    $node = { param($name, $what, $dir)
+        $log = "$B/check/$name"
+        $p = Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", $what) -WorkingDirectory $dir -NoNewWindow -PassThru `
+            -RedirectStandardOutput "$log.out" -RedirectStandardError "$log.log"
+        $null = $p.Handle
+        @{ Name = $name; Proc = $p; Logs = @("$log.out", "$log.log") }
+    }
+    $jobs += & $node "browser" "npx playwright test" (Join-Path $PSScriptRoot "tests/browser")
+    $jobs += & $node "lint" "npm run lint" (Join-Path $PSScriptRoot "tests/browser")
+    $cores = [Environment]::ProcessorCount
+    $win = Invoke-Tests -Jobs ([math]::Max(2, $cores - 4)) -Return
+    $bad = $false
+    Write-Host "`n--- every check" -ForegroundColor Cyan
+    Write-Host ("  {0,-12} {1}" -f "Windows", $(if ($win) { $win } else { "passed" })) -ForegroundColor $(if ($win) { "Red" } else { "Green" })
+    if ($win) { $bad = $true }
+    foreach ($j in $jobs) {
+        $j.Proc.WaitForExit()
+        $text = (@($j.Logs | Where-Object { Test-Path $_ } | ForEach-Object { Get-Content $_ })) -join "`n"
+        $text = $text -replace '\x1b\[[0-9;]*m', ''
+        $pattern = if ($j.Name -eq "browser") { '(?m)^\s*\d+ (passed|failed|flaky|skipped)\b[^\r\n]*' } # (Playwright's own lines)
+        else { 'all \d+ tests passed|\d+ of \d+ tests failed' }
+        $said = ([regex]::Matches($text, $pattern) | ForEach-Object { $_.Value.Trim() }) -join ", "
+        $ok = $j.Proc.ExitCode -eq 0
+        if (-not $ok) { $bad = $true }
+        $line = if ($said) { $said } elseif ($ok) { "passed" } else { "failed (exit $($j.Proc.ExitCode))" }
+        Write-Host ("  {0,-12} {1}" -f $j.Name, $line) -ForegroundColor $(if ($ok) { "Green" } else { "Red" })
+    }
+    $took = [int]((Get-Date) - $start).TotalSeconds
+    Write-Host "  (all in $took s - logs in $B/check)"
+    if ($bad) { exit 1 }
 }
 
 switch ($Cmd) {
@@ -364,6 +420,7 @@ switch ($Cmd) {
         Invoke-Tests $Rest
     }
     "ci" { Invoke-CI $(if ($Rest) { $Rest } else { @("test") }) }
+    "check" { Invoke-Check } # (2.7: every check at once - Windows, WSL test + asan, the browser tests, eslint)
     "app" { $null = Build-App $true }
     "pi" { Build-Target "pi" $Release }
     "pi32" { Build-Target "pi32" $Release }

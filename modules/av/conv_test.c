@@ -2617,6 +2617,125 @@ TEST(conv_leaves_out_what_an_mp4_edit_list_hides) {
     s_free(&v);
 }
 
+/* the k-th track's first sync sample (stss; 1 = the first): -1 without one, 1 when every sample is one (no stss) */
+static int first_sync(const W *w, int k) {
+    Bx t, b;
+    if (!trak_k(w, k, &t)) return -1;
+    if (!bx_path(t, "mdia/minf/stbl/stss", &b)) return 1;
+    return b.n >= 12 && be32(b.p + 4) ? (int)be32(b.p + 8) : -1;
+}
+
+/* (2.7; owner: "Full throttle ... processes the videos in the most effective way") One video over several cores: HEVC
+   made H.264 in parts side by side - each from the keyframe before it, its own pictures only, the first a keyframe -
+   and joined with the sound: the same pictures at the same times as one conversion of the whole, the sound the same.
+   Three streams one after another (an IDR each), cut where no keyframe is. */
+/* HEVC + AAC: three streams one after another - 27 pictures, a keyframe at 0, 9 and 18 - 0.9 s */
+static void hevc_three(W *in) {
+    static Stream v, a;
+    uint8_t hvcc[2048], asc[2];
+    HwStream hs = hevc_stream(64, 48, 8, HW_RANDOM | HW_TMVP, 9);
+    hs.rate_num = 30000, hs.rate_den = 1001;
+    static uint8_t au[1 << 17];
+    for (int g = 0; g < 3; g++)
+        for (int k = 0; k < hw_count(&hs); k++) {
+            int poc;
+            size_t len = hw_picture(&hs, k, false, au, sizeof au, &poc);
+            s_add(&v, au, len, frame_ms(poc + 9 * g), k == 0);
+        }
+    size_t nh = hw_hvcc(&hs, hvcc, sizeof hvcc);
+    add_aac(&a, 0.9, asc);
+    Tracks t = {"V_MPEGH/ISO/HEVC", hvcc, nh, 64, 48, "A_AAC", asc, 2};
+    mux(in, &t, 900, &v, &a);
+    s_free(&v), s_free(&a);
+}
+
+/* (2.7) for media/convert_test.c (a part, a join, by files): that file at `path` */
+bool conv_test_hevc_three(const char *path) {
+    W in;
+    hevc_three(&in);
+    bool ok = file_write_atomic(path, in.p, in.len);
+    free(in.p);
+    return ok;
+}
+
+TEST(conv_makes_one_video_in_parts_and_joins_them) {
+    W in, whole, part[3], joined;
+    hevc_three(&in);
+    AvConvJob j = {0};
+    Seen s;
+    j.h264 = true;
+    CHECK(run(&in, &whole, &j, &s));
+    CHECK_STR(j.err, "");
+    int n[2];
+    counts(&whole, n);
+    CHECK_INT(n[0], 27);
+
+    static const int cut[] = {0, 10, 19}; /* (pictures 10 and 19: no keyframe there - decoded from 9 and 18) */
+    static const int want[] = {10, 9, 8};
+    MkvReader pieces[3];
+    for (int p = 0; p < 3; p++) {
+        AvConvJob jp = {0};
+        jp.h264 = true;
+        jp.piece_from = (int64_t)frame_ms(cut[p]) * 1000000;
+        jp.piece_to = p < 2 ? (int64_t)frame_ms(cut[p + 1]) * 1000000 : AV_CONV_TO_END;
+        CHECK(run(&in, &part[p], &jp, &s));
+        CHECK_STR(jp.err, "");
+        int pn[2];
+        counts(&part[p], pn);
+        CHECK_INT(pn[0], want[p]);
+        CHECK_INT(pn[1], -1);                   /* (the picture alone) */
+        CHECK_INT(first_sync(&part[p], 0), 1); /* (it starts with a keyframe) */
+        pieces[p] = (MkvReader){&part[p], (int64_t)part[p].len, mem_read};
+    }
+    AvConvJob jj = {0};
+    jj.h264 = true;
+    jj.pieces = pieces;
+    jj.npieces = 3;
+    CHECK(run(&in, &joined, &jj, &s));
+    CHECK_STR(jj.err, "");
+    CHECK_HAS(jj.what, "(made in 3 parts)");
+    int nj[2];
+    counts(&joined, nj);
+    CHECK_INT(nj[0], 27);
+    CHECK_INT(nj[1], n[1]); /* the sound as the whole's */
+    CHECK(track_bytes(&joined, 1) == track_bytes(&whole, 1));
+    uint32_t dw[32], dj[32]; /* every picture at its time */
+    CHECK_INT(durations(&joined, 0, dj, 32), 27);
+    CHECK_INT(durations(&whole, 0, dw, 32), 27);
+    for (int i = 0; i < 27; i++) CHECK_INT((int)dj[i], (int)dw[i]);
+    free(joined.p);
+
+    /* a part of another video (another picture size: another settings record) is refused, and only HEVC made H.264 is
+       made in parts */
+    static Stream v2;
+    uint8_t hvcc2[2048];
+    HwStream hs2 = hevc_stream(32, 32, 8, 0, 5);
+    size_t nh2 = add_hevc(&v2, &hs2, hvcc2, sizeof hvcc2);
+    Tracks t2 = {"V_MPEGH/ISO/HEVC", hvcc2, nh2, 32, 32, NULL, NULL, 0};
+    W in2, other;
+    mux(&in2, &t2, 200, &v2, NULL);
+    AvConvJob jq = {0};
+    jq.h264 = true;
+    jq.piece_to = AV_CONV_TO_END;
+    CHECK(run(&in2, &other, &jq, &s));
+    pieces[1] = (MkvReader){&other, (int64_t)other.len, mem_read};
+    AvConvJob jb = {0};
+    jb.h264 = true;
+    jb.pieces = pieces;
+    jb.npieces = 3;
+    CHECK(!run(&in, &joined, &jb, &s));
+    CHECK_STR(jb.err, "A part of the picture was made with other settings");
+    free(joined.p), free(other.p), free(in2.p);
+    s_free(&v2);
+    AvConvJob jc = {0}; /* (copied, not made H.264: no parts) */
+    jc.piece_to = 1000000;
+    CHECK(!run(&in, &joined, &jc, &s));
+    CHECK(jc.unsupported);
+    free(joined.p);
+    for (int p = 0; p < 3; p++) free(part[p].p);
+    free(in.p), free(whole.p);
+}
+
 /* Small files of every kind the converter takes - the starting corpus for tools/convfuzz.c.
    Each must convert (the size change: fail cleanly); with HEMMA_FUZZ_SEEDS=<dir> they are
    also written there (CI's fuzz job makes them so, no binaries live in the repo). */
@@ -2714,7 +2833,7 @@ TEST(conv_fuzz_seeds) {
                                    0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
     char took[64][40]; /* every CodecID a seed carries: each format the converter takes needs one (below) */
     int ntook = 0;
-    for (int seed = 0; seed < 23; seed++) {
+    for (int seed = 0; seed < 24; seed++) {
         uint8_t avcc[256], asc[2], vol[64], bih[40];
         size_t avcc_len = 0;
         Tracks mp2 = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0}, t = mp2;
@@ -2869,6 +2988,13 @@ TEST(conv_fuzz_seeds) {
             for (int f = 0; f < 14; f++) s_add(&a, ac3 + f % 4 * 768, 768, f * 32, true);
             bitmapinfo(bih, 48, 32, "XVID");
             t = (Tracks){"V_MS/VFW/FOURCC", bih, sizeof bih, 48, 32, "A_AC3", NULL, 0};
+            break;
+        case 23: /* (2.7) three HEVC streams one after another - keyframes at 0, 9 and 18, 0.9 s - AAC: what Full
+                    throttle makes in parts (the browser tests: data parts of 300 ms) */
+            name = "hevc-three-keyframes-aac.mkv";
+            hevc_three(&in);
+            t = (Tracks){"V_MPEGH/ISO/HEVC", NULL, 0, 64, 48, "A_AAC", NULL, 0};
+            built = true;
             break;
         case 22: { /* HEVC that decodes (2.6): every syntax element hevc_testenc.h writes, 10-bit, AAC copied - copied
                       as 'hvc1' here; convfuzz converts a file it copied HEVC from once more, made H.264 */

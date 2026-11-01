@@ -14,6 +14,7 @@
 #include "convert.h"
 #include "room.h"
 #include "drives.h"
+#include "media.h"
 
 #define FOLDERS_EVERY_MS 30000
 #define PROBE_EVERY_MS (10 * 60000)
@@ -117,7 +118,7 @@ void media_health(Ctx *c, Health *h) {
     /* the library folders */
     if (!HS.n) {
         health_add(h, HEALTH_INFO, T("Films and series"), T("No library folders yet."),
-                   T("Add the folders with your videos under Watch → Library settings."), "/media/settings");
+                   T("Add the folders with your videos under Watch → Library settings."), MEDIA_SETTINGS_FOLDERS);
     } else {
         int trouble = 0;
         int64_t least = -1;
@@ -127,7 +128,7 @@ void media_health(Ctx *c, Health *h) {
                 snprintf(d, sizeof d, T("Hemma can't find the library folder %s."), r->path);
                 health_add(h, HEALTH_BAD, T("Library folder missing"), d,
                            T("Is the disk plugged in and mounted? Then rescan under Watch → Library settings."),
-                           "/media/settings");
+                           MEDIA_SETTINGS_FOLDERS);
                 trouble++;
                 continue;
             }
@@ -135,7 +136,7 @@ void media_health(Ctx *c, Health *h) {
                 snprintf(d, sizeof d, T("Hemma isn't allowed to look inside %s."), r->path);
                 health_add(h, HEALTH_BAD, T("Library folder locked"), d,
                            T("Let the user Hemma runs as read that folder (on a Pi: run the installer again with it)."),
-                           "/media/settings");
+                           MEDIA_SETTINGS_FOLDERS);
                 trouble++;
                 continue;
             }
@@ -162,7 +163,7 @@ void media_health(Ctx *c, Health *h) {
                                    .data_disk = r->data_disk, .want = want, .why = why,
                                    .todo = T("Delete or move some videos - or keep only the most compatible version of "
                                              "converted ones (Library settings)."),
-                                   .link = "/media/settings"};
+                                   .link = MEDIA_SETTINGS_MANAGE};
                 health_disk(h, &disk);
                 if (least < 0 || r->free < least) least = r->free;
             }
@@ -182,7 +183,7 @@ void media_health(Ctx *c, Health *h) {
             } else if (n > 0 && (size_t)n + 1 < sizeof d) {
                 snprintf(d + n, sizeof d - (size_t)n, ".");
             }
-            health_add(h, HEALTH_OK, T("Films and series"), d, NULL, "/media/settings");
+            health_add(h, HEALTH_OK, T("Films and series"), d, NULL, MEDIA_SETTINGS);
         }
     }
 
@@ -203,7 +204,7 @@ void media_health(Ctx *c, Health *h) {
         if (k > 0 && (size_t)k < sizeof d) /* ("..." only after names: "library...." once) */
             snprintf(d + k, sizeof d - (size_t)k, "%s.", shown && lost > shown ? "..." : "");
         health_add(h, HEALTH_INFO, T("Watch history"), d,
-                   T("Deleted or replaced on purpose? Library settings can forget it."), "/media/settings");
+                   T("Deleted or replaced on purpose? Library settings can forget it."), MEDIA_SETTINGS_MANAGE);
     }
 
     /* making videos play everywhere */
@@ -215,12 +216,12 @@ void media_health(Ctx *c, Health *h) {
                     "%d videos didn't fit on the drive, so they weren't converted."),
                  noroom);
         health_add(h, HEALTH_WARN, T("Not enough room to convert"), d,
-                   T("Make room on that drive, then convert again under Watch → Library settings."), "/media/settings");
+                   T("Make room on that drive, then convert again under Watch → Library settings."), MEDIA_SETTINGS_CONVERTING);
     }
     if (failed) {
         snprintf(d, sizeof d, TN(failed, "%d conversion failed.", "%d conversions failed."), failed);
         health_add(h, HEALTH_WARN, T("Conversions failed"), d, T("Library settings lists them, each with the reason."),
-                   "/media/settings");
+                   MEDIA_SETTINGS_CONVERTING);
     }
     bool here = browser_converter();
     snprintf(t, sizeof t, "%s",
@@ -232,5 +233,5 @@ void media_health(Ctx *c, Health *h) {
 
     health_step(h, HS.n > 0, T("Add your films and series"),
                 T("Point Hemma at the folders with your videos - or send them from a computer or phone."),
-                "/media/settings");
+                MEDIA_SETTINGS_FOLDERS);
 }

@@ -67,7 +67,7 @@ TEST(media_health_checks_the_library_folders) {
     media_health(&c, &h);
     const HealthItem *it = item(&h, "Films and series");
     CHECK(it && it->state == HEALTH_INFO && !it->step);
-    CHECK_STR(it->link, "/media/settings");
+    CHECK_STR(it->link, "/media/settings/folders");
     it = item(&h, "Add your films and series");
     CHECK(it && it->step && it->state != HEALTH_OK);
     CHECK(item(&h, "Play everywhere") != NULL);

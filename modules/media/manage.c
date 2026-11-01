@@ -1351,9 +1351,45 @@ bool media_manage_series(Ctx *c, Buf *b, const MediaSeries *s) {
     return true;
 }
 
+bool media_manage_film_view(Ctx *c, const MediaFile *f) {
+    return is_admin(c) && f && f->type == MF_VIDEO && f->role == MF_MAIN && f->name.kind != MEDIA_EPISODE &&
+           str_eq(ctx_q(c, "manage"), "1");
+}
+
 void media_manage_watch_button(Ctx *c, Buf *b, const MediaFile *f) {
+    if (!is_admin(c) || !f || f->type != MF_VIDEO || f->role != MF_MAIN) return;
+    if (media_manage_film_view(c, f)) { /* (in the view: back to the plain page) */
+        H(b, "<a class=\"btn\" href=\"/media/watch/%X\">", f->id);
+        ui_icon(b, "check");
+        H(b, "<span>%s</span></a>", T("Done"));
+        return;
+    }
+    if (f->name.kind == MEDIA_EPISODE) { /* (an episode: its row in the series' Manage) */
+        if (!f->series) return;
+        H(b, "<a class=\"btn\" href=\"/media/series/%X?manage=1&amp;s=%d#media-m-%X\" title=\"%s\">", f->series,
+          f->name.season, f->id, T("Fix its number, or remove it, its season or the series"));
+    } else H(b, "<a class=\"btn\" href=\"/media/watch/%X?manage=1\" title=\"%s\">", f->id, T("Its files, title, picture and removal"));
+    ui_icon(b, "settings");
+    H(b, "<span>%s</span></a>", T("Manage"));
+}
+
+/* A film's or other video's Manage view (2.7, the watch page's ?manage=1): its files, and what an admin can do to it */
+void media_manage_film_files(Buf *b, const MediaFile *f) {
+    const MediaFile *web = f->web ? media_file(f->web) : NULL;
+    char size[24];
+    media_size_text(f->size + (web ? web->size : 0), size, sizeof size);
+    buf_puts(b, "<div class=\"media-files\">");
+    if (web) {
+        file_line(b, f, "", T("Original"));
+        file_line(b, web, PLAY_CLS[CLAMP((int)web->probe.playable, 0, 3)],
+                  media_is_web_copy(web->rel) ? T("Converted copy") : T("Another version"));
+    } else file_line(b, f, PLAY_CLS[CLAMP((int)f->probe.playable, 0, 3)], T(media_playable_label(f->probe.playable)));
+    H(b, "<small class=\"muted\">%s</small></div>", size);
+}
+
+void media_manage_fix_link(Ctx *c, Buf *b, const MediaFile *f) {
     if (!can_fix_title(c, f)) return;
-    H(b, "<a class=\"btn\" href=\"/media/watch/%X?fix=1\" title=\"%s\">", f->id, T("Fix its title and year"));
+    H(b, "<a class=\"btn\" href=\"/media/watch/%X?manage=1&amp;fix=1\" title=\"%s\">", f->id, T("Fix its title and year"));
     ui_icon(b, "edit");
     H(b, "<span>%s</span></a>", T("Fix title"));
 }
@@ -1361,7 +1397,8 @@ void media_manage_watch_button(Ctx *c, Buf *b, const MediaFile *f) {
 void media_manage_watch_dialog(Ctx *c, Buf *b, const MediaFile *f) {
     if (!str_eq(ctx_q(c, "fix"), "1") || !can_fix_title(c, f)) return;
     char close[64], example[300];
-    snprintf(close, sizeof close, "/media/watch/%016llx", (unsigned long long)f->id);
+    snprintf(close, sizeof close, "/media/watch/%016llx%s", (unsigned long long)f->id,
+             str_eq(ctx_q(c, "manage"), "1") ? "?manage=1" : "");
     if (f->name.year) snprintf(example, sizeof example, "%s (%d)%s", f->name.title, f->name.year, ext_of(base_of(f->rel)));
     else snprintf(example, sizeof example, "%s%s", f->name.title, ext_of(base_of(f->rel)));
     ui_modal(b, T("Fix the title"), close);
@@ -1383,14 +1420,14 @@ void media_manage_watch_dialog(Ctx *c, Buf *b, const MediaFile *f) {
     ui_modal_end(b);
 }
 
-/* ------------------------------------------------------ what takes room */
+/* ------------------------------------------- the whole library (2.7) */
 
-#define ROOM_ROWS 10
-#define ROOM_MIN (1LL << 20) /* under a megabyte nothing takes room worth a row */
+#define LIB_ROWS 60 /* rows shown; a search finds the rest */
 
 typedef struct {
     uint64_t id;
     int64_t bytes;
+    int hevc;             /* videos of it an H.264 copy would make play everywhere (convert_h264_need) */
     const MediaSeries *s; /* a series, else */
     const MediaFile *f;   /* a film */
 } Big;
@@ -1400,61 +1437,100 @@ static int big_id_cmp(const void *x, const void *y) {
     return a < b ? -1 : a > b;
 }
 
-static int big_cmp(const void *x, const void *y) {
+static int big_cmp(const void *x, const void *y) { /* biggest first */
     const Big *a = x, *b = y;
     if (a->bytes != b->bytes) return a->bytes > b->bytes ? -1 : 1;
     return a->id < b->id ? -1 : a->id > b->id;
 }
 
-void media_manage_room_card(Ctx *c, Buf *b) {
+static const char *big_title(const Big *g) { return g->s ? g->s->title : g->f->name.title; }
+
+static int big_name_cmp(const void *x, const void *y) { /* A-Z (as the library sorts titles), then the year */
+    const Big *a = x, *b = y;
+    int k = media_title_cmp(big_title(a), big_title(b));
+    if (k) return k;
+    int ya = a->s ? a->s->year : a->f->name.year, yb = b->s ? b->s->year : b->f->name.year;
+    return ya != yb ? (ya < yb ? -1 : 1) : (a->id < b->id ? -1 : a->id > b->id);
+}
+
+/* Library settings' Manage tab (2.7; owner, 2026-11-01: "easier to get to a manage page - currently it's not easy to
+   understand how to get there"): every series and film, each to its Manage - A-Z or biggest first (what "What takes
+   room" showed: originals and copies together), ?q= finds one by its title. Admins only. */
+void media_manage_library_card(Ctx *c, Buf *b) {
     if (!is_admin(c)) return;
     const MediaIndex *ix = media_lib();
     int n = ix->nseries + ix->nmovies;
-    if (!n) return;
+    const char *q = ctx_q(c, "q");
+    bool by_size = str_eq(ctx_q(c, "sort"), "size");
+    ui_card(b, T("Your library"), NULL, NULL);
+    if (!n) {
+        H(b, "<p class=\"muted\">%s</p>", T("No series or films yet."));
+        ui_card_end(b);
+        return;
+    }
     Big *all = xcalloc((size_t)n, sizeof *all);
-    for (int i = 0; i < ix->nseries; i++) all[i] = (Big){ix->series[i].id, 0, &ix->series[i], NULL};
+    for (int i = 0; i < ix->nseries; i++) all[i] = (Big){ix->series[i].id, 0, 0, &ix->series[i], NULL};
     qsort(all, (size_t)ix->nseries, sizeof *all, big_id_cmp);
     for (int i = 0; i < ix->nfiles; i++) { /* a series: its episodes and extras, originals and copies */
         const MediaFile *f = &ix->files[i];
         if (f->type != MF_VIDEO || f->role == MF_WEBCOPY || !f->series) continue;
-        Big key = {f->series, 0, NULL, NULL}, *hit = bsearch(&key, all, (size_t)ix->nseries, sizeof *all, big_id_cmp);
+        Big key = {f->series, 0, 0, NULL, NULL}, *hit = bsearch(&key, all, (size_t)ix->nseries, sizeof *all, big_id_cmp);
         const MediaFile *web = f->web ? media_file(f->web) : NULL;
-        if (hit) hit->bytes += f->size + (web ? web->size : 0);
+        if (!hit) continue;
+        hit->bytes += f->size + (web ? web->size : 0);
+        hit->hevc += f->role == MF_MAIN && convert_h264_need(f);
     }
     for (int i = 0; i < ix->nmovies; i++) {
         const MediaFile *f = &ix->files[ix->movies[i]], *web = f->web ? media_file(f->web) : NULL;
-        all[ix->nseries + i] = (Big){f->id, f->size + (web ? web->size : 0), NULL, f};
+        all[ix->nseries + i] = (Big){f->id, f->size + (web ? web->size : 0), convert_h264_need(f), NULL, f};
     }
-    qsort(all, (size_t)n, sizeof *all, big_cmp);
-    int shown = 0;
-    while (shown < n && shown < ROOM_ROWS && all[shown].bytes >= ROOM_MIN) shown++;
-    if (shown) {
-        ui_card(b, T("What takes room"), NULL, NULL);
-        H(b, "<p class=\"muted\">%s</p><ol class=\"media-eps media-eps-compact\">",
-          T("The biggest series and films on the disk, originals and their copies together."));
-    }
-    for (int i = 0; i < shown; i++) {
+    int kept = 0; /* what the search finds */
+    for (int i = 0; i < n; i++)
+        if (!q[0] || fold_find(big_title(&all[i]), q)) all[kept++] = all[i];
+    qsort(all, (size_t)kept, sizeof *all, by_size ? big_cmp : big_name_cmp);
+
+    H(b, "<form class=\"media-lib-find\" method=\"get\" action=\"" MEDIA_SETTINGS_MANAGE "\" role=\"search\">"
+         "<input type=\"search\" name=\"q\" value=\"%s\" placeholder=\"%s\" aria-label=\"%s\" autocomplete=\"off\">",
+      q, T("Find a series or film"), T("Find a series or film"));
+    if (by_size) buf_puts(b, "<input type=\"hidden\" name=\"sort\" value=\"size\">");
+    H(b, "</form><nav class=\"seg media-lib-sort\" aria-label=\"%s\">", T("Order"));
+    H(b, "<a href=\"" MEDIA_SETTINGS_MANAGE "?q=%u\"%r>%s</a>", q, by_size ? "" : " class=\"on\" aria-current=\"page\"", T("A-Z"));
+    H(b, "<a href=\"" MEDIA_SETTINGS_MANAGE "?sort=size&amp;q=%u\"%r>%s</a></nav>", q,
+      by_size ? " class=\"on\" aria-current=\"page\"" : "", T("Biggest first"));
+    if (by_size) H(b, "<p class=\"muted media-small\">%s</p>", T("Sizes count originals and their copies together."));
+    if (!kept) H(b, "<p class=\"muted\">%s</p>", T("Nothing in the library goes by that name."));
+    else buf_puts(b, "<ol class=\"media-eps media-eps-compact media-lib\">");
+    for (int i = 0; i < kept && i < LIB_ROWS; i++) {
+        const Big *g = &all[i];
         char size[24];
-        media_size_text(all[i].bytes, size, sizeof size);
-        if (all[i].s)
-            H(b, "<li class=\"media-ep\" id=\"media-room-%X\"><a class=\"media-ep-main\" href=\"/media/series/%X?manage=1\">",
-              all[i].id, all[i].id);
-        else H(b, "<li class=\"media-ep\" id=\"media-room-%X\"><a class=\"media-ep-main\" href=\"/media/watch/%X\">", all[i].id, all[i].id);
-        H(b, "<span class=\"media-ep-n\">%d</span><span class=\"media-ep-t\"><b>%s</b><small>", i + 1,
-          all[i].s ? all[i].s->title : all[i].f->name.title);
-        if (all[i].s) {
-            int eps = media_episodes_in(all[i].s);
+        media_size_text(g->bytes, size, sizeof size);
+        if (g->s) H(b, "<li class=\"media-ep\" id=\"media-lib-%X\"><a class=\"media-ep-main\" href=\"/media/series/%X?manage=1\">", g->id, g->id);
+        else H(b, "<li class=\"media-ep\" id=\"media-lib-%X\"><a class=\"media-ep-main\" href=\"/media/watch/%X?manage=1\">", g->id, g->id);
+        buf_puts(b, "<span class=\"media-ep-n\">");
+        ui_icon(b, g->s ? "tv" : "film");
+        H(b, "</span><span class=\"media-ep-t\"><b>%s</b><small>", big_title(g));
+        if (g->s) {
+            int eps = media_episodes_in(g->s);
             H(b, "<span>%s</span> · ", T("Series"));
             H(b, TN(eps, "%d episode", "%d episodes"), eps);
+            if (g->hevc) {
+                buf_puts(b, " · ");
+                H(b, T("%d in HEVC"), g->hevc);
+            }
         } else {
             H(b, "<span>%s</span>", T("Film"));
-            if (all[i].f->name.year) H(b, " · %d", all[i].f->name.year);
+            if (g->f->name.year) H(b, " · %d", g->f->name.year);
+            else H(b, " · %s", T("no year"));
+            if (g->hevc) H(b, " · %s", T("in HEVC"));
         }
         H(b, "</small></span><b>%s</b></a></li>", size);
     }
-    if (shown) {
-        buf_puts(b, "</ol>");
-        ui_card_end(b);
+    if (kept) buf_puts(b, "</ol>");
+    if (kept > LIB_ROWS) {
+        buf_puts(b, "<p class=\"muted media-small\">");
+        H(b, TN(kept - LIB_ROWS, "%d more - search for it by name.", "%d more - search for them by name."), kept - LIB_ROWS);
+        buf_puts(b, "</p>");
     }
+    ui_card_end(b);
     free(all);
 }

@@ -47,6 +47,13 @@ Your movie and series drive as a little cinema.
 - **HEVC made H.264.** HEVC (x265) videos can get an H.264 copy that plays on every device: a whole series, a
   season, one episode or film, or everything at once - on Hemma's own computer, or on the computer you're using
   (it reads the video from Hemma, converts it and sends the copy back). Library settings lists what still needs it.
+  An upload can do it on the way too (a box under *More options*).
+- **How hard to work.** Converting may take a third of a computer's cores (*Low power*), two thirds (*Medium*) or
+  all of them (*Full throttle*) - chosen for Hemma's computer and for your own device, each said in its own numbers.
+  On Full throttle a video is made in parts side by side when fewer are left than cores, so one film uses them all.
+- **Library settings in tabs** - Overview (the counts, and what needs a look), Converting, Manage, Folders, Online,
+  Devices - and **Manage** one tap from Watch's header: every series and film, A-Z or biggest first, each a tap from
+  renaming, fixing, converting or removing it. Every episode's and film's page has Manage too.
 - **What your devices play.** Each phone, computer and TV that opens Watch tells Hemma which kinds of video it can
   play. Library settings then says how many videos play on every one of your devices - not just "everywhere", which
   counts every device there is - lists your devices with what each can't play, and says why the rest doesn't play

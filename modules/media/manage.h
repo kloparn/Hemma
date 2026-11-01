@@ -10,11 +10,16 @@
 void media_manage_series_link(Ctx *c, Buf *b, const MediaSeries *s);
 /* ... and the view itself, ?manage=1 (admins): true = drawn, the page ends there. */
 bool media_manage_series(Ctx *c, Buf *b, const MediaSeries *s);
-/* The watch page (page_watch): "Fix title" beside Remove (films and other videos), and its dialog (?fix=1). */
+/* The watch page (page_watch), admins (2.7): "Manage" - an episode's row in its series' Manage, a film's or other
+   video's own view (?manage=1: media_manage_film_view true; then the button says "Done"), whose card media.c draws
+   with its files (media_manage_film_files) and Fix title (media_manage_fix_link -> ?manage=1&fix=1, its dialog). */
 void media_manage_watch_button(Ctx *c, Buf *b, const MediaFile *f);
+bool media_manage_film_view(Ctx *c, const MediaFile *f);
+void media_manage_film_files(Buf *b, const MediaFile *f);
+void media_manage_fix_link(Ctx *c, Buf *b, const MediaFile *f);
 void media_manage_watch_dialog(Ctx *c, Buf *b, const MediaFile *f);
-/* Library settings (page_settings): the biggest series and films (admins). */
-void media_manage_room_card(Ctx *c, Buf *b);
+/* Library settings' Manage tab (2.7): every series and film, each to its Manage; A-Z or biggest first, ?q= (admins). */
+void media_manage_library_card(Ctx *c, Buf *b);
 
 void media_manage_act_remove(Ctx *c, Fields *f);      /* media.manage_remove: what=episode|season|series, id, s */
 void media_manage_act_fix_title(Ctx *c, Fields *f);   /* media.fix_title: id, title, year */
