@@ -751,6 +751,12 @@ TEST(mp4view_served_one_sound_at_a_time) {
     auth_hash("pw-eva-1234", p.pass, sizeof p.pass);
     p.role = ROLE_MEMBER;
     tbl_put(&T_person, &p);
+    int adam = th_person("Adam");
+    p = *person_get(adam);
+    str_copy(p.username, sizeof p.username, "adam");
+    auth_hash("pw-adam-1234", p.pass, sizeof p.pass);
+    p.role = ROLE_ADMIN;
+    tbl_put(&T_person, &p);
     char root[512], dir[600], path[700];
     str_copy(root, sizeof root, test_tmpdir());
     TM m = three_sounds();
@@ -847,6 +853,24 @@ TEST(mp4view_served_one_sound_at_a_time) {
     CHECK(str_starts(buf_cstr(&r), "HTTP/1.1 200 "));
     body = body_of(&r, &n);
     CHECK(n == file.len && !memcmp(body, file.p, n));
+    /* (2.6) ?src=1, an admin's device converting it: the file itself, every sound, its own size - in pieces too; a
+       member's ?src=1 is an ordinary request (the view) */
+    char ak[64];
+    sign_in("adam", "pw-adam-1234", ak, sizeof ak);
+    CHECK(strlen(ak) == 32);
+    snprintf(url, sizeof url, "/media/file/%s?src=1", hex);
+    request("GET", url, ak, NULL, &r);
+    body = body_of(&r, &n);
+    CHECK(n == file.len && !memcmp(body, file.p, n));
+    snprintf(range, sizeof range, "Range: bytes=%zu-%zu\r\n", file.len - 100, file.len - 1);
+    request("GET", url, ak, range, &r);
+    snprintf(cr, sizeof cr, "Content-Range: bytes %zu-%zu/%zu", file.len - 100, file.len - 1, file.len);
+    CHECK_HAS(buf_cstr(&r), cr);
+    body = body_of(&r, &n);
+    CHECK(n == 100 && !memcmp(body, file.p + file.len - 100, 100));
+    request("GET", url, ck, NULL, &r);
+    body_of(&r, &n);
+    CHECK(n != file.len);
     /* the file changed on the disk: a new view, not the one kept */
     m.rounds = 4;
     Buf file2 = {0};

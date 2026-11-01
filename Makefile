@@ -68,7 +68,7 @@ build/app.css: $(CSS) build/.dir
 ifeq ($(origin WASM_CC),undefined)
 WASM_CC  := $(shell command -v zig >/dev/null 2>&1 && echo "zig cc -target wasm32-wasi")
 endif
-WASM_SRC := modules/av/wasm/avconv.c $(addprefix modules/av/,conv.c mkv.c mpeg2.c mpeg4.c deint.c h264enc.c ac3.c dts.c aac.c mp4.c)
+WASM_SRC := modules/av/wasm/avconv.c $(addprefix modules/av/,conv.c mkv.c mpeg2.c mpeg4.c hevc.c hevc_ctu.c hevc_dsp.c deint.c h264enc.c ac3.c dts.c aac.c mp4.c)
 ifneq ($(strip $(WASM_CC)),)
 ifeq ($(filter av,$(SKIPPED)),)
 WASM := build/av.wasm

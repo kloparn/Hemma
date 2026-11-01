@@ -105,6 +105,11 @@ typedef struct {
     bool out;     /* skipped before it had a place: a file the library doesn't take, a bad name ... (the preview) */
     int64_t orig; /* the original's size (copies) */
     char ext[8];  /* the original's extension, to fall back to its name */
+    /* (2.6) a "here" batch's: the library file the browser converts (fetched as /media/file/<from>?src=1 - HEVC made
+       H.264), the video it's for (whose page it is: the same, or the original whose HEVC copy is read), and whether its
+       copy may take the place of the file there (Hemma's own HEVC .web.mp4) */
+    uint64_t from, video;
+    bool replace;
     /* SUBTITLES ONLY (1.3): a video that stays behind - the library has it (dupe), or its copy goes instead -
        still gives its subtitles: the browser reads them out of the original (file src) and sends them as
        entry i, saved next to `target`. A dupe's own subtitle files in the batch go next to the library's
@@ -182,6 +187,15 @@ static const Asset *asset_named(const char *path) { /* a file baked into this bi
     for (int i = 0; i < g_nassets; i++)
         if (g_assets[i].path && str_eq(g_assets[i].path, path)) return &g_assets[i];
     return NULL;
+}
+
+bool upload_can_convert(void) { return asset_named("/av.wasm") && asset_named("/conv.js"); }
+
+bool upload_ram_chosen(int person) { return str_eq(pref(person, PREF_UPLOAD_RAM, ""), "1"); }
+
+void upload_converter_attrs(Buf *b) {
+    const Asset *wasm = asset_named("/av.wasm"), *worker = asset_named("/conv.js");
+    if (wasm && worker) H(b, " data-convert=\"/static/conv.js?v=%s\" data-wasm=\"/static/av.wasm?v=%s\"", worker->etag, wasm->etag);
 }
 
 static bool ieq3(const char *a, const char *b) {
@@ -558,6 +572,8 @@ static bool live(const Batch *o) {
     return o && !o->art && !o->stopped && batch_open(o) && (running(o) || now_sec() - o->started < ACTIVE_S);
 }
 
+static int64_t batch_hold(const Batch *b);
+
 /* What live uploads have left to send (lock held), except `skip` and `me`'s own uploads that
    aren't running (a new plan of theirs replaces those). */
 static int holds_locked(MediaHold *out, int max, const Batch *skip, int me) {
@@ -566,7 +582,7 @@ static int holds_locked(MediaHold *out, int max, const Batch *skip, int me) {
         const Batch *o = g_batch[s];
         if (!live(o) || o == skip || (me && o->person == me && !running(o))) continue;
         str_copy(out[n].root, sizeof out[n].root, o->root);
-        out[n].bytes = MAX(o->total - o->moved, 0);
+        out[n].bytes = batch_hold(o);
         n++;
     }
     return n;
@@ -781,10 +797,27 @@ static void convert_here(Batch *b, bool keep_originals, int me) {
     }
 }
 
-static int64_t copy_guess(const UpFile *f) { return f->orig / 2; } /* DVD copies come out at about a third: half is on the safe side */
+/* DVD copies come out at about a third: half is on the safe side; H.264 made of HEVC (2.6) is often a little bigger */
+static int64_t copy_guess(const UpFile *f) { return f->from ? f->orig + f->orig / 4 : f->orig / 2; }
 
 /* Bytes a queued file still has to send (a copy not made yet: a guess). */
 static int64_t left_to_send(const UpFile *f) { return f->conv == CV_WAIT ? copy_guess(f) : MAX(f->size - f->saved, 0); }
+
+/* The room a batch holds on its disk (lock held, or b not shared yet): what it has left to send - but a "here" batch's
+   (2.6) only what's under way, at least its biggest still to come: the browser makes a few at a time, and each copy takes
+   the place of one that's there (every guess of a whole series at once refused "All of them" on a disk with room) */
+static int64_t batch_hold(const Batch *b) {
+    if (!b->nfiles || !b->files[0].from) return MAX(b->total - b->moved, 0);
+    int64_t sum = 0, biggest = 0;
+    for (int i = 0; i < b->nfiles; i++) {
+        const UpFile *f = &b->files[i];
+        if (f->state != UP_QUEUED && f->state != UP_WRITING) continue;
+        int64_t left = left_to_send(f);
+        biggest = MAX(biggest, left);
+        if (f->state == UP_WRITING || f->conv == CV_READY || (f->conv == CV_WAIT && f->pm > 0)) sum += left;
+    }
+    return MAX(sum, biggest);
+}
 
 #define MAKING_IT N_("Hemma is making this copy on the server right now")
 #define MADE_MEANWHILE N_("Hemma started making this copy on the server meanwhile")
@@ -805,10 +838,10 @@ static void leave_to_server(Batch *b, UpFile *f, bool meanwhile) {
 /* Room on the disk for what b has to send (spare_for); false with the reason in err (in the request's
    language). Lock NOT held. */
 static bool room_for(const Batch *b, int me, char *err, size_t cap) {
-    int64_t held = 0, spare = spare_for(b, b->root, me, &held);
-    if (b->total <= spare) return true;
+    int64_t held = 0, spare = spare_for(b, b->root, me, &held), hold = batch_hold(b);
+    if (hold <= spare) return true;
     char need[24], tail[200];
-    media_size_text(b->total, need, sizeof need);
+    media_size_text(hold, need, sizeof need);
     media_room_text(tail, sizeof tail, spare, held);
     snprintf(err, cap, T("Not enough room: this needs %s, and %s"), need, tail);
     return false;
@@ -861,6 +894,59 @@ static bool art_plan(Json *j, int at, Batch **out, char *err, size_t cap) {
     else snprintf(f->rel, sizeof f->rel, "%s.%s", stem, ext);
     f->state = UP_QUEUED;
     f->saved = resume_point(b, f);
+    *out = b;
+    return true;
+}
+
+/* (2.6) {"here":"<set>"}: the library's HEVC videos of a set (convert.c convert_h264_set: one, a series or season, the
+   films, all) made H.264 by the browser that asks - each read from /media/file/<id>?src=1 (the plan's "remote" list),
+   its copy sent back as the video's .web.mp4 like any upload's copy, taking the place of Hemma's own HEVC copy there.
+   One library folder a batch (the first video's): the rest wait for the next one. */
+static bool here_plan(int me, Json *j, int at, Batch **out, char *err, size_t cap) {
+    char what[160] = "";
+    json_string(j, at, what, sizeof what);
+    enum { HERE_MAX = 4096 };
+    const MediaFile **set = xcalloc(HERE_MAX, sizeof *set);
+    int n = convert_h264_set(what, set, HERE_MAX);
+    if (!n) {
+        free(set);
+        str_copy(err, cap, T("Nothing there needs converting any more"));
+        return false;
+    }
+    const MediaIndex *ix = media_lib();
+    Batch *b = xcalloc(1, sizeof *b);
+    b->files = xcalloc((size_t)n, sizeof *b->files);
+    str_copy(b->root, sizeof b->root, ix->roots[set[0]->root]);
+    size_t rl = strlen(b->root);
+    for (int k = 0; k < n; k++) {
+        const MediaFile *f = set[k], *s = convert_h264_from(f);
+        char src[1024], dst[1024];
+        bool replace = false;
+        if (f->root != set[0]->root || !s || !convert_h264_paths(f, src, sizeof src, dst, sizeof dst, &replace) ||
+            strncmp(dst, b->root, rl) || dst[rl] != '/')
+            continue;
+        bool twice = false; /* (x.mkv and x.webm of different lengths would both make x.web.mp4: the first one does) */
+        for (int p = 0; p < b->nfiles && !twice; p++) twice = str_ieq(b->files[p].rel, dst + rl + 1);
+        if (twice) continue;
+        UpFile *u = &b->files[b->nfiles];
+        str_copy(u->rel, sizeof u->rel, dst + rl + 1);
+        str_copy(u->ext, sizeof u->ext, "mp4");
+        u->orig = s->size, u->from = s->id, u->video = f->id, u->replace = replace, u->src = b->nfiles;
+        if (convert_making(dst) || convert_queued(f->id) || claimed(b->root, me, u->rel)) {
+            u->state = UP_SKIPPED;
+            why_set(u, convert_queued(f->id) ? N_("Hemma is making its play-everywhere copy on the server right now")
+                                             : N_("another upload is sending its copy right now"));
+        } else {
+            u->state = UP_QUEUED, u->conv = CV_WAIT;
+        }
+        b->nfiles++;
+    }
+    free(set);
+    if (!b->nfiles) {
+        batch_free(b);
+        str_copy(err, cap, T("Nothing there needs converting any more"));
+        return false;
+    }
     *out = b;
     return true;
 }
@@ -1189,9 +1275,12 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
         snprintf(err, sizeof err, T("That upload list didn't make sense (more than %d files?)"), MAX_FILES);
         goto out;
     }
-    int art = json_get(&j, 0, "art");
+    int art = json_get(&j, 0, "art"), here = json_get(&j, 0, "here");
     if (art >= 0) {
         if (!art_plan(&j, art, &b, err, sizeof err)) goto out;
+        batch_count(b);
+    } else if (here >= 0) {
+        if (!here_plan(c->me->id, &j, here, &b, err, sizeof err)) goto out;
         batch_count(b);
     } else {
         Ask a = {.j = &j};
@@ -1310,7 +1399,18 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
         listed_yet[i] = true;
     }
     free(listed_yet);
-    buf_printf(&out, "],\"skipped\":%d,\"total\":%lld}", b->skipped, (long long)b->total);
+    buf_printf(&out, "],\"skipped\":%d,\"total\":%lld", b->skipped, (long long)b->total);
+    if (here >= 0) { /* (2.6) where each "file" of the todo comes from: the library's, read by the browser */
+        buf_puts(&out, ",\"remote\":[");
+        for (int i = 0; i < b->nfiles; i++) {
+            char fx[17];
+            media_id_hex(b->files[i].from, fx);
+            buf_printf(&out, "%s{\"u\":\"/media/file/%s?src=1\",\"s\":%lld,\"h264\":true}", i ? "," : "", fx,
+                       (long long)b->files[i].orig);
+        }
+        buf_putc(&out, ']');
+    }
+    buf_putc(&out, '}');
     reply(conn, 200, &out);
     buf_free(&out);
     if (!k) { /* nothing to send: done already */
@@ -1441,7 +1541,8 @@ static void worker(void *arg) {
         complete = false;
     }
     if (complete) {
-        if (!b->art && path_stat(j->full, NULL, NULL, NULL))
+        bool over = b->files[j->i].replace && str_ends(j->full, ".web.mp4"); /* (2.6: Hemma's HEVC copy - only a copy) */
+        if (!b->art && !over && path_stat(j->full, NULL, NULL, NULL))
             fail = N_("A file with that name appeared meanwhile"), status = 409, stop = true;
         else if (!file_replace(j->part, j->full)) fail = N_("Couldn't finish the file"), status = 500, stop = true;
         complete = !fail;
@@ -2064,6 +2165,24 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
         lock_give(&g_lock);
         if (sb) spare = spare_for(sb, root, 0, &held);
     }
+    /* (2.6) a "here" copy whose place went meanwhile - its video removed or renamed (Manage): the HEVC copy it replaces
+       is gone, or the original it goes beside. Sent anyway it would bring the episode back, or one under its old name */
+    bool gone = false;
+    if (size >= 0) {
+        char tgt[1024] = "", src[1024] = "";
+        uint64_t from = 0;
+        bool rep = false;
+        lock_take(&g_lock);
+        const Batch *sb = find(id);
+        if (sb && i >= 0 && i < sb->nfiles && sb->files[i].from) {
+            from = sb->files[i].from, rep = sb->files[i].replace;
+            join(tgt, sizeof tgt, sb->root, sb->files[i].rel);
+        }
+        lock_give(&g_lock);
+        const MediaFile *mf = from && !rep ? media_file(from) : NULL;
+        if (from) gone = rep ? !path_stat(tgt, NULL, NULL, NULL)
+                             : !mf || !media_full_path(mf, src, sizeof src) || !path_stat(src, NULL, NULL, NULL);
+    }
 
     Buf out = {0};
     int status = 200;
@@ -2097,6 +2216,13 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
             err = T("That file is going as it is"), status = 409;
         } else if (size <= 0 || size > (1LL << 40)) {
             err = T("The browser's copy came out empty"), status = 422;
+        } else if (gone) {
+            b->total -= left_to_send(f);
+            drop_part(b, f);
+            f->state = UP_SKIPPED;
+            b->skipped++;
+            why_set(f, N_("its video was removed or renamed meanwhile"));
+            buf_puts(&out, "{\"skip\":true}");
         } else if (convert_give_way(full)) { /* the server's converter started on it meanwhile */
             leave_to_server(b, f, true);
             buf_puts(&out, "{\"skip\":true}");
@@ -2113,6 +2239,13 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
             b->last = b->busy = now_sec();
             buf_puts(&out, "{\"at\":0}");
         }
+    } else if (original && f->conv == CV_WAIT && f->from) { /* (2.6) a "here" one: its original is the library's own */
+        b->total -= copy_guess(f);
+        f->state = UP_SKIPPED;
+        b->skipped++;
+        if (why[0]) why_set(f, "%s", why); /* (the browser's words: data) */
+        else why_set(f, N_("the converter couldn't read it"));
+        buf_puts(&out, "{\"skip\":true}");
     } else if (original && f->conv == CV_WAIT) { /* couldn't convert: the original goes as it is */
         char rel[420], full[1024];
         snprintf(rel, sizeof rel, "%.*s.%s", (int)(strlen(f->rel) - 8), f->rel, f->ext); /* - ".web.mp4" */
@@ -3355,6 +3488,25 @@ void upload_page(Ctx *c, Buf *b) {
     }
     lock_give(&g_lock);
     buf_puts(b, "</div>");
+}
+
+/* (2.6) the person's own "On this device" batch (HEVC made H.264 by their browser) - its card where they started it: the
+   HEVC card, Manage, a video's page (video: only a batch making that one) - while it runs and 10 minutes after; false =
+   none. (Re-drawn with every /media page: the upload's changes re-render them all.) */
+bool upload_here_card(Ctx *c, Buf *b, uint64_t video) {
+    if (!c->me || !is_admin(c)) return false;
+    lock_take(&g_lock);
+    const Batch *u = batch_of(c->me->id);
+    bool show = u && u->nfiles && u->files[0].from && (batch_open(u) || !u->ended || now_sec() - u->ended < 600);
+    for (int i = 0; show && video && i < u->nfiles && u->files[i].video != video; i++)
+        if (i == u->nfiles - 1) show = false; /* (a video's page: only a batch with it) */
+    if (show) {
+        H(b, "<div class=\"media-h264-run\" id=\"media-h264-run\"><p><b>%s</b></p>", T("Converting on this device"));
+        render_batch(c, b, u);
+        buf_puts(b, "</div>");
+    }
+    lock_give(&g_lock);
+    return show;
 }
 
 void upload_summary(Ctx *c, Buf *b) {

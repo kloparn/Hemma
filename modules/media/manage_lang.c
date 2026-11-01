@@ -145,5 +145,12 @@ static const Tr TR[] = {
      "De största serierna och filmerna på disken, original och kopior tillsammans.",
      "Las series y películas más grandes del disco, originales y copias juntos."},
     {"Film", "Film", "Película"},
+    /* (2.6: HEVC made H.264) */
+    {"%d episode is HEVC: make it play everywhere -", "%d avsnitt är HEVC: få det att spelas överallt -",
+     "%d episodio es HEVC: haz que se reproduzca en todas partes -"},
+    {"%d episodes are HEVC: make them play everywhere -", "%d avsnitt är HEVC: få dem att spelas överallt -",
+     "%d episodios son HEVC: haz que se reproduzcan en todas partes -"},
+    {"%d episode of these is HEVC -", "%d av de här avsnitten är HEVC -", "%d de estos episodios es HEVC -"},
+    {"%d episodes of these are HEVC -", "%d av de här avsnitten är HEVC -", "%d de estos episodios son HEVC -"},
 };
 TRANSLATIONS(media_manage, TR)

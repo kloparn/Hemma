@@ -4,6 +4,62 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.6.0 (2026-10-31)
+
+HEVC (x265) videos can be made to play everywhere: Hemma's converter decodes HEVC now and makes an H.264 copy - on
+Hemma's own computer, or on the computer you're using, for a whole series, a season, one episode or film, or everything
+at once.
+
+### New
+
+- **HEVC made H.264:** HEVC (x265, H.265) videos - most of today's smaller releases, 8- or 10-bit - were copied as they
+  were into an MP4, which plays on Apple devices, newer TVs and phones, and in browsers with HEVC hardware, but not
+  everywhere. Hemma's converter decodes HEVC now and makes an H.264 copy that plays on every device. It takes the place
+  of the HEVC copy Hemma made earlier, or comes beside an HEVC original as its copy; an original is never written over
+  (with *Do that by itself after each conversion* ticked, a copy made on Hemma's computer takes its original's place,
+  as any conversion's does).
+- **Choose where it runs:** decoding HEVC and encoding H.264 is heavy work - hours for an episode on a Raspberry Pi,
+  minutes on a laptop or desktop. Every place that offers it has two buttons: **On Hemma's computer** (Hemma's own
+  queue, a few at a time; good when Hemma runs on a strong PC) and **On this device** (the browser you're using converts
+  it: it reads the video from Hemma, makes the copy and sends it back - keep the page open until it's done).
+- **What still needs it, and in what sizes:** **Watch → Library settings → Play everywhere from HEVC** lists every
+  series with HEVC episodes (how many each), the films, and *All of them*, each with both buttons. A series' **Manage**
+  offers the whole series and each season; a video's own page offers that episode or film. The list shrinks as copies
+  arrive, so it can be done a bit at a time. While your device converts, its progress shows in the same places.
+
+### Fixed
+
+- **A page that's uploading or converting keeps going when Hemma changes:** asked to load again (Hemma was updated),
+  such a page stopped at the browser's "Leave this page?" question until someone answered - a night's converting
+  waiting on it. It loads again once the work is done.
+
+### For developers
+
+- modules/av/hevc.c, hevc_ctu.c, hevc_dsp.c (hevc.h, hevc_int.h): an HEVC decoder, Main and Main 10 (ITU-T H.265), all
+  of the syntax those profiles allow - B-pictures and reordering, long-term pictures, AMP, PCM, transform skip and
+  bypass, sign hiding, scaling lists, weighted prediction, tiles, WPP, dependent slices, deblocking, SAO. Fed hvcC +
+  length-prefixed blocks (an MKV's or MP4's) or Annex B; frames in display order with their times, 8-bit planes or
+  16-bit for 10-bit, cropped to the conformance window. Refused by name (`hevc_unsupported`): not 4:2:0, more than 10
+  bits, luma and chroma of different depths, interlaced video sent as fields, the range/multilayer/screen-content
+  extensions. Checked against FFmpeg: 24 x265/kvazaar clips with every tool and three real
+  episodes/films (8- and 10-bit, up to 1080p) the same to the bit - whole episodes of 32,188 and 33,435 frames. About
+  45-55 fps at 1080p on one PC core. hevc_testenc.h = a test writer (every syntax element at random, or pictures with
+  known samples); hevc_test.c.
+- modules/av/conv: `AvConvJob.h264` - the picture must end up H.264: HEVC is decoded and re-encoded (on a 90 kHz
+  clock, each picture's own time, like MPEG-4 Part 2), AV1 refused ("only copy so far"), never `as_is`. wasm
+  `conv_run(size, quality, audio_kbps, h264)`. A new fuzz target, `hevc` (avfuzz, nightly too), and a seed,
+  `hevc-random-10bit-aac.mkv`; convfuzz converts every "HEVC copied" input again with `h264`.
+- modules/media/convert.c: `ConvertJob.h264` / `.replace` (only ever over a `.web.mp4`: a video standing for two
+  versions of one name whose HEVC one is an original isn't offered); `convert_h264_need/_from/_paths/_set`; `media.convert`
+  takes `h264=1` with `id=`, `series=` [+ `season=`], `films=1` or nothing (all). `convert_h264_card` (Library
+  settings) and `convert_h264_buttons` (also Manage and the watch page).
+- modules/media/upload.c: a plan `{"here": "<what>"}` = a batch of library videos converted by the browser - each file's
+  `from` (the video read), target = where the H.264 copy goes, `replace` (a PUT may write over Hemma's HEVC copy);
+  the answer's `remote` lists `/media/file/<id>?src=1` (stream.c: that very file, not its playable copy nor a one-sound
+  view; admins). wire.js: `form[data-here]` needs no picked files; conv.js reads a remote file with Range requests and
+  passes `h264` - a read without any answer (`{net}`) is waited out like a PUT's, up to 30 minutes, not counted as a try.
+  A `reload` that comes while an upload runs waits for its end (upload.spec.mjs "load again").
+
 ## 2.5.0 (2026-10-30)
 
 XviD and DivX videos, which played nowhere, are converted. MP3 and Opus sound get a copy too, and so do MP4s with Dolby

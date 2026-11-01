@@ -2057,6 +2057,16 @@ static void page_watch(Ctx *c, Buf *b, const char *idhex) {
     } else if (pl == PLAY_NO && pf == f) {
         H(b, "<p class=\"muted media-convert\">%s</p>", T("This format can't be converted by Hemma yet."));
     }
+    if (is_admin(c) && !convert_queued(f->id) && convert_h264_need(f)) { /* (2.6: HEVC made H.264, which plays everywhere) */
+        char what[40];
+        snprintf(what, sizeof what, "id=%016llx", (unsigned long long)f->id);
+        H(b, "<div class=\"media-convert\"><p class=\"muted\">%s</p>",
+          T("Its picture is HEVC: an H.264 copy plays everywhere. It's heavy work - a strong computer does it far faster than "
+            "a small one."));
+        convert_h264_buttons(c, b, what, 1);
+        buf_puts(b, "</div>");
+    }
+    if (is_admin(c)) upload_here_card(c, b, f->id); /* (this device making its H.264 copy: how far it is) */
 
     /* the rest of the season, for binge-friendly navigation */
     if (s && s->count > 1) {
@@ -2393,6 +2403,7 @@ static void page_settings(Ctx *c, Buf *b) {
         ui_card_end(b);
     }
     convert_card(c, b);
+    convert_h264_card(c, b); /* (2.6: HEVC made H.264 - by series, on Hemma's computer or this device) */
     subtake_card(c, b); /* (admins: the subtitles inside the MKVs, taken out by themselves) */
     media_lookup_card(c, b); /* (admins: categories looked up online - lookup.c, 1.4) */
 

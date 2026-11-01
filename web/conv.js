@@ -3,7 +3,9 @@
 // to WebAssembly (/static/av.wasm): this file only feeds it the file's bytes
 // and gathers what it writes. Nothing here knows about video.
 //   in:  {file, wasm, ram, part}  a File, the module's URL, and whether the copy waits in memory (else in a
-//                            Blob, which the browser may keep on its disk) - sent in pieces of `part` bytes
+//                            Blob, which the browser may keep on its disk) - sent in pieces of `part` bytes;
+//                            (2.6) file = {remote, size, h264}: a library file read from the server (Range
+//                            requests), its HEVC made H.264 - "convert on this device"
 //        {file, wasm, subs}  only the file's subtitles (a video the library has: it stays behind)
 //        {put, at}           send the copy, from byte `at`, to that address (PUTs)
 //   out: {pm, fed}           progress, 0..1000, and the original's bytes the converter has taken in so far
@@ -15,7 +17,9 @@
 //        {subsOnly, subs, pics}  the same subtitles, of a {subs} job
 //        {status, body}      the PUT's answer; status 0 = none came (the connection dropped)
 //        {lost: true}        the copy can't be read any more (the browser's disk filled up?)
-//        {error}             why there is none (the original is sent instead)
+//        {error, again, net, at} why there is none (the original is sent instead); again = a read failed,
+//                            worth another try; net = (2.6) a library file's read got no answer at all (the
+//                            network), at = how much the converter had taken in when it failed
 //        {plays: true}       (2.5) an MP4 that plays everywhere as it is: none needed, the original goes quietly
 // The copy never leaves this worker: wire.js ends the worker once the copy is sent, and the
 // browser lets go of it right then. Handed to the page, finished copies stayed until the page's
@@ -114,12 +118,31 @@ self.onmessage = async (e) => {
   // could not be read") - though the file is fine: the read tries once more, small, and a job that still
   // fails says so ({again}): it goes back in line, not up as the original. flaky (tests: data-flaky) = that
   // many reads fail.
-  let readFailed = false, fail = flaky | 0;
+  let readFailed = false, netFailed = false, failedAt = 0, fail = flaky | 0;
   try {
-    const reader = new FileReaderSync();
+    const reader = file.remote ? null : new FileReaderSync();
+    // (2.6) a library file: each read a Range request - synchronous, as the converter asks for its bytes (a
+    // worker may); anything but those very bytes stops it. No answer at all is the network ({net}: waited out
+    // like a PUT's - a Wi-Fi gone at 4 am mustn't skip a night's files as unreadable)
+    const fetched = (a, b) => {
+      const x = new XMLHttpRequest();
+      x.open('GET', file.remote, false);
+      x.setRequestHeader('Range', `bytes=${a}-${b - 1}`);
+      x.responseType = 'arraybuffer';
+      try {
+        x.send();
+      } catch (err) {
+        netFailed = true;
+        throw err;
+      }
+      if (!x.status) netFailed = true;
+      if (x.status !== 206 || !x.response || x.response.byteLength !== b - a) throw new Error(`reading it failed (${x.status})`);
+      netFailed = false;
+      return new Uint8Array(x.response);
+    };
     const slice = (a, b) => {
       if (fail > 0 && fail--) throw new DOMException('The requested file could not be read (test)', 'NotReadableError');
-      return new Uint8Array(reader.readAsArrayBuffer(file.slice(a, b)));
+      return file.remote ? fetched(a, b) : new Uint8Array(reader.readAsArrayBuffer(file.slice(a, b)));
     };
     // The copy: in memory when asked (and while there's memory: else what's made goes into a Blob and the
     // rest follows it there), else a Blob that grows in 64 MB steps, so memory holds at most that much of it -
@@ -151,6 +174,7 @@ self.onmessage = async (e) => {
               win = slice(off, Math.min(file.size, off + Math.max(n, grow)));
             } catch (err) {
               readFailed = true;
+              failedAt = fed;
               throw err;
             }
           }
@@ -198,7 +222,7 @@ self.onmessage = async (e) => {
     const x = instance.exports;
     wmem = x.memory;
     x._initialize();
-    const rc = subsOnly ? x.conv_subs_only(file.size) : x.conv_run(file.size, 0, 0);
+    const rc = subsOnly ? x.conv_subs_only(file.size) : x.conv_run(file.size, 0, 0, file.h264 ? 1 : 0);
     win = null;
     const text = (p) => {
       const b = bytes();
@@ -238,6 +262,7 @@ self.onmessage = async (e) => {
     // no WebAssembly / blocked: the original goes instead - but a read that failed, or memory that ran out,
     // is worth another try later ({again})
     const why = (err && err.message) || String(err);
-    postMessage({ error: 'This browser couldn\'t convert it (' + why + ')', again: readFailed || /memory|allocat/i.test(why) });
+    postMessage({ error: 'This browser couldn\'t convert it (' + why + ')', again: readFailed || /memory|allocat/i.test(why),
+      net: readFailed && netFailed, at: failedAt });
   }
 };

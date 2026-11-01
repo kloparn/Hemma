@@ -154,6 +154,40 @@ test('an upload waits out a dropped network', async ({ page }) => {
   await expect(page.locator('.media-up h3')).toContainText('Finished · 1 file sent');
 });
 
+// 2.6: Hemma asks its open pages to load again when it changed (a new version, at the socket's return) - a page that
+// was uploading did, and the browser's "leave the page?" question stopped it, a night's converting with it, until someone
+// answered. It loads again once the upload is done.
+test('a page asked to load again while uploading does so after the upload', async ({ page }) => {
+  const from = path.join(WORK, 'reload', 'Reloadfilm (2023).mp4');
+  const to = path.join(LIBRARY, 'Movies', 'Reloadfilm (2023)', 'Reloadfilm (2023).mp4');
+  fs.mkdirSync(path.dirname(from), { recursive: true });
+  fs.copyFileSync(CLIP, from);
+  let sock = null, held = 0, release;
+  const hold = new Promise((r) => { release = r; });
+  await page.routeWebSocket(/\/ws$/, (ws) => { sock = ws; ws.connectToServer(); });
+  await page.route(/\/media\/upload\/[^/?]+\/\d+/, async (route) => {
+    if (route.request().method() === 'PUT') { held++; await hold; }
+    await route.continue();
+  });
+  const asked = [];
+  page.on('dialog', (d) => { asked.push(d.type()); d.dismiss(); });
+  await page.goto('/media/upload');
+  await page.locator('input[name=files]').setInputFiles(from);
+  await expect(page.locator('.media-up-group .media-up-dir > span')).toHaveText(/Movies\s*\/\s*Reloadfilm \(2023\)/);
+  await page.evaluate(() => { globalThis.hemmaSame = 1; });
+  await page.locator('#media-up-start').click();
+  await expect.poll(() => held, { message: 'the file is being sent' }).toBeGreaterThan(0);
+  sock.send(JSON.stringify([['reload'], ['toast', 0, 'Reload asked']])); /* (a toast after it: the reload was seen) */
+  await expect(page.locator('#toasts')).toContainText('Reload asked');
+  expect(asked).toEqual([]);
+  expect(await page.evaluate(() => globalThis.hemmaSame)).toBe(1);
+  release();
+  await expect.poll(() => fs.existsSync(to), { message: 'it arrives', timeout: 30_000 }).toBe(true);
+  await expect.poll(() => page.evaluate(() => globalThis.hemmaSame).catch(() => 1),
+    { message: 'then the page loads again', timeout: 15_000 }).toBeUndefined();
+  expect(same(to, from)).toBe(true);
+});
+
 // 1.3: an episode the library has stays behind - but the subtitles it carries and the library's lacks go, read
 // out of it here, and land next to the library's own video.
 test('a video the library has gives only the subtitles it lacks', async ({ page }) => {
@@ -247,6 +281,52 @@ test('an MKV with an XviD picture is converted here too', async ({ page }) => {
   expect(fs.existsSync(path.join(dir, 'Xvidshow S01E01.mkv'))).toBe(false);
   const mp4 = fs.readFileSync(copy).toString('latin1');
   for (const box of ['avc1', 'avcC', 'mp4a']) expect(mp4).toContain(box); /* (made H.264, the MP3 copied) */
+});
+
+// 2.6 (the owner: "select a series i want to convert ... where they can pick 'on hemma device' or 'on logged device'"): a
+// library video whose picture is HEVC is made H.264 in this browser - the very file read from the server, its copy sent
+// back beside the original as an upload's copy would be.
+test('a library HEVC video is made H.264 on this device', async ({ page }) => {
+  const dir = path.join(LIBRARY, 'Series', 'Hevcshow', 'Season 1'), from = path.join(dir, 'Hevcshow S01E01.mkv');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.copyFileSync(path.join(WORK, 'mkv', 'hevc-random-10bit-aac.mkv'), from);
+  await act(page, 'media.rescan', {});
+  const row = page.locator('li.row', { hasText: 'Hevcshow' });
+  await expect.poll(async () => {
+    await page.goto('/media/settings');
+    return row.count();
+  }, { message: 'the scan lists it with the HEVC videos', timeout: 30_000 }).toBeGreaterThan(0);
+  test.skip(!(await row.locator('form[data-here][data-wasm]').count()), 'this Hemma has no converter for browsers (av.wasm)');
+  await row.locator('form[data-here] button').click();
+  const copy = path.join(dir, 'Hevcshow S01E01.web.mp4');
+  await expect.poll(() => fs.existsSync(copy), { message: 'its copy arrives', timeout: 60_000 }).toBe(true);
+  expect(fs.existsSync(from)).toBe(true); /* (the original stays) */
+  const mp4 = fs.readFileSync(copy).toString('latin1');
+  for (const box of ['avc1', 'avcC', 'mp4a']) expect(mp4).toContain(box); /* (made H.264, the AAC copied) */
+  expect(mp4).not.toContain('hvcC');
+});
+
+// 2.6: the video is read from Hemma while it's converted - a network that's gone a while is waited out, as an upload's
+// sending is (1.4), not taken for a file that can't be read (which would skip a night's videos within seconds).
+test('converting a library video here waits out a dropped network', async ({ page }) => {
+  const dir = path.join(LIBRARY, 'Series', 'Netshow', 'Season 1'), from = path.join(dir, 'Netshow S01E01.mkv');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.copyFileSync(path.join(WORK, 'mkv', 'hevc-random-10bit-aac.mkv'), from);
+  let cut = 8; /* (each try reads twice before it gives up; more than the 2 tries again a failed read gets) */
+  await page.route(/\/media\/file\/[0-9a-f]+\?src=1/, (route) => (cut-- > 0 ? route.abort('internetdisconnected') : route.continue()));
+  await act(page, 'media.rescan', {});
+  const row = page.locator('li.row', { hasText: 'Netshow' });
+  await expect.poll(async () => {
+    await page.goto('/media/settings');
+    return row.count();
+  }, { message: 'the scan lists it with the HEVC videos', timeout: 30_000 }).toBeGreaterThan(0);
+  test.skip(!(await row.locator('form[data-here][data-wasm]').count()), 'this Hemma has no converter for browsers (av.wasm)');
+  await row.locator('form[data-here]').evaluate((f) => { f.dataset.netpause = '20'; }); /* (ask again at once) */
+  await row.locator('form[data-here] button').click();
+  const copy = path.join(dir, 'Netshow S01E01.web.mp4');
+  await expect.poll(() => fs.existsSync(copy), { message: 'its copy arrives', timeout: 60_000 }).toBe(true);
+  expect(cut).toBeLessThan(0);
+  expect(fs.readFileSync(copy).toString('latin1')).toContain('avcC');
 });
 
 // 2.5 (the owner: "Its sound is Opus, which the converter can't change yet. So we should support that"): Opus sound is

@@ -490,7 +490,9 @@ static bool serve_file(Conn *conn, HttpReq *r, const char *idhex, char want, con
     if (!get_only(conn, r)) return true;
     uint64_t id = 0;
     const MediaFile *f = media_parse_id(idhex, &id) ? media_file(id) : NULL;
-    if (f && want == MF_VIDEO) f = media_playable(f); /* its play-everywhere copy, when converted */
+    bool exact = want == 'X'; /* (2.6: ?src=1 - the file itself) */
+    if (exact) want = MF_VIDEO;
+    else if (f && want == MF_VIDEO) f = media_playable(f); /* its play-everywhere copy, when converted */
     if (f && want == MF_VIDEO && f->type == MF_AUDIO) want = MF_AUDIO; /* (an audiobook's part: the same address) */
     char path[1024];
     int64_t size = 0, mtime = 0;
@@ -512,8 +514,9 @@ static bool serve_file(Conn *conn, HttpReq *r, const char *idhex, char want, con
     const char *cache = want != MF_IMAGE                ? "no-cache"
                         : strstr(r->query, "v=") ? "private, max-age=31536000, immutable"
                                                   : "private, max-age=86400";
-    /* several sounds in an MP4 (2.2): one of them, unless it's a download (which takes them all) */
-    if (want == MF_VIDEO && !dl && f->probe.nsounds >= 2 &&
+    /* several sounds in an MP4 (2.2): one of them, unless it's a download (which takes them all) - or ?src=1: a device
+       converting it reads the file itself, every sound, at the size its plan says */
+    if (want == MF_VIDEO && !dl && !exact && f->probe.nsounds >= 2 &&
         (str_eq(f->probe.container, "mp4") || str_eq(f->probe.container, "mov")))
         return serve_view(conn, r, path, f->id, size, mtime, sound, ctype, cache);
     return serve_bytes(conn, r, path, 0, size, ctype, cache, dl,
@@ -1099,6 +1102,8 @@ bool media_http(Ctx *c, Conn *conn, HttpReq *r) {
             plain(conn, 404, "not in the library\n");
             return true;
         }
+        if (str_eq(ctx_q(c, "src"), "1") && is_admin(c)) /* (2.6) that very file, not its copy: what a device converts */
+            return serve_file(conn, r, r->path + 12, 'X', NULL, -1);
         if (!str_eq(ctx_q(c, "download"), "1")) /* (?a=: which sound of an MP4 with several - 2.2) */
             return serve_file(conn, r, r->path + 12, MF_VIDEO, NULL, sound_asked(ctx_q(c, "a")));
         if (!media_grown_up(c)) { /* (the owner: downloads are for grown-ups - not children, guests or a TV) */

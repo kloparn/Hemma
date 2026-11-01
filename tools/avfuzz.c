@@ -10,17 +10,19 @@
  *   -DAVFUZZ_MPEG2   the MPEG-2 decoder: a raw video stream, fed in chunks of any size
  *   -DAVFUZZ_MPEG4   (2.5) the MPEG-4 Part 2 decoder (DivX, Xvid): a raw stream, fed a VOP a block, whole or in
  *                    pieces, its block times in or out of order
- *   -DAVFUZZ_PGS     Blu-ray picture subtitles (modules/av/subpic.c): a .sup opened, every cue drawn and
+ *   -DAVFUZZ_HEVC    (2.6) the HEVC decoder: an Annex B stream in pieces of any size, or its NAL units as a
+ *                    container's blocks after an hvcC made of its parameter sets
+ *   -DAVFUZZ_PGS    Blu-ray picture subtitles (modules/av/subpic.c): a .sup opened, every cue drawn and
  *                    made a PNG (png.c)
  *   -DAVFUZZ_VOBSUB  DVD picture subtitles: the input's bytes up to its first NUL are the .idx text, the rest
  *                    the .sub; opened, every cue drawn and made a PNG
  *   -DAVFUZZ_TAGS    an audio file's tags (modules/av/audiotags.c): an MP4's boxes or an MP3's ID3 tags and
  *                    frames read, every string and chapter looked at
  *
- * For mkv, ac3, dts, mpeg2 and mpeg4 the first byte of an input chooses the target's options (a layout, a chunk size,
- * a reset part-way), for tags the file's name (none, x.mp3, x.m4b, book.MP3), so the fuzzer explores those too.
+ * For mkv, ac3, dts, mpeg2, mpeg4 and hevc the first byte of an input chooses the target's options (a layout, a chunk
+ * size, a reset part-way), for tags the file's name (none, x.mp3, x.m4b, book.MP3), so the fuzzer explores those too.
  * Seeds: `HEMMA_FUZZ_SEEDS=build/fuzz-seeds HEMMA_FUZZ_RAW=build/fuzz-raw build/test conv_fuzz_seeds` - the MKVs
- * for mkv (as for convfuzz), build/fuzz-raw/ac3, .../dts, .../mpeg2 and .../mpeg4; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test
+ * for mkv (as for convfuzz), build/fuzz-raw/ac3, .../dts, .../mpeg2, .../mpeg4 and .../hevc; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test
  * subpic_fuzz_seeds` - build/fuzz-raw/pgs and .../vobsub; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test
  * audiotags_fuzz_seeds` - build/fuzz-raw/tags; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test mp4read_fuzz_seeds` -
  * build/fuzz-raw/mp4.
@@ -28,7 +30,8 @@
  *   clang -g -O1 -std=gnu11 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
  *         -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION -DAVFUZZ_AC3 tools/avfuzz.c modules/av/ac3.c -lm -o build/fuzz-ac3
  *   (mkv, mp4: modules/av/mkv.c; dts: modules/av/dts.c; mpeg2: modules/av/mpeg2.c; mpeg4: modules/av/mpeg4.c;
- *    pgs, vobsub: modules/av/subpic.c modules/av/png.c; tags: modules/av/audiotags.c)
+ *    hevc: modules/av/hevc.c hevc_ctu.c hevc_dsp.c; pgs, vobsub: modules/av/subpic.c modules/av/png.c;
+ *    tags: modules/av/audiotags.c)
  *   build/fuzz-ac3 -max_total_time=60 build/fuzz-corpus-ac3 build/fuzz-raw/ac3
  *
  * A finding is a sanitizer report (out of bounds, use after free, undefined behaviour, a leak) or a
@@ -42,8 +45,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(AVFUZZ_MKV) + defined(AVFUZZ_MP4) + defined(AVFUZZ_AC3) + defined(AVFUZZ_DTS) + defined(AVFUZZ_MPEG2) + defined(AVFUZZ_MPEG4) + defined(AVFUZZ_PGS) + defined(AVFUZZ_VOBSUB) + defined(AVFUZZ_TAGS) != 1
-#error "build with exactly one of -DAVFUZZ_MKV, -DAVFUZZ_MP4, -DAVFUZZ_AC3, -DAVFUZZ_DTS, -DAVFUZZ_MPEG2, -DAVFUZZ_MPEG4, -DAVFUZZ_PGS, -DAVFUZZ_VOBSUB, -DAVFUZZ_TAGS"
+#if defined(AVFUZZ_MKV) + defined(AVFUZZ_MP4) + defined(AVFUZZ_AC3) + defined(AVFUZZ_DTS) + defined(AVFUZZ_MPEG2) + defined(AVFUZZ_MPEG4) + defined(AVFUZZ_HEVC) + defined(AVFUZZ_PGS) + defined(AVFUZZ_VOBSUB) + defined(AVFUZZ_TAGS) != 1
+#error "build with exactly one of -DAVFUZZ_MKV, -DAVFUZZ_MP4, -DAVFUZZ_AC3, -DAVFUZZ_DTS, -DAVFUZZ_MPEG2, -DAVFUZZ_MPEG4, -DAVFUZZ_HEVC, -DAVFUZZ_PGS, -DAVFUZZ_VOBSUB, -DAVFUZZ_TAGS"
 #endif
 
 static volatile uint32_t g_sink; /* what was read: kept, so no read is optimised away */
@@ -279,6 +282,86 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) {
     mpeg4_flush(m);
     drain4(m);
     mpeg4_free(m);
+    return 0;
+}
+#endif
+
+#ifdef AVFUZZ_HEVC
+#include "../modules/av/hevc.h"
+
+#include <stdlib.h>
+
+static void drain5(Hevc *h) {
+    HevcFrame f;
+    while (hevc_frame(h, &f)) {
+        if (f.width <= 0 || f.height <= 0 || f.bit_depth < 8 || f.bit_depth > 10) abort(); /* (Main 10: 8, 9 or 10 bits) */
+        int cw = (f.width + 1) / 2, ch = (f.height + 1) / 2;
+        touch(f.y + (size_t)(f.height - 1) * (size_t)f.stride_y, (size_t)f.width);
+        touch(f.u + (size_t)(ch - 1) * (size_t)f.stride_c, (size_t)cw);
+        touch(f.v + (size_t)(ch - 1) * (size_t)f.stride_c, (size_t)cw);
+        touch((const uint8_t *)(f.y16 + (size_t)(f.height - 1) * (size_t)f.stride16_y), (size_t)f.width * 2);
+        touch((const uint8_t *)(f.v16 + (size_t)(ch - 1) * (size_t)f.stride16_c), (size_t)cw * 2);
+    }
+}
+
+static size_t next_sc(const uint8_t *p, size_t n, size_t from) { /* the next 00 00 01 at or after `from`, else n */
+    for (size_t i = from; i + 3 <= n; i++)
+        if (!p[i] && !p[i + 1] && p[i + 2] == 1) return i;
+    return n;
+}
+
+/* Options byte: & 3 = how it's fed (0, 1: Annex B in pieces of 1 + (& 0x3C) bytes; 2: the whole stream at once; 3: as
+   a container keeps it - an hvcC holding the VPS/SPS/PPS units found, then each other unit a block of its own with a
+   4-byte length); & 64 = a reset part-way (a seek); & 128 = the block times in reverse. */
+int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) {
+    if (n < 2) return 0;
+    Hevc *h = hevc_new();
+    if (!h) return 0;
+    uint8_t opt = d[0];
+    bool reset = opt & 64, done_reset = false;
+    int64_t t = opt & 128 ? (int64_t)n : 0;
+    if ((opt & 3) == 3) {
+        static uint8_t cfg[1 << 16], blk[1 << 16];
+        memset(cfg, 0, 23);
+        cfg[0] = 1, cfg[21] = 0x0f; /* 4-byte lengths */
+        size_t c = 23;
+        for (size_t s = next_sc(d, n, 1); s < n;) { /* the parameter sets, each an array of one */
+            size_t e = next_sc(d, n, s + 3), len = e - s - 3;
+            int type = s + 3 < n ? (d[s + 3] >> 1) & 63 : 0;
+            if (type >= 32 && type <= 34 && len <= 0xffff && c + 5 + len <= sizeof cfg && cfg[22] < 255) {
+                cfg[c++] = (uint8_t)(0x80 | type), cfg[c++] = 0, cfg[c++] = 1;
+                cfg[c++] = (uint8_t)(len >> 8), cfg[c++] = (uint8_t)len;
+                memcpy(cfg + c, d + s + 3, len), c += len;
+                cfg[22]++;
+            }
+            s = e;
+        }
+        hevc_config(h, cfg, c);
+        for (size_t s = next_sc(d, n, 1); s < n;) {
+            size_t e = next_sc(d, n, s + 3), len = e - s - 3;
+            int type = s + 3 < n ? (d[s + 3] >> 1) & 63 : 0;
+            if ((type < 32 || type > 34) && len + 4 <= sizeof blk) {
+                blk[0] = (uint8_t)(len >> 24), blk[1] = (uint8_t)(len >> 16), blk[2] = (uint8_t)(len >> 8), blk[3] = (uint8_t)len;
+                memcpy(blk + 4, d + s + 3, len);
+                if (hevc_decode(h, blk, len + 4, opt & 128 ? t-- : t++) < 0) break;
+                drain5(h);
+            }
+            s = e;
+            if (reset && !done_reset && s > n / 2) hevc_reset(h), done_reset = true;
+        }
+    } else {
+        for (size_t at = 1; at < n;) {
+            size_t end = (opt & 3) == 2 ? n : at + 1 + (opt & 0x3C);
+            if (end > n) end = n;
+            if (hevc_decode(h, d + at, end - at, opt & 128 ? t-- : t++) < 0) break;
+            drain5(h);
+            at = end;
+            if (reset && !done_reset && at > n / 2) hevc_reset(h), done_reset = true;
+        }
+    }
+    hevc_flush(h);
+    drain5(h);
+    hevc_free(h);
     return 0;
 }
 #endif

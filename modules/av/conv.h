@@ -100,6 +100,9 @@ typedef struct {
     int64_t max_samples;  /* most samples a track may get, if fewer than the built-in bound (tests, fuzzing); 0 = that */
     size_t pic_bytes;     /* the most one picture track may come to, if less than AV_CONV_PIC_BYTES (tests, fuzzing);
                              0 = that. Every picture track together: AV_CONV_PIC_TOTAL / AV_CONV_PIC_BYTES times it */
+    bool h264;            /* 2.6: the copy's picture must be H.264, which plays everywhere: HEVC is decoded and re-encoded
+                             (else copied as 'hvc1', which plays on newer devices only), AV1 refused as `unsupported`,
+                             and an MP4 that isn't H.264 is never as_is */
     bool want_subs;       /* hand back the subtitle tracks (subs) */
     bool skip_refused_subs; /* with want_subs: no subtitles-only pass after an `unsupported` refusal (the browser:
                                the original goes to the server then, which takes them out itself) */

@@ -194,6 +194,23 @@
   margin: 8px 0; padding: 10px 12px; border-radius: 10px; background: var(--panel-2); overflow-x: auto;
   font: 12.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all;
 }
+/* HEVC made H.264 (2.6, convert_h264_buttons): its two ways side by side - beside a row's title while they fit, else on
+   a line of their own, sharing it; "On this device" needs wire.js (form[data-here]), so it shows only with it */
+.media-h264 .row { flex-wrap: wrap; }
+.media-h264-go { display: inline-flex; flex-wrap: wrap; gap: 8px; vertical-align: middle; }
+.media-h264 .media-h264-go { margin-left: auto; }
+.media-h264-go form { margin: 0; }
+.media-h264-dev { display: none; }
+html[data-ws=on] .media-h264-dev { display: inline; }
+.media-h264-line { margin: 8px 0 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.media-convert .media-h264-go { margin-top: 2px; }
+.media-h264-run { margin: 4px 0 14px; padding: 10px 12px; border-radius: 12px; background: var(--panel-2); }
+.media-h264-run > p { margin: 0 0 6px; }
+@media (max-width: 600px) {
+  .media-h264-go { display: flex; flex: 1 1 100%; }
+  .media-h264-go form { flex: 1 1 auto; }
+  .media-h264-go .btn { width: 100%; }
+}
 
 /* ---- settings ---- */
 .media-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; margin: 0 0 14px; }

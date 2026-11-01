@@ -13,6 +13,7 @@
 #include "dts.h"
 #include "dts_testenc.h"
 #include "h264enc.h"
+#include "hevc_testenc.h"
 #include "mp4.h"
 #include "mpeg4_testenc.h"
 
@@ -1476,6 +1477,26 @@ static size_t add_mpeg4(Stream *s, int n, int width, int height, unsigned flags,
     return m4_bytes(&w);
 }
 
+/* (2.6) hevc_testenc.h's stream as an MKV track: each picture a block (4-byte lengths) at its display slot's ms.
+   Returns its hvcC (CodecPrivate) in hvcc. */
+static size_t add_hevc(Stream *s, const HwStream *hs, uint8_t *hvcc, size_t cap) {
+    static uint8_t au[1 << 17];
+    for (int k = 0; k < hw_count(hs); k++) {
+        int poc;
+        size_t len = hw_picture(hs, k, false, au, sizeof au, &poc);
+        s_add(s, au, len, frame_ms(poc), k == 0);
+    }
+    return hw_hvcc(hs, hvcc, cap);
+}
+
+static HwStream hevc_stream(int w, int h, int depth, unsigned flags, int frames) {
+    HwStream hs;
+    memset(&hs, 0, sizeof hs);
+    hs.width = w, hs.height = h, hs.depth = depth, hs.chroma = 1, hs.flags = flags, hs.frames = frames, hs.seed = 11;
+    hs.mv[0][0] = 2, hs.mv[1][1] = -2;
+    return hs;
+}
+
 /* An AVI's track as mkvmerge keeps it (V_MS/VFW/FOURCC): a BITMAPINFOHEADER as CodecPrivate */
 static void bitmapinfo(uint8_t bih[40], int width, int height, const char *fourcc) {
     memset(bih, 0, 40);
@@ -2461,6 +2482,67 @@ TEST(conv_reencodes_mpeg4_part_2) {
     }
 }
 
+/* (2.6) HEVC is copied as 'hvc1' unless the job asks for H.264 (AvConvJob.h264): then it's decoded and re-encoded,
+   timed by each picture's own time on 90 kHz like MPEG-4; AV1 and HEVC the decoder can't read are refused in words */
+TEST(conv_makes_hevc_h264_when_asked) {
+    static Stream v;
+    uint8_t hvcc[2048];
+    HwStream hs = hevc_stream(64, 48, 10, HW_RANDOM | HW_SAO | HW_TMVP, 9);
+    hs.rate_num = 30000, hs.rate_den = 1001;
+    size_t nh = add_hevc(&v, &hs, hvcc, sizeof hvcc);
+    Tracks t = {"V_MPEGH/ISO/HEVC", hvcc, nh, 64, 48, NULL, NULL, 0};
+    W in, out;
+    mux(&in, &t, 330, &v, NULL);
+    AvConvJob j = {0};
+    Seen s;
+    CHECK(run(&in, &out, &j, &s));
+    CHECK_STR(j.what, "HEVC copied");
+    free(out.p);
+    AvConvJob j2 = {0};
+    j2.h264 = true;
+    CHECK(run(&in, &out, &j2, &s));
+    CHECK_STR(j2.err, "");
+    CHECK_HAS(j2.what, "HEVC video (10-bit, 29.970 fps) → H.264");
+    int n[2];
+    counts(&out, n);
+    CHECK_INT(n[0], 9); /* every picture, B-pictures in their place */
+    CHECK(track_timescale(&out, 0) == 90000);
+    uint32_t d[16];
+    CHECK_INT(durations(&out, 0, d, 16), 9);
+    bool even = true; /* (frame_ms: 1001/30 ms in whole ms - 33 or 34) */
+    int sum = 0;
+    for (int i = 0; i < 8; i++) even &= d[i] == 2970 || d[i] == 3060, sum += (int)d[i];
+    CHECK(even);
+    CHECK_INT(sum, frame_ms(8) * 90);
+    free(in.p), free(out.p);
+    s_free(&v);
+
+    /* refused when H.264 is asked for: AV1 (copied otherwise), and HEVC in 4:2:2 */
+    static const uint8_t av1c[] = {0x81, 0x00, 0x0C, 0x00, 0x0A, 0x05, 0x00, 0x00, 0x00, 0x24, 0x9F};
+    for (int f = 0; f < 4; f++) s_add(&v, "\x12\x00\x0a\x0b", 4, frame_ms(f), f == 0);
+    t = (Tracks){"V_AV1", av1c, sizeof av1c, 64, 48, NULL, NULL, 0};
+    mux(&in, &t, 150, &v, NULL);
+    AvConvJob j3 = {0};
+    j3.h264 = true;
+    CHECK(!run(&in, &out, &j3, &s));
+    CHECK(j3.unsupported);
+    CHECK_STR(j3.err, "Its picture is AV1, which the converter can only copy so far (H.264 from it: not yet)");
+    free(in.p), free(out.p);
+    s_free(&v);
+    hs = hevc_stream(32, 32, 8, 0, 3);
+    hs.chroma = 2;
+    nh = add_hevc(&v, &hs, hvcc, sizeof hvcc);
+    t = (Tracks){"V_MPEGH/ISO/HEVC", hvcc, nh, 32, 32, NULL, NULL, 0};
+    mux(&in, &t, 150, &v, NULL);
+    AvConvJob j4 = {0};
+    j4.h264 = true;
+    CHECK(!run(&in, &out, &j4, &s));
+    CHECK(j4.unsupported);
+    CHECK_STR(j4.err, "Its HEVC picture uses 4:2:2 chroma, which the converter can't decode yet");
+    free(in.p), free(out.p);
+    s_free(&v);
+}
+
 /* Small files of every kind the converter takes - the starting corpus for tools/convfuzz.c.
    Each must convert (the size change: fail cleanly); with HEMMA_FUZZ_SEEDS=<dir> they are
    also written there (CI's fuzz job makes them so, no binaries live in the repo). */
@@ -2533,13 +2615,32 @@ TEST(conv_fuzz_seeds) {
             snprintf(path, sizeof path, "%s/mpeg4/%s", raw, names[i]);
             CHECK(file_write_atomic(path, b.p, b.len));
         }
+        /* HEVC streams (2.6): every syntax element the writer knows, 8, 9 and 10 bits, SAO, temporal vectors, PCM, QP deltas */
+        snprintf(path, sizeof path, "%s/hevc", raw);
+        CHECK(dir_make(path));
+        for (int i = 0; i < 5; i++) {
+            static const char *const names[] = {"hevc-pieces", "hevc-blocks-sao", "hevc-10bit-tmvp-reset", "hevc-exact-whole",
+                                                "hevc-9bit-qp-blocks"};
+            static const uint8_t opts[] = {0x0C, 3, 64 | 1, 2, 3};
+            static const unsigned flags[] = {HW_RANDOM, HW_RANDOM | HW_SAO | HW_PCM_LF, HW_RANDOM | HW_TMVP | HW_SAO, 0,
+                                             HW_RANDOM | HW_QP | HW_SAO};
+            static const int depths[] = {8, 8, 10, 8, 9};
+            static uint8_t stream[1 << 17];
+            HwStream hs = hevc_stream(i == 1 ? 80 : 48, i == 1 ? 48 : 32, depths[i], flags[i], 7);
+            hs.seed = (uint32_t)i + 1;
+            buf_reset(&b);
+            buf_putc(&b, (char)opts[i]);
+            buf_put(&b, stream, hevc_test_stream(stream, sizeof stream, &hs));
+            snprintf(path, sizeof path, "%s/hevc/%s", raw, names[i]);
+            CHECK(file_write_atomic(path, b.p, b.len));
+        }
         buf_free(&b);
     }
     static const uint8_t hvcc[] = {1,    0x01, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 0x5D, 0xF0, 0, 0xFC,
                                    0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
     char took[64][40]; /* every CodecID a seed carries: each format the converter takes needs one (below) */
     int ntook = 0;
-    for (int seed = 0; seed < 22; seed++) {
+    for (int seed = 0; seed < 23; seed++) {
         uint8_t avcc[256], asc[2], vol[64], bih[40];
         size_t avcc_len = 0;
         Tracks mp2 = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0}, t = mp2;
@@ -2695,6 +2796,16 @@ TEST(conv_fuzz_seeds) {
             bitmapinfo(bih, 48, 32, "XVID");
             t = (Tracks){"V_MS/VFW/FOURCC", bih, sizeof bih, 48, 32, "A_AC3", NULL, 0};
             break;
+        case 22: { /* HEVC that decodes (2.6): every syntax element hevc_testenc.h writes, 10-bit, AAC copied - copied
+                      as 'hvc1' here; convfuzz converts a file it copied HEVC from once more, made H.264 */
+            static uint8_t hvcc[2048];
+            name = "hevc-random-10bit-aac.mkv";
+            HwStream hs = hevc_stream(64, 48, 10, HW_RANDOM | HW_SAO | HW_TMVP | HW_PCM_LF | HW_QP, 9);
+            size_t nh = add_hevc(&v, &hs, hvcc, sizeof hvcc);
+            add_aac(&a, 0.35, asc);
+            t = (Tracks){"V_MPEGH/ISO/HEVC", hvcc, nh, 64, 48, "A_AAC", asc, 2};
+            break;
+        }
         case 18: { /* Opus copied (2.5): packets of 20 and 60 ms and two frames, one cut short */
             static uint8_t pkt[64];
             name = "h264-opus.mkv";
