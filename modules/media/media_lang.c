@@ -779,5 +779,11 @@ static const Tr TR[] = {
     {"DTS sound", "DTS-ljud", "sonido DTS"},
     {"TrueHD sound", "TrueHD-ljud", "sonido TrueHD"},
     {"sound browsers don't play", "ljud webbläsare inte spelar", "sonido que los navegadores no reproducen"},
+    {"Its picture is HEVC: an H.264 copy plays everywhere. It's heavy work - a strong computer does it far faster than "
+     "a small one.",
+     "Bilden är HEVC: en H.264-kopia spelas överallt. Det är tungt arbete - en kraftfull dator gör det mycket snabbare "
+     "än en liten.",
+     "Su imagen es HEVC: una copia H.264 se reproduce en todas partes. Es un trabajo pesado - un ordenador potente lo "
+     "hace mucho más rápido que uno pequeño."},
 };
 TRANSLATIONS(media, TR)

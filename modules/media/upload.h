@@ -98,5 +98,12 @@ uint64_t upload_show_key(const char *name); /* a series name, folded: "70's Show
 /* A folder name made safe to store anywhere ("Star Wars: A New Hope" -> "Star Wars - A New Hope"):
    false when nothing is left of it. */
 bool upload_safe_name(const char *in, char *out, size_t cap);
+/* (2.6) the browser's converter is built in (av.wasm, conv.js), and a form's attributes that tell wire.js where */
+bool upload_can_convert(void);
+void upload_converter_attrs(Buf *b);
+/* (2.6) the person ticked the upload form's "keep copies in memory" ("ram"): "On this device" does as they chose */
+bool upload_ram_chosen(int person);
+/* (2.6) the person's own "On this device" batch as a card (while it runs, and a while after); false = none */
+bool upload_here_card(Ctx *c, Buf *b, uint64_t video);
 
 #endif

@@ -14,6 +14,12 @@
  * made here (convert_making), and takes over one only queued (convert_give_way: it leaves the
  * queue - the upload brings it). A crash's leftover ".conv.part" goes at the next scan.
  *
+ * (2.6) HEVC MADE H.264 (owner, 2026-10-31: "select a series i want to convert ... a season of a show, whole show, episode
+ * or movie", "on hemma device or on logged device"): a job with ConvertJob.h264 decodes HEVC (av/hevc.c) and writes H.264,
+ * which plays everywhere; its copy is the video's .web.mp4, replacing Hemma's own HEVC copy there (ConvertJob.replace -
+ * an original never). convert_h264_card lists the HEVC videos by series; convert_h264_buttons gives a set's two ways:
+ * this queue ("On Hemma's computer") or the browser's converter ("On this device": upload.c's "here" batches).
+ *
  * Words (issue #46): a job's err is English (marked N_ here; the av library's own are its data) and
  * is translated where the card shows it; "no room" keeps its numbers, and the words are made then. */
 #include "../../core/ui.h"
@@ -21,6 +27,7 @@
 #include "convert.h"
 #include "remove.h"
 #include "room.h"
+#include "upload.h"
 
 #define MAX_WORKERS 12
 
@@ -68,6 +75,79 @@ void convert_web_path(const char *src, char *out, size_t cap) {
 }
 
 void convert_part_path(const char *dst, char *out, size_t cap) { snprintf(out, cap, "%s.conv.part", dst); }
+
+const MediaFile *convert_h264_from(const MediaFile *f) {
+    if (!f || f->type != MF_VIDEO || f->role == MF_WEBCOPY || f->role == MF_PLAYALL) return NULL;
+    const MediaFile *p = media_playable(f);
+    if (!str_eq(p->probe.vcodec, "hevc")) return NULL;
+    bool readable = container_is(&f->probe, "mkv", "webm") || container_is(&f->probe, "mp4", "mov");
+    return readable && str_eq(f->probe.vcodec, "hevc") ? f : p; /* (an original the converter can't read: from the copy) */
+}
+
+int convert_h264_set(const char *what, const MediaFile **out, int cap) {
+    const MediaIndex *ix = media_lib();
+    char key[16] = "", val[40] = "";
+    uint64_t id = 0;
+    int season = -1, n = 0;
+    const char *se = strstr(what ? what : "", "season=");
+    if (se) season = atoi(se + 7);
+    if (what && *what) {
+        const char *eq = strchr(what, '=');
+        size_t kl = eq ? (size_t)(eq - what) : 0;
+        if (eq && kl < sizeof key) memcpy(key, what, kl), key[kl] = '\0';
+        if (eq) str_copy(val, sizeof val, eq + 1);
+        char *amp = strchr(val, '&');
+        if (amp) *amp = '\0';
+    }
+    bool one = str_eq(key, "id") && media_parse_id(val, &id), series = str_eq(key, "series") && media_parse_id(val, &id);
+    if (what && *what && !one && !series && !str_eq(key, "films")) return 0;
+#define ADD(f) do { const MediaFile *f_ = (f); if (n < cap && convert_h264_need(f_)) out[n++] = f_; } while (0)
+    if (one) {
+        const MediaFile *f = media_file(id);
+        if (f) ADD(f);
+        return n;
+    }
+    for (int k = 0; k < ix->nepisodes && !str_eq(key, "films"); k++) {
+        const MediaFile *e = &ix->files[ix->episodes[k]];
+        if (!series || (e->series == id && (season < 0 || e->name.season == season))) ADD(e);
+    }
+    if (!series)
+        for (int k = 0; k < ix->nmovies; k++) ADD(&ix->files[ix->movies[k]]);
+    if (!series && !str_eq(key, "films"))
+        for (int k = 0; k < ix->nothers; k++) ADD(&ix->files[ix->others[k]]);
+#undef ADD
+    return n;
+}
+
+/* look: ask the disk whether a new copy's name is free (a copy made since the last scan) - what's queued or planned does;
+   counting on a page goes by the scan (the card and Manage count every video at every render) */
+static bool h264_paths(const MediaFile *f, char *src, size_t scap, char *dst, size_t dcap, bool *replace, bool look) {
+    const MediaFile *s = convert_h264_from(f), *p = s ? media_playable(f) : NULL;
+    if (!s) return false;
+    if (!media_full_path(s, src, scap)) return false;
+    *replace = true;
+    /* its HEVC copy, made here: replaced. Not another version of the same name (2.5: "x.mp4" beside "x.mkv", the one
+       that plays in more places standing for both) - that's an original: nothing until Keep only the most compatible
+       version has left one of them */
+    if (p != f) return media_is_web_copy(p->rel) && media_full_path(p, dst, dcap);
+    if (str_ends(src, ".web.mp4")) { /* a copy alone (its original went): replaced where it is */
+        str_copy(dst, dcap, src);
+        return true;
+    }
+    *replace = false; /* an HEVC original (an MP4 that played on Apple devices as it was): a new copy beside it */
+    convert_web_path(src, dst, dcap);
+    return !look || !path_stat(dst, NULL, NULL, NULL);
+}
+
+bool convert_h264_paths(const MediaFile *f, char *src, size_t scap, char *dst, size_t dcap, bool *replace) {
+    return h264_paths(f, src, scap, dst, dcap, replace, true);
+}
+
+bool convert_h264_need(const MediaFile *f) {
+    char src[1024], dst[1024];
+    bool replace;
+    return h264_paths(f, src, sizeof src, dst, sizeof dst, &replace, false);
+}
 
 /* ================================================================= pipeline */
 
@@ -166,7 +246,8 @@ bool convert_file(ConvertJob *j) {
     atomic_store(&j->out_mb, 0);
     char part[1100];
     convert_part_path(j->dst, part, sizeof part);
-    if (path_stat(j->dst, NULL, NULL, NULL)) { /* made since it was queued (by hand?): that one stays */
+    j->replace &= str_ends(j->dst, ".web.mp4"); /* (what's replaced is a copy - never anything else) */
+    if (!j->replace && path_stat(j->dst, NULL, NULL, NULL)) { /* made since it was queued (by hand?): that one stays */
         str_copy(j->err, sizeof j->err, N_("Its play-everywhere copy is there already"));
         return false;
     }
@@ -188,6 +269,7 @@ bool convert_file(ConvertJob *j) {
                     .quality = j->quality,
                     .audio_kbps = j->audio_kbps,
                     .limit_ns = j->limit_ns,
+                    .h264 = j->h264,
                     .want_subs = true,
                     .stop = &io.halt,
                     .progress = on_progress,
@@ -205,7 +287,7 @@ bool convert_file(ConvertJob *j) {
     }
     fclose(io.dst);
     fclose(io.src);
-    if (ok && path_stat(j->dst, NULL, NULL, NULL)) { /* never over a copy that arrived meanwhile */
+    if (ok && !j->replace && path_stat(j->dst, NULL, NULL, NULL)) { /* never over a copy that arrived meanwhile */
         str_copy(j->err, sizeof j->err, N_("Another play-everywhere copy arrived meanwhile - that one stays"));
         ok = false;
     }
@@ -495,14 +577,33 @@ bool convert_busy(void) {
 
 typedef enum { EQ_ADDED, EQ_NO, EQ_ON_ITS_WAY, EQ_THERE, EQ_UPLOAD, EQ_N } Enq;
 
+/* (2.6) The room an H.264 copy of HEVC may take: the encoder's size follows the picture, not the source - 0.6-1.5 times
+   the HEVC in real episodes (a Friends episode 45 MB a minute at 1080p, the most seen), more for a small x265 file. So
+   half as much again as the source, and at least 50 MB a minute at 1080p (by its pixels) - the server writes on without
+   asking again */
+static int64_t h264_need(const MediaFile *f, int64_t size) {
+    const MediaProbe *p = &media_playable(f)->probe;
+    double px = p->width > 0 && p->height > 0 ? (double)p->width * p->height / (1920.0 * 1080.0) : 1.0;
+    int64_t by_time = (int64_t)((double)p->duration_ms / 60000.0 * 50.0 * px * (1 << 20));
+    return MAX(size + size / 2, by_time);
+}
+
 /* Event loop (so is everything that claims a file: upload plans and PUTs, this - one can't
    slip in between a check and a claim). The copy mustn't be there already (made since the
    last scan) nor be coming by upload; then the video joins the queue once. */
-static Enq enqueue(const MediaFile *f) {
+static Enq enqueue(const MediaFile *f, bool h264) {
     char src[1024], dst[1024];
-    if (!f || convert_need(f) == CONV_NONE || !media_full_path(f, src, sizeof src)) return EQ_NO;
-    convert_web_path(src, dst, sizeof dst);
-    if (path_stat(dst, NULL, NULL, NULL)) return EQ_THERE;
+    bool replace = false;
+    int64_t size = 0;
+    if (h264) { /* (2.6) HEVC made H.264: from its original or its copy, into its .web.mp4 */
+        if (!convert_h264_paths(f, src, sizeof src, dst, sizeof dst, &replace) || !path_stat(src, &size, NULL, NULL))
+            return EQ_NO;
+    } else {
+        if (!f || convert_need(f) == CONV_NONE || !media_full_path(f, src, sizeof src)) return EQ_NO;
+        convert_web_path(src, dst, sizeof dst);
+        if (path_stat(dst, NULL, NULL, NULL)) return EQ_THERE;
+        size = f->size;
+    }
     if (upload_claims(src) || upload_claims(dst)) return EQ_UPLOAD;
     Enq r = EQ_ADDED;
     lock_take(&g_cl);
@@ -525,7 +626,8 @@ static Enq enqueue(const MediaFile *f) {
         g_items[g_nitems++] = it;
         it->id = f->id;
         it->state = CQ_WAITING;
-        it->need = f->size;
+        it->need = h264 ? h264_need(f, size) : size;
+        it->job.h264 = h264, it->job.replace = replace;
         str_copy(it->root, sizeof it->root, media_lib()->roots[f->root]);
         const MediaSeries *s = f->series ? media_series(f->series) : NULL;
         if (s && f->name.kind == MEDIA_EPISODE)
@@ -596,15 +698,28 @@ void convert_act_start(Ctx *c, Fields *f) {
     }
     atomic_store(&g_cstop, 0);
     lock_give(&g_cl);
-    if (single) got[enqueue(media_file(one))]++;
-    else {
+    bool h264 = str_eq(fields_str(f, "h264"), "1");
+    uint64_t sid = 0;
+    bool series = h264 && media_parse_id(fields_str(f, "series"), &sid), films = h264 && str_eq(fields_str(f, "films"), "1");
+    int season = series && *fields_str(f, "season") ? atoi(fields_str(f, "season")) : -1;
+    if (single) got[enqueue(media_file(one), h264)]++;
+    else if (series) { /* (2.6) a series, or one of its seasons */
+        for (int k = 0; k < ix->nepisodes; k++) {
+            const MediaFile *e = &ix->files[ix->episodes[k]];
+            if (e->series == sid && (season < 0 || e->name.season == season)) got[enqueue(e, true)]++;
+        }
+    } else if (films) {
+        for (int k = 0; k < ix->nmovies; k++) got[enqueue(&ix->files[ix->movies[k]], true)]++;
+    } else {
         bool *ep = xcalloc((size_t)ix->nfiles + 1, sizeof *ep);
         for (int k = 0; k < ix->nepisodes; k++) { /* series in order */
             ep[ix->episodes[k]] = true;
-            got[enqueue(&ix->files[ix->episodes[k]])]++;
+            got[enqueue(&ix->files[ix->episodes[k]], h264)]++;
         }
         for (int i = 0; i < ix->nfiles; i++)
-            if (!ep[i] && bulk_need(&ix->files[i])) got[enqueue(&ix->files[i])]++;
+            if (!ep[i] && (h264 ? ix->files[i].role == MF_MAIN && convert_h264_need(&ix->files[i]) /* (as the card counts) */
+                                : bulk_need(&ix->files[i])))
+                got[enqueue(&ix->files[i], h264)]++;
         free(ep);
     }
     int added = got[EQ_ADDED], noroom = 0;
@@ -666,6 +781,9 @@ void convert_act_stop(Ctx *c, Fields *f) {
 }
 
 bool convert_replace_original(uint64_t id, const char *src, const char *dst) {
+    /* (2.6) an H.264 copy made from Hemma's own HEVC copy (its original gone, or one the converter can't read) took that
+       copy's place: src IS the new copy - there's no original here to drop */
+    if (str_eq(src, dst) || str_ends(src, ".web.mp4")) return false;
     const MediaFile *o = media_file(id);
     MediaProbe pr;
     char rel[420];
@@ -925,4 +1043,110 @@ void convert_card(Ctx *c, Buf *b) {
       T("A copy keeps the picture and one sound track: other sound tracks (a director's commentary, other languages) "
         "go with the original."));
     ui_card_end(b);
+}
+
+/* ============================================== HEVC made H.264 (2.6) */
+
+static void hidden_fields(Buf *b, const char *what) { /* "a=1&b=2" as hidden inputs */
+    for (const char *p = what; p && *p;) {
+        const char *amp = strchr(p, '&');
+        size_t n = amp ? (size_t)(amp - p) : strlen(p);
+        char kv[120];
+        if (n && n < sizeof kv) {
+            memcpy(kv, p, n), kv[n] = '\0';
+            char *eq = strchr(kv, '=');
+            if (eq) *eq = '\0', H(b, "<input type=\"hidden\" name=\"%s\" value=\"%s\">", kv, eq + 1);
+        }
+        p = amp ? amp + 1 : NULL;
+    }
+}
+
+void convert_h264_buttons(Ctx *c, Buf *b, const char *what, int count) {
+    if (!is_admin(c) || count <= 0) return;
+    buf_puts(b, "<span class=\"media-h264-go\">");
+    ui_form(b, "media.convert", "inline");
+    buf_puts(b, "<input type=\"hidden\" name=\"h264\" value=\"1\">");
+    hidden_fields(b, what);
+    H(b, "<button class=\"btn\">%s</button>", T("On Hemma's computer"));
+    ui_form_end(b);
+    if (upload_can_convert()) { /* (wire.js: the browser's converter, its copies sent like an upload's) */
+        buf_puts(b, "<form class=\"inline media-h264-dev\" data-upload=\"/media/upload\" data-here=\"1\"");
+        upload_converter_attrs(b);
+        H(b, "><input type=\"hidden\" name=\"here\" value=\"%s\"><input type=\"hidden\" name=\"conv\" value=\"1\">%r"
+             "<button class=\"btn primary\">%s</button></form>",
+          what, c->me && upload_ram_chosen(c->me->id) ? "<input type=\"hidden\" name=\"ram\" value=\"1\">" : "",
+          T("On this device")); /* (copies in memory, or in Blobs, as the upload form's box says) */
+    }
+    buf_puts(b, "</span>");
+}
+
+void convert_h264_card(Ctx *c, Buf *b) {
+    if (!is_admin(c)) return;
+    const MediaIndex *ix = media_lib();
+    int films = 0, total = 0, *per = xcalloc((size_t)ix->nseries + 1, sizeof *per);
+    for (int k = 0; k < ix->nmovies; k++) films += convert_h264_need(&ix->files[ix->movies[k]]);
+    total = films;
+    for (int s = 0; s < ix->nseries; s++) {
+        const MediaSeries *se = &ix->series[s];
+        for (int k = se->first; k < se->first + se->count; k++) per[s] += convert_h264_need(&ix->files[ix->episodes[k]]);
+        total += per[s];
+    }
+    for (int k = 0; k < ix->nothers; k++) total += convert_h264_need(&ix->files[ix->others[k]]);
+    if (!total) { /* (what this device is making counts as done: its card stays while it works) */
+        free(per);
+        Buf run = {0};
+        if (upload_here_card(c, &run, 0)) {
+            ui_card(b, T("Play everywhere from HEVC"), NULL, NULL);
+            buf_put(b, run.p, run.len);
+            ui_card_end(b);
+        }
+        buf_free(&run);
+        return;
+    }
+    ui_card(b, T("Play everywhere from HEVC"), NULL, NULL);
+    upload_here_card(c, b, 0);
+    buf_puts(b, "<p>");
+    H(b,
+      TN(total,
+         "%d video is HEVC (x265): it plays on Apple devices, newer TVs and phones, and in browsers with HEVC hardware - "
+         "not everywhere.",
+         "%d videos are HEVC (x265): they play on Apple devices, newer TVs and phones, and in browsers with HEVC hardware - "
+         "not everywhere."),
+      total);
+    buf_puts(b, "</p><p class=\"muted media-small\">");
+    H(b, "%s ",
+      T("Hemma can make an H.264 copy of each, which plays everywhere. It takes the place of the HEVC copy Hemma made "
+        "(an original stays where it is), and it's about as big, or a little bigger."));
+    int cores = plat_cpu_count();
+    if (cores >= 8)
+        H(b, T("It's heavy work: Hemma's computer (%d cores) can do it, a few at a time - or open this page on a strong "
+               "computer and choose On this device."),
+          cores);
+    else
+        H(b, T("It's heavy work: on Hemma's computer (%d cores) one episode can take hours. A laptop or desktop is much "
+               "faster: open this page there and choose On this device - and keep the page open while it works."),
+          cores);
+    buf_puts(b, "</p><ul class=\"rows media-h264\">");
+    char what[64];
+    for (int s = 0; s < ix->nseries; s++) {
+        if (!per[s]) continue;
+        const MediaSeries *se = &ix->series[s];
+        H(b, "<li class=\"row\" id=\"media-h264-%X\"><a class=\"grow\" href=\"/media/series/%X?manage=1\">%s</a>"
+             "<span class=\"muted\">%d</span>",
+          se->id, se->id, se->title, per[s]);
+        snprintf(what, sizeof what, "series=%016llx", (unsigned long long)se->id);
+        convert_h264_buttons(c, b, what, per[s]);
+        buf_puts(b, "</li>");
+    }
+    if (films) {
+        H(b, "<li class=\"row\" id=\"media-h264-films\"><span class=\"grow\">%s</span><span class=\"muted\">%d</span>",
+          T("Movies"), films);
+        convert_h264_buttons(c, b, "films=1", films);
+        buf_puts(b, "</li>");
+    }
+    H(b, "<li class=\"row\" id=\"media-h264-all\"><b class=\"grow\">%s</b><span class=\"muted\">%d</span>", T("All of them"), total);
+    convert_h264_buttons(c, b, "", total);
+    buf_puts(b, "</li></ul>");
+    ui_card_end(b);
+    free(per);
 }

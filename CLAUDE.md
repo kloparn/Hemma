@@ -595,6 +595,25 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  <Movies|Films|Filmer>/<Title (Year)> or the film's folder; subtitles/pictures/copies go with their
                  video; what sits in a show's or film's own folder goes along; the rest (and episodes of no named
                  series) as chosen. File names never change. upload_safe_name: ':' -> ' -', no leading dots. THE SHOW'S FOLDER (show_home, 1.2.0): of each of its episodes' folders the shallowest that names the show (media_names_show), the one most episodes share (tie: the shorter); else the first episode's show folder unless that's the library folder itself or a Series folder; else a new <series folder>/<Show> - a copy at the top level once sent new seasons there.
+                 HERE BATCHES (2.6, convert.c HEVC MADE H.264): a plan {"here": "<scope>"} (here_plan; no files picked)
+                 = the library's HEVC videos in that scope as an upload whose every file is converted by the asking
+                 browser: UpFile.from = the video read, rel = convert_h264_paths' target, replace = the PUT may rename
+                 over Hemma's HEVC copy (never anything else), copy_guess = the original x 1.25; skipped when queued,
+                 being made or claimed ("Nothing there needs converting any more"). The answer's "remote" =
+                 [{u: /media/file/<id>?src=1, s: size, h264: true}] (stream.c: ?src=1 = that very file, not its playable
+                 copy nor 2.2's one-sound view - admins only); ?original=1 for such a file = skipped ({"skip":true}: the HEVC stays, it plays
+                 where it played). conv.js reads a remote file with synchronous Range XHRs (206 and the exact length or
+                 it fails; no answer at all = {net, at}: wire.js converter() waits the network out - down(), NET_WAIT - and
+                 starts the job again, not a try; NET_WAIT counts on until the job reads past `at`: a read failing at
+                 one place every time still ends) and calls conv_run(size, q, a, h264). Copies in memory when the admin ticked the upload form's "ram" box
+                 (upload_ram_chosen: the form gets ram=1). upload_here_card(c, b, video) = their own batch's card (render_batch)
+                 where it was started - the HEVC card (which stays while the batch's videos count as claimed), Manage, a
+                 video's page (video: only a batch making it; UpFile.video) - while open and 10 min after (or not yet stamped ended).
+                 ROOM: batch_hold() - a here batch holds only what's under way (being made, ready, being sent), at least
+                 its biggest still to come; ordinary ones all they have left (a whole series' guesses at once refused
+                 "All of them" on a disk with room). ?size= checks the copy's place is still there (gone: the HEVC copy
+                 it replaces, or the original it goes beside - removed or renamed on Manage) else {"skip":true}; two
+                 videos making one .web.mp4 go once.
   media/download.c + zip.c  DOWNLOADS (1.1; owner, 2026-10-21: grown-ups only - members and admins, never
                  children, guests or display accounts, media_grown_up; the version that plays everywhere; a season
                  or a series as ONE .zip): GET|HEAD /media/file/<id>?download=1 = the playable file +
@@ -661,8 +680,9 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
   media/convert.c "play everywhere": MKV -> <name>.web.mp4 next to the original (H.264 + AAC, faststart),
                  by av/conv.c (the same engine browsers run): MPEG-2 decoded, inverse-telecined/deinterlaced
                  (av/deint, chosen by sampling 4 windows) and re-encoded; H.264 copied; HEVC copied as 'hvc1'
-                 (hvcC arrays marked complete - what Safari needs; no HEVC decoder here, so it plays on Apple
-                 devices and browsers with HEVC hardware, not everywhere; Convert says "play in Safari too", the watch page
+                 (hvcC arrays marked complete - what Safari needs; copied by default, so it plays on Apple
+                 devices and browsers with HEVC hardware, not everywhere - H.264 from it only when an admin asks,
+                 "HEVC MADE H.264" below; Convert says "play in Safari too", the watch page
                  badge "Plays on newer devices"); AV1 copied as 'av01' (2.1; owner, 2026-10-29: an AV1 upload went up as
                  it was - "make this viable also as a convert"): av1C = MKV's CodecPrivate (the AV1CodecConfigurationRecord;
                  none = refused, saying so), a temporal delimiter leading a block dropped, the 'av01' brand in ftyp; no AV1
@@ -703,6 +723,29 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  remove orphaned *.conv.part. Lock order: g_pick, then upload.c's g_lock, then g_cl. Stop flag
                  + progress are atomics; change signatures are uint64_t (UBSan). Tests queue without threads
                  (convert_test_start/finish).
+                 HEVC MADE H.264 (2.6; owner, 2026-10-31: "a series i want to 'convert' ... a season of a show, whole
+                 show, episode or movie ... progressivly", "show which show needs to be converted still", "a heavy
+                 operation ... A user might have hemma on a strong pc", "pick 'on hemma device' or 'on logged device'";
+                 docs/decisions/0013): convert_h264_need(f) = its playable file is HEVC (and not queued/claimed);
+                 convert_h264_from = what's read (the original when it's an HEVC MKV/WebM/MP4/MOV, else the copy);
+                 convert_h264_paths = where it goes: Hemma's HEVC .web.mp4 is REPLACED (ConvertJob.replace: renamed
+                 over it), a lone .web.mp4 in place, an HEVC original gets a new .web.mp4 - an original is never
+                 written: a video standing for two versions of one name (2.5: x.mkv + an HEVC x.mp4) isn't offered (that
+                 MP4 is an original) until Keep only the most compatible version leaves one, and convert_file and the
+                 PUT's rename replace only a name ending .web.mp4 whatever the job says. "Do that by itself after each
+                 conversion" drops an H.264 job's original as any job's - but a job that read Hemma's own copy (a lone copy,
+                 or an original the converter can't read: src = dst) has none: convert_replace_original never deletes a
+                 .web.mp4 (it would be the new copy, the video's one file). ConvertJob.h264 -> AvConvJob.h264 (av/conv.c: HEVC decoded + re-encoded; AV1 refused).
+                 Room asked (h264_need): the source x 1.5, at least 50 MB a minute at 1080p by its pixels (copies came out 0.6-1.5 x the HEVC). Scopes (convert_h264_set, the media.convert fields with h264=1
+                 and the "here" plans alike): id=<16 hex> | series=<16 hex>[&season=N] | films=1 | "" = everything.
+                 convert_h264_buttons(c, b, what, count) = two forms: "On Hemma's computer" (media.convert h264=1)
+                 and, while av.wasm is built in (upload_can_convert), "On this device" = form[data-upload=/media/upload]
+                 [data-here] + upload_converter_attrs + hidden here=<what>, conv=1 - class media-h264-dev: shown only under
+                 html[data-ws=on], it needs wire.js; on a phone both share a line of their own (media.css); never inside a <p>. Shown by convert_h264_card (Library
+                 settings "Play everywhere from HEVC": per series with counts -> Manage, Movies, All of them; the
+                 heavy-work sentence by plat_cpu_count() >= 8), manage.c (the whole series card; a season's when only
+                 part of the series is HEVC) and the watch page (admins, that video). Tests: conv_test_hevc() /
+                 conv_test_hevc_mp4() (convert_test.c) make the fixtures.
   media/subs.c   SUBTITLES (1.2; owner, 2026-10-23: "all the shows that have subs to be able to give subs"): SRT ->
                  WebVTT (/media/sub/<id>.vtt) and which file belongs to which video. media_sub_tags(video, sub,
                  &MediaSubTags{lang, sdh, forced, n}) reads a name: sdh/cc/hi = SDH, forced/foreign = forced; a
@@ -1007,7 +1050,28 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  mpeg4 and libxvid with every tool 49-66 dB luma PSNR, 0 concealed - the IDCT is all that differs.
                  mpeg4_testenc.h = test streams (m4_*: flat intra MBs with a DC-prediction replica, vectors, escape-3
                  coefficients; mpeg4_test_block() = whole streams for conv seeds + avfuzz). DivX 3 (MS-MPEG4) is another
-                 codec: probe calls it "msmpeg4", never converted), ac3.* (full A/52 + E-AC-3 decoder (ETSI TS 102 366 Annex E: 1/2/3/6 blocks a frame,
+                 codec: probe calls it "msmpeg4", never converted), hevc.* (2.6; owner, 2026-10-31: 1284 HEVC copies
+                 played on newer devices only; decision 0013): HEVC Main + Main 10 (ITU-T H.265) - hevc.c = NALs
+                 (hvcC + length-prefixed blocks via hevc_config/hevc_decode, or Annex B pulled as frames are asked:
+                 pump), VPS ignored, SPS/PPS (VUI, scaling lists, tiles, WPP), slice headers (RPS incl. inter-RPS and
+                 long-term, weights), POC, reference marking, missing references made grey, bumping in display order,
+                 CRA/RASL; hevc_ctu.c = CABAC (contexts hv_init[3][154]; WPP saves after a row's 2nd CTB; dependent
+                 slices carry them), the coding tree (CU/PU/TU, AMP, PCM, cu_qp_delta, residuals with sign hiding,
+                 transform skip, bypass), intra modes/MPM, merge (pruned by AVAILABILITY as HM/FFmpeg, not by
+                 what was pruned) + AMVP + TMVP; hevc_dsp.c = transforms (DCT 4-32, DST), intra prediction (smoothing,
+                 strong), 8/4-tap MC + weighted prediction, deblocking, SAO (PCM/bypass samples kept when the SPS
+                 says). HevcFrame: 8-bit y/u/v (9/10-bit rounded), and y16/u16/v16 at the stream's own depth (8, 9 or 10 - Main 10
+                 allows 9: the fuzzer made some), cropped to the conformance window, pts. A cu_qp_delta outside 7.4.9.14's range
+                 (a damaged stream) is clamped into it: further out it took the QP below zero (FFmpeg drops the slice).
+                 hevc_unsupported() names what it refuses (not 4:2:0, > 10 bits, unequal depths, field-coded
+                 interlace, range/multilayer/SCC extensions). HV_MAX_PIXELS 720x576 under FUZZING_BUILD_MODE.
+                 CHECKED vs FFmpeg n8.0 (HEMMA_TEST_HEVC=<file> [_N] [_REF=<yuv>] ./build/test hevc_real): 24
+                 x265/kvazaar clips with every tool and 3 real files (8/10-bit up to 1080p) bit-exact, whole
+                 episodes (32,188 and 33,435 frames) identical. FFmpeg's own limits met on the way: it can't decode
+                 kvazaar's tiles + WPP together, and restores only half a PCM CU's chroma after SAO (HW_PCM_LF keeps
+                 such tests apart; we follow the spec). ~45-55 fps 1080p per PC core. hevc_testenc.h = a test writer
+                 (hevc_test_stream: random syntax of every element - HW_QP adds QP deltas, a third out of range -, or known samples:
+                 PCM, moves, averages, I0 P2 B1 P4 B3 ..., at 8, 9 or 10 bits); ac3.* (full A/52 + E-AC-3 decoder (ETSI TS 102 366 Annex E: 1/2/3/6 blocks a frame,
                  Ac3Info.samples; spectral extension; AHT with ac3_aht.h = the spec's VQ tables - FFmpeg's
                  hebap-4 table lacks the spec's row 0; mixing metadata's Lo/Ro levels; independent substream 0
                  only, the rest AC3_SKIP; enhanced coupling / half rates AC3_ERR_UNSUPPORTED): native/WAV-order/
@@ -1034,7 +1098,10 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  Feed mpeg2 (and mpeg4) the track's CodecPrivate first (an AVI's V_MS/VFW/FOURCC: past its
                  BITMAPINFOHEADER), then each block with its pts; mpeg2_reset()/mpeg4_reset()/ac3_reset() after mkv_seek().
                  conv.c re-encodes MPEG-4 progressive (DEINT_PASS), its track on a 90 kHz clock timed by each picture's
-                 pts (place_of; the last one and those without a time: the median gap of the first pictures, usual_gap). h264enc.* (Constrained
+                 pts (place_of; the last one and those without a time: the median gap of the first pictures, usual_gap).
+                 HEVC the same way, but only with AvConvJob.h264 (2.6: the picture must end up H.264 - HEVC decoded
+                 (hevc_config with the CodecPrivate's hvcC; 10-bit comes as 8-bit planes too), AV1 refused "can only copy so far",
+                 never as_is; wasm conv_run's 4th argument); without it HEVC is copied as ever. h264enc.* (Constrained
                  Baseline encoder, bit-exact vs Chrome; annexb=false + h264enc_avcc() for MP4; ~180 fps SD
                  per PC core, ~7.6 fps per Pi 3 core). mp4.* (faststart via reserved moov, or fragmented), flac.*, deint.* (IVTC / yadif / bob /
                  pass + analysis), aac.* (AAC-LC encoder, 48 kHz stereo 160 kbit/s for the converter;
@@ -1063,7 +1130,7 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  forced, data: ArrayBuffer (transferred), idx}]; conv_subs_only(size) = av_subtitles alone, posted
                  as {subsOnly, subs, pics} - 1.3, a video that stays behind), which
                  build.ps1/Makefile compile to $B/av.wasm (zig cc -target
-                 wasm32-wasi -mexec-model=reactor -msimd128; ~370 KB, imports only 4 hemma.* functions,
+                 wasm32-wasi -mexec-model=reactor -msimd128; ~780 KB in 2.6, ~300 KB gzipped as sent, imports only 4 hemma.* functions,
                  embedded as /static/av.wasm). Measured on a DVD episode: wasm ~75% of native speed (374 s
                  vs 282 s on one core), video bit-identical to native, AAC differs only by float rounding.
                  conv.c bounds samples per track (2M; with a stated length 300 pictures / 120 sound blocks
@@ -1119,7 +1186,9 @@ tools/avfuzz.c   faster targets, one part alone each (issue #50): -DAVFUZZ_MKV t
                  frames; 1.3), -DAVFUZZ_MPEG2 the MPEG-2 decoder (a raw
                  stream in chunks of any size), -DAVFUZZ_MPEG4 (2.5) the MPEG-4 Part 2 decoder (a VOP a block, whole or in
                  pieces, block times in or out of order; FUZZING_BUILD_MODE caps its pictures at 720x576 - ~480 inputs/s
-                 in WSL); an input's first byte picks options (layout, chunking, a reset).
+                 in WSL); -DAVFUZZ_HEVC (2.6) the HEVC decoder (Annex B in pieces of any size, or its NAL units as a container's
+                 blocks after an hvcC made of its parameter sets; times reversed; a reset); an input's first byte picks
+                 options (layout, chunking, a reset).
                  -DAVFUZZ_PGS (a .sup) and -DAVFUZZ_VOBSUB (the .idx text, a NUL, the .sub) (1.2): opened, every cue
                  checked against subpic.h's promises (abort), drawn (2M pixels an input) and made a PNG.
                  Measured in WSL: ~1.3M inputs a minute (mkv), 210k (ac3), 310k (mpeg2), ~200k (pgs), ~90k
@@ -1131,11 +1200,11 @@ tools/avfuzz.c   faster targets, one part alone each (issue #50): -DAVFUZZ_MKV t
                  book.MP3); aborts on text that isn't clean UTF-8, chapters out of order, a cover past the end or without its
                  JPEG/PNG bytes there. Seeds: HEMMA_FUZZ_RAW=build/fuzz-raw build/test audiotags_fuzz_seeds (~40-50k inputs/s;
                  50 min with 8 processes before 1.6 found one bug, in its own text check)
-tools/ci/fuzz.sh TARGET [S] [JOBS]: builds + runs conv | mkv | mp4 | ac3 | dts | mpeg2 | mpeg4 | pgs | vobsub | tags under ASan + UBSan from the
+tools/ci/fuzz.sh TARGET [S] [JOBS]: builds + runs conv | mkv | mp4 | ac3 | dts | mpeg2 | mpeg4 | hevc | pgs | vobsub | tags under ASan + UBSan from the
                  tree's top after `make build/test` (seeds made when missing; pgs/vobsub's from `HEMMA_FUZZ_RAW=
                  build/fuzz-raw build/test subpic_fuzz_seeds`), corpus in build/fuzz-corpus-T, findings in
                  build/fuzz-found-T (exit 1); JOBS > 1 = libFuzzer -fork, carrying on after a finding. Used by
-                 build.yml's fuzz job (conv, 90 s), fuzz.yml (NIGHTLY 01:17 UTC: the ten side by side on their own
+                 build.yml's fuzz job (conv, 90 s), fuzz.yml (NIGHTLY 01:17 UTC: the eleven side by side on their own
                  runners, 170 min each with every core, the corpus cached night to night - owner, 2026-10-21:
                  "about 3 hours"; a finding fails the job and keeps the files as an artifact) and local.sh
 tests/           test.h (framework), runner.c, harness.* (boot the core without a server; th_boot_in(dir) for a
@@ -1243,7 +1312,7 @@ tests/browser/   CI-ONLY Node (owner, 2026-10-21: "The CI can use node"; nothing
                  web/*.js, run from the repo top (`npm run lint`). Locally: build (./build.ps1 build + test, or
                  make), then `cd tests/browser && npm ci && npx playwright test`. Test-only modules' words etc.:
                  see Tests. CI jobs: build.yml `browser` and `lint`
-tools/ci/local.sh  CI's Linux jobs locally: test | asan | fuzz [S] [conv|mkv|mp4|ac3|dts|mpeg2|mpeg4|pgs|vobsub|tags], on a fresh copy of the tree (stdin tar,
+tools/ci/local.sh  CI's Linux jobs locally: test | asan | fuzz [S] [conv|mkv|mp4|ac3|dts|mpeg2|mpeg4|hevc|pgs|vobsub|tags], on a fresh copy of the tree (stdin tar,
                  --tar FILE, or this checkout) in /dev/shm, each job's build/ kept for the next run (only
                  what changed compiles); never deletes. Windows: ./build.ps1 ci [job] (WSL; $env:HEMMA_WSL)
 deploy/          avahi-hemma.service (2.0): install-pi.sh writes it to /etc/avahi/services/hemma.service (Hemma's port for
@@ -1776,7 +1845,11 @@ any submit, socket or not) · `form[data-upload="/base"]` (files: POST base/plan
 to base/<batch>/<i>?at=<offset>, resuming from GET base/<batch>/<i>; a todo entry `[i, at, end]` sends
 only the bytes before `end`; `{i, f}` = convert file f here first (web/conv.js Workers, half the cores,
 max 8, as far ahead as the room slider allows), POST ?size= / ?original=1, then PUT the result as entry i;
-`{i, f, subs: 1}` = only read f's subtitles and send those (1.3); ONE file at a time, whatever is ready first
+`{i, f, subs: 1}` = only read f's subtitles and send those (1.3); `form[data-here]` (2.6) = no files of
+its own: the plan's `remote` list (library videos, read from Hemma by Range) is converted with `h264` and sent back - a toast
+when the browser can't convert, "keep this page open" while it works; a `reload` op (a new Hemma, a changed asset
+in dev mode) that comes while an upload runs waits for its end (reloadDue: the "leave the page?" question froze the page
+and its converting till someone answered - a night's work once); ONE file at a time, whatever is ready first
 (finished copies, then plain entries in order - 1.3); the `ram` box keeps copies in memory, sent in pieces
 (?at=&end=; form[data-part] = the piece size, tests only); a `conv`
 form field is dropped when the browser can't run WebAssembly; the server renders progress; with a
@@ -2005,7 +2078,7 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
 ## Where things stand
 
 What each version changed is [CHANGELOG.md](CHANGELOG.md); why the big choices are what they are is
-[docs/decisions](docs/decisions/README.md) (0001-0010); how it fits together for humans is
+[docs/decisions](docs/decisions/README.md) (0001-0013); how it fits together for humans is
 [ARCHITECTURE.md](ARCHITECTURE.md) and [CONTRIBUTING.md](CONTRIBUTING.md). This file keeps the working rules.
 (Issue #51, 2026-10-21: the dated Status diary that lived here - every version's work, review passes -
 is the CHANGELOG's now.) 1.0.0 (2026-10-21) = the outside reviews' issues (#3-#103) and the planned
@@ -2107,6 +2180,13 @@ nowhere: Solsidan S06E03-04 + S07) and TWO FILES OF ONE NAME ARE ONE VIDEO (owne
 pickup the arhur episodes?" - library.c same_stem/lone_version: "x.mkv" + "x.mp4" in one folder lasting as long
 (media_copy_lasts) pair like a copy made here: the more compatible (media_compat_cost) becomes the MF_WEBCOPY the other
 streams through, Manage/the watch page say "Another version", Keep only the most compatible version deletes the other).
+2.6.0 (branch feat/convert-here; owner, 2026-10-31: "select a series i want to 'convert' ... a season of a show, whole show,
+episode or movie ... progressivly", "pick 'on hemma device' or 'on logged device'", and the HEVC decoder in the same release:
+"smash the 2.7 and 2.6 toghether") = HEVC MADE H.264: our own HEVC decoder (av/hevc*.c, bit-exact vs FFmpeg) and, when an
+admin asks - Library settings "Play everywhere from HEVC" (what's left, per series), Manage (series, season), a video's page -
+an H.264 copy made on Hemma's computer (the queue) or on the admin's own device (a "here" upload batch reading the library
+video from Hemma); it replaces Hemma's HEVC copy, never an original. Copying HEVC stays the default (decision 0013). A big PR
+for the ~1,500-line aim: the decoder (~3,100 lines) and its tests are most of it, the owner's choice of one release.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
@@ -2116,6 +2196,9 @@ Keep new work within what's been measured:
 - The converter: a 22-minute DVD episode ~282 s on one PC core natively, ~374 s as WebAssembly; video
   bit-identical native vs wasm, AAC differs only by float rounding; copies 190-480 MB per episode vs ~1 GB
   originals; a 7-season show (171 files) converted with 0 failures; E-AC-3 ~420× real time per PC core.
+  HEVC -> H.264 (2.6): 1080p 10-bit ~1.6-1.8 s a second of video per PC core, native or as WebAssembly in Node (a
+  22-min Friends episode ~36 min); ~36 MB a minute (about the HEVC's size), 39.6 dB; HEVC decoding alone ~45-55 fps.
+  Peak memory 80-100 MB a 1080p job (glibc, 3 sources) - a Pi 3's 2 workers ~200 MB of its 1 GB. Copies 0.6-1.5x the HEVC.
 - The program: ~3.3 MB for the Pi (0.25.0 added ~300 KB of translations); the suite ~10 s on a 20-thread PC.
 
 Owner decisions not in docs/decisions: the Network page's changes (device edits, owners, Wake-on-LAN, the
@@ -2128,6 +2211,6 @@ Next ideas: builder-style UI helpers / less raw HTML (owner asked), calmer home 
 on the wall (ticking the shopping list - needs .display actions), more wall blocks (weather is out: LAN only),
 MKV→MP4 remux on the fly for Safari/iPhone (planned as 1.2, owner 2026-10-21: a "virtual MP4" over the MKV,
 Dolby passed through for Apple devices; live AC-3 -> AAC after), "Open in VLC" links, router integration, DLNA, API tokens for
-scripts, "tune in" on the TV's browser via a QR code, more video formats as files need them (HEVC decoding,
-AV1 decoding for older Apple devices, interlaced XviD and GMC, Vorbis sound, TrueHD, AVI files - each with its fuzz
+scripts, "tune in" on the TV's browser via a QR code, more video formats as files need them (AV1
+decoding for older Apple devices and H.264 from AV1 - the same two buttons as HEVC's -, interlaced XviD and GMC, Vorbis sound, TrueHD, AVI files - each with its fuzz
 seed: docs/decisions/0006).

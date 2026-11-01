@@ -22,7 +22,7 @@ part of the file is handled on its own:
 | Picture | In the copy |
 |---|---|
 | H.264 (x264, AVC) | Copied as it is |
-| HEVC (x265, H.265), 8- or 10-bit | Copied as it is, into an MP4. Plays on Apple devices (Safari) and on phones, computers and TVs that decode HEVC themselves. The video's page says *Plays on newer devices* |
+| HEVC (x265, H.265), 8- or 10-bit | Copied as it is, into an MP4. Plays on Apple devices (Safari) and on phones, computers and TVs that decode HEVC themselves. The video's page says *Plays on newer devices*. Made into H.264, which plays everywhere, when you ask (2.6 - see *HEVC made H.264* below) |
 | AV1, 8- or 10-bit | Copied as it is, into an MP4. Plays in Chrome, Edge and Firefox, on Android phones and most TVs from the last few years, and in Safari on Apple's newest devices (iPhone 15 Pro and later, Macs and iPads with M3 or later). The video's page says *Plays on newer devices* |
 | MPEG-2 (DVD rips), MPEG-1 | Made into H.264, with the interlacing (the DVD's combed lines) fixed |
 | MPEG-4 Part 2: XviD, DivX 4 and later (2.5) | Made into H.264. B-frames, quarter-pixel motion and both quantisers are read; interlaced XviD and XviD with *global motion* (GMC) not yet |
@@ -63,6 +63,25 @@ a film. Making new sound takes a couple of minutes per episode on a Pi. Re-encod
 is the heavy part: about five minutes per episode on one PC core, and over an hour on a Pi 3. Upload
 DVD rips from a computer and let it do the work.
 
+### HEVC made H.264 (2.6)
+
+An HEVC copy plays on most devices from the last few years, but not on every one (**Watch → Library
+settings** shows which of yours play what). Hemma can make an H.264 copy instead, which plays everywhere:
+**Watch → Library settings → Play everywhere from HEVC** lists every series with HEVC episodes, the
+films, and *All of them*; a series' **Manage** offers the whole series or a season, and a video's own page
+that one video. Each has two buttons:
+
+- **On Hemma's computer:** Hemma's own queue does it, a few at a time. Good when Hemma runs on a strong PC.
+- **On this device:** the browser you're using does it - it reads the video from Hemma, makes the copy and
+  sends it back. Keep the page open until it's done.
+
+Decoding HEVC and encoding H.264 is the heaviest work Hemma does: a 22-minute 1080p episode takes about 35
+minutes of one PC core - in a browser too - and a computer works on several at once (up to 8 in a browser); on
+a Raspberry Pi it takes many hours. The new copy takes the place of the HEVC
+copy Hemma made, or comes beside an HEVC original; an original is never written over. (With *Do that by itself
+after each conversion* ticked, a copy made on Hemma's computer takes its original's place, as any conversion's
+does.) Its size is near the HEVC's: from about two thirds of it to half as much again in the episodes tried.
+
 ## Reading a file name
 
 What the usual words in a release's name mean for Hemma:
@@ -70,7 +89,7 @@ What the usual words in a release's name mean for Hemma:
 | In the name | It's | Hemma |
 |---|---|---|
 | x264, H.264, AVC | The picture | Plays everywhere |
-| x265, HEVC, H.265, 10bit | The picture | Copied: plays on newer devices |
+| x265, HEVC, H.265, 10bit | The picture | Copied: plays on newer devices. Made into H.264 when you ask (2.6) |
 | AV1 | The picture | Copied: plays on newer devices |
 | VP9 | The picture | Plays in Chrome and Edge as it is, not converted |
 | XviD, DivX | The picture (MPEG-4 Part 2) | Made into H.264 (2.5) |
@@ -92,7 +111,8 @@ What the usual words in a release's name mean for Hemma:
   losing quality) and Hemma converts it. The same goes for an AVI with XviD or DivX in it.
 - **DivX 3** (an older codec than XviD), XviD that is interlaced or uses *global motion* (GMC), **VC-1**, **VP9** and
   **WMV** pictures, and AV1 made into H.264 (for older
-  iPhones, iPads and Macs: Hemma copies AV1, it doesn't decode it).
+  iPhones, iPads and Macs: Hemma copies AV1, it doesn't decode it). HEVC that is 4:2:2, 4:4:4 or 12-bit
+  (professional cameras, not releases) is copied but can't be made H.264 yet.
 - **Dolby TrueHD** and uncompressed (PCM) sound, when the file has no other track.
 
 Such a video still goes into the library as it is and plays wherever the browser can play it. Its

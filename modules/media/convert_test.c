@@ -115,7 +115,17 @@ static void eb_small(Buf *b, uint32_t id, unsigned v) { /* v < 256 */
 /* MPEG-2 video and AC-3 sound in Matroska ("webm" doctype: in WebM), a minute long, `size`
    bytes: what the probe makes of a DVD rip - nothing a converter could read. Also used by
    upload_test.c. */
+static void rip_of(const char *root, const char *rel, const char *doctype, int64_t size, const char *vcodec, const char *acodec);
 void conv_test_rip(const char *root, const char *rel, const char *doctype, int64_t size) {
+    rip_of(root, rel, doctype, size, "V_MPEG2", "A_AC3");
+}
+
+/* (2.6) an HEVC + AAC Matroska file, a minute long, as the probe sees an x265 release. Also used by upload_test.c. */
+void conv_test_hevc(const char *root, const char *rel, int64_t size) {
+    rip_of(root, rel, "matroska", size, "V_MPEGH/ISO/HEVC", "A_AAC");
+}
+
+static void rip_of(const char *root, const char *rel, const char *doctype, int64_t size, const char *vcodec, const char *acodec) {
     Buf b = {0};
     size_t h = eb_open(&b, 0x1A45DFA3);
     eb_str(&b, 0x4282, doctype);
@@ -129,7 +139,7 @@ void conv_test_rip(const char *root, const char *rel, const char *doctype, int64
     for (int i = 7; i >= 0; i--) buf_putc(&b, (char)(u >> (8 * i)));
     eb_close(&b, info);
     size_t tracks = eb_open(&b, 0x1654AE6B);
-    static const char *const codec[] = {"V_MPEG2", "A_AC3"};
+    const char *const codec[] = {vcodec, acodec};
     for (unsigned t = 0; t < 2; t++) {
         size_t e = eb_open(&b, 0xAE);
         eb_small(&b, 0xD7, t + 1); /* track number */
@@ -244,14 +254,19 @@ static bool mp4_put_at(void *ctx, int64_t off, const void *p, size_t n) {
     fflush(f);
     return fseek(f, 0, SEEK_END) == 0 && ok;
 }
-static void made_copy(const char *root, const char *rel) {
-    char path[1024];
+static void copy_in(const char *root, const char *rel, bool hevc) {
+    char path[1024], dir[1024];
     snprintf(path, sizeof path, "%s/%s", root, rel);
+    str_copy(dir, sizeof dir, path);
+    *strrchr(dir, '/') = '\0';
+    dir_make(dir);
     FILE *f = file_open(path, "wb");
     Mp4Out out = {f, mp4_put, mp4_put_at};
     Mp4 *m = mp4_new(&out, 0, 4096);
     static const uint8_t cfg[] = {1, 0x42, 0, 0x1E, 0xFF, 0xE0, 0};
-    Mp4Track t = {.codec = MP4_H264, .timescale = 1000, .config = cfg, .config_len = sizeof cfg, .width = 64, .height = 48};
+    static const uint8_t hvcc[23] = {1, 1, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 0x5D, 0xF0, 0, 0xFC, 0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 0};
+    Mp4Track t = {.codec = hevc ? MP4_HEVC : MP4_H264, .timescale = 1000, .config = hevc ? hvcc : cfg,
+                  .config_len = hevc ? sizeof hvcc : sizeof cfg, .width = 64, .height = 48};
     mp4_add_track(m, &t);
     mp4_begin(m);
     static const uint8_t frame[16] = {0, 0, 0, 12};
@@ -260,6 +275,9 @@ static void made_copy(const char *root, const char *rel) {
     mp4_free(m);
     fclose(f);
 }
+static void made_copy(const char *root, const char *rel) { copy_in(root, rel, false); }
+/* (2.6) an HEVC MP4 a minute long: Hemma's 'hvc1' copy, or an original. Also used by upload_test.c. */
+void conv_test_hevc_mp4(const char *root, const char *rel) { copy_in(root, rel, true); }
 
 static bool there(const char *root, const char *rel) {
     char path[1024];
@@ -376,6 +394,160 @@ TEST(convert_never_writes_over_a_copy) {
     CHECK(!convert_file(&j)); /* (nothing a converter can read in there) */
     CHECK(!path_stat(part, NULL, NULL, NULL)); /* a failed one leaves nothing behind */
     CHECK(!path_stat(dst, NULL, NULL, NULL));
+}
+
+static const MediaFile *by_rel(const char *rel) {
+    const MediaIndex *ix = media_lib();
+    for (int i = 0; i < ix->nfiles; i++)
+        if (str_eq(ix->files[i].rel, rel)) return &ix->files[i];
+    return NULL;
+}
+
+/* (2.6) HEVC made H.264: what each video is made from and where its copy goes - Hemma's HEVC copy replaced, a copy alone
+   replaced where it is, an HEVC original given a new one, H.264 left alone - and the queue by season and the films; the
+   card and Manage offer both ways */
+TEST(convert_makes_hevc_h264_where_it_belongs) {
+    th_boot();
+    int adam = make_admin("Adam");
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    conv_test_hevc(root, "Series/H/Season 1/H.S01E01.mkv", 3000); /* an original, and Hemma's 'hvc1' copy of it */
+    conv_test_hevc_mp4(root, "Series/H/Season 1/H.S01E01.web.mp4");
+    conv_test_hevc_mp4(root, "Series/H/Season 1/H.S01E02.web.mp4"); /* a copy alone (its original went) */
+    conv_test_hevc_mp4(root, "Series/H/Season 2/H.S02E01.mp4");     /* an HEVC original, no copy */
+    copy_in(root, "Series/H/Season 2/H.S02E02.mp4", false);         /* H.264: nothing to do */
+    conv_test_hevc(root, "Movies/F (2020)/F (2020).mkv", 3000);
+    setting_set("media.roots", root);
+    media_scan_sync();
+    char src[1024], dst[1024];
+    bool replace = false;
+    const MediaFile *e1 = by_rel("Series/H/Season 1/H.S01E01.mkv"), *e2 = by_rel("Series/H/Season 1/H.S01E02.web.mp4"),
+                    *s1 = by_rel("Series/H/Season 2/H.S02E01.mp4"), *film = by_rel("Movies/F (2020)/F (2020).mkv");
+    CHECK(e1 && e2 && s1 && film);
+    if (!e1 || !e2 || !s1 || !film) {
+        th_halt();
+        return;
+    }
+    CHECK(convert_h264_paths(e1, src, sizeof src, dst, sizeof dst, &replace));
+    CHECK(str_ends(src, "/H.S01E01.mkv") && str_ends(dst, "/H.S01E01.web.mp4") && replace);
+    CHECK(convert_h264_paths(e2, src, sizeof src, dst, sizeof dst, &replace));
+    CHECK(str_ends(src, "/H.S01E02.web.mp4") && str_eq(src, dst) && replace);
+    CHECK(convert_h264_paths(s1, src, sizeof src, dst, sizeof dst, &replace));
+    CHECK(str_ends(src, "/H.S02E01.mp4") && str_ends(dst, "/H.S02E01.web.mp4") && !replace);
+    CHECK(!convert_h264_need(by_rel("Series/H/Season 2/H.S02E02.mp4")));
+    const MediaFile *set[8];
+    CHECK_INT(convert_h264_set("", set, 8), 4);
+    CHECK_INT(convert_h264_set("films=1", set, 8), 1);
+    char what[80];
+    snprintf(what, sizeof what, "series=%016llx&season=2", (unsigned long long)e1->series);
+    CHECK_INT(convert_h264_set(what, set, 8), 1);
+    CHECK_INT(convert_h264_set("nonsense=1", set, 8), 0);
+
+    const char *page = th_page(adam, "/media/settings");
+    CHECK_HAS(page, "4 videos are HEVC (x265)");
+    CHECK_HAS(page, "<input type=\"hidden\" name=\"h264\" value=\"1\">");
+    CHECK_HAS(page, "id=\"media-h264-films\"");
+    CHECK_HAS(page, "id=\"media-h264-all\"");
+    char url[96];
+    snprintf(url, sizeof url, "/media/series/%016llx?manage=1", (unsigned long long)e1->series);
+    page = th_page(adam, url);
+    CHECK_HAS(page, "3 episodes are HEVC");
+    CHECK_HAS(page, "2 episodes of these are HEVC"); /* season 1's card: part of the series */
+    CHECK(!strstr(page, "<p class=\"media-h264-line\">")); /* (a <form> inside a <p> closes it) */
+    snprintf(url, sizeof url, "/media/watch/%016llx", (unsigned long long)film->id);
+    CHECK_HAS(th_page(adam, url), "Its picture is HEVC: an H.264 copy plays everywhere");
+    pref_set(adam, "media.upload_ram", "1"); /* "On this device" keeps its copies in memory as the upload form's box says */
+    page = th_page(adam, "/media/settings");
+    if (strstr(page, "data-here")) CHECK_HAS(page, "<input type=\"hidden\" name=\"ram\" value=\"1\">");
+    int eva = th_person("Eva"); /* a member: none of it */
+    CHECK(!strstr(th_page(eva, url), "Its picture is HEVC"));
+    CHECK(!strstr(th_page(eva, "/media/settings"), "name=\"h264\""));
+
+    snprintf(what, sizeof what, "h264=1&series=%016llx&season=1", (unsigned long long)e1->series);
+    uint64_t id1 = e1->id, id2 = e2->id, id3 = s1->id;
+    ThResult r = th_act(adam, "media.convert", what);
+    CHECK_HAS(r.toast, "Converting 2 videos");
+    CHECK(convert_queued(id1) && convert_queued(id2) && !convert_queued(id3));
+    r = th_act(adam, "media.convert", "h264=1&films=1");
+    CHECK_HAS(r.toast, "Converting 1 video");
+    th_halt();
+}
+
+/* (2.6) "Do that by itself after each conversion" with HEVC made H.264: an original whose HEVC copy was replaced goes, as
+   after any conversion - but a copy alone (its original went long ago) is made from itself, and the original-dropping
+   must never take it for an original: it would delete the new copy, the video's only file */
+TEST(convert_h264_of_a_lone_copy_keeps_it_when_originals_go_by_themselves) {
+    th_boot();
+    int adam = make_admin("Adam");
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    conv_test_hevc(root, "Series/L/Season 1/L.S01E01.mkv", 3000); /* an original and Hemma's HEVC copy */
+    conv_test_hevc_mp4(root, "Series/L/Season 1/L.S01E01.web.mp4");
+    conv_test_hevc_mp4(root, "Series/L/Season 1/L.S01E02.web.mp4"); /* a copy alone */
+    setting_set("media.roots", root);
+    media_scan_sync();
+    CHECK(th_act(adam, "media.drop_auto", "on=1").ok);
+    media_test_free_space(1LL << 40);
+    const MediaFile *e1 = by_rel("Series/L/Season 1/L.S01E01.mkv"), *e2 = by_rel("Series/L/Season 1/L.S01E02.web.mp4");
+    CHECK(e1 && e2);
+    if (!e1 || !e2) {
+        th_halt();
+        return;
+    }
+    char what[80];
+    snprintf(what, sizeof what, "h264=1&series=%016llx", (unsigned long long)e1->series);
+    ThResult r = th_act(adam, "media.convert", what);
+    CHECK_HAS(r.toast, "Converting 2 videos");
+    CHECK(started("L S01E01"));
+    convert_test_finish(true);
+    made_copy(root, "Series/L/Season 1/L.S01E01.web.mp4"); /* (its H.264 copy in the HEVC one's place) */
+    convert_tick(now_ms());
+    CHECK(!there(root, "Series/L/Season 1/L.S01E01.mkv")); /* the original goes, as it would after any conversion */
+    CHECK(there(root, "Series/L/Season 1/L.S01E01.web.mp4"));
+    CHECK(started("L S01E02"));
+    convert_test_finish(true);
+    made_copy(root, "Series/L/Season 1/L.S01E02.web.mp4");
+    convert_tick(now_ms());
+    CHECK(there(root, "Series/L/Season 1/L.S01E02.web.mp4")); /* the new copy - the video's one file - stays */
+    media_test_free_space(-1);
+    th_halt();
+}
+
+/* (2.6) Two versions of one name (2.5: "x.mkv" beside "x.mp4", the one that plays in more places standing for both) with
+   an HEVC MP4: that MP4 is an original, never written - not offered until Keep only the most compatible version leaves one,
+   and a job told to replace anything but a .web.mp4 refuses */
+TEST(convert_never_makes_h264_over_another_version) {
+    th_boot();
+    make_admin("Adam");
+    char root[512];
+    str_copy(root, sizeof root, test_tmpdir());
+    conv_test_hevc(root, "Series/V/Season 1/V.S01E01.mkv", 3000);
+    conv_test_hevc_mp4(root, "Series/V/Season 1/V.S01E01.mp4");
+    setting_set("media.roots", root);
+    media_scan_sync();
+    const MediaFile *a = by_rel("Series/V/Season 1/V.S01E01.mkv"), *b = by_rel("Series/V/Season 1/V.S01E01.mp4");
+    CHECK(a && b && (a->web == b->id || b->web == a->id)); /* (one video: they pair) */
+    if (!a || !b) {
+        th_halt();
+        return;
+    }
+    const MediaFile *shown = a->web ? a : b;
+    CHECK(media_playable(shown) != shown);
+    CHECK(!convert_h264_need(shown));
+    const MediaFile *set[4];
+    CHECK_INT(convert_h264_set("", set, 4), 0);
+
+    ConvertJob j;
+    memset(&j, 0, sizeof j);
+    snprintf(j.src, sizeof j.src, "%s/Series/V/Season 1/V.S01E01.mkv", root);
+    snprintf(j.dst, sizeof j.dst, "%s/Series/V/Season 1/V.S01E01.mp4", root);
+    j.h264 = j.replace = true;
+    int64_t before = 0, after = 0;
+    CHECK(path_stat(j.dst, &before, NULL, NULL));
+    CHECK(!convert_file(&j));
+    CHECK_HAS(j.err, "copy is there already");
+    CHECK(path_stat(j.dst, &after, NULL, NULL) && after == before);
+    th_halt();
 }
 
 /* Subtitles taken out of a file go next to it, named so the library pairs them with the video and

@@ -44,6 +44,9 @@ Your movie and series drive as a little cinema.
   plays silently, DTS sound no browser plays) into a copy that does, keeping the file's subtitles as
   .srt files, and puts HEVC films into a file Safari on iPhone, iPad and Mac can play - and AV1 ones into
   one the newest Apple devices play too ([which videos](video-formats.md)).
+- **HEVC made H.264.** HEVC (x265) videos can get an H.264 copy that plays on every device: a whole series, a
+  season, one episode or film, or everything at once - on Hemma's own computer, or on the computer you're using
+  (it reads the video from Hemma, converts it and sends the copy back). Library settings lists what still needs it.
 - **What your devices play.** Each phone, computer and TV that opens Watch tells Hemma which kinds of video it can
   play. Library settings then says how many videos play on every one of your devices - not just "everywhere", which
   counts every device there is - lists your devices with what each can't play, and says why the rest doesn't play

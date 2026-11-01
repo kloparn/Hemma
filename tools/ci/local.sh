@@ -8,7 +8,7 @@
 #   bash tools/ci/local.sh test       make + make test with the system compiler     (CI: test)
 #   bash tools/ci/local.sh asan       the suite under ASan + UBSan with clang         (CI: sanitizers)
 #   bash tools/ci/local.sh fuzz [S] [T]  libFuzzer for S s (90) over T: conv (the converter, as CI's fuzz
-#                                     job), mkv, ac3, dts, mpeg2, mpeg4, pgs, vobsub or tags (one part alone, as the
+#                                     job), mkv, ac3, dts, mpeg2, mpeg4, hevc, pgs, vobsub or tags (one part alone, as the
 #                                     nightly) - tools/ci/fuzz.sh
 #
 # The tree to test: a tar on stdin (git ls-files -co --exclude-standard | tar -cf - -T -), else
@@ -27,11 +27,11 @@ while [ $# -gt 0 ]; do
     case $1 in
     --tar) tarfile=$2; shift 2 ;;
     [0-9]*) secs=$1; shift ;;
-    conv | mkv | mp4 | ac3 | dts | mpeg2 | mpeg4 | pgs | vobsub | tags) target=$1; shift ;;
+    conv | mkv | mp4 | ac3 | dts | mpeg2 | mpeg4 | hevc | pgs | vobsub | tags) target=$1; shift ;;
     *) echo "unknown argument $1"; exit 2 ;;
     esac
 done
-case $job in test | asan | fuzz) ;; *) echo "usage: bash tools/ci/local.sh test | asan | fuzz [seconds] [conv|mkv|mp4|ac3|dts|mpeg2|mpeg4|pgs|vobsub|tags] [--tar FILE]"; exit 2 ;; esac
+case $job in test | asan | fuzz) ;; *) echo "usage: bash tools/ci/local.sh test | asan | fuzz [seconds] [conv|mkv|mp4|ac3|dts|mpeg2|mpeg4|hevc|pgs|vobsub|tags] [--tar FILE]"; exit 2 ;; esac
 
 base=/dev/shm
 [ -d "$base" ] && [ -w "$base" ] || base=${TMPDIR:-/tmp}

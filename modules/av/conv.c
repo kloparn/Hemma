@@ -1,4 +1,5 @@
-/* modules/av/conv.c — MKV -> MP4 that plays everywhere (HEVC and AV1: on the devices that decode them). See conv.h. */
+/* modules/av/conv.c — MKV -> MP4 that plays everywhere (HEVC and AV1 copied: on the devices that decode them; HEVC
+   made H.264 when asked). See conv.h. */
 #include "conv.h"
 
 #include <stdio.h>
@@ -10,6 +11,7 @@
 #include "deint.h"
 #include "dts.h"
 #include "h264enc.h"
+#include "hevc.h"
 #include "mpeg2.h"
 #include "mpeg4.h"
 
@@ -99,11 +101,14 @@ typedef struct {
     Mpeg2 *dec;
     bool m4;                     /* (2.5) the picture is MPEG-4 Part 2 - DivX, Xvid: dec4 instead of dec */
     Mpeg4 *dec4;
+    bool hv;                     /* (2.6) HEVC made H.264 (AvConvJob.h264): dec5 instead of dec */
+    Hevc *dec5;
+    int hv_depth;                /* its samples' bit depth (8 or 10) */
     const uint8_t *vol;          /* its setup (the VOL): CodecPrivate, past an AVI's BITMAPINFOHEADER */
     size_t nvol;
     int64_t seen[ANALYZE_FRAMES]; /* its first pictures' times (the survey), for their usual length */
     int nseen;
-    int64_t vgap, vprev; /* MPEG-4 pictures are timed by their own times on 90 kHz: a usual length (ns), the last place */
+    int64_t vgap, vprev; /* MPEG-4 and HEVC pictures are timed by their own times on 90 kHz: a usual length (ns), the last place */
     Deint *di;
     int w, h; /* the picture size everything was set up for */
     int dmode, out_num, out_den; /* (MPEG-4: the track's clock is 90 kHz, out_* only the encoder's rate) */
@@ -392,7 +397,7 @@ static bool put_video(Conv *c, const uint8_t *data, size_t n, int64_t index, boo
     if (c->have_pend) {
         int64_t frames = index - c->pend_index;
         if (frames < 1) frames = 1;
-        uint32_t dur = (uint32_t)(c->dec4 ? CMIN(frames, 90000 * 60) : frames * c->out_den);
+        uint32_t dur = (uint32_t)(c->m4 || c->hv ? CMIN(frames, 90000 * 60) : frames * c->out_den);
         if (!put_sample(c, c->vtrack, c->pend, c->npend, dur, 0, c->pend_key)) return false;
     }
     if (n > c->cpend) {
@@ -422,17 +427,33 @@ static bool encode_out(Conv *c, const DeintOut *o) {
     H264Picture pic = {o->y, o->u, o->v, o->stride_y, o->stride_c, o->stride_c, o->index};
     H264Packet pk;
     if (!h264enc_encode(c->enc, &pic, &pk)) return fail(c, "The H.264 encoder stopped", NULL);
-    return put_video(c, pk.data, pk.size, c->dec4 ? place_of(c, o->pts) : o->index, pk.idr);
+    return put_video(c, pk.data, pk.size, c->m4 || c->hv ? place_of(c, o->pts) : o->index, pk.idr);
 }
 
-/* ---- the picture decoder: MPEG-2/-1, or (2.5) MPEG-4 Part 2, its frames as MPEG-2's ---- */
+/* ---- the picture decoder: MPEG-2/-1, or (2.5) MPEG-4 Part 2, or (2.6) HEVC, its frames as MPEG-2's ---- */
 
 static void vdec_decode(Conv *c, const uint8_t *p, size_t n, int64_t pts) {
-    if (c->dec4) mpeg4_decode(c->dec4, p, n, pts);
+    if (c->dec5) hevc_decode(c->dec5, p, n, pts);
+    else if (c->dec4) mpeg4_decode(c->dec4, p, n, pts);
     else mpeg2_decode(c->dec, p, n, pts);
 }
 
 static bool vdec_frame(Conv *c, Mpeg2Frame *pf) {
+    if (c->dec5) { /* progressive pictures (field pictures are refused: hevc_unsupported), 8-bit */
+        HevcFrame f;
+        if (!hevc_frame(c->dec5, &f)) return false;
+        memset(pf, 0, sizeof *pf);
+        pf->y = f.y, pf->u = f.u, pf->v = f.v, pf->stride_y = f.stride_y, pf->stride_c = f.stride_c;
+        pf->width = pf->disp_width = f.width, pf->height = pf->disp_height = f.height;
+        pf->dar_num = f.width * f.par_num, pf->dar_den = f.height * f.par_den;
+        pf->rate_num = f.rate_num, pf->rate_den = f.rate_den;
+        pf->type = f.type;
+        pf->progressive_sequence = pf->progressive_frame = true;
+        pf->pts = f.pts;
+        pf->concealed = f.damaged;
+        c->hv_depth = f.bit_depth;
+        return true;
+    }
     if (!c->dec4) return mpeg2_frame(c->dec, pf);
     Mpeg4Frame f;
     if (!mpeg4_frame(c->dec4, &f)) return false;
@@ -449,7 +470,8 @@ static bool vdec_frame(Conv *c, Mpeg2Frame *pf) {
 }
 
 static void vdec_flush(Conv *c) {
-    if (c->dec4) mpeg4_flush(c->dec4);
+    if (c->dec5) hevc_flush(c->dec5);
+    else if (c->dec4) mpeg4_flush(c->dec4);
     else mpeg2_flush(c->dec);
 }
 
@@ -1062,6 +1084,14 @@ static bool subs_pass(Conv *c, int pm0) {
 
 /* ---- the passes ---- */
 static bool restart_decoder(Conv *c) {
+    if (c->hv) {
+        if (c->dec5) hevc_free(c->dec5);
+        c->dec5 = hevc_new();
+        if (!c->dec5) return fail(c, "Out of memory", NULL);
+        if (!hevc_config(c->dec5, c->vt->priv, c->vt->priv_len))
+            return unsupported(c, "Its HEVC picture has no readable settings record (CodecPrivate)", NULL);
+        return true;
+    }
     if (c->m4) {
         if (c->dec4) mpeg4_free(c->dec4);
         c->dec4 = mpeg4_new();
@@ -1148,7 +1178,7 @@ static int analyze_window(Conv *c, DeintStats *ds, Mpeg2Frame *first, bool *have
         Mpeg2Frame pf;
         while (vdec_frame(c, &pf)) {
             if (!*have_first) *first = pf, *have_first = true;
-            if (c->m4) { /* (progressive: nothing to analyse - only the pictures' times) */
+            if (c->m4 || c->hv) { /* (progressive: nothing to analyse - only the pictures' times) */
                 if (opening && c->nseen < ANALYZE_FRAMES) c->seen[c->nseen++] = pf.pts;
             } else {
                 DeintIn in = {pf.y, pf.u, pf.v, pf.stride_y, pf.stride_c, pf.width, pf.height, pf.progressive_frame,
@@ -1191,8 +1221,10 @@ static bool survey(Conv *c, Mpeg2Frame *first, DeintStats *ds) {
     if (!restart_decoder(c) || analyze_window(c, ds, first, &have_first, true) < 0) return fail(c, "Stopped", NULL);
     if (c->dec4 && mpeg4_unsupported(c->dec4)) /* (interlaced Xvid, GMC ...) */
         return unsupported(c, "Its MPEG-4 picture uses %s, which the converter can't decode yet", mpeg4_unsupported(c->dec4));
+    if (c->dec5 && hevc_unsupported(c->dec5)) /* (4:2:2, 12 bits, fields ...) */
+        return unsupported(c, "Its HEVC picture uses %s, which the converter can't decode yet", hevc_unsupported(c->dec5));
     if (!have_first) return fail(c, "No picture could be decoded", NULL);
-    if (c->m4) {
+    if (c->m4 || c->hv) {
         c->vgap = usual_gap(c);
         return true;
     }
@@ -1273,7 +1305,7 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
     uint8_t avcc[512];
     if (c->vcode) {
         int rn = first->rate_num, rd = first->rate_den, dn = first->dar_num, dd = first->dar_den;
-        if (c->m4) { /* progressive pictures as they are; the rate the VOL states, else their usual length's */
+        if (c->m4 || c->hv) { /* progressive pictures as they are; the rate the VOL / VUI states, else their usual length's */
             c->dmode = DEINT_PASS;
             if (rn <= 0 || rd <= 0) {
                 int64_t mfps = (1000 * NS + c->vgap / 2) / c->vgap, g = gcd64(mfps, 1000);
@@ -1299,7 +1331,7 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         if (!c->di || !c->enc) return fail(c, "Can't set up the converter for this picture size", NULL);
         size_t n = h264enc_avcc(c->enc, avcc, sizeof avcc);
         vt.codec = MP4_H264;
-        vt.timescale = c->m4 ? 90000 : (uint32_t)c->out_num;
+        vt.timescale = c->m4 || c->hv ? 90000 : (uint32_t)c->out_num;
         vt.config = avcc;
         vt.config_len = n;
         vt.width = first->width;
@@ -1311,7 +1343,9 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         vt.transfer = first->height >= 720 ? 1 : 6;
         vt.matrix = first->height >= 720 ? 1 : pal ? 5 : 6;
         const char *kind = c->dmode == DEINT_IVTC ? "film" : c->dmode == DEINT_PASS ? "progressive" : "video";
-        if (c->m4)
+        if (c->hv)
+            snprintf(c->j->what, sizeof c->j->what, "HEVC video (%d-bit, %.3f fps) → H.264", c->hv_depth, (double)c->out_num / c->out_den);
+        else if (c->m4)
             snprintf(c->j->what, sizeof c->j->what, "MPEG-4 video (DivX/Xvid, %.3f fps) → H.264", (double)c->out_num / c->out_den);
         else snprintf(c->j->what, sizeof c->j->what, "DVD video (%s, %.3f fps) → H.264", kind, (double)c->out_num / c->out_den);
     } else {
@@ -1386,7 +1420,7 @@ static bool main_pass(Conv *c) {
         deint_flush(c->di);
         DeintOut o;
         while (!c->failed && deint_pull(c->di, &o)) encode_out(c, &o);
-        uint32_t last = (uint32_t)(c->m4 ? CMAX(1, at_tick(c->vgap)) : c->out_den); /* (its usual length) */
+        uint32_t last = (uint32_t)(c->m4 || c->hv ? CMAX(1, at_tick(c->vgap)) : c->out_den); /* (its usual length) */
         if (c->failed || (c->have_pend && !put_sample(c, c->vtrack, c->pend, c->npend, last, 0, c->pend_key)))
             return false;
     }
@@ -1449,6 +1483,7 @@ static bool plays_as_it_is(const Conv *c) {
     if (v && strcmp(v->codec, "V_MPEG4/ISO/AVC") && strcmp(v->codec, "V_AV1") &&
         !(!strcmp(v->codec, "V_MPEGH/ISO/HEVC") && !strcmp(v->fourcc, "hvc1")))
         return false;
+    if (v && c->j->h264 && strcmp(v->codec, "V_MPEG4/ISO/AVC")) return false; /* (2.6: asked to become H.264) */
     for (int i = 0; i < mkv_track_count(c->mkv); i++) {
         const MkvTrack *t = mkv_track(c->mkv, i);
         if (t->type == MKV_AUDIO && strcmp(t->codec, "A_AAC") && strcmp(t->codec, "A_MPEG/L3") && !is_opus(t->codec)) return false;
@@ -1534,6 +1569,10 @@ bool av_convert(AvConvJob *j) {
                 c->m4 = true, c->vol = c->vt->priv + hdr, c->nvol = c->vt->priv_len - hdr;
             }
         } else if (!strncmp(vk->id, "V_MPEG4/ISO/", 12)) c->m4 = true, c->vol = c->vt->priv, c->nvol = c->vt->priv_len;
+    } else if (j->h264 && !strcmp(vk->id, "V_MPEGH/ISO/HEVC")) { /* (2.6) decoded and made H.264, as MPEG-4 is */
+        c->vcode = c->hv = true;
+    } else if (j->h264 && !strcmp(vk->id, "V_AV1")) {
+        unsupported(c, "Its picture is AV1, which the converter can only copy so far (H.264 from it: not yet)", NULL);
     } else if (!strcmp(vk->id, "V_AV1") && !av1c_ok(c->vt->priv, c->vt->priv_len)) /* (Matroska requires it; an MP4 needs it) */
         unsupported(c, "Its AV1 picture has no settings record (CodecPrivate) in the file", NULL);
     else /* copied: Safari plays HEVC (and AV1, where the device decodes it) in an MP4, never in an MKV */
@@ -1576,6 +1615,7 @@ bool av_convert(AvConvJob *j) {
     mkv_close(c->mkv);
     if (c->dec) mpeg2_free(c->dec);
     if (c->dec4) mpeg4_free(c->dec4);
+    if (c->dec5) hevc_free(c->dec5);
     if (c->di) deint_free(c->di);
     if (c->enc) h264enc_free(c->enc);
     for (int k = 0; k < c->naud; k++) {

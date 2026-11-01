@@ -1,14 +1,16 @@
 /* tools/convfuzz.c — fuzzing modules/av's converter: av_convert on MKV bytes in memory, the MP4
- * written to memory. Reaches the demuxer, the MPEG-2 and MPEG-4 Part 2 decoders, the deinterlacer, the
- * H.264 encoder, the AC-3 decoder, the AAC encoder and the MP4 writer (dev aid, not part of the app).
+ * written to memory. Reaches the demuxer, the MPEG-2, MPEG-4 Part 2 and (2.6: a file it copied HEVC from is converted
+ * once more, made H.264) HEVC decoders, the deinterlacer, the H.264 encoder, the AC-3 decoder, the AAC encoder and the
+ * MP4 writer (dev aid, not part of the app).
  *
  * libFuzzer (clang on Linux/macOS; CI's fuzz job does this):
  *   HEMMA_FUZZ_SEEDS=build/fuzz-seeds build/test conv_fuzz_seeds      the seed files (made by
  *                                        the converter tests: small MKVs of every kind it takes)
  *   clang -g -O1 -std=gnu11 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
  *         -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION tools/convfuzz.c modules/av/conv.c modules/av/mkv.c \
- *         modules/av/mpeg2.c modules/av/mpeg4.c modules/av/deint.c modules/av/h264enc.c modules/av/ac3.c modules/av/dts.c \
- *         modules/av/aac.c modules/av/mp4.c -lm -o build/convfuzz
+ *         modules/av/mpeg2.c modules/av/mpeg4.c modules/av/hevc.c modules/av/hevc_ctu.c modules/av/hevc_dsp.c \
+ *         modules/av/deint.c modules/av/h264enc.c modules/av/ac3.c modules/av/dts.c modules/av/aac.c modules/av/mp4.c \
+ *         -lm -o build/convfuzz
  *   build/convfuzz -max_total_time=90 -max_len=65536 -rss_limit_mb=2048 -timeout=60 build/fuzz-corpus build/fuzz-seeds
  *
  * Replay, anywhere (zig cc on Windows too): -DCONVFUZZ_MAIN gives a plain main() that runs each
@@ -215,7 +217,24 @@ static int convert(const uint8_t *data, size_t size, Tally *t) {
         }
     }
     av_convert_free(&alone);
+    bool hevc = ok && !strncmp(j.what, "HEVC copied", 11);
     av_convert_free(&j);
+    if (hevc) { /* (2.6) a file it copied HEVC from: once more, made H.264 - the HEVC decoder through the whole converter */
+        Out o2 = {0};
+        AvConvJob h;
+        memset(&h, 0, sizeof h);
+        h.in = (MkvReader){&in, (int64_t)size, in_read};
+        h.out = (Mp4Out){&o2, out_write, out_write_at};
+        h.max_samples = MAX_SAMPLES_EACH;
+        h.h264 = true;
+        bool ok2 = av_convert(&h);
+        if ((ok2 && (h.err[0] || h.out_bytes != (int64_t)o2.len || !whole_mp4(&o2))) || (!ok2 && !h.err[0])) {
+            fprintf(stderr, "convfuzz: HEVC made H.264 broke a promise (%s)\n", ok2 ? "a success without a whole MP4" : "failed without saying why");
+            abort();
+        }
+        av_convert_free(&h);
+        free(o2.p);
+    }
     if (t) {
         t->runs++;
         if (ok) t->ok++;

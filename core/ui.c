@@ -613,6 +613,9 @@ static const char *const WIRE_TEXTS[] = {
     "Play (Space)",
     "Pause (Space)",
     "%s of %s",
+    "This browser can't convert videos",
+    "Converting on this device - keep this page open until it's done",
+    "Done: the new copies play everywhere",
 };
 
 const char *const *ui_wire_texts(int *n) {

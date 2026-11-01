@@ -260,6 +260,8 @@ static const Tr TR[] = {
      "Hemma está haciendo su copia que se reproduce en todas partes en el servidor ahora mismo"},
     {"another upload is sending its copy right now", "en annan uppladdning skickar dess kopia just nu",
      "otra subida está enviando su copia ahora mismo"},
+    {"its video was removed or renamed meanwhile", "dess video togs bort eller bytte namn under tiden",
+     "su vídeo se quitó o se renombró mientras tanto"},
     {"Hemma is making this copy on the server right now", "Hemma gör den här kopian på servern just nu",
      "Hemma está haciendo esta copia en el servidor ahora mismo"},
     {"Hemma started making this copy on the server meanwhile", "Hemma började göra den här kopian på servern under tiden",
@@ -651,5 +653,43 @@ static const Tr TR[] = {
      "%d película no tiene año. ¿Subirla igualmente?"},
     {"%d films have no year. Upload them anyway?", "%d filmer saknar år. Ladda upp dem ändå?",
      "%d películas no tienen año. ¿Subirlas igualmente?"},
+    /* (2.6: HEVC made H.264 - convert.c's card and buttons, and "here" batches) */
+    {"On Hemma's computer", "På Hemmas dator", "En el ordenador de Hemma"},
+    {"On this device", "På den här enheten", "En este dispositivo"},
+    {"Play everywhere from HEVC", "Spela överallt, från HEVC", "Reproducir en todas partes desde HEVC"},
+    {"%d video is HEVC (x265): it plays on Apple devices, newer TVs and phones, and in browsers with HEVC hardware - "
+     "not everywhere.",
+     "%d video är HEVC (x265): den spelas på Apples enheter, nyare tv-apparater och telefoner och i webbläsare med "
+     "HEVC-hårdvara - inte överallt.",
+     "%d vídeo es HEVC (x265): se reproduce en dispositivos de Apple, televisores y teléfonos más nuevos y en navegadores "
+     "con hardware HEVC - no en todas partes."},
+    {"%d videos are HEVC (x265): they play on Apple devices, newer TVs and phones, and in browsers with HEVC hardware - "
+     "not everywhere.",
+     "%d videor är HEVC (x265): de spelas på Apples enheter, nyare tv-apparater och telefoner och i webbläsare med "
+     "HEVC-hårdvara - inte överallt.",
+     "%d vídeos son HEVC (x265): se reproducen en dispositivos de Apple, televisores y teléfonos más nuevos y en "
+     "navegadores con hardware HEVC - no en todas partes."},
+    {"Hemma can make an H.264 copy of each, which plays everywhere. It takes the place of the HEVC copy Hemma made "
+     "(an original stays where it is), and it's about as big, or a little bigger.",
+     "Hemma kan göra en H.264-kopia av var och en, som spelas överallt. Den ersätter HEVC-kopian Hemma gjorde (ett "
+     "original stannar där det är), och den är ungefär lika stor eller lite större.",
+     "Hemma puede hacer una copia H.264 de cada uno, que se reproduce en todas partes. Ocupa el lugar de la copia HEVC "
+     "que hizo Hemma (un original se queda donde está) y es más o menos igual de grande, o un poco más."},
+    {"It's heavy work: Hemma's computer (%d cores) can do it, a few at a time - or open this page on a strong computer "
+     "and choose On this device.",
+     "Det är tungt arbete: Hemmas dator (%d kärnor) klarar det, några i taget - eller öppna den här sidan på en "
+     "kraftfull dator och välj På den här enheten.",
+     "Es un trabajo pesado: el ordenador de Hemma (%d núcleos) puede hacerlo, unos pocos a la vez - o abre esta página "
+     "en un ordenador potente y elige En este dispositivo."},
+    {"It's heavy work: on Hemma's computer (%d cores) one episode can take hours. A laptop or desktop is much faster: "
+     "open this page there and choose On this device - and keep the page open while it works.",
+     "Det är tungt arbete: på Hemmas dator (%d kärnor) kan ett avsnitt ta timmar. En bärbar eller stationär dator är "
+     "mycket snabbare: öppna den här sidan där och välj På den här enheten - och låt sidan vara öppen medan den arbetar.",
+     "Es un trabajo pesado: en el ordenador de Hemma (%d núcleos) un episodio puede tardar horas. Un portátil o un "
+     "ordenador de sobremesa es mucho más rápido: abre esta página allí y elige En este dispositivo - y deja la página "
+     "abierta mientras trabaja."},
+    {"All of them", "Alla", "Todos"},
+    {"Nothing there needs converting any more", "Inget där behöver konverteras längre", "Ya no hay nada que convertir ahí"},
+    {"Converting on this device", "Konverterar på den här enheten", "Convirtiendo en este dispositivo"},
 };
 TRANSLATIONS(media_upload, TR)

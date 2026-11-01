@@ -8,14 +8,14 @@
  * modules/<id>, not subfolders). Built with: zig cc -target wasm32-wasi
  * -mexec-model=reactor -msimd128 -O2 -s -Wl,-z,stack-size=8388608 -Imodules/av
  * (av_convert alone keeps ~40 KB on the stack), this file plus the av sources the
- * converter uses (conv mkv mpeg2 mpeg4 deint h264enc ac3 dts aac mp4).
+ * converter uses (conv mkv mpeg2 mpeg4 hevc hevc_ctu hevc_dsp deint h264enc ac3 dts aac mp4).
  *
  * The page side (web/conv.js) provides four functions:
  *   hemma.read(off, dst, n)       n bytes of the original at off into memory[dst]; 1 = ok
  *   hemma.write(p, n)             append memory[p .. p+n) to the copy; 1 = ok
  *   hemma.write_at(off, p, n)     overwrite earlier bytes of the copy; 1 = ok
  *   hemma.progress(permille)      0..1000
- * and calls _initialize(), then conv_run(size, quality, audio_kbps):
+ * and calls _initialize(), then conv_run(size, quality, audio_kbps, h264) (h264: 2.6, AvConvJob.h264 - HEVC made H.264):
  *   1 = done, 0 = failed, 2 = the file holds something we can't convert (send the original);
  *   3 = (2.5) an MP4/MOV that plays everywhere as it is: nothing made, send the original - without a word;
  *   conv_err() says why (UTF-8, NUL-terminated).
@@ -138,7 +138,7 @@ static void on_progress(void *ctx, int permille) {
     js_progress(permille);
 }
 
-EXPORT("conv_run") int conv_run(double size, int quality, int audio_kbps) {
+EXPORT("conv_run") int conv_run(double size, int quality, int audio_kbps, int h264) {
     static int64_t total;
     total = (int64_t)size;
     if (!g_out && !(g_out = malloc(OUTBUF))) return 0;
@@ -151,6 +151,7 @@ EXPORT("conv_run") int conv_run(double size, int quality, int audio_kbps) {
     g_job.out = (Mp4Out){NULL, dst_write, dst_write_at};
     g_job.quality = quality;
     g_job.audio_kbps = audio_kbps;
+    g_job.h264 = h264 != 0;
     g_job.want_subs = true;
     g_job.skip_refused_subs = true; /* (a refused file goes as it is: no second read of it here) */
     g_job.progress = on_progress;

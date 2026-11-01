@@ -38,7 +38,7 @@
   const VERSION = root.dataset.v || '';
   const here = () => location.pathname + location.search;
   const pending = new Map();
-  let ws = null, open = false, tries = 0, seq = 0, fresh = [], leaving = 0, uploading = false;
+  let ws = null, open = false, tries = 0, seq = 0, fresh = [], leaving = 0, uploading = false, reloadDue = false;
 
   // While the browser is navigating away (plain POST, full page load) the old page
   // must not reconnect or reload: that would cancel the navigation in flight.
@@ -674,8 +674,13 @@
 
   async function upload(f) {
     if (uploading) { toast(1, T('An upload is already running')); return; }
-    const picked = chosen(f), files = picked.map((x) => x.file);
-    if (!files.length) { toast(2, f.dataset.empty || T('Choose a folder or some files first')); return; }
+    // (2.6) form[data-here]: no files of this device's - the server's plan names library files ({remote}), which the
+    // converter here reads from the server and makes H.264 ("convert on this device"); the copies go back as an
+    // upload's do
+    const library = f.dataset.here !== undefined; /* (not `here`: that's the page's address, below) */
+    const picked = library ? [] : chosen(f);
+    let files = picked.map((x) => x.file);
+    if (!library && !files.length) { toast(2, f.dataset.empty || T('Choose a folder or some files first')); return; }
     const base = f.dataset.upload, body = {};
     for (const [k, v] of pairs(new FormData(f))) body[k] = v;
     // the page says where (if it has them); data-part: the pieces a copy in memory goes in (tests: small ones)
@@ -683,8 +688,11 @@
     const use = { worker: f.dataset.convert, wasm: f.dataset.wasm, part: Number(f.dataset.part) || 0,
       flaky: Number(f.dataset.flaky) || 0 };
     netPause = Number(f.dataset.netpause) || 5000;
-    if (!canConvert || !use.worker || !use.wasm) delete body.conv;
-    body.files = picked.map((x) => [x.path, x.file.size]);
+    if (!canConvert || !use.worker || !use.wasm) {
+      if (library) { toast(2, T('This browser can\'t convert videos')); return; }
+      delete body.conv;
+    }
+    if (!library) body.files = picked.map((x) => [x.path, x.file.size]);
     uploading = true;
     busy(f, true);
     let made = null, sent = false;
@@ -693,6 +701,10 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       }).then(json);
       if (plan.error) throw new Error(plan.error);
+      if (library) {
+        files = (plan.remote || []).map((r) => ({ remote: r.u, size: r.s, h264: !!r.h264 }));
+        toast(1, T('Converting on this device - keep this page open until it\'s done'));
+      }
       // under way: the page shows its progress instead of the preview (the list stays here until it's done:
       // Start again after a failure carries on)
       if (f.dataset.preview) send({ t: 'live', a: f.dataset.preview, url: here(), f: [['files', '']] });
@@ -719,6 +731,7 @@
         await sendMade(`${base}/${plan.batch}/${copies[got.k].i}`, copies[got.k], got.m, files);
       }
       sent = true;
+      if (library && copies.length) toast(0, T('Done: the new copies play everywhere')); // (the card says what was skipped)
     } catch (err) {
       toast(2, err.message || T('The upload stopped'));
     } finally {
@@ -729,6 +742,8 @@
         if (sent) f._files = [];
         else preview(f, true);
       }
+      // (a stopped upload keeps its picked files for Start - a library one has none: it loads again either way)
+      if (reloadDue && (sent || library) && !isLeaving()) location.reload();
     }
   }
 
@@ -782,6 +797,10 @@
     const seen = new Map(); // job -> [progress, when the server last heard it]
     const inRam = new Map(); // job -> what its copy keeps in memory (its original's size)
     const tries = new Map(), again = []; // job -> tries so far; jobs back in line
+    // (2.6) job -> since when its reads of a library file get no answer (the network), and how far in the furthest of
+    // them was: a job that reads past it again was cut off by a passing outage - the next one is waited out afresh; one
+    // failing at the same read every time (a disk's bad spot cutting the stream) gives up after NET_WAIT, as before
+    const netSince = new Map(), netAt = new Map();
     let next = 0, taken = 0, halted = '', waiting = null;
     const source = (k) => (jobs[k].subs ? 0 : files[jobs[k].f].size); // (reading subtitles keeps nothing)
     const ahead = () => [...workers.keys(), ...ready.keys()].reduce((n, k) => n + source(k), 0);
@@ -820,6 +839,20 @@
       const w = workers.get(k);
       workers.delete(k);
       seen.delete(k);
+      if (w && m.error && m.net && !halted) { // (2.6) the network, not the file: waited out (down()), not a try
+        const since = netSince.get(k) || Date.now();
+        netSince.set(k, since);
+        netAt.set(k, Math.max(netAt.get(k) || 0, m.at || 0));
+        inRam.delete(k);
+        w.terminate();
+        down(since).then((on) => {
+          if (halted) return;
+          if (on) { again.push(k); pump(); } else { netSince.delete(k); netAt.delete(k); finish(k, { error: m.error }); }
+        });
+        return;
+      }
+      netSince.delete(k);
+      netAt.delete(k);
       if (w && m.error && m.again && !halted && (tries.get(k) || 0) < AGAIN) { // back in line, not up as it is
         tries.set(k, (tries.get(k) || 0) + 1);
         inRam.delete(k);
@@ -847,6 +880,7 @@
       w.onmessage = (e) => {
         const m = e.data;
         if (m.pm === undefined) { finish(k, m); return; }
+        if (netAt.has(k) && m.fed > netAt.get(k)) { netSince.delete(k); netAt.delete(k); } // (past where it was cut off)
         const [, at] = seen.get(k) || [0, 0];
         if (Date.now() - at >= 3000) tell(k, m.pm, m.fed);
         else seen.set(k, [m.pm, at, m.fed]);
@@ -1019,7 +1053,9 @@
         break;
       }
       case 'toast': toast(op[1], op[2], op[3]); break;
-      case 'reload': if (!isLeaving()) location.reload(); break;
+      // (not while uploading: the "leave and stop the upload?" question froze the page - and a night's converting
+      // with it - until someone answered; a new Hemma's reload came at the socket's return. It comes after.)
+      case 'reload': if (uploading) reloadDue = true; else if (!isLeaving()) location.reload(); break;
     }
   }
 

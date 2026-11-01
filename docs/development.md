@@ -122,7 +122,7 @@ does. On a 20-thread PC the suite takes about 5-10 s instead of a minute.
 
 `tools/ci/local.sh` runs CI's three Linux jobs on your own machine: `test` (gcc, `make` +
 `make test`), `asan` (the suite under AddressSanitizer + UBSan with clang) and `fuzz [seconds]
-[conv|mkv|ac3|mpeg2]` (a libFuzzer target - see [Fuzzing](#fuzzing)). The suite runs in four
+[conv|mkv|ac3|mpeg2|hevc|...]` (a libFuzzer target - see [Fuzzing](#fuzzing)). The suite runs in four
 processes there, as on GitHub's runners (`HEMMA_TEST_JOBS` changes it): tests that share a process
 meet what earlier ones left, and four processes put different tests together than twenty do.
 It works on a fresh copy of the tree in a RAM disk and keeps
@@ -180,12 +180,12 @@ its spec too; the rules are listed in CLAUDE.md ("the player's rules").
 ### Fuzzing
 
 The converter reads files nobody controls, in the process that serves the whole household, so it's
-fuzzed: libFuzzer feeds it damaged and strange inputs under AddressSanitizer + UBSan. Ten targets
+fuzzed: libFuzzer feeds it damaged and strange inputs under AddressSanitizer + UBSan. Eleven targets
 (`tools/ci/fuzz.sh TARGET [seconds] [processes]`): `conv` - a whole conversion
 (`tools/convfuzz.c`, slow per input, reaches everything) - and `mkv`, `mp4`, `ac3`, `dts`, `mpeg2`, `mpeg4`
-(DivX/Xvid), `pgs` and `vobsub` (Blu-ray and DVD picture subtitles) and `tags` (audiobooks), one part alone (`tools/avfuzz.c`, tens to hundreds of
+(DivX/Xvid), `hevc` (x265), `pgs` and `vobsub` (Blu-ray and DVD picture subtitles) and `tags` (audiobooks), one part alone (`tools/avfuzz.c`, tens to hundreds of
 times as many inputs a minute). Every push runs `conv` for 90 s; every night
-`.github/workflows/fuzz.yml` runs all ten side by side for about three
+`.github/workflows/fuzz.yml` runs all eleven side by side for about three
 hours, each starting from what the earlier nights found. A finding fails that night's run, and the
 input that does it is kept with the run: `build/fuzz-<target> <file>` replays it.
 

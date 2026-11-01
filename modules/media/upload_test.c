@@ -11,6 +11,8 @@
 #include "upload.h"
 
 void conv_test_rip(const char *root, const char *rel, const char *doctype, int64_t size); /* convert_test.c */
+void conv_test_hevc(const char *root, const char *rel, int64_t size);                    /* (2.6) */
+void conv_test_hevc_mp4(const char *root, const char *rel);
 
 TEST(upload_names_keep_folders_and_refuse_tricks) {
     char out[400];
@@ -791,6 +793,151 @@ TEST(upload_takes_copies_the_browser_makes) {
     CHECK(g_done);
     server_shutdown();
     buf_free(&r);
+    th_halt();
+}
+
+/* ------------------------------------------- converted on this device (2.6) */
+
+/* "On this device": the plan names the library's HEVC videos ({"here"}), each read from the server as the very file
+   (?src=1 - the original, not its copy), its H.264 copy sent back in place of Hemma's HEVC copy; one the device couldn't
+   convert is skipped, never sent as an "original" */
+TEST(upload_here_makes_library_hevc_h264_on_the_device) {
+    th_boot();
+    auth_configure("upload-salt", 1000);
+    int adam_id = make_user("Adam", "adam", "pw-adam-123", ROLE_ADMIN), eva_id = th_person("Eva");
+    char root[512], path[1100];
+    str_copy(root, sizeof root, test_tmpdir());
+    setting_set("media.roots", root);
+    conv_test_hevc(root, "Series/H/Season 1/H.S01E01.mkv", 3000);
+    conv_test_hevc_mp4(root, "Series/H/Season 1/H.S01E01.web.mp4");
+    conv_test_hevc_mp4(root, "Series/H/Season 1/H.S01E02.web.mp4");
+    media_scan_sync();
+    CHECK(server_listen("127.0.0.1", 0));
+    g_port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], batch[17], url[160], json[200], hex[17];
+    sign_in("adam", "pw-adam-123", adam, sizeof adam);
+    Buf r = {0};
+    const MediaFile *e1 = NULL;
+    for (int i = 0; i < media_lib()->nfiles; i++)
+        if (str_eq(media_lib()->files[i].rel, "Series/H/Season 1/H.S01E01.mkv")) e1 = &media_lib()->files[i];
+    CHECK(e1);
+    if (!e1) {
+        th_halt();
+        return;
+    }
+    uint64_t e1_id = e1->id;
+    snprintf(json, sizeof json, "{\"here\":\"series=%016llx\",\"conv\":\"1\"}", (unsigned long long)e1->series);
+    plan_for(adam, json, &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[{\"i\":0,\"f\":0},{\"i\":1,\"f\":1}]");
+    media_id_hex(e1->id, hex);
+    snprintf(url, sizeof url, "\"remote\":[{\"u\":\"/media/file/%s?src=1\",\"s\":3000,\"h264\":true}", hex);
+    CHECK_HAS(body_of(&r), url);
+
+    /* the very file - the original MKV - in pieces (Range), where the plain address streams its copy */
+    snprintf(url, sizeof url, "/media/file/%s?src=1", hex);
+    call("GET", url, adam, "Range: bytes=0-3\r\n", "", 0, 0, &r);
+    CHECK_HAS(buf_cstr(&r), "206");
+    CHECK(!memcmp(body_of(&r), "\x1A\x45\xDF\xA3", 4)); /* (Matroska's EBML header) */
+    snprintf(url, sizeof url, "/media/file/%s", hex);
+    call("GET", url, adam, "Range: bytes=4-7\r\n", "", 0, 0, &r);
+    CHECK(!memcmp(body_of(&r), "ftyp", 4)); /* (the copy) */
+
+    /* its H.264 copy takes the place of the HEVC one */
+    snprintf(url, sizeof url, "/media/upload/%s/0?size=10", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    CHECK_HAS(body_of(&r), "\"at\":0");
+    snprintf(url, sizeof url, "/media/upload/%s/0?at=0", batch);
+    call("PUT", url, adam, NULL, "0123456789", 10, 10, &r);
+    CHECK_HAS(buf_cstr(&r), "200");
+    snprintf(path, sizeof path, "%s/Series/H/Season 1/H.S01E01.web.mp4", root);
+    CHECK(same_file(path, "0123456789", 10));
+    snprintf(path, sizeof path, "%s/Series/H/Season 1/H.S01E01.mkv", root);
+    CHECK(path_stat(path, NULL, NULL, NULL)); /* (the original stays) */
+
+    /* one the device couldn't make: skipped - its file stays as it was */
+    snprintf(url, sizeof url, "/media/upload/%s/1?original=1&why=Nope", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    CHECK_HAS(body_of(&r), "\"skip\":true");
+    snprintf(path, sizeof path, "%s/Series/H/Season 1/H.S01E02.web.mp4", root);
+    Buf got = {0};
+    CHECK(file_read_all(path, &got, 1 << 20) && got.len > 8 && !memcmp(got.p + 4, "ftyp", 4));
+    buf_free(&got);
+
+    /* a set with nothing to make */
+    plan_for(adam, "{\"here\":\"films=1\",\"conv\":\"1\"}", &r, batch);
+    CHECK_HAS(body_of(&r), "Nothing there needs converting any more");
+
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    /* its card where it was started - Library settings, a video's page - for the admin who started it, a while after too */
+    CHECK_HAS(th_page(adam_id, "/media/settings"), "Converting on this device");
+    snprintf(url, sizeof url, "/media/watch/%016llx", (unsigned long long)e1_id);
+    CHECK_HAS(th_page(adam_id, url), "id=\"media-h264-run\"");
+    CHECK(!strstr(th_page(eva_id, "/media/settings"), "media-h264-run"));
+    th_halt();
+}
+
+/* (2.6) A "here" batch holds room for what's under way, not every copy's guess at once (a whole series from a device was
+   refused on a disk with room for it, a copy at a time), and a copy whose place went meanwhile - its video removed or
+   renamed on Manage - is skipped when it's ready instead of bringing the episode back */
+TEST(upload_here_holds_what_is_under_way_and_skips_what_went) {
+    th_boot();
+    auth_configure("upload-salt", 1000);
+    make_user("Adam", "adam", "pw-adam-123", ROLE_ADMIN);
+    char root[512], path[1100], rel[80];
+    str_copy(root, sizeof root, test_tmpdir());
+    setting_set("media.roots", root);
+    for (int e = 1; e <= 4; e++) {
+        snprintf(rel, sizeof rel, "Series/R/Season 1/R.S01E%02d.web.mp4", e);
+        conv_test_hevc_mp4(root, rel);
+    }
+    media_scan_sync();
+    int64_t one = 0;
+    snprintf(path, sizeof path, "%s/Series/R/Season 1/R.S01E01.web.mp4", root);
+    CHECK(path_stat(path, &one, NULL, NULL) && one > 0);
+    const MediaFile *e1 = NULL;
+    for (int i = 0; i < media_lib()->nfiles; i++)
+        if (str_eq(media_lib()->files[i].rel, "Series/R/Season 1/R.S01E01.web.mp4")) e1 = &media_lib()->files[i];
+    CHECK(e1);
+    if (!e1) {
+        th_halt();
+        return;
+    }
+    upload_test_free_space(MEDIA_RESERVE + 2 * one); /* room for a copy or so - not four at once */
+    CHECK(server_listen("127.0.0.1", 0));
+    g_port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], batch[17], url[160], json[200];
+    sign_in("adam", "pw-adam-123", adam, sizeof adam);
+    Buf r = {0};
+    snprintf(json, sizeof json, "{\"here\":\"series=%016llx\",\"conv\":\"1\"}", (unsigned long long)e1->series);
+    plan_for(adam, json, &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[{\"i\":0,\"f\":0},{\"i\":1,\"f\":1},{\"i\":2,\"f\":2},{\"i\":3,\"f\":3}]");
+
+    /* E02 is removed meanwhile: its copy, ready, has no place - skipped, and nothing comes back */
+    snprintf(path, sizeof path, "%s/Series/R/Season 1/R.S01E02.web.mp4", root);
+    CHECK(file_remove(path));
+    snprintf(url, sizeof url, "/media/upload/%s/1?size=10", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    CHECK_HAS(body_of(&r), "\"skip\":true");
+    CHECK(!path_stat(path, NULL, NULL, NULL));
+    /* E01's goes as ever */
+    snprintf(url, sizeof url, "/media/upload/%s/0?size=10", batch);
+    call("POST", url, adam, NULL, "", 0, 0, &r);
+    CHECK_HAS(body_of(&r), "\"at\":0");
+
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    buf_free(&r);
+    upload_test_free_space(-1);
     th_halt();
 }
 

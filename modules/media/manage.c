@@ -1266,6 +1266,19 @@ bool media_manage_series(Ctx *c, Buf *b, const MediaSeries *s) {
     buf_puts(b, "<span>");
     H(b, T("Remove the series (%s)"), size);
     buf_puts(b, "</span></a></div>");
+    int hevc = 0, hevc_season = 0; /* (2.6: HEVC made H.264 - the series, or this season) */
+    for (int i = 0; i < s->count; i++)
+        if (convert_h264_need(media_episode(s, i))) hevc++, hevc_season += media_episode(s, i)->name.season == season;
+    char what[64];
+    if (hevc) {
+        buf_puts(b, "<div class=\"media-h264-line\">");
+        H(b, TN(hevc, "%d episode is HEVC: make it play everywhere -", "%d episodes are HEVC: make them play everywhere -"), hevc);
+        snprintf(what, sizeof what, "series=%016llx", (unsigned long long)s->id);
+        buf_puts(b, " ");
+        convert_h264_buttons(c, b, what, hevc);
+        buf_puts(b, "</div>");
+    }
+    upload_here_card(c, b, 0); /* (this device converting: how far it is) */
     MediaWork work; /* its categories from the internet: what was found, and "Update categories" by an id (1.4) */
     media_work_series(s, &work);
     media_lookup_form(c, b, &work);
@@ -1299,7 +1312,16 @@ bool media_manage_series(Ctx *c, Buf *b, const MediaSeries *s) {
     buf_puts(b, "<span>");
     if (season) H(b, T("Remove season %d (%s)"), season, size);
     else H(b, T("Remove the specials (%s)"), size);
-    buf_puts(b, "</span></a></div><div class=\"media-left\"><ol class=\"media-eps media-eps-compact\">");
+    buf_puts(b, "</span></a></div>");
+    if (hevc_season && hevc_season < hevc) {
+        buf_puts(b, "<div class=\"media-h264-line\">");
+        H(b, TN(hevc_season, "%d episode of these is HEVC -", "%d episodes of these are HEVC -"), hevc_season);
+        snprintf(what, sizeof what, "series=%016llx&season=%d", (unsigned long long)s->id, season);
+        buf_puts(b, " ");
+        convert_h264_buttons(c, b, what, hevc_season);
+        buf_puts(b, "</div>");
+    }
+    buf_puts(b, "<div class=\"media-left\"><ol class=\"media-eps media-eps-compact\">");
     for (int i = 0; i < s->count; i++) {
         const MediaFile *e = media_episode(s, i);
         if (e->name.season == season) episode_row(b, s, e, here);
