@@ -90,6 +90,10 @@ public final class OfflineActivity extends Activity {
         super.onResume();
         draw(true);
         main.postDelayed(tick, 1000);
+        /* at home: the places both ways (2.7.1) - one reached in a player here goes to Hemma at once, and Hemma's newer
+           ones come to what's saved. Away: a request that fails, nothing more. */
+        String base = Offline.base(this), agent = Offline.agent(this);
+        if (base != null) new Thread(() -> Offline.sync(getApplicationContext(), base, agent), "hemma-sync").start();
     }
 
     @Override protected void onPause() {

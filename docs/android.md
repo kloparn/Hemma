@@ -22,7 +22,10 @@ shows what you saved for offline meanwhile.
 3. **Play** plays it from where you got to. Videos come in the language you listen to (see *Sound
    language* in Watch's Library settings) and with their subtitles; audiobooks with their chapters, the
    lock screen's controls, 15 seconds back and 30 forward.
-4. Back home, the app tells Hemma where you got to, so *Continue watching* and your books carry on there.
+4. Back home, the app tells Hemma where you got to, so *Continue watching* and your books carry on there - and
+   the other way round (from 2.7.1): watch further on the TV or in a browser, and the saved copy starts there
+   too. Whichever place is newer wins. The app catches up whenever it's at home: when it finds Hemma, when you
+   put it away, and when you open the Offline screen - so open the app once before you leave.
 
 Saved things stay on the phone until you **Delete** them on the Offline screen (or uninstall the app).
 A film takes about as much room as its file in Hemma - a gigabyte or more for a long one in HD - and the

@@ -147,6 +147,60 @@ public class SavedTest {
         heard.pos = 5;
         if (v != null && b != null) eq(Saved.toSend(Arrays.asList(v, heard, never, b)).size(), 2, "the unsent ones");
 
+        /* 2.7.1: the place both ways - the newer wins, the phone's or Hemma's (skew = Hemma's clock less the phone's) */
+        Saved.Places ps = Saved.places("{\"v\":1,\"now\":5000,\"places\":[{\"id\":\"0123456789abcdef\",\"pos\":900,\"dur\":1320,"
+            + "\"done\":false,\"at\":4000},{\"id\":\"nope\",\"pos\":1},{\"id\":\"fedcba9876543210\",\"pos\":1700,\"dur\":1800,"
+            + "\"done\":true,\"at\":4500}]}");
+        check(ps != null && ps.now == 5000 && ps.by.size() == 2, "Hemma's places, a bad id left out");
+        check(Saved.places("{\"v\":2,\"now\":5000,\"places\":[]}") == null && Saved.places("<html>") == null
+            && Saved.places("{\"v\":1,\"places\":[]}") == null, "not that answer");
+        Saved.Place tv = ps != null ? ps.by.get("0123456789abcdef") : new Saved.Place();
+        Saved.Item s = manifest(VIDEO); /* (saved at 600, never played here) */
+        eq(Saved.settle(s, tv, 0), Saved.TAKE, "watched on the TV since it was saved: Hemma's");
+        s.take(tv, 100);
+        check(s.pos == 900 && !s.unsent && !s.ended && s.placeAt == 3900, "taken, its time on the phone's clock");
+        eq(s.start(), 900.0, "and played from there");
+        eq(Saved.settle(s, tv, 100), Saved.KEEP, "taken once");
+        eq(Saved.settle(s, tv, 99), Saved.KEEP, "the clocks a second apart: still the same");
+        s.pos = 1000; /* (played on here, offline) */
+        s.unsent = true;
+        s.placeAt = 4200;
+        eq(Saved.settle(s, tv, 0), Saved.SEND, "played here later: ours to Hemma");
+        eq(Saved.settle(s, tv, -300), Saved.TAKE, "the phone's clock ahead: the TV was later after all");
+        eq(Saved.settle(s, null, 0), Saved.SEND, "Hemma has none: ours");
+        s.placeAt = 3500;
+        eq(Saved.settle(s, tv, 0), Saved.TAKE, "watched here, then on the TV: the TV's, ours never sent");
+        s.unsent = false;
+        s.placeAt = 4100; /* (sent; Hemma's own record of it is older: a report it had before) */
+        eq(Saved.settle(s, tv, 0), Saved.KEEP, "ours is newer and Hemma has it");
+        s.placeAt = 0; /* (a place from before 2.7.1) */
+        eq(Saved.settle(s, tv, 0), Saved.TAKE, "a sent place with no time: Hemma's");
+        s.unsent = true;
+        eq(Saved.settle(s, tv, 0), Saved.SEND, "an unsent place with no time: sent, as before");
+        eq(Saved.settle(manifest(VIDEO), null, 0), Saved.KEEP, "nothing anywhere");
+        Saved.Item done = manifest(BOOK);
+        done.pos = 1700;
+        done.dur = 1800;
+        done.placeAt = 4400;
+        Saved.Place fin = ps != null ? ps.by.get("fedcba9876543210") : new Saved.Place();
+        eq(Saved.settle(done, fin, 0), Saved.TAKE, "the same place, finished on Hemma's side");
+        done.take(fin, 0);
+        check(done.ended && done.start() == 0, "finished: from the top, as Hemma's pages start it");
+        Saved.Item back2 = Saved.Item.fromJson(done.json());
+        eq(back2 != null ? back2.placeAt : -1, 4500L, "its time in item.json");
+        List<Saved.Item> many = new ArrayList<>();
+        for (int i = 0; i < 61; i++) {
+            Saved.Item it = manifest(VIDEO);
+            it.id = String.format("%016x", i + 1);
+            many.add(it);
+        }
+        List<String> asks = Saved.placesPaths(many);
+        eq(asks.size(), 3, "61 things: three asks");
+        eq(asks.get(2), "/media/offline/places.json?ids=000000000000003d", "the last on its own");
+        check(asks.get(0).startsWith("/media/offline/places.json?ids=0000000000000001,0000000000000002,") && Saved.hemmaPath(asks.get(0)),
+            "thirty ids, a path of Hemma's");
+        eq(Saved.placesPaths(new ArrayList<>()).size(), 0, "nothing saved: nothing to ask");
+
         /* a download that goes on */
         eq(Saved.resumeAt(0, 100), 0L, "nothing yet");
         eq(Saved.resumeAt(40, 100), 40L, "from what's there");

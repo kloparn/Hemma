@@ -4,6 +4,34 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.7.1 (2026-11-01)
+
+What you saved for offline in the Android app starts where you got to - on the TV, in a browser or in the app at home.
+
+### Fixed
+
+- **Saved for offline follows you both ways:** the app told Hemma where you got to in something saved, but never took
+  Hemma's place back. Watch further on the TV or in a browser and the copy on your phone still started where it was when
+  you saved it. Now whenever the app is at home - when it finds Hemma, when you put it away from Hemma's pages, and when
+  you open the Offline screen - each saved video and audiobook takes the newer of the two places: the one reached on the
+  phone goes to Hemma, the one reached anywhere else comes to the phone. Something watched to its end starts from the
+  top, as on Hemma's pages.
+- **An older place no longer wins:** a place reached on the phone, offline, was sent to Hemma even when you'd watched
+  further on the TV since - and Continue watching went back. The newer one wins now. (Places reached with an older app
+  have no time and are sent as before.)
+
+### For developers
+
+- modules/media/offline.c: `GET /media/offline/places.json?ids=<id>,<id>...` (at most 64; offline's who-may rules) =
+  `{"v":1,"now":<Hemma's clock>,"places":[{"id","pos","dur","done","at"}]}` - the viewer's `media_watch` rows,
+  `at` = `MediaWatch.updated`; ids without a row are left out.
+- apps/android: `Saved.places` / `placesPaths` (30 ids an ask) / `settle(item, place, skew)` = KEEP, SEND or TAKE, the
+  newer place winning (skew = Hemma's clock less the phone's); `Item.placeAt` (item.json `place_at`, the phone's clock),
+  `Item.take`; `Item.start()` is 0 once ended. `Offline.sync` asks Hemma's places first, then sends or takes each (a
+  404 = a Hemma before 2.7.1: unsent places are sent, as before); it runs from `MainActivity.home()`, `onStop` (2 s
+  later: the paused player's report first) and `OfflineActivity.onResume`. `Offline.base` / `agent` shared with
+  OfflineService. SavedTest: the rules.
+
 ## 2.7.0 (2026-11-01)
 
 Library settings in tabs, Manage one tap away, and how hard converting works - up to every core on one video.

@@ -334,11 +334,25 @@ public final class MainActivity extends Activity {
         home();
     }
 
-    /* Hemma reached (2.3): the places reached offline go to it, and what was left half-saved goes on */
+    /* Hemma reached (2.3): the places in what's saved, both ways (2.7.1: Offline.sync), and what was left half-saved
+       goes on */
     private void home() {
-        String agent = web.getSettings().getUserAgentString(), at = base;
-        new Thread(() -> Offline.sync(getApplicationContext(), at, agent), "hemma-sync").start();
+        sync(0);
         OfflineService.resume(this);
+    }
+
+    /* Offline.sync on a thread, after `wait` ms */
+    private void sync(long wait) {
+        String agent = web.getSettings().getUserAgentString(), at = base;
+        if (at == null) return;
+        new Thread(() -> {
+            try {
+                Thread.sleep(wait);
+            } catch (InterruptedException e) {
+                return;
+            }
+            Offline.sync(getApplicationContext(), at, agent);
+        }, "hemma-sync").start();
     }
 
     /* hemma-app:save?m=<manifest> and hemma-app:offline, from Hemma's own pages (2.3) - anything else of that kind
@@ -541,6 +555,9 @@ public final class MainActivity extends Activity {
         super.onStop();
         CookieManager.getInstance().flush();
         if (!listening) web.onPause(); /* (a video pauses when the screen goes off; an audiobook doesn't) */
+        /* put away while Hemma's pages were open (2.7.1): what was watched or heard here comes to what's saved - the last
+           chance before the phone leaves home. A moment later: the paused player's last report goes first. */
+        if (web.getVisibility() == View.VISIBLE) sync(2000);
     }
 
     @Override protected void onDestroy() {

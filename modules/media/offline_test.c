@@ -223,6 +223,53 @@ TEST(offline_manifests_say_what_to_save) {
     th_halt();
 }
 
+/* 2.7.1: where the viewer is in what the app saved, and when they got there - the app's copies take a newer place */
+TEST(offline_places_say_where_and_when) {
+    int adam = boot_with_offline();
+    int eva = th_person("Eva"), gus = person_as("Gus", ROLE_GUEST);
+    const MediaFile *film = find("Two Voices (2024).mp4"), *e1 = find("S01E01.Seeds.mp4"), *e2 = find("S01E02.Roots.mp4");
+    CHECK(film && e1 && e2 && book_id());
+    uint64_t fid = film->id, e1id = e1->id, e2id = e2->id, bid = book_id();
+    Buf keep = {0};
+    char form[120], path[200], want[200];
+
+    snprintf(form, sizeof form, "id=%016llx&pos=250&dur=600", (unsigned long long)fid); /* (as the TV reports) */
+    CHECK(th_act(eva, "media.progress", form).ok);
+    snprintf(form, sizeof form, "id=%016llx&pos=58&dur=60", (unsigned long long)e2id); /* (past 92%: done) */
+    CHECK(th_act(eva, "media.progress", form).ok);
+    snprintf(form, sizeof form, "id=%016llx&pos=30&dur=60", (unsigned long long)e1id); /* (someone else's place) */
+    CHECK(th_act(adam, "media.progress", form).ok);
+    snprintf(form, sizeof form, "id=%016llx&pos=400&dur=600", (unsigned long long)bid);
+    CHECK(th_act(eva, "media.progress", form).ok);
+    const MediaWatch *w = media_watch_get(eva, fid);
+    CHECK(w && w->updated > 0);
+    int64_t at = w->updated;
+
+    /* only what has a place, in the order asked; not-ids and a place of someone else's left out */
+    snprintf(path, sizeof path, "/media/offline/places.json?ids=%016llx,nothing,%016llx,%016llx,%016llx", (unsigned long long)fid,
+             (unsigned long long)e1id, (unsigned long long)e2id, (unsigned long long)bid);
+    const char *a = get(eva, "GET", path, &keep);
+    CHECK(str_starts(a, "HTTP/1.1 200"));
+    CHECK_HAS(a, "Cache-Control: no-store");
+    CHECK(str_starts(body(a), "{\"v\":1,\"now\":"));
+    long long now = strtoll(body(a) + strlen("{\"v\":1,\"now\":"), NULL, 10);
+    CHECK(now >= at);
+    snprintf(want, sizeof want, "\"places\":[{\"id\":\"%016llx\",\"pos\":250,\"dur\":600,\"done\":false,\"at\":%lld},", (unsigned long long)fid,
+             (long long)at);
+    CHECK_HAS(body(a), want);
+    snprintf(want, sizeof want, "{\"id\":\"%016llx\",\"pos\":58,\"dur\":60,\"done\":true,", (unsigned long long)e2id);
+    CHECK_HAS(body(a), want);
+    snprintf(want, sizeof want, "{\"id\":\"%016llx\",\"pos\":400,\"dur\":600,\"done\":false,", (unsigned long long)bid);
+    CHECK_HAS(body(a), want);
+    snprintf(want, sizeof want, "%016llx", (unsigned long long)e1id);
+    CHECK(!strstr(body(a), want));
+    CHECK(str_ends(body(a), "}]}"));
+    CHECK(str_ends(get(eva, "GET", "/media/offline/places.json", &keep), "\"places\":[]}")); /* (nothing asked) */
+    CHECK(str_starts(get(gus, "GET", path, &keep), "HTTP/1.1 403"));                     /* (as every manifest) */
+    buf_free(&keep);
+    th_halt();
+}
+
 TEST(offline_season_lists_and_who_may) {
     int adam = boot_with_offline();
     int eva = th_person("Eva"), leo = person_as("Leo", ROLE_CHILD), gus = person_as("Gus", ROLE_GUEST),
