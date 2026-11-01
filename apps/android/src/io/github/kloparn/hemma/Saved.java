@@ -260,8 +260,9 @@ public final class Saved {
         public final List<Chapter> chapters = new ArrayList<>();
         public String state = "saving"; /* saving | ready | failed */
         public String why = "";         /* failed: room | forbidden | gone | signin | network | bad */
-        public double pos = -1, dur;    /* the place reached offline (-1 = none yet) */
+        public double pos = -1, dur;    /* the place reached offline (-1 = none yet) - or Hemma's, when newer (2.7.1) */
         public boolean ended, unsent;   /* unsent: Hemma hasn't heard of that place yet */
+        public long placeAt;            /* when pos was reached, by the PHONE's clock (unix s; 0 = not known) */
 
         public boolean book() { return "book".equals(kind); }
 
@@ -282,8 +283,10 @@ public final class Saved {
             return all <= 0 ? 0 : (int) Math.min(100, done() * 100 / all);
         }
 
-        /** Where playing starts: the place reached offline, else Hemma's when it was saved; from the top in its last 5 s */
+        /** Where playing starts: the place reached offline (or Hemma's newer one), else Hemma's when it was saved; from the
+         *  top once it was seen to its end, or in its last 5 s - as Hemma's pages do */
         public double start() {
+            if (ended) return 0;
             double at = pos >= 0 ? pos : resumeS, len = length();
             return at < 0 || (len > 0 && at >= len - 5) ? 0 : at;
         }
@@ -409,6 +412,7 @@ public final class Saved {
             m.put("dur", dur);
             m.put("ended", ended);
             m.put("unsent", unsent);
+            m.put("place_at", placeAt);
             return write(m);
         }
 
@@ -445,7 +449,17 @@ public final class Saved {
             it.dur = num(m, "dur", 0);
             it.ended = bool(m, "ended");
             it.unsent = bool(m, "unsent");
+            it.placeAt = (long) num(m, "place_at", 0);
             return it;
+        }
+
+        /** Hemma's place, newer than this one, taken (skew = Hemma's clock less the phone's, seconds) */
+        public void take(Place p, long skew) {
+            pos = p.pos;
+            if (p.dur > 0) dur = p.dur;
+            ended = p.done;
+            unsent = false;
+            placeAt = p.at - skew;
         }
 
         /** What Hemma's media.progress takes for the place reached offline (a book's in the whole book) */
@@ -460,6 +474,82 @@ public final class Saved {
         for (Item it : all)
             if (it.unsent && it.pos >= 0) out.add(it);
         return out;
+    }
+
+    /* ------------------------------------------------------------------ the place, both ways (2.7.1) */
+
+    /** Where Hemma says the viewer is in one saved thing (GET /media/offline/places.json) */
+    public static final class Place {
+        public double pos, dur;
+        public boolean done;
+        public long at; /* when they got there, by HEMMA's clock (unix s) */
+    }
+
+    /** Hemma's answer: its clock ("now") and its places by id; null = not that answer */
+    public static final class Places {
+        public long now;
+        public final Map<String, Place> by = new LinkedHashMap<>();
+    }
+
+    public static Places places(String json) {
+        Object o;
+        try {
+            o = parse(json);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+        if (!(o instanceof Map) || num((Map<?, ?>) o, "v", 0) != 1) return null;
+        Map<?, ?> m = (Map<?, ?>) o;
+        Places out = new Places();
+        out.now = (long) num(m, "now", 0);
+        if (out.now <= 0) return null;
+        for (Object e : list(m, "places")) {
+            if (!(e instanceof Map)) continue;
+            Map<?, ?> f = (Map<?, ?>) e;
+            Place p = new Place();
+            p.pos = Math.max(0, num(f, "pos", 0));
+            p.dur = Math.max(0, num(f, "dur", 0));
+            p.done = bool(f, "done");
+            p.at = (long) num(f, "at", 0);
+            if (validId(str(f, "id"))) out.by.put(str(f, "id"), p);
+        }
+        return out;
+    }
+
+    /** Hemma's addresses for the places of these saved things: a few dozen ids each (an address stays under hemmaPath's
+     *  600 characters) */
+    public static List<String> placesPaths(List<Item> all) {
+        List<String> out = new ArrayList<>();
+        StringBuilder b = null;
+        int n = 0;
+        for (Item it : all) {
+            if (!validId(it.id)) continue;
+            if (b == null || n == PLACES_EACH) {
+                if (b != null) out.add(b.toString());
+                b = new StringBuilder("/media/offline/places.json?ids=");
+                n = 0;
+            }
+            b.append(n++ > 0 ? "," : "").append(it.id);
+        }
+        if (b != null) out.add(b.toString());
+        return out;
+    }
+
+    static final int PLACES_EACH = 30;
+
+    public static final int KEEP = 0, SEND = 1, TAKE = 2;
+
+    /** One saved thing's place against Hemma's (p: null = Hemma has none; skew = Hemma's clock less the phone's): the
+     *  newer one wins. SEND = ours, reached here later, goes to Hemma; TAKE = Hemma's (watched on the TV, in a browser,
+     *  in the app at home since) becomes ours; KEEP = nothing to do. A place reached here before 2.7.1 has no time: it's
+     *  sent, as it was then. */
+    public static int settle(Item it, Place p, long skew) {
+        boolean ours = it.pos >= 0 && it.placeAt > 0;
+        if (it.unsent && it.pos >= 0 && (p == null || it.placeAt <= 0 || it.placeAt + skew >= p.at)) return SEND;
+        if (p == null) return KEEP;
+        if (!it.unsent && ours && it.placeAt + skew >= p.at) return KEEP;
+        if (!it.unsent && Math.abs(p.pos - it.pos) < 1 && p.done == it.ended) return KEEP; /* (the same: nothing to write) */
+        return TAKE;
     }
 
     /* ------------------------------------------------------------------ a book's place */

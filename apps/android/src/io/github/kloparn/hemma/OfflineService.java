@@ -131,17 +131,9 @@ public final class OfflineService extends Service {
         stopSelf();
     }
 
-    private String base() { return getSharedPreferences("hemma", MODE_PRIVATE).getString("base", null); }
+    private String base() { return Offline.base(this); }
 
-    private String agent() { return System.getProperty("http.agent", "Android") + " HemmaApp/" + version(); }
-
-    private String version() {
-        try {
-            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-        } catch (Exception e) {
-            return "?";
-        }
-    }
+    private String agent() { return Offline.agent(this); }
 
     private void toast(int res, Object... args) {
         String s = getString(res, args);
@@ -209,6 +201,7 @@ public final class OfflineService extends Service {
             it.dur = had.dur;
             it.ended = had.ended;
             it.unsent = had.unsent;
+            it.placeAt = had.placeAt;
             it.savedAt = had.savedAt;
         }
         if (it.savedAt == 0) it.savedAt = System.currentTimeMillis();

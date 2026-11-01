@@ -94,6 +94,7 @@ final class Offline {
         if (dur > 0) it.dur = dur;
         it.ended = ended;
         it.unsent = true;
+        it.placeAt = System.currentTimeMillis() / 1000;
         put(c, it);
     }
 
@@ -178,12 +179,16 @@ final class Offline {
         }
     }
 
-    /** The places reached offline, to Hemma (media.progress, as its own pages report them) - on a thread; each one
-     *  Hemma took is marked sent. A redirect to the sign-in page isn't taking it. */
+    /** The place in each saved thing, both ways (2.7.1; owner, 2026-11-01: "it works offline -> online but not the
+     *  opposite") - on a thread, whenever the app is at home (Hemma found, the app put away, the Offline screen opened):
+     *  Hemma's places first (places.json, with its clock), then for each thing the newer place wins (Saved.settle) - one
+     *  reached here goes to Hemma (media.progress, as its own pages report them; marked sent once Hemma took it), one
+     *  reached on the TV or in a browser since comes here. An older Hemma has no places.json: what's unsent is sent, as
+     *  before. Not at home, or signed out: nothing, until next time. */
     static void sync(Context c, String base, String agent) {
         if (!syncing.compareAndSet(false, true)) return; /* (one at a time: two finds of Hemma sent each place twice) */
         try {
-            send(c, base, agent);
+            settle(c, base, agent);
         } finally {
             syncing.set(false);
         }
@@ -191,33 +196,85 @@ final class Offline {
 
     private static final java.util.concurrent.atomic.AtomicBoolean syncing = new java.util.concurrent.atomic.AtomicBoolean();
 
-    private static void send(Context c, String base, String agent) {
-        for (Saved.Item it : Saved.toSend(all(c))) {
+    private static void settle(Context c, String base, String agent) {
+        List<Saved.Item> all = all(c);
+        java.util.Map<String, Saved.Place> hemma = new java.util.HashMap<>();
+        long skew = 0;
+        boolean known = true;
+        for (String path : Saved.placesPaths(all)) {
             try {
-                HttpURLConnection h = open(base, "/a/media.progress", "POST", agent);
-                h.setDoOutput(true);
-                h.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
-                h.setRequestProperty("Origin", base);
-                h.setRequestProperty("Referer", base + "/");
-                byte[] body = it.progressForm().getBytes(StandardCharsets.UTF_8);
-                h.setFixedLengthStreamingMode(body.length);
-                try (OutputStream o = h.getOutputStream()) {
-                    o.write(body);
+                Saved.Places ps = Saved.places(text(base, path, agent));
+                if (ps == null) {
+                    known = false;
+                    break;
                 }
-                int code = h.getResponseCode();
-                String to = h.getHeaderField("Location");
-                h.disconnect();
-                boolean took = (code >= 200 && code < 300) || (code >= 300 && code < 400 && (to == null || !to.contains("/login")));
-                if (!took) continue;
+                skew = ps.now - System.currentTimeMillis() / 1000; /* (Hemma's clock less ours) */
+                hemma.putAll(ps.by);
+            } catch (Refused e) {
+                if (e.code != 404) return; /* (signed out, or not this person's to ask) */
+                known = false;             /* (a Hemma from before 2.7.1) */
+                break;
+            } catch (IOException e) {
+                return; /* (not at home after all) */
+            }
+        }
+        for (Saved.Item it : all) {
+            Saved.Place p = hemma.get(it.id);
+            int what = known ? Saved.settle(it, p, skew) : it.unsent && it.pos >= 0 ? Saved.SEND : Saved.KEEP;
+            if (what == Saved.SEND && !send(c, base, agent, it)) return;
+            if (what == Saved.TAKE) {
                 synchronized (Offline.class) {
-                    Saved.Item now = get(c, it.id);
-                    if (now != null && Math.abs(now.pos - it.pos) < 0.5) { /* (not moved on meanwhile) */
-                        now.unsent = false;
+                    Saved.Item now = get(c, it.id); /* (again: a player may have moved it on meanwhile) */
+                    if (now != null && Saved.settle(now, p, skew) == Saved.TAKE) {
+                        now.take(p, skew);
                         put(c, now);
                     }
                 }
-            } catch (IOException ignored) { /* (not at home after all: next time) */
             }
         }
+    }
+
+    /** One place to Hemma; false = Hemma can't be reached (the rest waits too). A redirect to the sign-in page isn't
+     *  taking it. */
+    private static boolean send(Context c, String base, String agent, Saved.Item it) {
+        try {
+            HttpURLConnection h = open(base, "/a/media.progress", "POST", agent);
+            h.setDoOutput(true);
+            h.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+            h.setRequestProperty("Origin", base);
+            h.setRequestProperty("Referer", base + "/");
+            byte[] body = it.progressForm().getBytes(StandardCharsets.UTF_8);
+            h.setFixedLengthStreamingMode(body.length);
+            try (OutputStream o = h.getOutputStream()) {
+                o.write(body);
+            }
+            int code = h.getResponseCode();
+            String to = h.getHeaderField("Location");
+            h.disconnect();
+            boolean took = (code >= 200 && code < 300) || (code >= 300 && code < 400 && (to == null || !to.contains("/login")));
+            if (!took) return true;
+            synchronized (Offline.class) {
+                Saved.Item now = get(c, it.id);
+                if (now != null && Math.abs(now.pos - it.pos) < 0.5) { /* (not moved on meanwhile) */
+                    now.unsent = false;
+                    put(c, now);
+                }
+            }
+            return true;
+        } catch (IOException e) {
+            return false; /* (not at home after all: next time) */
+        }
+    }
+
+    /** The Hemma the app last found, and the app's name as its requests give it - for a sync from the Offline screen */
+    static String base(Context c) { return c.getSharedPreferences("hemma", Context.MODE_PRIVATE).getString("base", null); }
+
+    static String agent(Context c) {
+        String v = "?";
+        try {
+            v = c.getPackageManager().getPackageInfo(c.getPackageName(), 0).versionName;
+        } catch (Exception ignored) {
+        }
+        return System.getProperty("http.agent", "Android") + " HemmaApp/" + v;
     }
 }

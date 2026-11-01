@@ -5,6 +5,9 @@
  *  - GET /media/offline/<id>.json: a video's (its file id) or an audiobook's manifest - its title, picture, length, the
  *    viewer's place, its files (a video's ONE address with the viewer's sound: media_file_src), its text subtitles, a
  *    book's chapters. GET /media/offline/season/<series id>-<season>.json: that season's episodes' manifests, in order.
+ *  - GET /media/offline/places.json?ids=<id>,<id>... (2.7.1): where the viewer is in each of those now, and when they got
+ *    there by Hemma's clock - so a saved copy starts where they got to on the TV or in a browser since (the app's
+ *    Saved.settle: the newer place wins, the phone's or Hemma's).
  *  - Who may: members, admins and children (a child only what's open to them - kids.c); guests and display accounts
  *    get 403, what isn't there (or isn't a child's) 404.
  *  - The buttons are plain links the app's WebView takes (MainActivity: hemma-app:save?m=<manifest>, hemma-app:offline),
@@ -148,6 +151,36 @@ static bool season_list(Ctx *c, const MediaSeries *s, int season, Buf *j) {
     return n > 0;
 }
 
+/* The viewer's place in each of ?ids= (16 hex each, ',' between; at most PLACES_MAX): {"v","now","places":[{"id","pos",
+   "dur","done","at"}]} - only those with a place (none = never watched, or forgotten), "at" = when it was last reported
+   (MediaWatch.updated), "now" = Hemma's clock, so the phone can set its own clock's times against it. A row is the
+   viewer's own whatever it's of: no kids rule needed (a child has places only in what they could watch). */
+#define PLACES_MAX 64
+static void places(Ctx *c, Buf *j) {
+    buf_printf(j, "{\"v\":%d,\"now\":%lld,\"places\":[", OFFLINE_FORMAT, (long long)c->now);
+    int v = ctx_viewer(c), n = 0;
+    const char *p = ctx_q(c, "ids");
+    for (int asked = 0; v && *p && asked < PLACES_MAX; asked++) {
+        size_t len = strcspn(p, ",");
+        char hex[17];
+        uint64_t id;
+        const MediaWatch *w = NULL;
+        if (len == 16) {
+            memcpy(hex, p, 16);
+            hex[16] = '\0';
+            if (media_parse_id(hex, &id)) w = media_watch_get(v, id);
+        }
+        if (w) {
+            media_id_hex(id, hex);
+            buf_printf(j, "%s{\"id\":\"%s\",\"pos\":%d,\"dur\":%d,\"done\":%s,\"at\":%lld}", n++ ? "," : "", hex, w->pos, w->dur,
+                       w->done ? "true" : "false", (long long)w->updated);
+        }
+        p += len;
+        if (*p == ',') p++;
+    }
+    buf_puts(j, "]}");
+}
+
 static void reply_json(Conn *conn, const Buf *j) {
     conn_reply(conn, 200, "application/json; charset=utf-8", j->p, j->len, "Cache-Control: no-store\r\n");
 }
@@ -190,6 +223,9 @@ bool media_offline_http(Ctx *c, Conn *conn, HttpReq *r) {
             hex[16] = '\0';
             found = media_parse_id(hex, &id) && season_list(c, media_series(id), (int)season, &j);
         }
+    } else if (str_eq(rest, "places.json")) {
+        places(c, &j);
+        found = true;
     } else if (hex_json(rest, &id)) {
         const MediaFile *f = media_file(id);
         const MediaBook *bk = f && f->type == MF_VIDEO ? NULL : media_book(id);

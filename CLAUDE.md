@@ -1340,8 +1340,17 @@ apps/android/    THE HEMMA APP FOR ANDROID (2.0; docs/decisions/0011, docs/andro
                  the pure part (a small JSON reader/writer, the manifest/item model, a book's whole-book place <-> part +
                  offset, Range resume, which places to send) - test/SavedTest.java, run by both builds like NetTest.
                  Offline.java = the store (getExternalFilesDir/offline/<id>/: item.json, files, poster ~512 px, .vtt) + HTTP
-                 (the WebView's cookie, private addresses only) + the sync: open() POSTs every unsent place to
-                 /a/media.progress (Origin/Referer = base), one sync at a time. OfflineService = a dataSync foreground
+                 (the WebView's cookie, private addresses only) + the sync, BOTH WAYS (2.7.1; owner, 2026-11-01: "works
+                 offline -> online but not the opposite"): Offline.sync first GETs /media/offline/places.json?ids= (30
+                 ids an ask: Saved.placesPaths) - Hemma's places + its clock - then Saved.settle(item, place, skew) per
+                 item: the NEWER place wins (Item.placeAt = when pos was reached, the phone's clock; skew = Hemma's now less
+                 the phone's): SEND = POST /a/media.progress (Origin/Referer = base), TAKE = Item.take (Hemma's pos/dur/
+                 done, placeAt on the phone's clock), KEEP; a 404 (a Hemma before 2.7.1) = every unsent place sent, as
+                 before; a place with no time (an app before 2.7.1) is sent while unsent. One sync at a time; it runs from
+                 MainActivity.home() (Hemma found), onStop while Hemma's page shows (2 s later: the paused player's last
+                 report first) and OfflineActivity.onResume. Item.start() = 0 once ended (as media_resume_at). Not done: a
+                 sync in the background (JobScheduler) - a place reached on the TV after the app was last open at home
+                 doesn't reach the phone. OfflineService = a dataSync foreground
                  service downloading ITSELF (HttpURLConnection, .part + Range resume, one file at a time, StatFs + 200 MB
                  margin) - not DownloadManager (another process: Android 17's local-network permission, and the cookie).
                  OfflineActivity = the Offline screen (also the finder panel's "Offline (N)" when Hemma can't be reached);
@@ -2269,6 +2278,11 @@ Manage view), HOW HARD TO WORK (Low/Medium/Full for Hemma's computer and each ad
 (one video over every core - on Hemma's computer and on a device, joined by the server; decision 0014), an upload box
 making HEVC H.264 on the way, and a device's copy taking its original's place as the queue's do. A big PR by the owner's
 choice.
+2.7.1 (branch offline/fixes; owner, 2026-11-01: "seems to work offline -> online but not the opposite") = SAVED FOR OFFLINE
+FOLLOWS YOU BOTH WAYS: GET /media/offline/places.json?ids=<id>,... (at most 64) = {"v","now","places":[{"id","pos","dur",
+"done","at" = MediaWatch.updated}]} for the viewer; the app's Offline.sync asks it first and the newer place wins (see
+apps/android) - a saved copy starts where the TV or a browser got to, and an older place from the phone no longer
+overwrites a newer one.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
