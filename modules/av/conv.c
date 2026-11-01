@@ -275,6 +275,13 @@ static int64_t ticks(int64_t ns, int64_t timescale) { return ns / NS * timescale
    a 23-minute DuckTales episode, the picture running ahead of its sound. */
 static int64_t at_tick(int64_t ns) { return ns / NS * 90000 + (ns % NS * 90000 + NS / 2) / NS; }
 
+/* (2.6.1) where an MP4's edit list stops showing a track (MkvTrack.end), as ns past `from` (the copy's first time on
+   that track): -1 = none, or not believable */
+static int64_t end_after(const MkvTrack *t, int64_t from) {
+    if (t->end <= 0 || t->end >= MAX_TS || from == MKV_NOPTS || from <= -MAX_TS || t->end <= from) return -1;
+    return t->end - from;
+}
+
 static void append(char *s, size_t cap, const char *more) {
     size_t n = strlen(s);
     if (n < cap) snprintf(s + n, cap - n, "%s", more);
@@ -478,6 +485,8 @@ static void vdec_flush(Conv *c) {
 static bool decoded(Conv *c) {
     Mpeg2Frame pf;
     while (!c->failed && vdec_frame(c, &pf)) {
+        if (pf.pts != MKV_NOPTS && pf.pts >= c->vt->end && end_after(c->vt, c->v0) > 0) continue; /* (2.6.1) past an
+                                                                    MP4's edit list: decoded for the others, never shown */
         if (pf.width != c->w || pf.height != c->h) { /* a later sequence header changed the size: the
                                                         deinterlacer and the encoder are set up for one */
             char sizes[64];
@@ -1295,6 +1304,10 @@ static bool setup_audio(Conv *c, struct ConvAudio *a, bool is_def) {
         words = a->mp3 ? " · MP3 copied" : " · AAC copied";
     }
     if (lead > 0) at.delay = ticks(lead, at.timescale);
+    /* (2.6.1) where an MP4's edit list stops the sound, on this track's media clock: made AAC from the first sample
+       heard (after the priming), Opus from its first block (after the pre-skip), the rest from its first block */
+    int64_t e = end_after(a->t, a->code && lead < 0 ? c->v0 : a->a0);
+    if (e > 0) at.end = (a->code ? AAC_PRIMING : a->opus ? a->preskip : 0) + ticks(e, at.timescale);
     if (is_def) append(c->j->what, sizeof c->j->what, words);
     a->track = mp4_add_track(c->mp4, &at);
     return a->track >= 0 || fail(c, "The MP4 writer refused a track", NULL);
@@ -1366,6 +1379,9 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         if (c->vt->disp_width && c->vt->disp_height && c->vt->disp_unit == 0)
             sar_of(c->vt->width, c->vt->height, c->vt->disp_width, c->vt->disp_height, &vt.sar_num, &vt.sar_den);
         vt.start = at_tick(c->vshift); /* the first picture at movie time 0 (as copy_video places it) */
+        int64_t e = end_after(c->vt, c->dts[0]); /* (2.6.1) what an MP4's edit list hid stays hidden - kept: a picture
+                                                    shown before it may be predicted from it */
+        if (e > 0 && c->vshift < MAX_TS) vt.end = at_tick(e + c->vshift);
         snprintf(c->j->what, sizeof c->j->what, c->vcopy == MP4_HEVC ? "HEVC copied" : c->vcopy == MP4_AV1 ? "AV1 copied" : "H.264 copied");
     }
     snprintf(vt.lang, sizeof vt.lang, "und");

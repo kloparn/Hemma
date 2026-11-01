@@ -1489,6 +1489,32 @@ static size_t add_hevc(Stream *s, const HwStream *hs, uint8_t *hvcc, size_t cap)
     return hw_hvcc(hs, hvcc, cap);
 }
 
+/* (2.6.1) a Stream as an MP4's only track (mp4.c's writer, 1 ms ticks): the blocks in their order, each block's ms its
+   presentation time (the decode times their sorted ms, the edit list's start what keeps composition offsets >= 0);
+   shown_ms > 0: the edit list stops showing it there */
+static void mp4_of(W *w, int codec, const uint8_t *cfg, size_t cfg_len, int width, int height, const Stream *v, int shown_ms) {
+    memset(w, 0, sizeof *w);
+    static int dts[MAX_BLOCKS];
+    for (int i = 0; i < v->n; i++) { /* (insertion sort: a few blocks) */
+        int k = i;
+        for (; k > 0 && dts[k - 1] > v->ms[i]; k--) dts[k] = dts[k - 1];
+        dts[k] = v->ms[i];
+    }
+    int shift = 0;
+    for (int i = 0; i < v->n; i++) shift = dts[i] - v->ms[i] > shift ? dts[i] - v->ms[i] : shift;
+    Mp4Out o = {w, mem_write, mem_write_at};
+    Mp4 *m = mp4_new(&o, 0, 1 << 16);
+    Mp4Track t = {.codec = codec, .timescale = 1000, .config = cfg, .config_len = cfg_len, .width = width,
+                  .height = height, .start = shift, .end = shown_ms > 0 ? shift + shown_ms : 0};
+    bool ok = mp4_add_track(m, &t) == 0 && mp4_begin(m);
+    for (int i = 0; ok && i < v->n; i++) {
+        int next = i + 1 < v->n ? dts[i + 1] : dts[i] + (i ? dts[i] - dts[i - 1] : 40);
+        ok = mp4_sample(m, 0, s_block(v, i), s_size(v, i), (uint32_t)(next - dts[i]), v->ms[i] - dts[i] + shift, v->key[i]);
+    }
+    CHECK(ok && mp4_finish(m));
+    mp4_free(m);
+}
+
 static HwStream hevc_stream(int w, int h, int depth, unsigned flags, int frames) {
     HwStream hs;
     memset(&hs, 0, sizeof hs);
@@ -2540,6 +2566,54 @@ TEST(conv_makes_hevc_h264_when_asked) {
     CHECK(j4.unsupported);
     CHECK_STR(j4.err, "Its HEVC picture uses 4:2:2 chroma, which the converter can't decode yet");
     free(in.p), free(out.p);
+    s_free(&v);
+}
+
+/* the k-th track's sample sizes, from its stsz (at most cap); -1 without one */
+static int sample_sizes(const W *w, int k, uint32_t *d, int cap) {
+    Bx t, b;
+    if (!trak_k(w, k, &t) || !bx_path(t, "mdia/minf/stbl/stsz", &b) || b.n < 12) return -1;
+    int n = 0;
+    for (uint32_t i = 0, count = be32(b.p + 8); i < count && n < cap && 12 + (i + 1) * 4 <= b.n; i++) d[n++] = be32(b.p + 12 + i * 4);
+    return n;
+}
+
+/* (2.6.1) HEVC in an MP4 whose edit list stops before its last picture (Friends': the encoder's last two, 83 ms the
+   copy showed and the original didn't): the hidden picture is still decoded - the shown B-picture before it is
+   predicted from it - but left out of the H.264 copy; what's shown comes out as without the cut */
+TEST(conv_leaves_out_what_an_mp4_edit_list_hides) {
+    static Stream v;
+    uint8_t hvcc[2048];
+    HwStream hs = hevc_stream(64, 48, 8, HW_RANDOM | HW_TMVP, 9); /* I0 P2 B1 P4 B3 P6 B5 P8 B7 */
+    hs.rate_num = 30000, hs.rate_den = 1001;
+    size_t nh = add_hevc(&v, &hs, hvcc, sizeof hvcc);
+    W whole, cut, out1, out2;
+    mp4_of(&whole, MP4_HEVC, hvcc, nh, 64, 48, &v, 0);
+    mp4_of(&cut, MP4_HEVC, hvcc, nh, 64, 48, &v, frame_ms(8)); /* pictures 0-7 shown, 8 (B7's reference) hidden */
+    AvConvJob j1 = {0}, j2 = {0};
+    j1.h264 = j2.h264 = true;
+    Seen s;
+    CHECK(run(&whole, &out1, &j1, &s));
+    CHECK(run(&cut, &out2, &j2, &s));
+    CHECK_STR(j2.err, "");
+    int n1[2], n2[2];
+    counts(&out1, n1);
+    counts(&out2, n2);
+    CHECK_INT(n1[0], 9);
+    CHECK_INT(n2[0], 8);
+    uint32_t a[16], b[16]; /* the same eight pictures, B7 too: its hidden reference was decoded */
+    CHECK_INT(sample_sizes(&out1, 0, a, 16), 9);
+    CHECK_INT(sample_sizes(&out2, 0, b, 16), 8);
+    for (int i = 0; i < 8; i++) CHECK_INT((int)b[i], (int)a[i]);
+    size_t m1 = box(&out1, "mdat"), m2 = box(&out2, "mdat");
+    uint32_t first8 = 0;
+    for (int i = 0; i < 8; i++) first8 += a[i];
+    CHECK(m1 && m2);
+    if (m1 && m2) { /* (an mdat's header: 8 bytes, or 16 with a 64-bit size) */
+        m1 += be32(out1.p + m1) == 1 ? 16 : 8, m2 += be32(out2.p + m2) == 1 ? 16 : 8;
+        CHECK(out1.len >= m1 + first8 && out2.len >= m2 + first8 && !memcmp(out1.p + m1, out2.p + m2, first8));
+    }
+    free(whole.p), free(cut.p), free(out1.p), free(out2.p);
     s_free(&v);
 }
 

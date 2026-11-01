@@ -26,8 +26,9 @@
  * ('fLaC' + dfLa) and AC-3 ('ac-3' + dac3, for Safari). Samples are given in
  * decode order with a duration and a composition offset (pts - dts) in the
  * track's own timescale; interleave tracks by time (chunks form as tracks
- * alternate). Edit lists appear only when a track starts later or doesn't
- * start at media time 0. Files over 4 GB switch to co64 by themselves.
+ * alternate). Edit lists appear only when a track starts later, doesn't
+ * start at media time 0 or stops before its end (2.6.1: Mp4Track.end).
+ * Files over 4 GB switch to co64 by themselves.
  *
  * Several sound tracks (2.2: the converter keeps every language): each its own trak in alternate group 1,
  * its language in mdhd, its name in hdlr, only the one that plays by default tkhd-enabled (Mp4Track.off on
@@ -76,6 +77,9 @@ typedef struct {
     int64_t start; /* media time shown at movie time 0: the first pts when it isn't 0, or an AAC
                       encoder's priming (1024 samples) so players skip it and stay in sync */
     int64_t delay; /* nothing for this long before the track starts (audio that begins late) */
+    int64_t end;   /* (2.6.1) media time where showing stops: what an original's edit list hid stays hidden (its samples
+                      kept - later ones may be predicted from them); 0, or not past start and before the last sample's
+                      end = shown to the end */
 } Mp4Track;
 
 #define MP4_FRAGMENTED 1

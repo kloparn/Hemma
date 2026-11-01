@@ -5,7 +5,8 @@
  * An ISO BMFF (MP4, M4V) or QuickTime (MOV) file: the moov read whole (at most MP4_MOOV_CAP), each trak's sample
  * table turned into a list of samples (file offset, size, decode time, composition offset, key), and mkv_next()
  * handing out every track's samples in file-offset order - as stored, interleaved - with their presentation time in
- * ns (the composition time less the edit list's media_time, plus an empty edit's delay). Codecs are named as
+ * ns (the composition time less the edit list's media_time, plus an empty edit's delay; where its edit ends,
+ * MkvTrack.end - 2.6.1: Friends' MP4 hid its last two pictures that way). Codecs are named as
  * Matroska names them ("V_MPEG4/ISO/AVC" with the avcC as CodecPrivate, "A_AAC" with the AudioSpecificConfig, "A_AC3"
  * ...), so the converter's table and checks work as they are; MkvTrack.fourcc keeps the sample entry. A text track
  * (QuickTime chapters, timecodes) is no track to it (type 0, no samples handed out); tx3g subtitles are S_TEXT/UTF8,
@@ -442,6 +443,7 @@ static const char *m4_trak(Mkv *m, Span trak, uint32_t movie_ts, const uint32_t 
                 continue;
             }
             if (mt > 0 && mt < ((int64_t)1 << 50)) k->shift = mt;
+            if (i + 1 == ne && dur > 0 && movie_ts) t->end = k->delay_ns + m4_ns(dur, movie_ts); /* (2.6.1: the last edit's end) */
             break;
         }
     }

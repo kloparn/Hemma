@@ -53,6 +53,7 @@ typedef struct {
     int frames; /* pictures (25 a second), with B-frames: decode I P B B P B B ... */
     int vts, vdelta; /* the pictures' timescale and length in it (0: 90000 and 3600 - 25 a second) */
     int snd_frames;  /* Dolby frames (0: as long as the pictures) */
+    int hide;        /* (2.6.1) the last pictures' worth the edit lists hide - the picture's and the sound's */
 } Make;
 
 /* What the file holds: every picture's and the sound's presentation times (ns), as mkv.h reads them */
@@ -60,6 +61,7 @@ typedef struct {
     int64_t vpts[800];
     int nv, na;
     int64_t a_first, a_end;
+    int64_t vend, aend, dur; /* (2.6.1) where the edit lists stop showing each (MkvTrack.end), the file's length */
     char vcodec[64], acodec[64]; /* (MkvTrack.codec's size) */
 } Seen;
 
@@ -85,6 +87,8 @@ static bool make(Mem *out, const Make *o) {
     uint32_t vts = o->vts ? (uint32_t)o->vts : 90000, vd = o->vdelta ? (uint32_t)o->vdelta : 3600;
     Mp4Track vt = {.codec = o->hev1 ? MP4_HEVC : MP4_H264, .timescale = vts, .config = avcc, .config_len = avcc_len,
                    .width = 64, .height = 48, .start = 2 * vd}; /* (B-frames: two pictures' worth of reordering) */
+    int64_t shown = (int64_t)(o->frames - o->hide) * vd; /* (what the edit lists show: in the pictures' ticks) */
+    if (o->hide) vt.end = vt.start + shown;
     int v = mp4_add_track(m, &vt), a = -1, t = -1, s = -1;
     static uint8_t snd[64 * 768];
     size_t nsnd = 0, fsize = 0;
@@ -100,6 +104,7 @@ static bool make(Mem *out, const Make *o) {
         mp4_dac3(snd, 768, dac3); /* (E-AC-3: the 'ec-3'/'dec3' patched in after - the reader goes by the frames) */
         Mp4Track at = {.codec = MP4_AC3, .timescale = 48000, .config = dac3, .config_len = 3, .channels = 2, .sample_rate = 48000};
         memcpy(at.lang, "eng", 4);
+        if (o->hide) at.end = shown * 48000 / (int64_t)vts;
         a = mp4_add_track(m, &at);
     } else if (o->sound == SND_AAC || o->sound == SND_MP3) {
         static const uint8_t asc[2] = {0x11, 0x90};
@@ -159,8 +164,9 @@ static bool look(const Mem *f, Seen *s, char *err, size_t cap) {
     Mkv *m = mkv_open(&r, err, cap);
     if (!m) return false;
     const MkvTrack *v = mkv_find_track(m, MKV_VIDEO), *a = mkv_find_track(m, MKV_AUDIO);
-    if (v) snprintf(s->vcodec, sizeof s->vcodec, "%s", v->codec);
-    if (a) snprintf(s->acodec, sizeof s->acodec, "%s", a->codec);
+    if (v) snprintf(s->vcodec, sizeof s->vcodec, "%s", v->codec), s->vend = v->end;
+    if (a) snprintf(s->acodec, sizeof s->acodec, "%s", a->codec), s->aend = a->end;
+    s->dur = mkv_duration(m);
     s->a_first = INT64_MAX;
     MkvFrame fr;
     while (mkv_next(m, &fr) > 0) {
@@ -347,6 +353,7 @@ TEST(mp4read_fuzz_seeds) {
         {"h264-mp3.mp4", {.sound = SND_MP3, .frames = 10}},
         {"hevc-aac.mp4", {.sound = SND_AAC, .frames = 10, .hev1 = true}},
         {"fragmented.mp4", {.sound = SND_AAC, .frames = 20, .fragmented = true}},
+        {"h264-ac3-edit-end.mp4", {.sound = SND_AC3, .frames = 10, .hide = 2}}, /* (2.6.1) */
     };
     for (size_t i = 0; i < countof(SEEDS); i++) {
         Mem m;
@@ -382,5 +389,41 @@ TEST(mp4read_keeps_film_rate_pictures_in_place) {
     }
     CHECK(worst <= 11112); /* (one tick of 90 kHz: rounding, never adding up) */
     CHECK(a.vpts[599] > 24900000000LL); /* (the last at 599 x 1001/24000 s = 24.98 s) */
+    free(in.p), free(out.p);
+}
+
+/* (2.6.1) An edit list that stops before the last pictures (Friends' MP4 hid its last two - the encoder's tail - and the
+   copy showed them, 83 ms): read as MkvTrack.end, and the copy shows no more than the original - every picture kept (a
+   shown one may be predicted from a hidden one), its own edit lists ending where the original's did, the sound's too */
+TEST(mp4read_keeps_what_an_edit_list_hides_hidden) {
+    Make o = {.sound = SND_AC3, .frames = 20, .hide = 3};
+    Mem in, out;
+    CHECK(make(&in, &o));
+    Seen a, b;
+    char err[160];
+    CHECK(look(&in, &a, err, sizeof err));
+    CHECK_INT(a.nv, 20); /* (every picture read: the hidden ones are there to be decoded) */
+    CHECK(a.vend == 680000000LL); /* 17 pictures of 40 ms */
+    CHECK(a.aend == 680000000LL);
+    AvConvJob j;
+    CHECK(convert(&in, &out, &j));
+    CHECK_HAS(j.what, "H.264 copied");
+    CHECK_HAS(j.what, "Dolby Digital → AAC");
+    CHECK(look(&out, &b, err, sizeof err));
+    CHECK_INT(b.nv, 20);
+    CHECK(b.vend - a.vend <= 1000000 && a.vend - b.vend <= 1000000); /* (to the edit list's millisecond) */
+    CHECK(b.aend - a.aend <= 1000000 && a.aend - b.aend <= 1000000);
+    CHECK(b.dur >= 679000000LL && b.dur <= 681000000LL); /* the copy lasts as long as the original shows */
+    free(in.p), free(out.p);
+
+    /* nothing hidden: the edit list ends with the last picture, and so does the copy's (2.6.1: mp4.c's own lists ended
+       the B-frames' reordering early - 720 ms here, the last two pictures never shown) */
+    Make w = {.sound = SND_AC3, .frames = 20};
+    CHECK(make(&in, &w));
+    CHECK(look(&in, &a, err, sizeof err));
+    CHECK(a.vend == 800000000LL);
+    CHECK(convert(&in, &out, &j));
+    CHECK(look(&out, &b, err, sizeof err));
+    CHECK(b.vend == 800000000LL);
     free(in.p), free(out.p);
 }
