@@ -765,5 +765,16 @@ static const Tr TR[] = {
     {"in %d part", "i %d del", "en %d parte"},
     {"in %d parts", "i %d delar", "en %d partes"},
     {"a part of its copy couldn't be made", "en del av dess kopia gick inte att göra", "no se pudo hacer una parte de su copia"},
+    /* 2.7: the room a device's copies under way may take, set with its power tier */
+    {"Room on this device for copies being made: <b id=\"media-power-room-n\">%d</b> GB",
+     "Plats på den här enheten för kopior som görs: <b id=\"media-power-room-n\">%d</b> GB",
+     "Espacio en este dispositivo para copias en curso: <b id=\"media-power-room-n\">%d</b> GB"},
+    {"They wait on this device's disk, or in its memory, until they're sent. Whatever it says, each tier gets what its "
+     "cores need at once; more lets uploads convert further ahead.",
+     "De väntar på enhetens disk, eller i dess minne, tills de skickas. Vad det än står får varje nivå det som dess "
+     "kärnor behöver på en gång; mer låter uppladdningar konvertera längre i förväg.",
+     "Esperan en el disco de este dispositivo, o en su memoria, hasta que se envían. Diga lo que diga, cada nivel tiene "
+     "lo que sus núcleos necesitan a la vez; más deja que las subidas conviertan más por adelantado."},
+    {"Room on this device: %d GB", "Plats på den här enheten: %d GB", "Espacio en este dispositivo: %d GB"},
 };
 TRANSLATIONS(media_upload, TR)

@@ -553,14 +553,14 @@ TEST(upload_takes_copies_the_browser_makes) {
     char other[17];
     plan_for(adam, plain, &r, other);
     CHECK_HAS(body_of(&r), "\"todo\":[[0,0]]");
-    /* the room slider's choice is kept for next time (the browser's converter keeps to it), within 2-32 GB */
+    /* the room slider's choice is kept for next time (the browser's converter keeps to it), within 2-256 GB (2.7: 32 before) */
     plan_for(adam, "{\"root\":\"0\",\"into\":\"Up3\",\"conv\":\"1\",\"room\":\"16\",\"files\":[[\"S/x.mkv\",3000]]}", &r, other);
     CHECK_STR(pref(adam_id, "media.upload_room", ""), "16");
-    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up3\",\"conv\":\"1\",\"room\":\"99\",\"files\":[[\"S/x.mkv\",3000]]}", &r, other);
-    CHECK_STR(pref(adam_id, "media.upload_room", ""), "32");
+    plan_for(adam, "{\"root\":\"0\",\"into\":\"Up3\",\"conv\":\"1\",\"room\":\"999\",\"files\":[[\"S/x.mkv\",3000]]}", &r, other);
+    CHECK_STR(pref(adam_id, "media.upload_room", ""), "256");
     const char *form = th_page(adam_id, "/media/upload");
     if (strstr(form, "data-wasm")) { /* (when the converter is built in: the slider comes with it) */
-        CHECK_HAS(form, "name=\"room\" min=\"2\" max=\"32\" step=\"1\" value=\"32\" data-show=\"media-room-n\"");
+        CHECK_HAS(form, "name=\"room\" min=\"2\" max=\"256\" step=\"1\" value=\"256\" data-show=\"media-room-n\"");
         CHECK_HAS(form, "<input type=\"checkbox\" name=\"ram\" value=\"1\"><span>"); /* (1.3: off at first) */
     }
     /* ... and the memory box's (1.3), when converting */
@@ -1000,6 +1000,7 @@ TEST(upload_here_makes_a_video_in_parts_and_the_server_joins_them) {
     CHECK_HAS(body_of(&r), "{\"i\":2,\"f\":0,\"part\":[300,600]");
     CHECK_HAS(body_of(&r), "{\"i\":3,\"f\":0,\"part\":[600,-1]");
     CHECK(!strstr(body_of(&r), "{\"i\":0,")); /* (the film itself: joined, never sent) */
+    CHECK_HAS(body_of(&r), "\"room\":8589934592"); /* (the room set - 8 GB - over what 20 workers' small parts need) */
     for (int k = 0; k < 3; k++) {
         snprintf(url, sizeof url, "/media/upload/%s/%d?size=%d", batch, 1 + k, (int)piece[k].len);
         call("POST", url, adam, NULL, "", 0, 0, &r);

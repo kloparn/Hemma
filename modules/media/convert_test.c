@@ -538,6 +538,13 @@ TEST(convert_power_tiers_per_machine) {
         CHECK_STR(pref(adam, "media.power_here", ""), "low");
         CHECK_HAS(th_page(adam, url), "data-workers=\"6\"");
         CHECK_HAS(th_page(adam, "/media/settings/converting"), "· 20 cores");
+        /* the room its copies under way may take: up to 256 GB now (32 before), the upload form's slider too */
+        CHECK_HAS(th_page(adam, "/media/settings/converting"), "name=\"room\" min=\"2\" max=\"256\" step=\"1\" value=\"8\"");
+        CHECK(th_act(adam, "media.power", "where=here&room=100").ok);
+        CHECK_STR(pref(adam, "media.upload_room", ""), "100");
+        CHECK_STR(pref(adam, "media.power_here", ""), "low"); /* (the room alone: the tier stays) */
+        CHECK(th_act(adam, "media.power", "where=here&room=999").ok);
+        CHECK_STR(pref(adam, "media.upload_room", ""), "256");
     }
     th_halt();
 }

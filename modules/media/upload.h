@@ -107,6 +107,10 @@ bool upload_can_convert(void);
 void upload_converter_attrs(Ctx *c, Buf *b);
 /* (2.6) the person ticked the upload form's "keep copies in memory" ("ram"): "On this device" does as they chose */
 bool upload_ram_chosen(int person);
+/* (2.7) the room a person's devices may take for copies under way (GB: the upload form's slider, pref media.upload_room;
+   *lo / *hi = its bounds, may be NULL), and setting it (clamped) */
+int upload_room_gb(int person, int *lo, int *hi);
+void upload_set_room(int person, int gb);
 /* (2.6) the person's own "On this device" batch as a card (while it runs, and a while after); false = none */
 bool upload_here_card(Ctx *c, Buf *b, uint64_t video);
 

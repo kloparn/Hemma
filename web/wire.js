@@ -713,7 +713,9 @@
       // {i, f} = convert file f here first, then send the copy as entry i (the server says how);
       // {i, f, subs: 1} = only read file f's subtitles, and send those (it stays behind)
       const copies = plan.todo.filter((t) => !Array.isArray(t)), plain = plan.todo.filter((t) => Array.isArray(t));
-      const room = Math.min(32, Math.max(2, Number(body.room) || 8)) * 2 ** 30; // the form's "room" (GB)
+      // the room the copies under way may take: the server's (2.7: the person's setting, or what their power tier's
+      // workers need) - else the form's "room" (GB)
+      const room = plan.room > 0 ? plan.room : Math.min(256, Math.max(2, Number(body.room) || 8)) * 2 ** 30;
       made = converter(base, plan.batch, files, copies, { ...use, ram: body.ram === '1', h264: body.h264 === '1' }, room);
       // One file at a time, never idle while something can go (1.3; owner: "be always at that limit"): what
       // the converters finished first, then the files that go as they are (in the plan's order: a VobSub's

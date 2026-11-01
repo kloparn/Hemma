@@ -784,7 +784,10 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  media.power_here -> convert_device_workers(c) = this session's device's cores (devices.c MediaDevice.cores,
                  wire.js sends navigator.hardwareConcurrency with media.caps; media_device_cores also says phone by the
                  agent) at that tier, 0 = not known -> upload_converter_attrs(c, b) puts data-workers on the converting forms
-                 (wire.js converter's width; else half the cores, at most 8). convert_power_card (Converting tab, admins):
+                 (wire.js converter's width; else half the cores, at most 8). ROOM (owner: "make the user be able to run it much
+                 higher"): the plan's answer has "room" (bytes) = MAX(the person's room - upload_room_gb, pref media.upload_room,
+                 ROOM_MAX 256 GB, was 32 - workers x the batch's biggest job) - wire.js converter's room; the card has the
+                 slider too (media.power where=here room=GB). convert_power_card (Converting tab, admins):
                  each machine's three radios (data-auto, action media.power where=server|here tier=low|medium|full), what
                  each means there. convert_test_device_cores(n) in tests.
                  FULL THROTTLE IN PARTS (2.7): pick's split(it) - Full, an h264 job, dur_ms >= 2 x PART_MIN_S

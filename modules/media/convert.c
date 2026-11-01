@@ -1378,6 +1378,21 @@ void convert_power_card(Ctx *c, Buf *b) {
         buf_puts(b, "</h3>");
         buf_free(&name);
         power_choices(b, "here", convert_power_of(pref(c->me->id, PREF_POWER_HERE, "")), dc, phone);
+        /* (owner: "make the user be able to run it much higher") the room its copies under way may take - the upload
+           form's slider too; the tier gets at least what its workers need whatever it says (the plan's "room") */
+        int lo = 0, hi = 0, gb = upload_room_gb(c->me->id, &lo, &hi);
+        ui_form(b, "media.power", "stack media-power-room");
+        ui_hidden(b, "where", "here");
+        buf_puts(b, "<label class=\"field\"><span>");
+        H(b, T("Room on this device for copies being made: <b id=\"media-power-room-n\">%d</b> GB"), gb);
+        H(b,
+          "</span><input type=\"range\" name=\"room\" min=\"%d\" max=\"%d\" step=\"1\" value=\"%d\" data-auto "
+          "data-show=\"media-power-room-n\" aria-describedby=\"media-power-room-h\"><small class=\"muted\" "
+          "id=\"media-power-room-h\">%s</small></label>",
+          lo, hi, gb,
+          T("They wait on this device's disk, or in its memory, until they're sent. Whatever it says, each tier gets "
+            "what its cores need at once; more lets uploads convert further ahead."));
+        ui_form_end(b);
     }
     ui_card_end(b);
 }
@@ -1386,6 +1401,11 @@ void convert_power_card(Ctx *c, Buf *b) {
 void convert_act_power(Ctx *c, Fields *f) {
     if (!is_admin(c)) {
         ctx_fail(c, "%s", T("Only an admin can convert videos"));
+        return;
+    }
+    if (str_eq(fields_str(f, "where"), "here") && fields_str(f, "room")[0]) { /* (the room slider: GB) */
+        upload_set_room(c->me->id, atoi(fields_str(f, "room")));
+        ctx_ok(c, T("Room on this device: %d GB"), upload_room_gb(c->me->id, NULL, NULL));
         return;
     }
     int tier = convert_power_of(fields_str(f, "tier"));

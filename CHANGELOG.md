@@ -19,6 +19,8 @@ Library settings in tabs, Manage one tap away, and how hard converting works - u
 - **How hard to work:** *Low power* (about a third of the computer's cores: it stays free for everything else),
   *Medium power* (about two thirds, the default) or *Full throttle* (all of them) - for Hemma's computer, and for the
   device you're using for *On this device* and uploads. The Converting tab says what each means on each machine.
+  The room a device may fill with copies being made now goes up to 256 GB (it stopped at 32), and each tier gets at
+  least what its cores need at once - an 8 GB room had held Full throttle to about ten 1080p episodes.
 - **Full throttle uses every core on one video:** when fewer videos are left than cores, a video being made H.264 from
   HEVC is made in parts side by side and joined - a film no longer takes one core for hours while the rest wait. On a
   device, its parts are sent as they're made and Hemma joins them.

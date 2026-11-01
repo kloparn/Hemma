@@ -76,7 +76,7 @@
 #define PREF_UPLOAD_RAM "media.upload_ram"
 #define ROOM_DEFAULT 8
 #define ROOM_MIN 2
-#define ROOM_MAX 32
+#define ROOM_MAX 256 /* (2.7: "make the user be able to run it much higher" - it was 32) */
 #define MAX_BATCHES 4
 #define MAX_FILES 5000
 #define MAX_WORKERS 2
@@ -203,6 +203,18 @@ static const Asset *asset_named(const char *path) { /* a file baked into this bi
 bool upload_can_convert(void) { return asset_named("/av.wasm") && asset_named("/conv.js"); }
 
 bool upload_ram_chosen(int person) { return str_eq(pref(person, PREF_UPLOAD_RAM, ""), "1"); }
+
+int upload_room_gb(int person, int *lo, int *hi) {
+    if (lo) *lo = ROOM_MIN;
+    if (hi) *hi = ROOM_MAX;
+    return (int)CLAMP(str_int_or(pref(person, PREF_UPLOAD_ROOM, ""), ROOM_DEFAULT), ROOM_MIN, ROOM_MAX);
+}
+
+void upload_set_room(int person, int gb) {
+    char v[16];
+    snprintf(v, sizeof v, "%d", CLAMP(gb, ROOM_MIN, ROOM_MAX));
+    pref_set(person, PREF_UPLOAD_ROOM, v);
+}
 
 void upload_converter_attrs(Ctx *c, Buf *b) {
     const Asset *wasm = asset_named("/av.wasm"), *worker = asset_named("/conv.js");
@@ -1492,6 +1504,16 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
     }
     free(listed_yet);
     buf_printf(&out, "],\"skipped\":%d,\"total\":%lld", b->skipped, (long long)b->total);
+    /* (2.7; owner: "It should be the limit you've set, like make the user be able to run it much higher") the room the
+       device may hold for copies under way: what its person set (this plan's slider, else the one kept), and at least
+       what its power tier's workers need at once - their biggest job each - so the tier is never held back by it */
+    int64_t room = (int64_t)(in.room > 0 ? in.room : upload_room_gb(c->me->id, NULL, NULL)) << 30, biggest = 0;
+    for (int i = 0; i < b->nfiles; i++) {
+        const UpFile *f = &b->files[i];
+        if (f->state == UP_QUEUED && f->conv == CV_WAIT && !f->parts) biggest = MAX(biggest, f->orig);
+    }
+    room = MAX(room, (int64_t)convert_device_workers(c) * biggest);
+    buf_printf(&out, ",\"room\":%lld", (long long)room);
     if (here >= 0) { /* (2.6) where each "file" of the todo comes from: the library's, read by the browser */
         buf_puts(&out, ",\"remote\":[");
         for (int i = 0; i < b->nfiles && !b->files[i].part_of; i++) { /* (2.7: the videos - their parts read them) */
