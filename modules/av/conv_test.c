@@ -13,6 +13,7 @@
 #include "dts.h"
 #include "dts_testenc.h"
 #include "h264enc.h"
+#include "hevc.h"
 #include "hevc_testenc.h"
 #include "mp4.h"
 #include "mpeg4_testenc.h"
@@ -2736,6 +2737,230 @@ TEST(conv_makes_one_video_in_parts_and_joins_them) {
     free(in.p), free(whole.p);
 }
 
+/* (2.8) A stand-in for a graphics card (AvGpu): our own HEVC decoder and H.264 encoder, set up as the converter sets up
+   its own - so a copy made "on the card" must be the very copy the converter makes itself. It can say no (refuse), stop
+   after `fail_at` blocks, and counts what it was given. */
+typedef struct {
+    Hevc *dec;
+    H264Enc *enc;
+    AvGpuSetup s;
+    bool refuse, ended, flushed, opened, closed;
+    int fail_at, fed, made;
+    int64_t index;
+    struct GpuPic {
+        uint8_t *p;
+        size_t n;
+        int64_t pts;
+        bool key;
+    } q[64];
+    int nq, head;
+    uint8_t *out; /* what take() handed over last */
+} FakeGpu;
+
+static bool fake_open(void *ctx, const AvGpuSetup *s) {
+    FakeGpu *g = ctx;
+    if (g->refuse) return false;
+    g->s = *s;
+    g->dec = hevc_new();
+    H264Params hp = {0};
+    hp.width = s->width, hp.height = s->height, hp.fps_num = s->fps_num, hp.fps_den = s->fps_den;
+    hp.quality = s->qp, hp.preset = H264_FAST, hp.annexb = false, hp.colour = s->height >= 720 ? 709 : 601;
+    g->enc = h264enc_new(&hp);
+    g->opened = g->dec && g->enc && hevc_config(g->dec, s->config, s->config_len);
+    return g->opened;
+}
+
+static void fake_pull(FakeGpu *g) {
+    HevcFrame f;
+    while (hevc_frame(g->dec, &f)) {
+        if (f.pts != HEVC_NOPTS && f.pts >= g->s.end) continue; /* (past an edit list's end: never shown) */
+        H264Picture pic = {f.y, f.u, f.v, f.stride_y, f.stride_c, f.stride_c, g->index++};
+        H264Packet pk;
+        if (!h264enc_encode(g->enc, &pic, &pk) || g->nq >= 64) continue;
+        struct GpuPic *q = &g->q[(g->head + g->nq++) % 64];
+        q->p = malloc(pk.size);
+        memcpy(q->p, pk.data, pk.size);
+        q->n = pk.size, q->pts = f.pts, q->key = pk.idr;
+        g->made++;
+    }
+}
+
+static bool fake_feed(void *ctx, const uint8_t *p, size_t n, int64_t pts, bool key) {
+    FakeGpu *g = ctx;
+    (void)key;
+    if (g->fail_at && g->fed >= g->fail_at) return false;
+    g->fed++;
+    hevc_decode(g->dec, p, n, pts);
+    fake_pull(g);
+    return true;
+}
+
+static void fake_end(void *ctx) { ((FakeGpu *)ctx)->ended = true; }
+
+static int fake_take(void *ctx, AvGpuPicture *out, bool wait) {
+    FakeGpu *g = ctx;
+    if (!g->nq && wait && g->ended && !g->flushed) {
+        hevc_flush(g->dec);
+        fake_pull(g);
+        g->flushed = true;
+    }
+    if (!g->nq) return g->flushed ? -1 : 0;
+    struct GpuPic *q = &g->q[g->head];
+    g->head = (g->head + 1) % 64, g->nq--;
+    free(g->out);
+    g->out = q->p;
+    *out = (AvGpuPicture){q->p, q->n, q->pts, q->key};
+    return 1;
+}
+
+static size_t fake_avcc(void *ctx, uint8_t *out, size_t cap) { return h264enc_avcc(((FakeGpu *)ctx)->enc, out, cap); }
+
+static void fake_close(void *ctx) {
+    FakeGpu *g = ctx;
+    g->closed = true;
+}
+
+/* Two copies hold the same samples: per track their sizes, lengths and keyframes, the picture's settings record - only
+   where the tracks' runs meet in the mdat may differ (the sample-to-chunk table) */
+static void same_copy(const W *a, const W *b) {
+    for (int k = 0; k < 2; k++) {
+        static uint32_t x[4096], y[4096];
+        int nx = sample_sizes(a, k, x, 4096), ny = sample_sizes(b, k, y, 4096);
+        CHECK_INT(nx, ny);
+        for (int i = 0; i < nx && i < ny; i++) CHECK_INT((int)x[i], (int)y[i]);
+        nx = durations(a, k, x, 4096), ny = durations(b, k, y, 4096);
+        CHECK_INT(nx, ny);
+        for (int i = 0; i < nx && i < ny; i++) CHECK_INT((int)x[i], (int)y[i]);
+        CHECK_INT(first_sync(a, k), first_sync(b, k));
+        CHECK(track_bytes(a, k) == track_bytes(b, k));
+    }
+    Bx ta, tb, ca, cb;
+    CHECK(trak_k(a, 0, &ta) && trak_k(b, 0, &tb));
+    CHECK(bx_path(ta, "mdia/minf/stbl/stsd", &ca) && bx_path(tb, "mdia/minf/stbl/stsd", &cb));
+    CHECK(ca.n == cb.n && !memcmp(ca.p, cb.p, ca.n)); /* (avc1 + avcC: the same encoder settings) */
+    size_t ma = box(a, "mdat"), mb = box(b, "mdat"); /* every byte of the samples, in some order: the same sum */
+    CHECK(ma && mb);
+    ma += be32(a->p + ma) == 1 ? 16 : 8, mb += be32(b->p + mb) == 1 ? 16 : 8;
+    uint64_t sa = 0, sb = 0;
+    for (size_t i = ma; i < a->len; i++) sa += a->p[i] * (uint64_t)(a->p[i] + 1);
+    for (size_t i = mb; i < b->len; i++) sb += b->p[i] * (uint64_t)(b->p[i] + 1);
+    CHECK(sa == sb);
+}
+
+static void fake_free(FakeGpu *g) {
+    if (g->dec) hevc_free(g->dec);
+    if (g->enc) h264enc_free(g->enc);
+    while (g->nq) free(g->q[g->head].p), g->head = (g->head + 1) % 64, g->nq--;
+    free(g->out);
+}
+
+TEST(conv_makes_the_picture_on_a_graphics_card_when_it_can) {
+    W in, cpu, card;
+    hevc_three(&in); /* HEVC (B-pictures) + AAC, 27 pictures */
+    AvConvJob j = {0};
+    Seen s;
+    j.h264 = true;
+    CHECK(run(&in, &cpu, &j, &s));
+    CHECK(!j.on_gpu);
+
+    /* the card makes the picture: the same file as ours, said so */
+    FakeGpu g = {0};
+    AvGpu gpu = {&g, fake_open, fake_feed, fake_end, fake_take, fake_avcc, fake_close};
+    AvConvJob jg = {0};
+    jg.h264 = true;
+    jg.gpu = &gpu;
+    CHECK(run(&in, &card, &jg, &s));
+    CHECK_STR(jg.err, "");
+    CHECK(jg.on_gpu && !jg.gpu_failed);
+    CHECK_HAS(jg.what, "→ H.264 on the graphics card");
+    CHECK(g.opened && g.ended && g.closed);
+    CHECK_INT(g.fed, 27); /* every block, once: the survey decoded only the first picture itself */
+    CHECK_INT(g.made, 27);
+    CHECK_INT(g.s.width, 64);
+    CHECK_INT(g.s.height, 48);
+    CHECK_INT(g.s.depth, 8);
+    CHECK_INT(g.s.qp, 23);
+    CHECK_INT(g.s.keyint, 60); /* (~2 s at 29.97) */
+    CHECK(g.s.end == INT64_MAX);
+    same_copy(&card, &cpu); /* (the pictures meet the sound a picture sooner: ours wait one in the deinterlacer) */
+    fake_free(&g);
+    free(card.p);
+
+    /* a card that says no: ours makes it, as without one */
+    FakeGpu no = {.refuse = true};
+    gpu.ctx = &no;
+    AvConvJob jn = {0};
+    jn.h264 = true;
+    jn.gpu = &gpu;
+    CHECK(run(&in, &card, &jn, &s));
+    CHECK(!jn.on_gpu && !no.closed && !no.fed);
+    CHECK(card.len == cpu.len && !memcmp(card.p, cpu.p, cpu.len)); /* (ours: the very same file) */
+    fake_free(&no);
+    free(card.p);
+
+    /* a card that stops part-way: no copy, and worth another try without it */
+    FakeGpu stops = {.fail_at = 10};
+    gpu.ctx = &stops;
+    AvConvJob js = {0};
+    js.h264 = true;
+    js.gpu = &gpu;
+    CHECK(!run(&in, &card, &js, &s));
+    CHECK(js.gpu_failed && !js.unsupported);
+    CHECK_STR(js.err, "The graphics card stopped converting it");
+    CHECK(stops.closed);
+    fake_free(&stops);
+    free(card.p);
+
+    /* never asked: HEVC copied (no h264), and parts (Full throttle's) */
+    FakeGpu idle = {0};
+    gpu.ctx = &idle;
+    AvConvJob jc = {0};
+    jc.gpu = &gpu;
+    CHECK(run(&in, &card, &jc, &s));
+    CHECK_HAS(jc.what, "HEVC copied");
+    CHECK(!jc.on_gpu && !idle.opened);
+    free(card.p);
+    AvConvJob jp = {0};
+    jp.h264 = true;
+    jp.gpu = &gpu;
+    jp.piece_to = AV_CONV_TO_END;
+    CHECK(run(&in, &card, &jp, &s));
+    CHECK(!jp.on_gpu && !idle.opened);
+    fake_free(&idle);
+    free(card.p);
+    free(in.p), free(cpu.p);
+}
+
+/* (2.8) what an MP4's edit list hides stays hidden on the card too: it's told where the shown pictures end */
+TEST(conv_tells_the_graphics_card_where_the_picture_ends) {
+    static Stream v;
+    uint8_t hvcc[2048];
+    HwStream hs = hevc_stream(64, 48, 8, HW_RANDOM | HW_TMVP, 9);
+    hs.rate_num = 30000, hs.rate_den = 1001;
+    size_t nh = add_hevc(&v, &hs, hvcc, sizeof hvcc);
+    W cut, cpu, card;
+    mp4_of(&cut, MP4_HEVC, hvcc, nh, 64, 48, &v, frame_ms(8));
+    AvConvJob j = {0};
+    Seen s;
+    j.h264 = true;
+    CHECK(run(&cut, &cpu, &j, &s));
+    FakeGpu g = {0};
+    AvGpu gpu = {&g, fake_open, fake_feed, fake_end, fake_take, fake_avcc, fake_close};
+    AvConvJob jg = {0};
+    jg.h264 = true;
+    jg.gpu = &gpu;
+    CHECK(run(&cut, &card, &jg, &s));
+    CHECK(jg.on_gpu);
+    CHECK(g.s.end == (int64_t)frame_ms(8) * 1000000);
+    int n[2];
+    counts(&card, n);
+    CHECK_INT(n[0], 8);
+    same_copy(&card, &cpu);
+    fake_free(&g);
+    free(cut.p), free(cpu.p), free(card.p);
+    s_free(&v);
+}
+
 /* Small files of every kind the converter takes - the starting corpus for tools/convfuzz.c.
    Each must convert (the size change: fail cleanly); with HEMMA_FUZZ_SEEDS=<dir> they are
    also written there (CI's fuzz job makes them so, no binaries live in the repo). */
@@ -2792,19 +3017,21 @@ TEST(conv_fuzz_seeds) {
             snprintf(path, sizeof path, "%s/dts/%s", raw, names[i]);
             CHECK(file_write_atomic(path, b.p, b.len));
         }
-        /* MPEG-4 Part 2 streams (2.5): B-VOPs, quarter samples, video packets, the MPEG quantiser, packed blocks */
+        /* MPEG-4 Part 2 streams (2.5): B-VOPs, quarter samples, video packets, the MPEG quantiser, packed blocks; 2.8.0:
+           pictures one sample tall or wide (the nightly fuzzer found the chroma's edge going to 0 there) */
         snprintf(path, sizeof path, "%s/mpeg4", raw);
         CHECK(dir_make(path));
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 6; i++) {
             static const char *const names[] = {"mpeg4-b-vops", "mpeg4-qpel-reversed", "mpeg4-packets-mpegquant-pieces",
-                                                "mpeg4-packed-reset"};
-            static const uint8_t opts[] = {0, 128, 3 | 8, 64};
-            static const unsigned flags[] = {0, M4_QPEL, M4_RESYNC | M4_MPEGQ, 0};
+                                                "mpeg4-packed-reset", "mpeg4-one-row", "mpeg4-one-column-qpel"};
+            static const uint8_t opts[] = {0, 128, 3 | 8, 64, 0, 2};
+            static const unsigned flags[] = {0, M4_QPEL, M4_RESYNC | M4_MPEGQ, 0, 0, M4_QPEL};
+            static const int size[][2] = {{48, 32}, {48, 32}, {72, 40}, {48, 32}, {48, 1}, {1, 32}};
             static uint8_t blk[32768];
             buf_reset(&b);
             buf_putc(&b, (char)opts[i]);
             for (int k = 0, disp; k < 10; k++)
-                buf_put(&b, blk, mpeg4_test_block(blk, sizeof blk, k, i == 2 ? 72 : 48, i == 2 ? 40 : 32, flags[i], i == 3, &disp));
+                buf_put(&b, blk, mpeg4_test_block(blk, sizeof blk, k, size[i][0], size[i][1], flags[i], i == 3, &disp));
             snprintf(path, sizeof path, "%s/mpeg4/%s", raw, names[i]);
             CHECK(file_write_atomic(path, b.p, b.len));
         }
@@ -2833,7 +3060,7 @@ TEST(conv_fuzz_seeds) {
                                    0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 1,    0x20, 0, 1, 0, 2, 0x40, 0x01};
     char took[64][40]; /* every CodecID a seed carries: each format the converter takes needs one (below) */
     int ntook = 0;
-    for (int seed = 0; seed < 24; seed++) {
+    for (int seed = 0; seed < 25; seed++) {
         uint8_t avcc[256], asc[2], vol[64], bih[40];
         size_t avcc_len = 0;
         Tracks mp2 = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0}, t = mp2;
@@ -2989,6 +3216,17 @@ TEST(conv_fuzz_seeds) {
             bitmapinfo(bih, 48, 32, "XVID");
             t = (Tracks){"V_MS/VFW/FOURCC", bih, sizeof bih, 48, 32, "A_AC3", NULL, 0};
             break;
+        case 24: { /* (2.8) HEVC big enough for a graphics card (they refuse tiny pictures): 320x240, 8-bit, AAC - the
+                      browser tests make it H.264 on the card where the browser has one */
+            static uint8_t hvcc[2048];
+            name = "hevc-card-320x240-aac.mkv";
+            HwStream hs = hevc_stream(320, 240, 8, HW_TMVP, 24);
+            hs.rate_num = 30000, hs.rate_den = 1001;
+            size_t nh = add_hevc(&v, &hs, hvcc, sizeof hvcc);
+            add_aac(&a, 0.8, asc);
+            t = (Tracks){"V_MPEGH/ISO/HEVC", hvcc, nh, 320, 240, "A_AAC", asc, 2};
+            break;
+        }
         case 23: /* (2.7) three HEVC streams one after another - keyframes at 0, 9 and 18, 0.9 s - AAC: what Full
                     throttle makes in parts (the browser tests: data parts of 300 ms) */
             name = "hevc-three-keyframes-aac.mkv";

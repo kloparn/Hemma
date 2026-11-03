@@ -93,9 +93,47 @@ typedef struct {
     size_t idx_len;
 } AvConvSub; /* av_convert_free frees srt, data and idx */
 
+/* (2.8) A GRAPHICS CARD MAKES THE PICTURE (AvConvJob.gpu): HEVC made H.264 (h264) by someone else's decoder and encoder -
+   the browser's WebCodecs on the device's graphics card (wasm/avconv.c, web/conv.js) - the pictures never leaving the
+   card. The converter still reads the file, makes the sound and the subtitles and writes the MP4 as ever: it hands over
+   the HEVC blocks as they are and writes the H.264 that comes back. Times are ns after the video's first picture. */
+typedef struct {
+    const uint8_t *config; /* the HEVC settings record (hvcC: the track's CodecPrivate) */
+    size_t config_len;
+    int width, height;     /* the picture as shown (cropped): what's encoded */
+    int depth;             /* its samples' bits, 8 or 10 (the copy is 8-bit) */
+    int fps_num, fps_den;  /* its rate */
+    int qp;                /* H.264 quantiser */
+    int keyint;            /* a keyframe at least every this many pictures (seek points) */
+    int64_t end;           /* only pictures shown before it (an MP4's edit list end); INT64_MAX = all */
+} AvGpuSetup;
+
+typedef struct {
+    const uint8_t *data;   /* one H.264 picture, NAL units with 4-byte lengths (avcC's) - valid until the next call */
+    size_t size;
+    int64_t pts;
+    bool key;
+} AvGpuPicture;
+
+typedef struct {
+    void *ctx;
+    /* ready for this picture? false = it can't (the codec, the size, a browser without it): the converter makes the
+       picture itself, as without one */
+    bool (*open)(void *ctx, const AvGpuSetup *s);
+    bool (*feed)(void *ctx, const uint8_t *p, size_t n, int64_t pts, bool key); /* a block, in file order; false = failed */
+    void (*end)(void *ctx); /* no more blocks */
+    /* the next H.264 picture, in presentation order (no B-frames): 1 = *out, 0 = none yet (only when !wait), -1 = no
+       more (after end), -2 = the card failed */
+    int (*take)(void *ctx, AvGpuPicture *out, bool wait);
+    size_t (*avcc)(void *ctx, uint8_t *out, size_t cap); /* its H.264 settings record, once a picture came out */
+    void (*close)(void *ctx);
+} AvGpu;
+
 typedef struct {
     MkvReader in;
     Mp4Out out;           /* needs write_at: the index is written into room reserved up front */
+    const AvGpu *gpu;     /* (2.8) with h264: an HEVC picture made on a graphics card when it can (NULL: ours) - whole
+                             videos only, not parts or joins */
     int quality;          /* H.264 QP (lower = better, bigger); 0 = 23 */
     int audio_kbps;       /* AAC bitrate; 0 = 160 */
     int64_t limit_ns;     /* stop after this much video (previews, tests); 0 = the whole file */
@@ -128,6 +166,8 @@ typedef struct {
     bool unsupported;      /* failed because of what the file holds (a codec we don't convert yet), not an error */
     bool as_is;            /* 2.5: nothing made - the input (an MP4/MOV) plays everywhere as it is: H.264, HEVC as hvc1 or AV1,
                               every sound AAC or MP3 (err says so; unsupported stays false) */
+    bool on_gpu;           /* (2.8) the picture was made on the graphics card (gpu) */
+    bool gpu_failed;       /* (2.8) the card stopped part-way: what was written is no good - worth again without it */
     AvConvSub subs[AV_CONV_MAX_SUBS]; /* with want_subs, after a success or an `unsupported` refusal: the
                                          subtitle tracks in file order (empty ones left out) */
     int nsubs;

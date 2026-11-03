@@ -137,6 +137,46 @@ TEST(mpeg4_vectors_and_half_samples) {
     mpeg4_free(d);
 }
 
+/* (2.8.0, found by the nightly fuzzer) A picture one sample wide or tall: its chroma is one column/row, and a moved
+   macroblock predicts its chroma from that alone - not from before the plane (a 16x1 VOL took window() there). */
+TEST(mpeg4_one_sample_wide_or_tall) {
+    static const int SIZE[][2] = {{16, 1}, {1, 16}, {1, 1}, {40, 1}};
+    for (size_t s = 0; s < sizeof SIZE / sizeof *SIZE; s++) {
+        int W = SIZE[s][0], H = SIZE[s][1], mbw = (W + 15) / 16;
+        static M4w a, p;
+        memset(&a, 0, sizeof a), memset(&p, 0, sizeof p);
+        M4Dc g = {.mbw = mbw};
+        m4_vol(&a, W, H, 0);
+        m4_vop(&a, 0, 0, true, 0);
+        for (int mb = 0; mb < mbw; mb++) m4_intra_mb(&a, &g, mb, 100, 60, 200, false, 0);
+        m4_stuffing(&a);
+        m4_vop(&p, 1, 1, true, 0);
+        for (int mb = 0; mb < mbw; mb++) m4_moved_mb(&p, 1, 1); /* half a sample right and down: from the edges */
+        m4_stuffing(&p);
+
+        Mpeg4 *d = mpeg4_new();
+        CHECK(mpeg4_decode(d, a.b, m4_bytes(&a), 0) >= 0);
+        CHECK(mpeg4_decode(d, p.b, m4_bytes(&p), 1) >= 0);
+        mpeg4_flush(d);
+        Mpeg4Frame f;
+        int n = 0;
+        while (mpeg4_frame(d, &f)) {
+            CHECK(f.width == W && f.height == H && f.concealed == 0);
+            int cw = (W + 1) / 2, ch = (H + 1) / 2;
+            for (int j = 0; j < H; j++)
+                CHECK(flat(f.y + j * f.stride_y, W, 100));
+            for (int j = 0; j < ch; j++) {
+                if (!flat(f.u + j * f.stride_c, cw, 60) || !flat(f.v + j * f.stride_c, cw, 200))
+                    test_fail(__FILE__, __LINE__, "%dx%d frame %d: chroma row %d is %d/%d, not 60/200", W, H, n, j,
+                              f.u[j * f.stride_c], f.v[j * f.stride_c]);
+            }
+            n++;
+        }
+        CHECK_INT(n, 2);
+        mpeg4_free(d);
+    }
+}
+
 /* I (time 0), P (3), B (1), B (2) in decoding order - the P-VOP skips everything, so do the B-VOPs (co-located
    macroblocks skipped: no bits). Out: I B B P, each with its block's time. */
 TEST(mpeg4_b_vops_come_out_in_display_order_with_their_times) {

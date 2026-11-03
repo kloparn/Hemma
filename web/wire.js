@@ -71,6 +71,7 @@
       while (later.length) send({ t: 'log', url: here(), m: later.shift(), ua: navigator.userAgent });
       if (subLater) { send(subLater); subLater = null; } // (a subtitles pick made while the socket was down)
       capsTell();
+      gpuHints();
       // a new socket is a new screen to the server: an upload page's preview is asked for again
       for (const f of document.querySelectorAll('form[data-preview]')) if (f._files && f._files.length && !uploading) preview(f, true);
     };
@@ -556,6 +557,31 @@
     } catch (_) { return false; }
   })();
 
+  // (2.8) The graphics card: can this browser make an HEVC picture H.264 there (conv.js: WebCodecs on the card, the
+  // converter waiting for it - JSPI)? Browsers allow WebCodecs only on a secure page: https, or 127.0.0.1 / localhost -
+  // Hemma opened on the computer itself through a forwarded port (docs/graphics-card.md). Asked once a load. html[data-gpu]
+  // says it for the page (media.css shows the line that's true): on, off (a computer on a page that isn't secure), no.
+  const PHONE = /Mobi|Android|iPhone|iPad/.test(navigator.userAgent);
+  const CARD_JOBS = 3; // videos on the card at once (each its own decoder and encoder: a card has room for a few)
+  let cardAsk = null;
+  const cardOk = () => cardAsk || (cardAsk = (async () => {
+    try {
+      if (!self.isSecureContext || !self.VideoDecoder || !self.VideoEncoder || typeof WebAssembly.Suspending !== 'function') return false;
+      const hw = 'prefer-hardware';
+      const [d, e] = await Promise.all([
+        VideoDecoder.isConfigSupported({ codec: 'hvc1.1.6.L120.90', codedWidth: 1920, codedHeight: 1080, hardwareAcceleration: hw }),
+        VideoEncoder.isConfigSupported({ codec: 'avc1.640028', width: 1920, height: 1080, bitrateMode: 'quantizer',
+          hardwareAcceleration: hw, avc: { format: 'avc' } })]);
+      return !!(d.supported && e.supported);
+    } catch (_) { return false; }
+  })());
+  function gpuHints() {
+    const html = document.documentElement;
+    if (html.dataset.gpu || !document.querySelector('[data-gpu-hint]')) return;
+    html.dataset.gpu = 'no';
+    cardOk().then((on) => { html.dataset.gpu = on ? 'on' : !self.isSecureContext && !PHONE ? 'off' : 'no'; });
+  }
+
   // What's chosen: a form with a [data-drop] area keeps its files itself (f._files: [{file, path}]) -
   // dropped (folders too, walked with their paths) or picked, each choice adding to the list;
   // [data-drop-clear] empties it. Others read their file inputs at submit (a picture's form).
@@ -698,6 +724,10 @@
     busy(f, true);
     let made = null, sent = false;
     try {
+      // (2.8) the graphics card for HEVC made H.264 - the server then makes no parts of a library batch's videos
+      use.gpu = !!body.conv && await cardOk();
+      if (use.gpu) body.gpu = '1';
+      use.here = library;
       const plan = await fetch(base + '/plan', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       }).then(json);
@@ -758,7 +788,9 @@
     try {
       if (!job.subs) {
         /* (m.plays, 2.5: an MP4 that plays everywhere as it is - the original goes, and nothing is said about it) */
-        const s = await ask(url, m.send ? `size=${m.size}` : m.plays ? 'original=1&plays=1' : `original=1&why=${encodeURIComponent(m.error || '')}`);
+        // (2.8: gpu = its picture made on the graphics card; card = why the card stopped, when the cores made it instead)
+        const how = m.gpu ? '&gpu=1' : m.cardFailed ? `&card=${encodeURIComponent(m.cardFailed.slice(0, 160))}` : '';
+        const s = await ask(url, m.send ? `size=${m.size}${how}` : m.plays ? 'original=1&plays=1' : `original=1&why=${encodeURIComponent(m.error || '')}`);
         if (!s.skip) await put(url, m.send ? m : files[job.f], s.at || 0);
       }
       const tracks = (m.subs || []).concat(m.pics || []).sort((a, b) => (a.t || 0) - (b.t || 0));
@@ -793,10 +825,14 @@
   // device's disk, the old way. A job whose read failed ({again}) goes back in line, AGAIN times at most.
   const RAM_MAX = 8 * 2 ** 30, AGAIN = 2;
   function converter(base, batch, files, jobs, use, room) {
-    const phone = /Mobi|Android|iPhone|iPad/.test(navigator.userAgent);
-    // (2.7) the server's number when it knows this device (data-workers), else half the cores, at most 8; a phone one
-    const width = use.workers > 0 ? use.workers
-      : phone ? 1 : Math.max(1, Math.min(8, Math.floor((navigator.hardwareConcurrency || 2) / 2)));
+    // (2.7) the server's number when it knows this device (data-workers), else half the cores, at most 8; a phone one -
+    // (2.8) with the graphics card, a library batch (every video HEVC made H.264) makes CARD_JOBS at once, all on the card:
+    // the cores stay free for the sound and the rest. In an upload, CARD_JOBS of the jobs at a time may use it; a card that
+    // stopped twice isn't asked again.
+    const width = use.gpu && use.here ? CARD_JOBS : use.workers > 0 ? use.workers
+      : PHONE ? 1 : Math.max(1, Math.min(8, Math.floor((navigator.hardwareConcurrency || 2) / 2)));
+    const onCard = new Set();
+    let cardFails = 0;
     const workers = new Map(), finished = []; // finished: {k, m}, in the order they came
     const ready = new Map(); // job -> the worker holding its finished copy, until it's sent
     const seen = new Map(); // job -> [progress, when the server last heard it]
@@ -845,6 +881,8 @@
       const w = workers.get(k);
       workers.delete(k);
       seen.delete(k);
+      onCard.delete(k);
+      if (m.cardFailed) cardFails++; // (the card stopped part-way: the cores made it - sendMade tells the server, for its log)
       if (w && m.error && m.net && !halted) { // (2.6) the network, not the file: waited out (down()), not a try
         const since = netSince.get(k) || Date.now();
         netSince.set(k, since);
@@ -871,7 +909,7 @@
       if (w && m.size !== undefined && !halted) { // made: it waits in its worker to be sent
         ready.set(k, w);
         report(k, 1000); // (1.5: the card says "Ready" until it goes, not "Processing 99%")
-        m = { size: m.size, subs: m.subs, pics: m.pics, send: sender(w), drop: () => drop(k) };
+        m = { size: m.size, subs: m.subs, pics: m.pics, gpu: m.gpu, cardFailed: m.cardFailed, send: sender(w), drop: () => drop(k) };
       } else if (w) {
         w.terminate();
       }
@@ -894,8 +932,10 @@
       w.onerror = (e) => { e.preventDefault(); finish(k, { error: T('The converter stopped') }); };
       const ram = !!use.ram && !job.subs && held() + source(k) <= RAM_MAX;
       if (ram) inRam.set(k, source(k));
+      const gpu = !!use.gpu && cardFails < 2 && !job.subs && !job.part && onCard.size < CARD_JOBS;
+      if (gpu) onCard.add(k);
       w.postMessage({ file: files[job.f], wasm: use.wasm, ram, part: use.part, subs: !!job.subs, h264: !!use.h264, cut: job.part,
-        flaky: tries.has(k) ? 0 : use.flaky });
+        flaky: tries.has(k) ? 0 : use.flaky, gpu });
     }
     function pump() {
       for (;;) { // the jobs back in line first, then the next new one - while there's room
@@ -1308,6 +1348,7 @@
     }
     letGo();
     capsTell();
+    gpuHints();
   }
 
   // What this browser plays (2.5, media/devices.c): a page carrying [data-caps="<type>|<type>|..."] is answered once a

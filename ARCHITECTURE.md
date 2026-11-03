@@ -83,7 +83,9 @@ can't play - DVD rips (MPEG-2, Dolby sound), Dolby Digital Plus, DTS - `modules/
 decoders and encoders in plain C: one MKV in, one MP4 (H.264 + AAC) out, which every browser,
 phone and TV plays. The same C code runs on the server and, compiled to WebAssembly, in the
 browser that uploads a video: the uploading computer makes the copy, so the Pi does no heavy
-lifting. It is fuzzed on every push and for hours every night.
+lifting. It is fuzzed on every push and for hours every night. Where the browser can (2.8), that
+computer's graphics card makes an HEVC video's picture H.264 through WebCodecs while the same C
+does the rest ([decision 0015](docs/decisions/0015-the-graphics-card-through-the-browser.md)).
 
 ## Accounts and safety
 

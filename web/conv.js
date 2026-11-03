@@ -23,6 +23,8 @@
 //                            worth another try; net = (2.6) a library file's read got no answer at all (the
 //                            network), at = how much the converter had taken in when it failed
 //        {plays: true}       (2.5) an MP4 that plays everywhere as it is: none needed, the original goes quietly
+// (2.8) in: gpu = this job may use the graphics card - an HEVC picture made H.264 by WebCodecs (card() below); out: the
+//        {size ...} message says gpu: true when it did, and cardFailed: why, when the card stopped and the CPU made it
 // The copy never leaves this worker: wire.js ends the worker once the copy is sent, and the
 // browser lets go of it right then. Handed to the page, finished copies stayed until the page's
 // memory was next tidied - which a page this small hardly ever needs - and a long upload left
@@ -75,6 +77,155 @@ function inMemory() {
   };
 }
 
+// (2.8) THE GRAPHICS CARD: an HEVC picture made H.264 by the browser's WebCodecs - decoded and encoded on the device's
+// graphics card, the pictures never leaving it - while the converter (av.wasm) does everything else: it hands over the
+// HEVC blocks as they are (gpu_feed) and writes the H.264 that comes back (gpu_take). The calls that wait suspend the
+// converter (JSPI: WebAssembly.Suspending / promising). Browsers allow WebCodecs only on a secure page - https, or
+// 127.0.0.1 / localhost - so on Hemma's plain http address there's none (docs: how to open Hemma at 127.0.0.1).
+const CARD_AHEAD = 4; // blocks waiting in the decoder, and pictures in the encoder, at most
+const cardCan = () => !!(self.VideoDecoder && self.VideoEncoder && self.EncodedVideoChunk && typeof WebAssembly.Suspending === 'function'
+  && typeof WebAssembly.promising === 'function');
+
+// hvcC -> the codec string WebCodecs wants (ISO/IEC 14496-15 Annex E): hvc1.<space><profile>.<compat, bits reversed>.<tier><level>[.<constraints>]
+function hevcCodec(c) {
+  const space = ['', 'A', 'B', 'C'][c[1] >> 6], tier = c[1] & 0x20 ? 'H' : 'L', profile = c[1] & 31;
+  let compat = 0;
+  for (let i = 0; i < 32; i++) if (c[2 + (i >> 3)] & (0x80 >> (i & 7))) compat |= 1 << i; // (reversed: the first bit lowest)
+  const cons = Array.from(c.subarray(6, 12));
+  while (cons.length && !cons[cons.length - 1]) cons.pop();
+  return `hvc1.${space}${profile}.${(compat >>> 0).toString(16).toUpperCase()}.${tier}${c[12]}` +
+    cons.map((b) => '.' + b.toString(16).toUpperCase()).join('');
+}
+
+// H.264 High at the lowest level that holds this size and rate (H.264 table A-1): 4.0 for 1080p30, 5.1 for 4K
+function avcCodec(w, h, fps) {
+  const mbs = Math.ceil(w / 16) * Math.ceil(h / 16), rate = mbs * fps;
+  const levels = [[0x1E, 1620, 40500], [0x1F, 3600, 108000], [0x20, 5120, 216000], [0x28, 8192, 245760], [0x2A, 8704, 522240],
+    [0x32, 22080, 589824], [0x33, 36864, 983040], [0x34, 36864, 2073600]];
+  const l = levels.find(([, size, perS]) => mbs <= size && rate <= perS) || levels[levels.length - 1];
+  return 'avc1.6400' + l[0].toString(16).toUpperCase().padStart(2, '0');
+}
+
+function card(memory) {
+  let dec = null, enc = null, setup = null, avcc = null, failed = '', first = true, flushed = false, made = 0;
+  const out = [];
+  let waiting = null; // the converter waiting (a resolve) - for a picture, or for room
+  const wake = () => { if (waiting) { const w = waiting; waiting = null; w(); } };
+  const oops = (where) => (e) => { failed = failed || `${where}: ${(e && e.message) || e}`; wake(); };
+  const bytes = () => new Uint8Array(memory().buffer);
+  const busy = () => (dec ? dec.decodeQueueSize : 0) > CARD_AHEAD || (enc ? enc.encodeQueueSize : 0) > CARD_AHEAD;
+  // Each picture goes from the decoder to the encoder through a canvas, drawn there on the card: handed over straight, a
+  // 10-bit picture (x265's) went at ~100 a second for all the jobs together - its conversion to 8 bits on the way into
+  // the encoder held them up (2.8, an RTX 3060: ~315 a second this way for one job, ~470 for three; 46 dB, colours true)
+  let canvas = null, draw = null;
+  const decoded = (frame) => {
+    if (failed || (setup.end >= 0 && frame.timestamp >= setup.end)) { frame.close(); return; } // (past an edit list's end)
+    let pic = null;
+    try {
+      if (!canvas) {
+        canvas = new OffscreenCanvas(setup.width, setup.height);
+        draw = canvas.getContext('2d', { alpha: false });
+      }
+      draw.drawImage(frame, 0, 0, setup.width, setup.height);
+      pic = new VideoFrame(canvas, { timestamp: frame.timestamp });
+      enc.encode(pic, { keyFrame: made++ % setup.keyint === 0, avc: { quantizer: setup.qp } });
+    } catch (e) {
+      oops('encoding')(e);
+    }
+    if (pic) pic.close();
+    frame.close();
+  };
+  const encoded = (chunk, meta) => {
+    if (!avcc && meta && meta.decoderConfig && meta.decoderConfig.description) {
+      const d = meta.decoderConfig.description;
+      avcc = new Uint8Array(ArrayBuffer.isView(d) ? d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength) : d.slice(0));
+    }
+    const data = new Uint8Array(chunk.byteLength);
+    chunk.copyTo(data);
+    out.push({ data, t: chunk.timestamp, key: chunk.type === 'key' });
+    wake();
+  };
+  return {
+    // hemma.gpu_open: 1 = the card takes this picture (both configurations supported here), 0 = it doesn't
+    open: async (cfg, n, width, height, depth, fpsNum, fpsDen, qp, keyint, endUs) => {
+      try {
+        const hvcc = bytes().slice(cfg, cfg + n);
+        const fps = fpsDen > 0 ? fpsNum / fpsDen : 25;
+        const dc = { codec: hevcCodec(hvcc), description: hvcc, hardwareAcceleration: 'prefer-hardware' };
+        const ec = { codec: avcCodec(width, height, fps), width, height, framerate: fps, bitrateMode: 'quantizer',
+          hardwareAcceleration: 'prefer-hardware', latencyMode: 'quality', avc: { format: 'avc' } };
+        const [ds, es] = await Promise.all([VideoDecoder.isConfigSupported(dc), VideoEncoder.isConfigSupported(ec)]);
+        if (!ds.supported || !es.supported || typeof OffscreenCanvas !== 'function') return 0;
+        setup = { qp, keyint: Math.max(1, keyint), end: endUs, depth, width, height };
+        enc = new VideoEncoder({ output: encoded, error: oops('the encoder') });
+        enc.configure(ec);
+        dec = new VideoDecoder({ output: decoded, error: oops('the decoder') });
+        dec.configure(dc);
+        dec.ondequeue = enc.ondequeue = wake;
+        return 1;
+      } catch (_) {
+        return 0;
+      }
+    },
+    // hemma.gpu_feed: a block, in file order; waits while the card is busy (a promise suspends the converter)
+    feed: (p, n, ptsUs, key) => {
+      if (failed) return 0;
+      if (first && !key) return 1; // (the decoder starts at a keyframe)
+      first = false;
+      try {
+        dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: ptsUs, data: bytes().subarray(p, p + n) }));
+      } catch (e) {
+        oops('decoding')(e);
+        return 0;
+      }
+      if (!busy()) return 1;
+      return (async () => {
+        while (busy() && !failed) await new Promise((ok) => { waiting = ok; });
+        return failed ? 0 : 1;
+      })();
+    },
+    // hemma.gpu_end: no more blocks - what's in the card comes out
+    end: () => {
+      if (!dec || failed) { flushed = true; return; }
+      dec.flush().then(() => enc.flush()).then(() => { flushed = true; wake(); }, oops('finishing'));
+    },
+    // hemma.gpu_take: the next H.264 picture into memory[buf] (see avconv.c); waits only when asked to
+    take: (wait, buf, cap, meta) => {
+      const give = () => {
+        if (failed) return -2;
+        if (out.length) {
+          const o = out[0], m = new DataView(memory().buffer, meta, 24);
+          if (o.data.length > cap) { m.setFloat64(16, o.data.length, true); return -3; }
+          bytes().set(o.data, buf);
+          m.setFloat64(0, o.t, true);
+          m.setFloat64(8, o.key ? 1 : 0, true);
+          out.shift();
+          return o.data.length;
+        }
+        return flushed ? -1 : null;
+      };
+      const r = give();
+      if (r !== null || !wait) return r === null ? 0 : r;
+      return (async () => {
+        for (;;) {
+          await new Promise((ok) => { waiting = ok; });
+          const got = give();
+          if (got !== null) return got;
+        }
+      })();
+    },
+    avcc: (o, cap) => {
+      if (!avcc || avcc.length > cap) return 0;
+      bytes().set(avcc, o);
+      return avcc.length;
+    },
+    close: () => {
+      for (const c of [dec, enc]) try { if (c && c.state !== 'closed') c.close(); } catch (_) { /* (gone) */ }
+    },
+    get failed() { return failed; },
+  };
+}
+
 async function send(url, at) {
   if (made instanceof Blob) {
     try {
@@ -113,7 +264,7 @@ self.onmessage = async (e) => {
     postMessage(await send(e.data.put, e.data.at));
     return;
   }
-  const { file, wasm, ram, part, subs: subsOnly, flaky, h264, cut } = e.data;
+  const { file, wasm, ram, part, subs: subsOnly, flaky, h264, cut, gpu } = e.data;
   if (part > 0) PART = part;
   // Reading the original can fail for a while - a browser short of memory for the read (copies held in
   // memory; 1.3: ten Simpsons and three South Park episodes went up unconverted, "readAsArrayBuffer ...
@@ -217,23 +368,40 @@ self.onmessage = async (e) => {
         }
       },
     };
+    // (2.8) the graphics card, when this job may use it and the browser has what it takes (else the six imports are
+    // there, never called)
+    const toH264 = file.h264 || h264 ? 1 : 0;
+    const onCard = !subsOnly && !cut && !!gpu && !!toH264 && cardCan() ? card(() => wmem) : null;
+    const cardIn = onCard ? { gpu_open: new WebAssembly.Suspending(onCard.open), gpu_feed: new WebAssembly.Suspending(onCard.feed),
+      gpu_end: onCard.end, gpu_take: new WebAssembly.Suspending(onCard.take), gpu_avcc: onCard.avcc, gpu_close: onCard.close }
+      : { gpu_open: () => 0, gpu_feed: () => 0, gpu_end: () => {}, gpu_take: () => -2, gpu_avcc: () => 0, gpu_close: () => {} };
     const got = await fetch(wasm);
     if (!got.ok) throw new Error(`the converter is missing (${got.status})`);
     const code = await got.arrayBuffer();
-    const { instance } = await WebAssembly.instantiate(code, { hemma });
+    const { instance } = await WebAssembly.instantiate(code, { hemma: { ...hemma, ...cardIn } });
     const x = instance.exports;
     wmem = x.memory;
     x._initialize();
-    const rc = subsOnly ? x.conv_subs_only(file.size)
-      : cut ? x.conv_part(file.size, 0, cut[0], cut[1]) // (2.7) one part of it, made side by side (Full throttle)
-      : x.conv_run(file.size, 0, 0, file.h264 || h264 ? 1 : 0);
-    win = null;
     const text = (p) => {
       const b = bytes();
       let end = p;
       while (b[end]) end++;
       return new TextDecoder().decode(b.subarray(p, end));
     };
+    let rc = subsOnly ? x.conv_subs_only(file.size)
+      : cut ? x.conv_part(file.size, 0, cut[0], cut[1]) // (2.7) one part of it, made side by side (Full throttle)
+      : onCard ? await WebAssembly.promising(x.conv_run)(file.size, 0, 0, toH264, 1)
+      : x.conv_run(file.size, 0, 0, toH264, 0);
+    const madeOnCard = !!onCard && rc === 1 && !!x.conv_on_gpu();
+    let cardFailed = '';
+    if (onCard && rc !== 1 && x.conv_gpu_failed()) { // the card stopped part-way: made again without it, from the start
+      cardFailed = onCard.failed || text(x.conv_err());
+      mem = ram ? inMemory() : null;
+      copy = new Blob([]), pending = [], held = 0;
+      win = null, fed = 0, last = -1;
+      rc = x.conv_run(file.size, 0, 0, toH264, 0);
+    }
+    win = null;
     if (rc === 3) { /* (2.5: an MP4 that plays everywhere as it is - nothing made, the original goes quietly) */
       postMessage({ plays: true });
       return;
@@ -261,7 +429,7 @@ self.onmessage = async (e) => {
     }
     fold();
     made = mem || new Blob([copy], { type: 'video/mp4' });
-    postMessage({ size: made.size, subs, pics }, pics.map((p) => p.data));
+    postMessage({ size: made.size, subs, pics, gpu: madeOnCard, cardFailed }, pics.map((p) => p.data));
   } catch (err) {
     // no WebAssembly / blocked: the original goes instead - but a read that failed, or memory that ran out,
     // is worth another try later ({again})

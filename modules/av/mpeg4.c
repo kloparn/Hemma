@@ -537,13 +537,16 @@ static void pred_luma(Mpeg4 *d, const Pic *ref, uint8_t *dst, int ds, int px, in
     else hpel(dst, ds, s, ws, n, n, fx, fy, rc);
 }
 
-/* Both 8x8 chroma blocks of macroblock (mbx, mby) from a chroma vector in half samples. */
+/* Both 8x8 chroma blocks of macroblock (mbx, mby) from a chroma vector in half samples. The chroma plane's edge is
+   the luma's halved (as FFmpeg's), but at least one sample: a picture 1 wide or 1 tall has a chroma column/row too,
+   and a 0 made window() reach before the plane (2.8.0: the nightly fuzzer, a VOL of 16x1). */
 static void pred_chroma(Mpeg4 *d, const Pic *ref, uint8_t *du, uint8_t *dv, int ds, int mbx, int mby, int cx, int cy,
                         int rc) {
     int x = mbx * 8 + (cx >> 1), y = mby * 8 + (cy >> 1), ws;
-    const uint8_t *s = window(ref->u, d->sc, d->w >> 1, d->h >> 1, x, y, 9, 9, d->win, &ws);
+    int cw = d->w > 1 ? d->w >> 1 : 1, ch = d->h > 1 ? d->h >> 1 : 1;
+    const uint8_t *s = window(ref->u, d->sc, cw, ch, x, y, 9, 9, d->win, &ws);
     hpel(du, ds, s, ws, 8, 8, cx & 1, cy & 1, rc);
-    s = window(ref->v, d->sc, d->w >> 1, d->h >> 1, x, y, 9, 9, d->win, &ws);
+    s = window(ref->v, d->sc, cw, ch, x, y, 9, 9, d->win, &ws);
     hpel(dv, ds, s, ws, 8, 8, cx & 1, cy & 1, rc);
 }
 

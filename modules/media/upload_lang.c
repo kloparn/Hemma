@@ -776,5 +776,21 @@ static const Tr TR[] = {
      "Esperan en el disco de este dispositivo, o en su memoria, hasta que se envían. Diga lo que diga, cada nivel tiene "
      "lo que sus núcleos necesitan a la vez; más deja que las subidas conviertan más por adelantado."},
     {"Room on this device: %d GB", "Plats på den här enheten: %d GB", "Espacio en este dispositivo: %d GB"},
+    /* 2.8: the device's graphics card */
+    {"Its graphics card makes HEVC videos H.264 here: a few at a time, a few times faster than its cores - and they stay "
+     "free.",
+     "Dess grafikkort gör HEVC-videor till H.264 här: några åt gången, flera gånger snabbare än dess kärnor - och de "
+     "hålls lediga.",
+     "Su tarjeta gráfica convierte aquí los vídeos HEVC a H.264: unos pocos a la vez, varias veces más rápido que sus "
+     "núcleos - y estos quedan libres."},
+    {"Its graphics card could make HEVC videos H.264 a few times faster and leave the cores free - but browsers only let a "
+     "page use it on a secure address. Open Hemma on this computer through a forwarded address, such as "
+     "http://127.0.0.1:8099 (docs/graphics-card.md).",
+     "Dess grafikkort kunde göra HEVC-videor till H.264 flera gånger snabbare och lämna kärnorna lediga - men webbläsare "
+     "låter bara en sida använda det på en säker adress. Öppna Hemma på den här datorn via en vidarebefordrad adress, "
+     "till exempel http://127.0.0.1:8099 (docs/graphics-card.md).",
+     "Su tarjeta gráfica podría convertir los vídeos HEVC a H.264 varias veces más rápido y dejar libres los núcleos - "
+     "pero los navegadores solo dejan que una página la use en una dirección segura. Abre Hemma en este ordenador a "
+     "través de una dirección redirigida, como http://127.0.0.1:8099 (docs/graphics-card.md)."},
 };
 TRANSLATIONS(media_upload, TR)
