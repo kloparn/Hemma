@@ -129,6 +129,10 @@ typedef struct {
     bool phave;
     uint8_t avcc[512]; /* the encoder's settings record: every part's must be the same */
     size_t navcc;
+    /* (2.8) the picture made on a graphics card (j->gpu): gpu = it said yes (open), the blocks go to it as they are and
+       what comes back is written; gpu_cfg = its settings record is in the MP4; gpu_last = the last block's time given */
+    bool gpu_maybe, gpu, gpu_cfg;
+    int64_t gpu_last;
     /* video copy */
     int64_t *vpts; /* every video pts in file order (decode order) */
     int nvpts, vi;
@@ -1201,6 +1205,12 @@ static int analyze_window(Conv *c, DeintStats *ds, Mpeg2Frame *first, bool *have
             if (opening && sound_unseen(c, &fr)) continue; /* still looking for the first sound */
             break;
         }
+        if (c->gpu_maybe && *have_first) { /* (2.8) the card decodes the rest: past the first picture, only the blocks'
+                                              times (in file order - survey sorts them) */
+            if (opening && c->nseen < ANALYZE_FRAMES && fr.pts != MKV_NOPTS) c->seen[c->nseen++] = fr.pts;
+            got++;
+            continue;
+        }
         vdec_decode(c, fr.data, fr.size, fr.pts);
         Mpeg2Frame pf;
         while (vdec_frame(c, &pf)) {
@@ -1252,6 +1262,7 @@ static bool survey(Conv *c, Mpeg2Frame *first, DeintStats *ds) {
         return unsupported(c, "Its HEVC picture uses %s, which the converter can't decode yet", hevc_unsupported(c->dec5));
     if (!have_first) return fail(c, "No picture could be decoded", NULL);
     if (c->m4 || c->hv) {
+        if (c->gpu_maybe) qsort(c->seen, (size_t)c->nseen, sizeof *c->seen, cmp_i64); /* (blocks' times: in time order) */
         c->vgap = usual_gap(c);
         return true;
     }
@@ -1347,7 +1358,6 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         } else c->dmode = deint_mode_for(deint_kind(ds));
         deint_rate(c->dmode, rn, rd, &c->out_num, &c->out_den);
         c->w = first->width, c->h = first->height;
-        c->di = deint_new(first->width, first->height, c->dmode);
         H264Params hp = {0};
         hp.width = first->width;
         hp.height = first->height;
@@ -1358,13 +1368,26 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         hp.preset = H264_FAST;
         hp.annexb = false;
         hp.colour = first->height >= 720 ? 709 : 601;
-        c->enc = h264enc_new(&hp);
-        if (!c->di || !c->enc) return fail(c, "Can't set up the converter for this picture size", NULL);
-        size_t n = h264enc_avcc(c->enc, avcc, sizeof avcc);
-        if (n <= sizeof c->avcc) memcpy(c->avcc, avcc, n), c->navcc = n; /* (2.7: the join checks every part has it) */
+        size_t n = 0;
+        if (c->gpu_maybe) { /* (2.8) the graphics card, when it says yes: its settings record comes with its first picture */
+            const AvGpu *g = c->j->gpu;
+            int64_t e = end_after(c->vt, c->v0), den = CMAX(1, c->out_den);
+            int64_t key = (2 * (int64_t)c->out_num + den / 2) / den; /* (a keyframe every ~2 s, as ours) */
+            AvGpuSetup s = {c->vt->priv, c->vt->priv_len, first->width, first->height, c->hv_depth, c->out_num, c->out_den,
+                            hp.quality, (int)CMIN(600, CMAX(1, key)), e > 0 ? e : INT64_MAX};
+            c->gpu = g->open(g->ctx, &s);
+            c->j->on_gpu = c->gpu;
+        }
+        if (!c->gpu) {
+            c->di = deint_new(first->width, first->height, c->dmode);
+            c->enc = h264enc_new(&hp);
+            if (!c->di || !c->enc) return fail(c, "Can't set up the converter for this picture size", NULL);
+            n = h264enc_avcc(c->enc, avcc, sizeof avcc);
+            if (n <= sizeof c->avcc) memcpy(c->avcc, avcc, n), c->navcc = n; /* (2.7: the join checks every part has it) */
+        }
         vt.codec = MP4_H264;
         vt.timescale = c->m4 || c->hv ? 90000 : (uint32_t)c->out_num;
-        vt.config = avcc;
+        vt.config = n ? avcc : NULL;
         vt.config_len = n;
         vt.width = first->width;
         vt.height = first->height;
@@ -1376,7 +1399,9 @@ static bool setup_tracks(Conv *c, const Mpeg2Frame *first, const DeintStats *ds)
         vt.matrix = first->height >= 720 ? 1 : pal ? 5 : 6;
         const char *kind = c->dmode == DEINT_IVTC ? "film" : c->dmode == DEINT_PASS ? "progressive" : "video";
         if (c->hv)
-            snprintf(c->j->what, sizeof c->j->what, "HEVC video (%d-bit, %.3f fps) → H.264", c->hv_depth, (double)c->out_num / c->out_den);
+            snprintf(c->j->what, sizeof c->j->what, c->gpu ? "HEVC video (%d-bit, %.3f fps) → H.264 on the graphics card"
+                                                           : "HEVC video (%d-bit, %.3f fps) → H.264",
+                     c->hv_depth, (double)c->out_num / c->out_den);
         else if (c->m4)
             snprintf(c->j->what, sizeof c->j->what, "MPEG-4 video (DivX/Xvid, %.3f fps) → H.264", (double)c->out_num / c->out_den);
         else snprintf(c->j->what, sizeof c->j->what, "DVD video (%s, %.3f fps) → H.264", kind, (double)c->out_num / c->out_den);
@@ -1501,11 +1526,51 @@ static bool feed_pieces(Conv *c, int64_t upto) {
     return false;
 }
 
+/* ---- (2.8) the picture made on a graphics card ---- */
+
+static bool gpu_stopped(Conv *c) {
+    c->j->gpu_failed = true;
+    return fail(c, "The graphics card stopped converting it", NULL);
+}
+
+/* What the card made so far (all: wait for the rest, after end), written as our encoder's pictures are - its settings
+   record with the first */
+static bool gpu_take(Conv *c, bool all) {
+    const AvGpu *g = c->j->gpu;
+    AvGpuPicture p;
+    while (!c->failed) {
+        int r = g->take(g->ctx, &p, all);
+        if (r == 0 || r == -1) return true;
+        if (r != 1 || !p.data || !p.size) return gpu_stopped(c);
+        if (!c->gpu_cfg) {
+            uint8_t cfg[1024];
+            size_t n = g->avcc(g->ctx, cfg, sizeof cfg);
+            if (!n || n > sizeof cfg || !mp4_set_config(c->mp4, c->vtrack, cfg, n))
+                return fail(c, "The graphics card's H.264 came without its settings", NULL);
+            c->gpu_cfg = true;
+        }
+        if (!c->have_pend && !p.key) return gpu_stopped(c); /* (a copy starts with a keyframe) */
+        int64_t place = place_of(c, p.pts == MKV_NOPTS || c->v0 == MKV_NOPTS ? MKV_NOPTS : c->v0 + p.pts);
+        if (!put_video(c, p.data, p.size, place, p.key)) return false;
+    }
+    return false;
+}
+
+/* A block of the picture, as it is - its time after the first picture (none: just after the last one's) */
+static bool gpu_feed(Conv *c, const MkvFrame *fr) {
+    const AvGpu *g = c->j->gpu;
+    int64_t t = fr->pts != MKV_NOPTS && c->v0 != MKV_NOPTS ? fr->pts - c->v0 : c->gpu_last + NS / 1000;
+    c->gpu_last = t;
+    if (!g->feed(g->ctx, fr->data, fr->size, t, fr->key)) return gpu_stopped(c);
+    return gpu_take(c, false);
+}
+
 static bool main_pass(Conv *c) {
     MkvFrame fr;
     if (c->piece) return piece_pass(c);
     mkv_rewind(c->mkv);
-    if (c->vcode && !c->joining && !restart_decoder(c)) return false; /* start over with a fresh decoder: the survey consumed frames */
+    if (c->vcode && !c->joining && !c->gpu && !restart_decoder(c)) return false; /* start over with a fresh decoder: the
+                                                                                    survey consumed frames */
     int r = 0;
     while (!c->failed && (r = next_frame(c, &fr)) > 0) {
         if (stopped(c)) return fail(c, "Stopped", NULL);
@@ -1514,6 +1579,8 @@ static bool main_pass(Conv *c) {
         if (fr.track == c->vt->number) {
             if (c->joining) { /* (its picture is the parts') */
                 ;
+            } else if (c->gpu) { /* (2.8: the card's) */
+                gpu_feed(c, &fr);
             } else if (c->vcode) {
                 vdec_decode(c, fr.data, fr.size, fr.pts);
                 decoded(c);
@@ -1543,6 +1610,12 @@ static bool main_pass(Conv *c) {
         if (!feed_pieces(c, INT64_MAX)) return false;
         uint32_t last = (uint32_t)CMAX(1, at_tick(c->vgap));
         if (c->have_pend && !put_sample(c, c->vtrack, c->pend, c->npend, last, 0, c->pend_key)) return false;
+    } else if (c->gpu) { /* (2.8) the card's last pictures */
+        c->j->gpu->end(c->j->gpu->ctx);
+        if (!gpu_take(c, true)) return false;
+        if (!c->have_pend) return gpu_stopped(c); /* (it made no picture at all) */
+        uint32_t last = (uint32_t)CMAX(1, at_tick(c->vgap));
+        if (!put_sample(c, c->vtrack, c->pend, c->npend, last, 0, c->pend_key)) return false;
     } else if (c->vcode) { /* the last pictures still inside the decoder and the deinterlacer */
         vdec_flush(c);
         decoded(c);
@@ -1628,6 +1701,7 @@ bool av_convert(AvConvJob *j) {
     j->permille = 0;
     j->out_bytes = 0;
     j->unsupported = j->as_is = false;
+    j->on_gpu = j->gpu_failed = false;
     j->nsubs = 0;
     char err[160] = "";
     c->mkv = mkv_open(&j->in, err, sizeof err);
@@ -1724,6 +1798,7 @@ bool av_convert(AvConvJob *j) {
         c->joining = j->npieces > 0;
         if (c->piece) c->naud = c->alive = 0; /* (a part: the picture alone) */
     }
+    c->gpu_maybe = !c->failed && c->hv && j->gpu && !c->piece && !c->joining; /* (2.8: the card, if it says yes) */
     if (j->want_subs && !c->piece) choose_subs(c);
 
     Mpeg2Frame first = {0};
@@ -1761,6 +1836,7 @@ bool av_convert(AvConvJob *j) {
     hand_subs(c, subs_ok);
 
     if (c->mp4) mp4_free(c->mp4);
+    if (c->gpu && j->gpu->close) j->gpu->close(j->gpu->ctx); /* (2.8) */
     if (c->pmkv) mkv_close(c->pmkv); /* (2.7: a part the join was reading) */
     mkv_close(c->mkv);
     if (c->dec) mpeg2_free(c->dec);

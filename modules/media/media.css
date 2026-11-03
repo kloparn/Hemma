@@ -683,3 +683,7 @@ html[data-nodir] .media-up-folder { display: none; } /* (wire.js: no folder pick
 .media-power-opt { align-items: flex-start; }
 .media-power-opt input { margin-top: 3px; flex: none; } /* (a long description beside it: it kept shrinking) */
 .media-power-opt span { display: flex; flex-direction: column; gap: 2px; }
+/* (2.8) the device's graphics card: the line that's true here - wire.js sets html[data-gpu] (on: at work; off: a computer
+   on a page that isn't secure, where browsers keep the card from it) */
+[data-gpu-hint] { display: none; }
+html[data-gpu=on] [data-gpu-hint=on], html[data-gpu=off] [data-gpu-hint=off] { display: block; }

@@ -998,7 +998,9 @@ static void part_progress(Batch *b, int v) {
     if (pm > video->pm) video->pm = pm;
 }
 
-static bool here_plan(Ctx *c, Json *j, int at, Batch **out, char *err, size_t cap) {
+/* card (2.8): the asking browser makes the pictures on its graphics card - whole videos, one after another, never in parts
+   (a part's join would be done again by the server, and the card is quicker than the parts) */
+static bool here_plan(Ctx *c, Json *j, int at, bool card, Batch **out, char *err, size_t cap) {
     int me = c->me->id;
     char what[160] = "";
     json_string(j, at, what, sizeof what);
@@ -1045,7 +1047,7 @@ static bool here_plan(Ctx *c, Json *j, int at, Batch **out, char *err, size_t ca
         str_copy(err, cap, T("Nothing there needs converting any more"));
         return false;
     }
-    here_parts(c, b); /* (2.7: Full throttle - long ones in parts side by side) */
+    if (!card) here_parts(c, b); /* (2.7: Full throttle - long ones in parts side by side) */
     *out = b;
     return true;
 }
@@ -1384,7 +1386,10 @@ static void plan(Ctx *c, Conn *conn, HttpReq *r) {
         if (!art_plan(&j, art, &b, err, sizeof err)) goto out;
         batch_count(b);
     } else if (here >= 0) {
-        if (!here_plan(c, &j, here, &b, err, sizeof err)) goto out;
+        char gpu[4] = ""; /* (2.8: "1" = the browser makes the pictures on its graphics card) */
+        int g = json_get(&j, 0, "gpu");
+        if (g >= 0) json_string(&j, g, gpu, sizeof gpu);
+        if (!here_plan(c, &j, here, str_eq(gpu, "1"), &b, err, sizeof err)) goto out;
         batch_count(b);
     } else {
         Ask a = {.j = &j};
@@ -2272,6 +2277,10 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
     }
     long long pm = fields_int(&q, "pm", -1), size = fields_int(&q, "size", -1), fed = fields_int(&q, "fed", -1);
     bool original = str_eq(fields_str(&q, "original"), "1"), plays = str_eq(fields_str(&q, "plays"), "1"); /* (2.5) */
+    bool card = str_eq(fields_str(&q, "gpu"), "1"); /* (2.8: its picture made on the device's graphics card - or, card=,
+                                                       why the card stopped and the device's cores made it instead) */
+    char card_why[164];
+    str_copy(card_why, sizeof card_why, fields_str(&q, "card"));
     char why[96], msg[400]; /* (why: the browser's converter's words - shown as they came) */
     str_copy(why, sizeof why, fields_str(&q, "why"));
     fields_free(&q);
@@ -2360,6 +2369,9 @@ static void converted(Ctx *c, Conn *conn, HttpReq *r, uint64_t id, int i) {
             file_remove(part); /* a copy from an earlier try: this one starts over */
             b->last = b->busy = now_sec();
             buf_puts(&out, "{\"at\":0}");
+            if (card) log_info("upload: %s made on the graphics card of %s's device", f->rel, c->me->username);
+            else if (card_why[0]) log_warn("upload: %s made by %s's device without its graphics card, which stopped: %s", f->rel,
+                                           c->me->username, card_why);
         }
     } else if (original && f->conv == CV_WAIT && f->from) { /* (2.6) a "here" one: its original is the library's own */
         b->total -= copy_guess(f);

@@ -320,6 +320,7 @@ test('a library HEVC video is made in parts on this device on full throttle', as
   const dir = path.join(LIBRARY, 'Series', 'Partshow', 'Season 1'), from = path.join(dir, 'Partshow S01E01.mkv');
   fs.mkdirSync(dir, { recursive: true });
   fs.copyFileSync(path.join(WORK, 'mkv', 'hevc-three-keyframes-aac.mkv'), from);
+  await page.addInitScript(() => { delete WebAssembly.Suspending; }); /* (2.8: no graphics card - it makes whole videos) */
   await page.goto('/media/upload');
   test.skip(!(await page.locator('form[data-wasm]').count()), 'this Hemma has no converter for browsers (av.wasm)');
   await act(page, 'media.power', { where: 'here', tier: 'full' });
@@ -365,6 +366,38 @@ test('a library HEVC video is made H.264 on this device', async ({ page }) => {
   const mp4 = fs.readFileSync(copy).toString('latin1');
   for (const box of ['avc1', 'avcC', 'mp4a']) expect(mp4).toContain(box); /* (made H.264, the AAC copied) */
   expect(mp4).not.toContain('hvcC');
+});
+
+// 2.8 (the owner: "implement the encoding path on the gpu if it exist"): where this browser has a graphics card that
+// decodes HEVC and encodes H.264 (WebCodecs, on a secure page - these tests' 127.0.0.1 is one), the picture is made
+// there: H.264 High (avcC's profile 100; ours is Constrained Baseline, 66), whole - no parts on Full throttle - the AAC
+// copied by the converter as ever. Skipped where there's no card (CI's browsers).
+test('a library HEVC video is made H.264 on the graphics card where there is one', async ({ page }) => {
+  const dir = path.join(LIBRARY, 'Series', 'Cardshow', 'Season 1'), from = path.join(dir, 'Cardshow S01E01.mkv');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.copyFileSync(path.join(WORK, 'mkv', 'hevc-card-320x240-aac.mkv'), from);
+  await act(page, 'media.power', { where: 'here', tier: 'full' });
+  await act(page, 'media.rescan', {});
+  const row = page.locator('li.row', { hasText: 'Cardshow' });
+  await expect.poll(async () => {
+    await page.goto('/media/settings/converting');
+    return row.count();
+  }, { message: 'the scan lists it with the HEVC videos', timeout: 30_000 }).toBeGreaterThan(0);
+  test.skip(!(await row.locator('form[data-here][data-wasm]').count()), 'this Hemma has no converter for browsers (av.wasm)');
+  await expect.poll(() => page.evaluate(() => document.documentElement.dataset.gpu || ''), { timeout: 10_000 }).not.toBe('');
+  const card = await page.evaluate(() => document.documentElement.dataset.gpu);
+  await expect(page.locator('#media-gpu-on')).toBeVisible({ visible: card === 'on' }); /* (the line that's true here) */
+  test.skip(card !== 'on', 'this browser has no graphics card it can convert on');
+  const puts = [];
+  page.on('request', (r) => { if (r.method() === 'PUT') puts.push(r.url()); });
+  await row.locator('form[data-here] button').click();
+  const copy = path.join(dir, 'Cardshow S01E01.web.mp4');
+  await expect.poll(() => fs.existsSync(copy), { message: 'its copy arrives', timeout: 60_000 }).toBe(true);
+  const mp4 = fs.readFileSync(copy).toString('latin1');
+  expect(mp4).toContain('avcC\x01\x64'); /* (H.264 High: the card's) */
+  expect(mp4).toContain('mp4a');
+  expect(puts.every((u) => /\/0\?/.test(u))).toBe(true); /* (whole: only the video's own entry) */
+  await act(page, 'media.power', { where: 'here', tier: 'medium' });
 });
 
 // 2.6: the video is read from Hemma while it's converted - a network that's gone a while is waited out, as an upload's

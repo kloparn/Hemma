@@ -51,6 +51,10 @@ Your movie and series drive as a little cinema.
 - **How hard to work.** Converting may take a third of a computer's cores (*Low power*), two thirds (*Medium*) or
   all of them (*Full throttle*) - chosen for Hemma's computer and for your own device, each said in its own numbers.
   On Full throttle a video is made in parts side by side when fewer are left than cores, so one film uses them all.
+- **Your graphics card does the heavy part** (from 2.8). On the computer you're using, HEVC made H.264 goes to its
+  graphics card when the browser can use it - about three times faster than every core together, with smaller copies.
+  Browsers only allow that on a secure address, so open Hemma on that computer through a forwarded port
+  ([how](graphics-card.md)).
 - **Library settings in tabs** - Overview (the counts, and what needs a look), Converting, Manage, Folders, Online,
   Devices - and **Manage** one tap from Watch's header: every series and film, A-Z or biggest first, each a tap from
   renaming, fixing, converting or removing it. Every episode's and film's page has Manage too.

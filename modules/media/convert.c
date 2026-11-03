@@ -1393,6 +1393,16 @@ void convert_power_card(Ctx *c, Buf *b) {
           T("They wait on this device's disk, or in its memory, until they're sent. Whatever it says, each tier gets "
             "what its cores need at once; more lets uploads convert further ahead."));
         ui_form_end(b);
+        /* (2.8) its graphics card: the line that's true here shows (media.css, by html[data-gpu] - wire.js) - the card at
+           work (a secure page whose browser can: https, or 127.0.0.1 through a port forward), or how to let it (a computer
+           on Hemma's plain address) */
+        H(b, "<p class=\"muted media-small\" id=\"media-gpu-on\" data-gpu-hint=\"on\">%s</p>",
+          T("Its graphics card makes HEVC videos H.264 here: a few at a time, a few times faster than its cores - and they "
+            "stay free."));
+        H(b, "<p class=\"muted media-small\" id=\"media-gpu-off\" data-gpu-hint=\"off\">%s</p>",
+          T("Its graphics card could make HEVC videos H.264 a few times faster and leave the cores free - but browsers only "
+            "let a page use it on a secure address. Open Hemma on this computer through a forwarded address, such as "
+            "http://127.0.0.1:8099 (docs/graphics-card.md)."));
     }
     ui_card_end(b);
 }

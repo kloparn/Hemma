@@ -615,7 +615,8 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  it replaces, or the original it goes beside - removed or renamed on Manage) else {"skip":true}; two
                  videos making one .web.mp4 go once. A copy in place sets UpFile.settle: upload_tick then does what Hemma's
                  own queue does with "Do that by itself after each conversion" ticked (2.7: convert_replace_original - the
-                 original stayed beside a device's copy). PARTS (2.7, Full throttle on the device - decision 0014):
+                 original stayed beside a device's copy). PARTS (2.7, Full throttle on the device - decision 0014; none
+                 when the plan says gpu=1 - 2.8, the browser's graphics card makes whole videos):
                  here_parts gives each long video (dur_ms / g_part_min_ms, CONVERT_PART_MIN_S 300 s; HEMMA_TEST_PART_MS in
                  the browser tests) its share of the device's workers (convert_device_workers / videos) as part entries
                  after the videos - part_of = 1 + its video's entry, part_k, cut_from/_to ms (-1 = the end), orig = its
@@ -1099,7 +1100,7 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  smallest - a packed block's second VOP takes the next empty block's time (`debt`), a lone N-VOP's time
                  is dropped. Refused by name (mpeg4_unsupported): interlaced, GMC, data partitioning, shapes, sprites,
                  complexity estimation, NEWPRED, reduced res, scalability, not 8-bit. MC clamps to the VISIBLE size (1144
-                 wide: not MB-aligned). Checked vs FFmpeg (HEMMA_TEST_MPEG4=<file> [_REF=<ffmpeg yuv420p, -fps_mode
+                 wide: not MB-aligned; the chroma's halved, at least 1 sample - 2.8.0's fuzz finding: a 16x1 VOL went to 0). Checked vs FFmpeg (HEMMA_TEST_MPEG4=<file> [_REF=<ffmpeg yuv420p, -fps_mode
                  passthrough>] [_N] [_OUT] ./build/test mpeg4_real): the 3 real files 53-65 dB, 16 clips from FFmpeg's
                  mpeg4 and libxvid with every tool 49-66 dB luma PSNR, 0 concealed - the IDCT is all that differs.
                  mpeg4_testenc.h = test streams (m4_*: flat intra MBs with a DC-prediction replica, vectors, escape-3
@@ -1195,8 +1196,19 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  forced, data: ArrayBuffer (transferred), idx}]; conv_subs_only(size) = av_subtitles alone, posted
                  as {subsOnly, subs, pics} - 1.3, a video that stays behind), which
                  build.ps1/Makefile compile to $B/av.wasm (zig cc -target
-                 wasm32-wasi -mexec-model=reactor -msimd128; ~780 KB in 2.6, ~300 KB gzipped as sent, imports only 4 hemma.* functions,
-                 embedded as /static/av.wasm). Measured on a DVD episode: wasm ~75% of native speed (374 s
+                 wasm32-wasi -mexec-model=reactor -msimd128; ~780 KB in 2.6, ~300 KB gzipped as sent, imports 4 hemma.* functions
+                 + (2.8) 6 hemma.gpu_* - conv.js always provides them, as stubs when no card - embedded as /static/av.wasm).
+                 (2.8) THE GRAPHICS CARD (owner, 2026-11-01: "implement the encoding path on the gpu if it exist ... painfully slow
+                 even with a monster cpu"): AvConvJob.gpu (conv.h AvGpu: open/feed/end/take/avcc/close, AvGpuSetup, AvGpuPicture)
+                 - with h264, an HEVC picture's blocks go to feed as they are and the H.264 pictures take hands back (presentation
+                 order, no B-frames) are written as our encoder's (put_video/place_of; the avcC from avcc with the first:
+                 mp4_set_config); open says no = ours, as ever (on_gpu false); a failure part-way = gpu_failed ("The graphics card
+                 stopped converting it"). gpu_maybe: the survey decodes only the first picture and takes the blocks' times (sorted)
+                 for the usual gap. Whole videos only (not piece/joining). avconv.c: imports gpu_open(hvcc, n, w, h, depth, fps_num,
+                 fps_den, qp, keyint, end_us) gpu_feed(p, n, pts_us, key) gpu_end() gpu_take(wait, buf, cap, meta[3]) (> 0 bytes,
+                 0 none yet, -1 no more, -2 failed, -3 buf too small: meta[2]) gpu_avcc gpu_close; conv_run(..., gpu); exports
+                 conv_on_gpu, conv_gpu_failed. Times us after the first picture. conv_test.c FakeGpu = our own decoder + encoder:
+                 the same samples as the CPU path (same_copy: only the interleave differs - our deinterlacer holds a picture). Measured on a DVD episode: wasm ~75% of native speed (374 s
                  vs 282 s on one core), video bit-identical to native, AAC differs only by float rounding.
                  conv.c bounds samples per track (2M; with a stated length 300 pictures / 120 sound blocks
                  per second; AvConvJob.max_samples lowers it) and refuses MPEG-2 whose picture size changes
@@ -1223,7 +1235,15 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
 web/             app.css (core styles + shared vocabulary), wire.js, conv.js (the upload converter's Worker:
                  feeds av.wasm a File - reading ahead: reading on from where it stopped, each read twice the last,
                  up to 32 MB (8 MB on a phone), so workers sharing a hard disk read in long runs (1.3) - and
-                 gathers the copy, in memory or a Blob; or only a file's subtitles), icon.svg, manifest
+                 gathers the copy, in memory or a Blob; or only a file's subtitles; (2.8) card() = the graphics card through
+                 WebCodecs - VideoDecoder (hevcCodec: hvcC -> "hvc1...") -> an OffscreenCanvas 2d (drawImage) -> VideoEncoder
+                 (avcCodec: High at the lowest level that fits, bitrateMode quantizer QP 23, a keyframe every keyint, latencyMode
+                 quality), the converter suspended while feed/take wait (JSPI: WebAssembly.Suspending imports, promising
+                 conv_run); CARD_AHEAD 4 in each queue. THE CANVAS: handed straight from decoder to encoder a 10-bit picture went
+                 at ~100/s for ALL jobs together (its 8-bit conversion into the encoder held them; latencyMode realtime and a copy
+                 through memory no better); through the canvas ~315/s one job, ~470/s three, 46 dB vs the original, colours
+                 true (ffmpeg psnr). A card that stops: conv_run again without it, from scratch ({cardFailed: why})),
+                 icon.svg, manifest
 third_party/sqlite/  SQLite 3.54.1 amalgamation + its recovery extension (ext/recover: dbdata.c, sqlite3recover.c/.h;
                  recover.c includes both as one object; sqlite3.c needs SQLITE_ENABLE_DBPAGE_VTAB) - see its
                  README for provenance + hashes
@@ -1898,6 +1918,8 @@ element full screen: its video's webkitEnterFullscreen (Apple's player) instead;
 check real full screen in a normal browser) ·
 `[data-caps="<type>|<type>|..."]` (2.5, media/devices.c: answered ONCE A LOAD - canPlayType per type, y/m/n - as the
 live media.caps; the list and its meaning are the server's; wire.js capsTell) ·
+`[data-gpu-hint="on|off"]` (2.8: shown by media.css when html[data-gpu] says the same - wire.js gpuHints/cardOk: the
+browser makes HEVC H.264 on the graphics card here, or a computer on a page that isn't secure) ·
 `[data-upnext="S"]` (the page's "next episode" card for its video[data-next]: unhidden in the last S
 seconds, `[data-count]` = seconds left, `[data-hide]` puts it away for that video, a link in it reports
 the video watched BEFORE the nav goes; an [autofocus] in it takes the focus from the video) ·
@@ -2158,7 +2180,7 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
 ## Where things stand
 
 What each version changed is [CHANGELOG.md](CHANGELOG.md); why the big choices are what they are is
-[docs/decisions](docs/decisions/README.md) (0001-0013); how it fits together for humans is
+[docs/decisions](docs/decisions/README.md) (0001-0015); how it fits together for humans is
 [ARCHITECTURE.md](ARCHITECTURE.md) and [CONTRIBUTING.md](CONTRIBUTING.md). This file keeps the working rules.
 (Issue #51, 2026-10-21: the dated Status diary that lived here - every version's work, review passes -
 is the CHANGELOG's now.) 1.0.0 (2026-10-21) = the outside reviews' issues (#3-#103) and the planned
@@ -2283,6 +2305,18 @@ FOLLOWS YOU BOTH WAYS: GET /media/offline/places.json?ids=<id>,... (at most 64) 
 "done","at" = MediaWatch.updated}]} for the viewer; the app's Offline.sync asks it first and the newer place wins (see
 apps/android) - a saved copy starts where the TV or a browser got to, and an older place from the phone no longer
 overwrites a newer one.
+2.8.0 (branch feat/enable-gpu-convertion; owner, 2026-11-01: "implement the encoding path on the gpu if it exist ...
+painfully slow even with a monster cpu") = THE GRAPHICS CARD CONVERTS: "On this device" (and an upload's h264 box) makes
+an HEVC picture H.264 on the computer's graphics card through WebCodecs (conv.js card(), av/conv AvGpu - see there), three
+videos at a time (wire.js CARD_JOBS), whole (a plan with gpu=1: here_plan makes no parts). WebCodecs exists only in a
+SECURE CONTEXT: Hemma's plain http LAN address has none, so the converting computer opens Hemma through a port forward on
+itself - http://127.0.0.1:8099 (Windows: netsh interface portproxy; docs/graphics-card.md) - which browsers count as secure;
+nothing in Hemma changes (the Host guard takes an IP, same-origin compares Origin with Host). wire.js cardOk() (a secure
+page, VideoDecoder/VideoEncoder + WebAssembly.Suspending, the card's HEVC decode + H.264 quantizer encode supported) ->
+html[data-gpu] on / off (a computer on a page that isn't secure) / no; media.css shows the [data-gpu-hint] line that's
+true on the power card's "This device". The log: "upload: <rel> made on the graphics card of <user>'s device" (?size=
+...&gpu=1), a warning with why when the card stopped and the cores made it (&card=). Measured on the dev PC (RTX 3060,
+i5-13600KF, Chrome 156): see the converter's numbers below.
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
@@ -2295,6 +2329,10 @@ Keep new work within what's been measured:
   HEVC -> H.264 (2.6): 1080p 10-bit ~1.6-1.8 s a second of video per PC core, native or as WebAssembly in Node (a
   22-min Friends episode ~36 min); ~36 MB a minute (about the HEVC's size), 39.6 dB; HEVC decoding alone ~45-55 fps.
   Peak memory 80-100 MB a 1080p job (glibc, 3 sources) - a Pi 3's 2 workers ~200 MB of its 1 GB. Copies 0.6-1.5x the HEVC.
+  On a graphics card (2.8, RTX 3060 via Chrome's WebCodecs): four 23-min 1080p 10-bit Pokémon episodes in 5 min 22 s
+  through Hemma's own "On this device" (3 at once, ~17x real time, the CPU ~23%, the card's encoder 95%), vs 17 min
+  47 s on all 20 threads (Full throttle, 4 parts each); 46.3 dB Y / 47.4 U / 47.0 V vs the original at 1.5 Mbit/s (ours:
+  47.1 / 50.1 / 50.1 at 2.4: half as big again), every picture in step; the card's decoding alone ~1,580 fps.
 - The program: ~4.7 MB for the Pi (2.6.0; av.wasm and its gzip twin inside, ~1.1 MB of it), "one ~5 MB program" in the
   README and the GitHub description; the suite ~25 s on a 20-thread PC (874 tests).
 

@@ -27,7 +27,22 @@
  *   text) - the page sends them to the server, which saves them next to the copy. After a 2 there are
  *   none: the original goes to the server, which takes its subtitles out itself (skip_refused_subs).
  * conv_subs_only(size) instead reads only the subtitle tracks (1 = read, 0 = not), for a video that stays
- * behind; the same conv_sub_* tell them. */
+ * behind; the same conv_sub_* tell them.
+ *
+ * (2.8) THE GRAPHICS CARD: conv_run's 5th argument gpu = 1 lets an HEVC picture made H.264 go to the browser's
+ * WebCodecs (AvConvJob.gpu) - six more functions from the page, the ones that wait suspending this module (JSPI:
+ * conv.js wraps them in WebAssembly.Suspending and conv_run in WebAssembly.promising):
+ *   hemma.gpu_open(hvcc, n, width, height, depth, fps_num, fps_den, qp, keyint, end_us)  1 = the card takes it (end_us
+ *                                  < 0: every picture; else only those shown before it), 0 = it doesn't
+ *   hemma.gpu_feed(p, n, pts_us, key)   a block, in file order; 1 = ok (may wait while the card is busy)
+ *   hemma.gpu_end()                no more blocks
+ *   hemma.gpu_take(wait, buf, cap, meta)  the next H.264 picture into memory[buf]: its bytes (> 0), 0 = none yet,
+ *                                  -1 = no more, -2 = the card failed, -3 = buf too small (meta[2] = how big); meta =
+ *                                  3 doubles: its time (us), keyframe (1/0), the size needed
+ *   hemma.gpu_avcc(out, cap)       its settings record's bytes (avcC), 0 = none yet
+ *   hemma.gpu_close()
+ * conv_on_gpu() = 1 when the picture was made on the card; conv_gpu_failed() = 1 when the card stopped part-way (the
+ * page runs it again without: what was written is no good). Times are microseconds after the video's first picture. */
 #include <stdlib.h>
 #include <string.h>
 
@@ -40,6 +55,13 @@ IMPORT("read") int js_read(double off, void *dst, int n);
 IMPORT("write") int js_write(const void *p, int n);
 IMPORT("write_at") int js_write_at(double off, const void *p, int n);
 IMPORT("progress") void js_progress(int permille);
+IMPORT("gpu_open") int js_gpu_open(const void *hvcc, int n, int width, int height, int depth, int fps_num, int fps_den, int qp,
+                                   int keyint, double end_us);
+IMPORT("gpu_feed") int js_gpu_feed(const void *p, int n, double pts_us, int key);
+IMPORT("gpu_end") void js_gpu_end(void);
+IMPORT("gpu_take") int js_gpu_take(int wait, void *buf, int cap, double *meta);
+IMPORT("gpu_avcc") int js_gpu_avcc(void *out, int cap);
+IMPORT("gpu_close") void js_gpu_close(void);
 
 /* ---- input: the page reads a File, which costs a call into JS per read, while
    the demuxer asks for a few bytes at a time - so read whole 1 MB blocks */
@@ -130,6 +152,59 @@ static bool dst_write_at(void *ctx, int64_t off, const void *p, size_t n) {
     return flush_out() && js_write_at((double)off, p, (int)n) == 1;
 }
 
+/* ---- (2.8) the graphics card, through the page (AvGpu over the gpu_* imports) */
+
+static unsigned char *g_pic; /* the picture gpu_take handed over (grows to the biggest) */
+static int g_npic;
+
+static bool gpu_open(void *ctx, const AvGpuSetup *s) {
+    (void)ctx;
+    double end = s->end == INT64_MAX ? -1 : (double)(s->end / 1000);
+    return js_gpu_open(s->config, (int)s->config_len, s->width, s->height, s->depth, s->fps_num, s->fps_den, s->qp,
+                       s->keyint, end) == 1;
+}
+
+static bool gpu_feed(void *ctx, const uint8_t *p, size_t n, int64_t pts, bool key) {
+    (void)ctx;
+    return js_gpu_feed(p, (int)n, (double)(pts / 1000), key) == 1;
+}
+
+static void gpu_end(void *ctx) {
+    (void)ctx;
+    js_gpu_end();
+}
+
+static int gpu_take(void *ctx, AvGpuPicture *out, bool wait) {
+    (void)ctx;
+    double meta[3];
+    for (;;) {
+        int r = js_gpu_take(wait, g_pic, g_npic, meta);
+        if (r == -3) { /* (a bigger picture than any so far) */
+            int need = (int)meta[2];
+            unsigned char *p = need > 0 ? realloc(g_pic, (size_t)need) : NULL;
+            if (!p) return -2;
+            g_pic = p, g_npic = need;
+            continue;
+        }
+        if (r <= 0) return r == 0 ? 0 : r == -1 ? -1 : -2;
+        *out = (AvGpuPicture){g_pic, (size_t)r, (int64_t)meta[0] * 1000, meta[1] != 0};
+        return 1;
+    }
+}
+
+static size_t gpu_avcc(void *ctx, uint8_t *out, size_t cap) {
+    (void)ctx;
+    int n = js_gpu_avcc(out, (int)cap);
+    return n > 0 ? (size_t)n : 0;
+}
+
+static void gpu_close(void *ctx) {
+    (void)ctx;
+    js_gpu_close();
+}
+
+static const AvGpu g_gpu = {NULL, gpu_open, gpu_feed, gpu_end, gpu_take, gpu_avcc, gpu_close};
+
 /* ---- the job */
 
 static AvConvJob g_job;
@@ -139,7 +214,10 @@ static void on_progress(void *ctx, int permille) {
     js_progress(permille);
 }
 
-EXPORT("conv_run") int conv_run(double size, int quality, int audio_kbps, int h264) {
+EXPORT("conv_on_gpu") int conv_on_gpu(void) { return g_job.on_gpu; }
+EXPORT("conv_gpu_failed") int conv_gpu_failed(void) { return g_job.gpu_failed; }
+
+EXPORT("conv_run") int conv_run(double size, int quality, int audio_kbps, int h264, int gpu) {
     static int64_t total;
     total = (int64_t)size;
     if (!g_out && !(g_out = malloc(OUTBUF))) return 0;
@@ -153,6 +231,7 @@ EXPORT("conv_run") int conv_run(double size, int quality, int audio_kbps, int h2
     g_job.quality = quality;
     g_job.audio_kbps = audio_kbps;
     g_job.h264 = h264 != 0;
+    g_job.gpu = gpu ? &g_gpu : NULL; /* (2.8) */
     g_job.want_subs = true;
     g_job.skip_refused_subs = true; /* (a refused file goes as it is: no second read of it here) */
     g_job.progress = on_progress;

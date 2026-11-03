@@ -4,6 +4,59 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.8.0 (2026-11-02)
+
+HEVC made H.264 on your graphics card: "On this device" hands the picture to the computer's graphics card when the
+browser can use it - about three times faster than every core together, the copies a third smaller.
+
+### New
+
+- **Your graphics card converts** (owner: "implement the encoding path on the gpu if it exist ... painfully slow even
+  with a monster cpu"): *On this device* - Library settings' *Play everywhere from HEVC*, a series' Manage, a video's
+  page - and an upload's "Make HEVC videos play everywhere too" box now make an HEVC (x265) video's picture H.264 on the
+  computer's graphics card, through the browser's WebCodecs: decoded and encoded there, the pictures never leaving the
+  card. Hemma's own converter still reads the file, makes the sound and subtitles and writes the copy. Measured on a PC
+  with an RTX 3060: four 23-minute 1080p 10-bit episodes in 5 minutes 22 seconds (about 17 times real time), against
+  17 minutes 47 seconds on all twenty of its threads - and the copies a third smaller, as good to the eye (46.3 dB PSNR
+  against the originals; the processor's 47.1).
+- **The one step it needs:** browsers only allow it on a secure address, and Hemma's on your network isn't one. Open
+  Hemma on the converting computer through a forwarded port - `http://127.0.0.1:8099` - and the browser counts the page
+  as secure; nothing in Hemma changes. [docs/graphics-card.md](docs/graphics-card.md) says how (one `netsh` line on
+  Windows). *Library settings → Converting → How hard to work → This device* says whether the card is at work, or how to
+  let it.
+- Three videos at a time on the card, whole (Full throttle's parts are for cores). A video the card can't take is made
+  by the processor as before; one where the card stops part-way is made again by the processor, and the log says why.
+  Hemma's log names each copy the card made.
+
+### Fixed
+
+- **An XviD or DivX video one pixel wide or tall no longer reads outside its picture** (found by the nightly fuzzing,
+  2026-11-02 and -03): moving its colour from the picture before, the converter looked one row or column before the
+  colour's memory. No real video is that size, but a damaged or crafted file could say so. Every other size decodes
+  exactly as before.
+
+### For developers
+
+- modules/av/mpeg4.c `pred_chroma`: the chroma plane's edge for motion is the luma's halved but at least one sample (a 0
+  took `window()`'s clamp to -1: UBSan's pointer overflow). mpeg4_test.c `mpeg4_one_sample_wide_or_tall` (16x1, 1x16,
+  1x1, 40x1); the fuzz seeds gain `mpeg4-one-row` (48x1) and `mpeg4-one-column-qpel` (1x32).
+
+- modules/av/conv.h `AvGpu` / `AvGpuSetup` / `AvGpuPicture`, `AvConvJob.gpu` (+ results `on_gpu`, `gpu_failed`): with
+  `h264`, an HEVC picture's blocks go to `gpu->feed` as they are and the H.264 pictures `gpu->take` hands back are written
+  as our encoder's (its avcC set with the first: `mp4_set_config`); `open` says no = our decoder and encoder, as ever.
+  The survey decodes only the first picture then (the blocks' times for the rate). Whole videos only - no parts or joins.
+  conv_test.c: a stand-in card made of our own decoder and encoder gives the same samples as the CPU path.
+- modules/av/wasm/avconv.c: imports `gpu_open/feed/end/take/avcc/close`, exports `conv_on_gpu`, `conv_gpu_failed`;
+  `conv_run`'s 5th argument `gpu`.
+- web/conv.js `card()`: WebCodecs `VideoDecoder` (hvcC -> its codec string) -> `OffscreenCanvas` -> `VideoEncoder`
+  (H.264 High, `bitrateMode: 'quantizer'`, QP 23, a keyframe every ~2 s), the converter suspended while it waits (JSPI:
+  `WebAssembly.Suspending` / `promising`). The canvas in between: handed straight from decoder to encoder, a 10-bit
+  picture went at ~100 frames a second for all the jobs together; through the canvas ~315 for one job, ~470 for three.
+  A card that stops: the job runs again without it (`{cardFailed}`).
+- web/wire.js: `cardOk()` (a secure page, WebCodecs + JSPI, the card's HEVC decoder and H.264 encoder); a plan with
+  `gpu=1`; `CARD_JOBS` (3) jobs on the card; `html[data-gpu]` = on / off / no for `[data-gpu-hint]` (media.css).
+- modules/media/upload.c: a here plan with `gpu=1` makes no parts; `?size=...&gpu=1` / `&card=<why>` -> the log.
+
 ## 2.7.1 (2026-11-01)
 
 What you saved for offline in the Android app starts where you got to - on the TV, in a browser or in the app at home.

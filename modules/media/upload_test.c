@@ -1031,6 +1031,52 @@ TEST(upload_here_makes_a_video_in_parts_and_the_server_joins_them) {
     th_halt();
 }
 
+/* (2.8) A browser that makes the pictures on its graphics card (the plan's "gpu":"1") gets whole videos - no parts, even on
+   Full throttle with cores to spare */
+TEST(upload_here_on_a_graphics_card_makes_no_parts) {
+    th_boot();
+    auth_configure("upload-salt", 1000);
+    int adam_id = make_user("Adam", "adam", "pw-adam-123", ROLE_ADMIN);
+    char root[512], src[700];
+    str_copy(root, sizeof root, test_tmpdir());
+    setting_set("media.roots", root);
+    snprintf(src, sizeof src, "%s/Movies/R (2020)", root);
+    CHECK(dir_make(src));
+    snprintf(src, sizeof src, "%s/Movies/R (2020)/R (2020).mkv", root);
+    CHECK(conv_test_hevc_three(src));
+    media_scan_sync();
+    const MediaFile *film = NULL;
+    for (int i = 0; i < media_lib()->nfiles; i++)
+        if (str_eq(media_lib()->files[i].rel, "Movies/R (2020)/R (2020).mkv")) film = &media_lib()->files[i];
+    CHECK(film);
+    if (!film) {
+        th_halt();
+        return;
+    }
+    pref_set(adam_id, "media.power_here", "full");
+    convert_test_device_cores(20);
+    upload_test_part_min(300); /* (on the cores: parts of 300 ms - three) */
+    CHECK(server_listen("127.0.0.1", 0));
+    g_port = server_port();
+    g_done = 0;
+    CHECK(thread_spawn(serve, NULL));
+    char adam[64], batch[17], json[200];
+    sign_in("adam", "pw-adam-123", adam, sizeof adam);
+    Buf r = {0};
+    snprintf(json, sizeof json, "{\"here\":\"id=%016llx\",\"conv\":\"1\",\"gpu\":\"1\"}", (unsigned long long)film->id);
+    plan_for(adam, json, &r, batch);
+    CHECK_HAS(body_of(&r), "\"todo\":[{\"i\":0,\"f\":0}]");
+    CHECK(!strstr(body_of(&r), "\"part\""));
+    server_stop();
+    for (int i = 0; i < 300 && !g_done; i++) plat_sleep_ms(10);
+    CHECK(g_done);
+    server_shutdown();
+    convert_test_device_cores(0);
+    upload_test_part_min(0);
+    buf_free(&r);
+    th_halt();
+}
+
 /* (2.6) A "here" batch holds room for what's under way, not every copy's guess at once (a whole series from a device was
    refused on a disk with room for it, a copy at a time), and a copy whose place went meanwhile - its video removed or
    renamed on Manage - is skipped when it's ready instead of bringing the episode back */
