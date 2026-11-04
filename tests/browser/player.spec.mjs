@@ -3,7 +3,7 @@
 // also without wire.js (the address's #t=) - but not in the last 5 seconds, and the next episode comes on
 // in the same player (so a full screen stays full screen).
 import { expect, test } from '@playwright/test';
-import { at, episodes, film, ready } from './helpers.mjs';
+import { act, at, episodes, film, ready } from './helpers.mjs';
 
 test('the player reports where you are, and the page resumes there', async ({ page }) => {
   const [e1] = await episodes(page);
@@ -86,4 +86,34 @@ test('the next episode comes on in the same player', async ({ page }) => {
   expect(await w.evaluate((m) => m._mark)).toBe('the same element'); /* morphed, not rebuilt: full screen stays */
   await expect(w).toHaveAttribute('data-id', e2.split('/').pop());
   await expect.poll(() => w.evaluate((m) => !m.paused && m.currentTime > 0), { message: 'it plays' }).toBe(true);
+});
+
+// 2.9: "Skip intro" - an episode's intro (set here as an admin does on Manage: Hemma finds them by itself while
+// nobody watches, which these tests don't wait for - and the test clips are steady tones, which never make one)
+// shows the button while it plays, not in its last second; a press lands at its end. Other episodes have none.
+test('Skip intro jumps over the intro', async ({ page }) => {
+  const [e1, e2] = await episodes(page);
+  const id = e2.split('/').pop();
+  await act(page, 'media.intro', { id, how: 'set', from: '0:10', to: '0:40' });
+  try {
+    await page.goto(e2);
+    const v = page.locator('#media-video'), skip = page.locator('#media-box .pl-skip');
+    await ready(v);
+    await expect(skip).toBeHidden(); /* (before it) */
+    await v.evaluate((m) => { m.muted = true; m.currentTime = 12; return m.play(); });
+    await expect(skip).toBeVisible();
+    await expect(skip).toHaveText('Skip intro');
+    await skip.click();
+    await expect.poll(() => at(v), { message: 'past the intro' }).toBeGreaterThan(39.5);
+    await expect(skip).toBeHidden();
+    await v.evaluate((m) => { m.currentTime = 25; }); /* back into it: there again */
+    await expect(skip).toBeVisible();
+    await v.evaluate((m) => { m.currentTime = 39.4; }); /* its last second: gone */
+    await expect(skip).toBeHidden();
+    await page.goto(e1);
+    await ready(page.locator('#media-video'));
+    expect(await page.locator('#media-box .pl-skip').count()).toBe(0);
+  } finally {
+    await act(page, 'media.intro', { id, how: 'auto' });
+  }
 });

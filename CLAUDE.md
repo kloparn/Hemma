@@ -837,7 +837,27 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  disk mounted elsewhere isn't read again -, size, mtime, tracks, saved, at), format
                  media.subtake_format (a new one reads everything again); the library rescans at a run's end and
                  every 5 min while one goes. Tests: subtake_test_step() (1 looked at / 0 none left / -1 waiting),
-                 _reads/_opens, _halt_after(n).
+                 _reads/_opens, _halt_after(n). It doesn't start while intros.c reads (intros_busy: the same disk).
+  media/intros.c SKIP INTRO (2.9; owner, 2026-11-03: "are we able to automatically determine when the intro is? ... a
+                 'skip' button", "it's perfect when no-one is watching we process stuff"; decision 0016): a thread (one,
+                 background priority, tick-started, never under tests) does a SEASON at a time - eligible() = a main
+                 episode of season 1+ (not specials, not a disc's extras) - the newest series first: each episode's PLAYABLE
+                 file (else its original when that fails: MP3/Opus copies) read by av/intro intro_read for its first
+                 INTRO_READ_S (600) at most / INTRO_READ_SHARE (45%) of it, then intro_find over the season; a season of
+                 fewer than 4 borrows GUESTS (3) episodes each side from the series' other seasons (prints only). Rows =
+                 raw table media_intro(rel PK below the library folder, size, mtime, state 1 found / 0 none / -1
+                 unreadable (why, English) / 2 HAND, from_ms, to_ms, votes, why, at), format media.intro_format (a new one
+                 deletes all but HAND rows). A season is done again when any episode's row is missing or its size/mtime
+                 changed (HAND rows are kept whatever); a season a run went through isn't tried again until the index
+                 changes (g_tried). PRINTS (48) fingerprints by the file read + size + mtime stay in memory (LRU): a season
+                 stopped half-way, or done again for one new episode, reads only what's missing. Waits: setting
+                 media.intros "0" (on by default; card "Skip intros" on the Converting tab), media_lib_away(),
+                 convert_busy(), subtake_busy(), media_watching_active() (+60 s quiet), the first 120 s after a start.
+                 media_intro_of(f) -> the watch page (media.c media_controls: UiPlayer.skip_from/_to). Manage: each
+                 episode's row says " · Intro 1:02–1:34" / " · No intro" (media_intro_note) and has an "Intro" button
+                 (&intro=<id> -> media_intro_dialog); action media.intro (admins: id, how = set (from, to: "1:02", "62",
+                 "0:01:02"; 2 s at least, not past its length) | none | auto - forget the row: found again). Tests:
+                 intros_test_step() (1 a season / 0 none left / -1 waiting), _read_s(n), _reads().
                  PICTURE SUBTITLES on the wire (stream.c): GET /media/subpic/<id>.json {"w","h","cues":[[start,end,x,
                  y,w,h]..]} and /media/subpic/<id>/<n>.png (subpic_render + png_indexed) for a library .sup / .idx
                  (+ its .sub) the viewer's kids rules allow, else 404; on threads (4 at once, else 503),
@@ -1077,7 +1097,38 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  ("Movies"). Also drops watch progress, logs to the activity feed. Episodes, seasons and series:
                  media_purge_* here too, driven by manage.c.
   av/            pure-C codec library, no MODULE(), libc only (no core/ deps, no globals) so it also
-                 builds for wasm32 (audiotags.* isn't in av.wasm: the server's alone).
+                 builds for wasm32 (audiotags.*, aacdec.* and intro.* aren't in av.wasm: the server's alone).
+                 aacdec.* (2.9; owner: "if we can make our own true AAC decoder, even on the already encoded AAC, then we
+                 could make it for everything"): AAC-LC from ISO/IEC 14496-3 for ANY encoder - AudioSpecificConfig
+                 (explicit + backward-compatible 0x2b7 SBR/PS signalling, explicit rates mapped to the nearest tables, a
+                 program config element), SCE/CPE/LFE (CCE = AACDEC_ERR_UNSUPPORTED), DSE/FIL/PCE read past (a fill's
+                 EXT_SBR_DATA = implicit HE-AAC: info.sbr, ext_rate x2), an ADTS header skipped, every rate's band tables
+                 (48/44.1/32/24/16 checked equal to the encoder's), pulses, TNS (the spec's tns_decode_coef + all-pole
+                 filter), M/S, intensity (inverted by ms_used only when ms_mask_present = 1, as the spec says), PNS
+                 (FFmpeg's LCG 1664525/1013904223 from 0x1f2e3d4c, per window, so outputs compare), sine/KBD windows, the
+                 IMDCT as a DCT-IV over an M/2-point complex FFT, unfolded. HE-AAC/v2 decode as their LC core (the
+                 core's rate: half the sound - what a fingerprint needs). Layouts NATIVE / WAV (configs 1-6) / STEREO
+                 (Lo/Ro, LFE dropped) / MONO. An error = silence of the last channel count. Main/LTP/SSR/ER, 960-sample
+                 frames refused at open. Own Huffman trees from aac.h's codebooks (no globals). Checked vs FFmpeg
+                 (HEMMA_TEST_AAC): 17 ffmpeg-encoded files - 13 rates, mono/stereo/5.1, a PCE, PNS/IS/TNS/M/S - 136 dB
+                 (float rounding); a whole HE-AAC episode, 0 errors, its core 30 dB from FFmpeg's full decode resampled.
+                 intro.* (2.9, decision 0016): IntroPrinter (mono PCM -> FIR low-pass + decimation by rate/5000 to 5-8 kHz
+                 -> 0.37 s Hann windows every 1/INTRO_FPS (16) s, a real FFT of 2048 as a 1024-point complex one -> 33
+                 bands 300-2000 Hz -> 32 bits: (E[m]-E[m+1]) - (prev[m]-prev[m+1]) > 0, Haitsma & Kalker) - a frame under
+                 -60 dBFS or with < 3 / > 29 bits set is not loud (matches nothing); IntroPrint.start_ms = frame 0's centre
+                 in the video's time. intro_read(MkvReader, {seconds, stop}) = the default sound track (AAC by its
+                 CodecPrivate or aacdec_make_config for old ids; AC-3/E-AC-3, DTS as Lo/Ro averaged) - holes filled with
+                 silence (10 s at most), a frame at another rate left out; INTRO_READ_CODEC with why ("its sound is MP3").
+                 intro_match(a, b): every loud frame as four 16-bit pieces (low/high halves, even/odd bits), sorted;
+                 equal pieces vote for offsets (buckets over 48 skipped), the CANDIDATES (24) best local peaks +-2 are
+                 SCANNED: windows of 1 s averaging <= 11 bits apart, runs with up to 3 s bad, edges trimmed to where 4
+                 frames average <= 11, runs at nearby offsets merged (longest kept). intro_find(prints, n, {min 15 s, max
+                 150 s, partners 6}): each episode against the next 6 readable ones, up to 3 runs a pair; per episode the
+                 stretch the most partners share (overlap >= half the shorter), the outermost-but-one of their edges when
+                 3+; one partner only counts when it agrees to STRONG_COST (7.5 bits). Real files (HEMMA_TEST_INTRO, an -O2
+                 WSL build): That '70s Show S7 (HE-AAC) 25/25 found 29.7-32.5 s (two versions of its intro: E05 + E09
+                 share the other), S1 (DVD AC-3) 23/25 (disc 4 titles 1 and 4 share no theme with the rest); a season
+                 matched in 0.7 s. intro_testmk.h = test episodes (music with a theme at a place; an MP4 with H.264 + AAC).
                  audiotags.* (1.6): an audio file's tags without decoding a sound - MP4/M4B by box headers only (never the
                  sound's sample tables: ~180 reads, 5-7 KB of a 1.5 GB book; chapters from the tref 'chap' text track with its
                  simple elst, else Nero chpl; ilst tags, description ldes > desc > ©des > ©cmt, covr located by offset) and MP3
@@ -1249,6 +1300,8 @@ third_party/sqlite/  SQLite 3.54.1 amalgamation + its recovery extension (ext/re
                  README for provenance + hashes
 tools/embed.c    bakes web assets (+ every module's CSS, bundled) into the binary
 tools/pisim.c    Windows dev aid: runs a program inside Raspberry Pi-like limits (see below)
+tools/introcheck.c  dev aid for modules/av/intro (2.9): introcheck [-s S] FILE... = each file's sound fingerprinted (with timings),
+                 then the season matched - build lines at its top (zig cc -target aarch64-linux-musl for a Pi)
 tools/avdump.c   dev aid for modules/av: info | frames --at S --n K --png DIR | bench | fuzz
                  (zig cc -O2 -std=gnu11 -Icore tools/avdump.c modules/av/mkv.c modules/av/mpeg2.c
                   core/base.c core/plat.c -lws2_32 -liphlpapi -lbcrypt -o avdump.exe)
@@ -1285,11 +1338,15 @@ tools/avfuzz.c   faster targets, one part alone each (issue #50): -DAVFUZZ_MKV t
                  book.MP3); aborts on text that isn't clean UTF-8, chapters out of order, a cover past the end or without its
                  JPEG/PNG bytes there. Seeds: HEMMA_FUZZ_RAW=build/fuzz-raw build/test audiotags_fuzz_seeds (~40-50k inputs/s;
                  50 min with 8 processes before 1.6 found one bug, in its own text check)
-tools/ci/fuzz.sh TARGET [S] [JOBS]: builds + runs conv | mkv | mp4 | ac3 | dts | mpeg2 | mpeg4 | hevc | pgs | vobsub | tags under ASan + UBSan from the
+                 -DAVFUZZ_AAC (2.9): aacdec.c - d[0] options (layout, a unit cut short, a reset), d[1] the config's length
+                 (0..15) + the config (refused -> a plain one by the options), then units [2-byte length][bytes]. Seeds:
+                 HEMMA_FUZZ_RAW=build/fuzz-raw build/test aacdec_fuzz_seeds (our encoder's streams + hand-written frames with
+                 every tool). 40 min x 8 processes before 2.9: 7.7M inputs, nothing found.
+tools/ci/fuzz.sh TARGET [S] [JOBS]: builds + runs conv | mkv | mp4 | aac | ac3 | dts | mpeg2 | mpeg4 | hevc | pgs | vobsub | tags under ASan + UBSan from the
                  tree's top after `make build/test` (seeds made when missing; pgs/vobsub's from `HEMMA_FUZZ_RAW=
                  build/fuzz-raw build/test subpic_fuzz_seeds`), corpus in build/fuzz-corpus-T, findings in
                  build/fuzz-found-T (exit 1); JOBS > 1 = libFuzzer -fork, carrying on after a finding. Used by
-                 build.yml's fuzz job (conv, 90 s), fuzz.yml (NIGHTLY 01:17 UTC: the eleven side by side on their own
+                 build.yml's fuzz job (conv, 90 s), fuzz.yml (NIGHTLY 01:17 UTC: the twelve side by side on their own
                  runners, 170 min each with every core, the corpus cached night to night - owner, 2026-10-21:
                  "about 3 hours"; a finding fails the job and keeps the files as an artifact) and local.sh
 tests/           test.h (framework), runner.c, harness.* (boot the core without a server; th_boot_in(dir) for a
@@ -1536,7 +1593,7 @@ build*/ data/ .env   generated / runtime / secrets (gitignored)
   local notes say where it lives on their machine.
 - Real-media checks (never part of the suite; the owner's media is read-only apart from `.web.mp4` copies):
   `HEMMA_TEST_SHOW=<show folder> ./build/test.exe media_real` lists how the library sees that folder;
-  `HEMMA_TEST_MKV=<file.mkv>` / `HEMMA_TEST_AC3=<file>` run the av decoders over a real file; `HEMMA_TEST_CONVERT=<a copy of an .mkv>` (+ `HEMMA_TEST_CONVERT_S=90`: seconds, 30 by default) `./build/test.exe convert_real_file_when_given` converts its start like the server does - its .srt files land next to that copy; `HEMMA_TEST_SUBS=<file.mkv> [HEMMA_TEST_SUBS_OUT=<dir>] ./build/test.exe conv_subtitles_of_a_real_file` takes its subtitle tracks out (sub-<k>.<lang>.srt/.sup/.idx+.sub); `HEMMA_TEST_SUP=<file.sup> | HEMMA_TEST_IDX=<file.idx> [HEMMA_TEST_PNG=<folder>] ./build/test.exe subpic_real` lists (and draws) a picture track's cues.
+  `HEMMA_TEST_MKV=<file.mkv>` / `HEMMA_TEST_AC3=<file>` run the av decoders over a real file; `HEMMA_TEST_AAC=<file> [HEMMA_TEST_AAC_S=s] [HEMMA_TEST_AAC_OUT=<f32>] [HEMMA_TEST_AAC_WAV=1] ./build/test.exe aacdec_real_file_when_given` decodes a file's AAC track (compare with ffmpeg -f f32le); `HEMMA_TEST_INTRO=<a season's folder> [HEMMA_TEST_INTRO_EXT=.mkv] [HEMMA_TEST_INTRO_S=600] [HEMMA_TEST_INTRO_PAIRS=1|<k>] ./build/test intro_real_season_when_given` lists the intros found there (use an -O2 build: WSL's make); `HEMMA_TEST_CONVERT=<a copy of an .mkv>` (+ `HEMMA_TEST_CONVERT_S=90`: seconds, 30 by default) `./build/test.exe convert_real_file_when_given` converts its start like the server does - its .srt files land next to that copy; `HEMMA_TEST_SUBS=<file.mkv> [HEMMA_TEST_SUBS_OUT=<dir>] ./build/test.exe conv_subtitles_of_a_real_file` takes its subtitle tracks out (sub-<k>.<lang>.srt/.sup/.idx+.sub); `HEMMA_TEST_SUP=<file.sup> | HEMMA_TEST_IDX=<file.idx> [HEMMA_TEST_PNG=<folder>] ./build/test.exe subpic_real` lists (and draws) a picture track's cues.
 
 ## How the live UI works
 
@@ -1920,6 +1977,12 @@ check real full screen in a normal browser) ·
 live media.caps; the list and its meaning are the server's; wire.js capsTell) ·
 `[data-gpu-hint="on|off"]` (2.8: shown by media.css when html[data-gpu] says the same - wire.js gpuHints/cardOk: the
 browser makes HEVC H.264 on the graphics card here, or a computer on a page that isn't secure) ·
+`button[data-p="skip"][data-from][data-to]` (2.9, ui_player's UiPlayer.skip_from/_to - media/intros.c: an episode's
+intro): wire.js skipSync (from plSync, every timeupdate) unhides it while from <= currentTime < to - 1 (announce()s its
+words), a press sets currentTime = to; on a TV (the bar [data-arrows]) it takes the focus while it shows when the focus
+was on the picture or the player, and gives it back to the video when it goes. Outside the bar (.pl-skip: shows whether
+the bar does or not); none for live or the browser's own player. tests/browser/player.spec.mjs "Skip intro jumps over the
+intro" ·
 `[data-upnext="S"]` (the page's "next episode" card for its video[data-next]: unhidden in the last S
 seconds, `[data-count]` = seconds left, `[data-hide]` puts it away for that video, a link in it reports
 the video watched BEFORE the nav goes; an [autofocus] in it takes the focus from the video) ·
@@ -2180,7 +2243,7 @@ cards *after* existing ones (otherwise an unkeyed sibling gets rebuilt and loses
 ## Where things stand
 
 What each version changed is [CHANGELOG.md](CHANGELOG.md); why the big choices are what they are is
-[docs/decisions](docs/decisions/README.md) (0001-0015); how it fits together for humans is
+[docs/decisions](docs/decisions/README.md) (0001-0016); how it fits together for humans is
 [ARCHITECTURE.md](ARCHITECTURE.md) and [CONTRIBUTING.md](CONTRIBUTING.md). This file keeps the working rules.
 (Issue #51, 2026-10-21: the dated Status diary that lived here - every version's work, review passes -
 is the CHANGELOG's now.) 1.0.0 (2026-10-21) = the outside reviews' issues (#3-#103) and the planned
@@ -2317,6 +2380,14 @@ html[data-gpu] on / off (a computer on a page that isn't secure) / no; media.css
 true on the power card's "This device". The log: "upload: <rel> made on the graphics card of <user>'s device" (?size=
 ...&gpu=1), a warning with why when the card stopped and the cores made it (&card=). Measured on the dev PC (RTX 3060,
 i5-13600KF, Chrome 156): see the converter's numbers below.
+2.9.0 (branch feat/proper-AAC-encoder; owner, 2026-11-03: "Shows have intros ... are we able to automatically determine when
+the intro is? And if so can we add a 'skip' button", "if we can make our own true AAC decoder, even on the already encoded
+AAC, then we could make it for everything", "the PI should do it slow ... it's perfect when no-one is watching we process
+stuff"; decision 0016) = SKIP INTRO: av/aacdec (a real AAC-LC decoder: the sound of nearly every video that plays
+everywhere), av/intro (sound fingerprints and their matching), media/intros.c (the job: a season at a time, while nobody
+watches; Manage's Intro; the Converting tab's "Skip intros" card), the player's "Skip intro" (core/ui UiPlayer.skip_*,
+wire.js skipSync). The twelfth nightly fuzz target (aac). Not done: skip credits (sitcoms play scenes over them), an MP3
+decoder (episodes with MP3 sound get no button: the card counts them), skipping intros by itself (a person's choice).
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
@@ -2334,7 +2405,13 @@ Keep new work within what's been measured:
   47 s on all 20 threads (Full throttle, 4 parts each); 46.3 dB Y / 47.4 U / 47.0 V vs the original at 1.5 Mbit/s (ours:
   47.1 / 50.1 / 50.1 at 2.4: half as big again), every picture in step; the card's decoding alone ~1,580 fps.
 - The program: ~4.7 MB for the Pi (2.6.0; av.wasm and its gzip twin inside, ~1.1 MB of it), "one ~5 MB program" in the
-  README and the GitHub description; the suite ~25 s on a 20-thread PC (874 tests).
+  README and the GitHub description; the suite ~27 s on a 20-thread PC (905 tests in 2.9).
+- Intros (2.9, an -O2 build in WSL on the dev PC, files on its SMR disk through WSL): an HE-AAC 720p episode's first 10 min
+  read and printed in ~2 s, a DVD rip's (AC-3, ~1 GB) in ~13-15 s - the reading; a 25-episode season matched in 0.7 s
+  (piece voting; the brute force over every offset took 21 s). The AAC decoder: a 21-min HE-AAC episode (its core) in
+  ~9 s in the -O0 debug build. On the Pi 3B+ (tools/introcheck.c, nice 19, during an upload): 10 min of sound decoded and
+  printed in ~7.8 s (HE-AAC) / ~12.6 s (AC-3), a season matched in 0.1-0.2 s - plus reading 45% of each file from the
+  USB disk: ~15-30 s an episode, a 2,000-episode library over a night or two.
 
 Owner decisions not in docs/decisions: the Network page's changes (device edits, owners, Wake-on-LAN, the
 presence window) are admin-only - members only look (2026-10-11); the sign-in page keeps its "Welcome back"

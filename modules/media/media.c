@@ -17,6 +17,7 @@
 #include "drives.h"
 #include "download.h"
 #include "manage.h"
+#include "intros.h"
 #include "subtake.h"
 
 static int64_t g_disks_at; /* when the disks under the library were last measured (see "disk space") */
@@ -418,6 +419,8 @@ void media_controls(const Ctx *c, Buf *b, const MediaFile *f, bool tv) {
     }
     p.sounds = snd;
     p.nsounds = snds ? snds->n : 0;
+    int64_t from, to; /* 2.9: its intro - found by itself (intros.c) or set on Manage: "Skip intro" */
+    if (media_intro_of(f, &from, &to)) p.skip_from = from / 1000.0, p.skip_to = to / 1000.0;
     ui_player(b, &p);
     free(choice);
 }
@@ -2622,6 +2625,7 @@ static void page_settings(Ctx *c, Buf *b) {
         }
         convert_power_card(c, b); /* (2.7: how hard to work - Hemma's computer, and this device) */
         subtake_card(c, b);       /* (admins: the subtitles inside the MKVs, taken out by themselves) */
+        intros_card(c, b);        /* (2.9, admins: the series' intros, found by themselves) */
         break;
     }
     case TAB_MANAGE:
@@ -3200,6 +3204,7 @@ static const Action actions[] = {
     {"media.manage_remove", media_manage_act_remove}, {"media.fix_title", media_manage_act_fix_title},
     {"media.fix_episode", media_manage_act_fix_episode}, {"media.rename_series", media_manage_act_rename_series},
     {"media.take_subs", subtake_act_switch},
+    {"media.intros", intros_act_switch}, {"media.intro", intros_act_set}, /* (2.9: intros - intros.c) */
     {"media.cat", act_media_cat}, {"media.cat_new", act_media_cat_new}, /* (members and admins: 1.4) */
     {"media.lookup", act_media_lookup}, {"media.lookup_id", act_media_lookup_id},
     {"media.lookup_art", act_media_lookup_art}, {"media.art_id", act_media_art_id}, /* (pictures: 2.5) */
@@ -3239,6 +3244,7 @@ static void start(void) {
     upload_start();
     media_lib_start();
     subtake_start(); /* (after the library: its table sits beside the library's cache) */
+    intros_start();  /* (2.9: the same) */
     media_devices_start();
     media_health_reset();
     g_disks_at = 0; /* (a start measures afresh: a test before this one may have measured other folders) */
@@ -3250,6 +3256,7 @@ static void stop(void) {
     media_lookup_stop();
     media_drives_stop();
     subtake_stop(); /* (the file it was reading goes back on its list) */
+    intros_stop();  /* (the season it was reading: what it read stays until then) */
     media_stream_stop();
     upload_stop();
     convert_stop();
@@ -3324,6 +3331,7 @@ static void tick(int64_t now) {
     upload_tick(now);
     convert_tick(now);
     subtake_tick(now); /* (after the queue's: a conversion that just started makes it wait) */
+    intros_tick(now);  /* (after the subtitles': it waits for them) */
     media_health_tick(now);
     media_drives_tick(now);
     media_manage_tick(now); /* (a removal finished on its thread) */

@@ -38,6 +38,9 @@ Your movie and series drive as a little cinema.
 - **Subtitles**, the ones inside your video files too - even DVD and Blu-ray subtitles, which are
   pictures, not text.
 - **Remembers where you stopped**, for each person.
+- **Skip intro** (from 2.9). While an episode's intro plays, the player offers to skip it - on the TV, OK skips.
+  Hemma finds the intros itself: while nobody watches it listens to the start of each episode and takes the stretch
+  the episodes of a season share. An admin can set or clear one on the series' Manage page.
 - **Your language:** a film or series with sound in several languages keeps them all, and each person hears
   theirs - Hemma asks once, and the player's Language menu switches while watching.
 - **Plays everywhere.** Hemma converts videos a browser can't play (DVD rips, Dolby sound that Chrome

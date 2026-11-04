@@ -4,6 +4,7 @@
 #   conv    tools/convfuzz.c: a whole conversion, MKV (or MP4) in, MP4 out (every part at once; slow per input)
 #   mkv     tools/avfuzz.c:   the Matroska reader alone
 #   mp4     tools/avfuzz.c:   the MP4/MOV reader alone (2.5: mkv.c's mkv_mp4.h behind the same calls)
+#   aac     tools/avfuzz.c:   the AAC decoder alone (2.9), a config + raw access units
 #   ac3     tools/avfuzz.c:   the Dolby (AC-3 / E-AC-3) decoder alone, raw frames
 #   dts     tools/avfuzz.c:   the DTS decoder alone, raw core frames
 #   mpeg2   tools/avfuzz.c:   the MPEG-2 decoder alone, raw streams
@@ -28,6 +29,7 @@ conv) src="tools/convfuzz.c modules/av/conv.c modules/av/mkv.c modules/av/mpeg2.
       def= opts="-max_len=65536 -timeout=60" ;;
 mkv) src="tools/avfuzz.c modules/av/mkv.c" def=-DAVFUZZ_MKV opts="-max_len=65536 -timeout=10" ;;
 mp4) src="tools/avfuzz.c modules/av/mkv.c" def=-DAVFUZZ_MP4 opts="-max_len=65536 -timeout=10" seeds=build/fuzz-raw/mp4 ;;
+aac) src="tools/avfuzz.c modules/av/aacdec.c modules/av/aac.c" def=-DAVFUZZ_AAC opts="-max_len=32768 -timeout=10" seeds=build/fuzz-raw/aac ;;
 ac3) src="tools/avfuzz.c modules/av/ac3.c" def=-DAVFUZZ_AC3 opts="-max_len=32768 -timeout=10" seeds=build/fuzz-raw/ac3 ;;
 dts) src="tools/avfuzz.c modules/av/dts.c" def=-DAVFUZZ_DTS opts="-max_len=32768 -timeout=10" seeds=build/fuzz-raw/dts ;;
 mpeg2) src="tools/avfuzz.c modules/av/mpeg2.c" def=-DAVFUZZ_MPEG2 opts="-max_len=65536 -timeout=20" seeds=build/fuzz-raw/mpeg2 ;;
@@ -36,7 +38,7 @@ hevc) src="tools/avfuzz.c modules/av/hevc.c modules/av/hevc_ctu.c modules/av/hev
 pgs) src="tools/avfuzz.c modules/av/subpic.c modules/av/png.c" def=-DAVFUZZ_PGS opts="-max_len=65536 -timeout=20" seeds=build/fuzz-raw/pgs ;;
 vobsub) src="tools/avfuzz.c modules/av/subpic.c modules/av/png.c" def=-DAVFUZZ_VOBSUB opts="-max_len=65536 -timeout=20" seeds=build/fuzz-raw/vobsub ;;
 tags) src="tools/avfuzz.c modules/av/audiotags.c" def=-DAVFUZZ_TAGS opts="-max_len=65536 -timeout=10" seeds=build/fuzz-raw/tags ;;
-*) echo "usage: sh tools/ci/fuzz.sh conv|mkv|mp4|ac3|dts|mpeg2|mpeg4|hevc|pgs|vobsub|tags [seconds] [processes]"; exit 2 ;;
+*) echo "usage: sh tools/ci/fuzz.sh conv|mkv|mp4|aac|ac3|dts|mpeg2|mpeg4|hevc|pgs|vobsub|tags [seconds] [processes]"; exit 2 ;;
 esac
 
 # the seeds: small files of every kind the converter takes, picture subtitles and tagged audio files, made by
@@ -47,6 +49,7 @@ esac
     HEMMA_FUZZ_RAW=build/fuzz-raw build/test subpic_fuzz_seeds >/dev/null
 [ -d build/fuzz-raw/tags ] || HEMMA_FUZZ_RAW=build/fuzz-raw build/test audiotags_fuzz_seeds >/dev/null
 [ -d build/fuzz-raw/mp4 ] || HEMMA_FUZZ_RAW=build/fuzz-raw build/test mp4read_fuzz_seeds >/dev/null
+[ -d build/fuzz-raw/aac ] || HEMMA_FUZZ_RAW=build/fuzz-raw build/test aacdec_fuzz_seeds >/dev/null
 # shellcheck disable=SC2086 # (word lists on purpose)
 clang -g -O1 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
     -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \

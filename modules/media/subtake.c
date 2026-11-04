@@ -28,6 +28,7 @@
 #include "convert.h"
 #include "download.h"
 #include "library.h"
+#include "intros.h"
 #include "subtake.h"
 
 #include <stdatomic.h>
@@ -403,7 +404,8 @@ void subtake_tick(int64_t now) {
     g_wait = wait_reason(now, true);
     if (!g_wait && now - g_started < START_AFTER_MS) g_wait = WAIT_START;
     if (running && g_wait && g_wait != WAIT_START) atomic_store(&g_halt, 1);
-    else if (!running && !g_wait && g_checked < g_total && g_idle_gen != media_lib_gen() && !app_testing()) start_run();
+    else if (!running && !g_wait && g_checked < g_total && g_idle_gen != media_lib_gen() && !app_testing() && !intros_busy())
+        start_run(); /* (2.9: not while the intros' job reads: the same disk) */
     running = atomic_load(&g_running);
     if (running) app_wake_in(1000); /* (its results, and stopping it in time when someone starts watching) */
     /* the new subtitles join the library: when a run ends, else every RESCAN_MS */
@@ -449,6 +451,8 @@ void subtake_start(void) {
     }
     if (st) sqlite3_reset(st);
 }
+
+bool subtake_busy(void) { return atomic_load(&g_running); }
 
 void subtake_stop(void) {
     atomic_store(&g_quit, 1);

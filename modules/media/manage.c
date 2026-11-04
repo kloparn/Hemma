@@ -25,6 +25,7 @@
 
 #include "../../core/ui.h"
 #include "convert.h"
+#include "intros.h"
 #include "media.h"
 #include "remove.h"
 #include "room.h"
@@ -1085,7 +1086,9 @@ static void episode_row(Buf *b, const MediaSeries *s, const MediaFile *e, const 
         media_fmt_duration(e->probe.duration_ms, d, sizeof d);
         H(b, " · %s", d);
     }
-    H(b, " · %s</small>", size);
+    H(b, " · %s", size);
+    if (ep) media_intro_note(b, e); /* (2.9: " · Intro 1:02–1:34") */
+    buf_puts(b, "</small>");
     if (web) {
         file_line(b, e, "", T("Original"));
         file_line(b, web, PLAY_CLS[CLAMP((int)web->probe.playable, 0, 3)],
@@ -1097,6 +1100,8 @@ static void episode_row(Buf *b, const MediaSeries *s, const MediaFile *e, const 
     if (fixable(e))
         H(b, "<a class=\"btn\" href=\"%s&amp;fix=%X\">%s<span class=\"sr-only\"> %s</span></a>", here, e->id, T("Fix number"),
           label);
+    if (ep && e->role == MF_MAIN && e->name.season > 0) /* (2.9: its intro, found or set by hand) */
+        H(b, "<a class=\"btn\" href=\"%s&amp;intro=%X\">%s<span class=\"sr-only\"> %s</span></a>", here, e->id, T("Intro"), label);
     H(b, "<a class=\"btn danger\" href=\"%s&amp;rm=%X\">", here, e->id);
     ui_icon(b, "trash");
     H(b, "<span>%s</span><span class=\"sr-only\"> %s</span></a></div></div></li>", T("Remove"), label);
@@ -1348,6 +1353,8 @@ bool media_manage_series(Ctx *c, Buf *b, const MediaSeries *s) {
     else if (str_eq(ctx_q(c, "rename"), "1")) rename_dialog(b, s, here);
     else if (media_parse_id(fx, &xid) && (x = media_file(xid)) != NULL && x->series == s->id && fixable(x))
         fix_dialog(b, s, x, here);
+    else if (media_parse_id(ctx_q(c, "intro"), &xid) && (x = media_file(xid)) != NULL && x->series == s->id)
+        media_intro_dialog(c, b, x, here);
     return true;
 }
 

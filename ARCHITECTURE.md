@@ -87,6 +87,10 @@ lifting. It is fuzzed on every push and for hours every night. Where the browser
 computer's graphics card makes an HEVC video's picture H.264 through WebCodecs while the same C
 does the rest ([decision 0015](docs/decisions/0015-the-graphics-card-through-the-browser.md)).
 
+The same decoders listen for intros (2.9): while nobody watches, the server reads the start of each episode's sound
+(AAC, Dolby or DTS), makes a fingerprint of it, and takes as a season's intro the stretch its episodes share - the
+player then offers *Skip intro* ([decision 0016](docs/decisions/0016-intros-found-by-their-sound.md)).
+
 ## Accounts and safety
 
 Every page needs a sign-in except the sign-in page itself. Passwords are salted PBKDF2 with a
