@@ -4,6 +4,73 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.9.0 (2026-11-04)
+
+Skip intro: Hemma listens to the start of every episode while nobody watches, finds the intro the episodes of a season
+share, and the player offers to skip it. On the way, a decoder for the sound of most videos that already play everywhere:
+AAC, from any encoder.
+
+### New
+
+- **Skip intro** (owner: "are we able to automatically determine when the intro is? And if so can we add a 'skip'
+  button for it?"): while an episode's intro plays, the player shows *Skip intro*; a press goes to where the episode
+  starts. On a TV it takes the remote's focus while it shows, so OK skips. Live TV has none (a channel plays on its
+  shared clock).
+- **Found by themselves, while nobody watches** (owner: "it's perfect when no-one is watching we process stuff"): in the
+  background Hemma listens to the first minutes of each episode (at most ten, and less than half of it), a season at a
+  time, the newest series first, and takes as the intro the stretch the season's episodes share - wherever it comes,
+  after a cold open of any length. It waits while anyone watches, a conversion runs or the subtitles are being taken out
+  (the same disk), and a season it was stopped in goes on where it got to. Intros shorter than 15 seconds (a title card,
+  a studio's logo) aren't offered. A season with two versions of its intro gets both; a pilot or special without the
+  season's intro gets none. On the dev PC, That '70s Show: all 25 episodes of a season of Blu-ray rips (HE-AAC sound)
+  got their 30-second intro, after cold opens of one to six minutes, and 23 of 25 of a season of DVD rips - the two
+  others share no intro with the rest. On a Raspberry Pi 3B+ an episode takes about 15-30 seconds (most of it reading its start
+  from the disk): a library of a couple of thousand episodes over a night or two, once - then only what's new.
+- **Library settings → Converting → Skip intros** (admins): how far it has got, what was found, which episodes' sound
+  can't be listened to yet, and a switch (on by default).
+- **Manage → Intro** on every episode: what was found ("Intro 1:02–1:34"), set it by hand, say the episode has none, or
+  let Hemma find it again. A hand-set intro is never replaced.
+- **AAC sound decoded** (owner: "if we can make our own true AAC decoder, even on the already encoded AAC, then we could
+  make it for everything"): Hemma reads AAC from any encoder - every sample rate, mono to 7.1, every tool of AAC-LC -
+  and the AAC core of HE-AAC. With Dolby and DTS it already read, that's the sound of nearly every video: only episodes
+  whose sound is MP3 or Opus can't be listened to yet (the card counts them).
+
+### For developers
+
+- modules/av/aacdec.c (`aacdec_open/_decode/_config/_make_config`, layouts native, WAV, Lo/Ro stereo, mono): AAC-LC from
+  ISO/IEC 14496-3 - AudioSpecificConfig (explicit and backward-compatible SBR/PS signalling, explicit rates, a program
+  config element), SCE/CPE/LFE (CCE refused), DSE/FIL/PCE read past (a fill element's SBR data marks implicit HE-AAC),
+  ADTS headers skipped, every rate's band tables, sections, scalefactors, all eleven codebooks + escapes, pulses, TNS,
+  M/S, intensity stereo, PNS (FFmpeg's noise generator, so the outputs compare), long/start/short/stop windows with sine
+  and KBD shapes; the inverse MDCT as a DCT-IV over a quarter-size complex FFT. Main/LTP/SSR/ER, 960-sample frames and
+  coupling channels refused. Checked against FFmpeg: 17 files FFmpeg encoded (all 13 rates, mono, stereo, 5.1, a PCE,
+  PNS/IS/TNS/M/S on) match to 136 dB, float rounding; a whole 21-minute HE-AAC episode decodes without an error, its
+  core 30 dB from FFmpeg's full decode (the difference is SBR's top band). aacdec_test.c: the transform and windows
+  against their definitions and the encoder's, our encoder's streams through it and through aac_testdec.h alike, and
+  frames written by hand for every tool. Server only: not in av.wasm.
+- modules/av/intro.c: `IntroPrinter` (mono PCM -> filtered and thinned out to 5-8 kHz -> a 32-bit print 16 times a
+  second: which of 33 bands between 300 and 2,000 Hz grew louder than the next since the frame before - Haitsma and
+  Kalker's robust hash; silence and steady sound match nothing), `intro_read` (a Matroska/MP4 file's default sound -
+  AAC, AC-3, E-AC-3, DTS - its first N seconds, times kept across holes), `intro_match` (two prints: equal 16-bit pieces
+  vote for offsets, the best 24 are scanned for stretches agreeing to ~11 bits in 32 over a second, three-second gaps
+  forgiven, edges trimmed) and `intro_find` (a season: each episode against its next six, the stretch most others share
+  - one shared only with one other must agree to 7.5 bits). A 25-episode season matches in under a second.
+- tools/avfuzz.c `-DAVFUZZ_AAC` (a config + raw units, any layout, cut units, resets) - the twelfth nightly target
+  (fuzz.yml, fuzz.sh, local.sh); seeds `HEMMA_FUZZ_RAW=<dir> build/test aacdec_fuzz_seeds`. 40 minutes with 8 processes
+  before this release: 7.7 million inputs, nothing found.
+- modules/media/intros.c: the job (a season a thread, `media_intro` raw table by the episode's path below its library
+  folder with size and mtime, its own format `media.intro_format` - a new one drops what was found, never an admin's;
+  fingerprints kept in memory for 48 files), `media_intro_of` for the watch page, Manage's row and dialog,
+  `media.intros` (the switch) and `media.intro` (admins: `how` = set / none / auto). subtake.c and intros.c take turns
+  on the disk (`subtake_busy`, `intros_busy`).
+- core/ui.h `UiPlayer.skip_from/skip_to/skip_label`: ui_player draws `button.pl-skip[data-p=skip][data-from][data-to]`
+  outside the bar; web/wire.js `skipSync` shows it inside the stretch (not its last second), a press sets
+  `currentTime` to its end, a TV's bar ([data-arrows]) gives it the focus. tests/browser/player.spec.mjs "Skip intro
+  jumps over the intro".
+- Real-file checks (never part of the suite): `HEMMA_TEST_AAC=<file> [HEMMA_TEST_AAC_S, _OUT, _WAV]` decodes a file's AAC
+  track to float samples; `HEMMA_TEST_INTRO=<season folder> [HEMMA_TEST_INTRO_EXT=.mkv, _S, _PAIRS]` lists what
+  intro_find finds there (an -O2 build reads a season in about a minute on a PC).
+
 ## 2.8.0 (2026-11-02)
 
 HEVC made H.264 on your graphics card: "On this device" hands the picture to the computer's graphics card when the

@@ -233,6 +233,13 @@ void ui_player(Buf *b, const UiPlayer *p) {
     buf_puts(b, "</span></button>");
     /* the browser can't play it (wire.js sets data-err on the video's "error"): say so, not spin */
     H(b, "<p class=\"pl-err\" role=\"alert\">%s</p>", p->trouble ? p->trouble : T("This video won't play in this browser."));
+    if (!p->live && p->skip_from >= 0 && p->skip_to > p->skip_from) { /* (2.9: an intro - outside the bar: it shows on its own) */
+        char from[24], to[24];
+        snprintf(from, sizeof from, "%.2f", p->skip_from);
+        snprintf(to, sizeof to, "%.2f", p->skip_to);
+        H(b, "<button type=\"button\" class=\"pl-skip\" data-p=\"skip\" data-from=\"%s\" data-to=\"%s\" hidden>%s</button>", from, to,
+          p->skip_label ? p->skip_label : T("Skip intro"));
+    }
     H(b, "<span class=\"pl-spin\" aria-hidden=\"true\"></span><div class=\"pl-bar\"%r>", p->tv ? " data-arrows" : "");
     if (!p->live)
         H(b, "<div class=\"pl-seek\"><span class=\"pl-buf\"></span><span class=\"pl-fill\"></span><input type=\"range\" "

@@ -16,22 +16,24 @@
  *                    made a PNG (png.c)
  *   -DAVFUZZ_VOBSUB  DVD picture subtitles: the input's bytes up to its first NUL are the .idx text, the rest
  *                    the .sub; opened, every cue drawn and made a PNG
+ *   -DAVFUZZ_AAC     (2.9) the AAC decoder (modules/av/aacdec.c): an AudioSpecificConfig and raw access units, each
+ *                    with a 2-byte length in front
  *   -DAVFUZZ_TAGS    an audio file's tags (modules/av/audiotags.c): an MP4's boxes or an MP3's ID3 tags and
  *                    frames read, every string and chapter looked at
  *
- * For mkv, ac3, dts, mpeg2, mpeg4 and hevc the first byte of an input chooses the target's options (a layout, a chunk
+ * For mkv, aac, ac3, dts, mpeg2, mpeg4 and hevc the first byte of an input chooses the target's options (a layout, a chunk
  * size, a reset part-way), for tags the file's name (none, x.mp3, x.m4b, book.MP3), so the fuzzer explores those too.
  * Seeds: `HEMMA_FUZZ_SEEDS=build/fuzz-seeds HEMMA_FUZZ_RAW=build/fuzz-raw build/test conv_fuzz_seeds` - the MKVs
  * for mkv (as for convfuzz), build/fuzz-raw/ac3, .../dts, .../mpeg2, .../mpeg4 and .../hevc; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test
  * subpic_fuzz_seeds` - build/fuzz-raw/pgs and .../vobsub; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test
  * audiotags_fuzz_seeds` - build/fuzz-raw/tags; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test mp4read_fuzz_seeds` -
- * build/fuzz-raw/mp4.
+ * build/fuzz-raw/mp4; `HEMMA_FUZZ_RAW=build/fuzz-raw build/test aacdec_fuzz_seeds` - build/fuzz-raw/aac.
  *
  *   clang -g -O1 -std=gnu11 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
  *         -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION -DAVFUZZ_AC3 tools/avfuzz.c modules/av/ac3.c -lm -o build/fuzz-ac3
  *   (mkv, mp4: modules/av/mkv.c; dts: modules/av/dts.c; mpeg2: modules/av/mpeg2.c; mpeg4: modules/av/mpeg4.c;
  *    hevc: modules/av/hevc.c hevc_ctu.c hevc_dsp.c; pgs, vobsub: modules/av/subpic.c modules/av/png.c;
- *    tags: modules/av/audiotags.c)
+ *    tags: modules/av/audiotags.c; aac: modules/av/aacdec.c modules/av/aac.c)
  *   build/fuzz-ac3 -max_total_time=60 build/fuzz-corpus-ac3 build/fuzz-raw/ac3
  *
  * A finding is a sanitizer report (out of bounds, use after free, undefined behaviour, a leak) or a
@@ -45,8 +47,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(AVFUZZ_MKV) + defined(AVFUZZ_MP4) + defined(AVFUZZ_AC3) + defined(AVFUZZ_DTS) + defined(AVFUZZ_MPEG2) + defined(AVFUZZ_MPEG4) + defined(AVFUZZ_HEVC) + defined(AVFUZZ_PGS) + defined(AVFUZZ_VOBSUB) + defined(AVFUZZ_TAGS) != 1
-#error "build with exactly one of -DAVFUZZ_MKV, -DAVFUZZ_MP4, -DAVFUZZ_AC3, -DAVFUZZ_DTS, -DAVFUZZ_MPEG2, -DAVFUZZ_MPEG4, -DAVFUZZ_HEVC, -DAVFUZZ_PGS, -DAVFUZZ_VOBSUB, -DAVFUZZ_TAGS"
+#if defined(AVFUZZ_MKV) + defined(AVFUZZ_MP4) + defined(AVFUZZ_AAC) + defined(AVFUZZ_AC3) + defined(AVFUZZ_DTS) + defined(AVFUZZ_MPEG2) + defined(AVFUZZ_MPEG4) + defined(AVFUZZ_HEVC) + defined(AVFUZZ_PGS) + defined(AVFUZZ_VOBSUB) + defined(AVFUZZ_TAGS) != 1
+#error "build with exactly one of -DAVFUZZ_MKV, -DAVFUZZ_MP4, -DAVFUZZ_AAC, -DAVFUZZ_AC3, -DAVFUZZ_DTS, -DAVFUZZ_MPEG2, -DAVFUZZ_MPEG4, -DAVFUZZ_HEVC, -DAVFUZZ_PGS, -DAVFUZZ_VOBSUB, -DAVFUZZ_TAGS"
 #endif
 
 static volatile uint32_t g_sink; /* what was read: kept, so no read is optimised away */
@@ -108,6 +110,49 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) {
     mkv_rewind(m);
     if (mkv_next(m, &f) == 1) touch(f.data, f.size);
     mkv_close(m);
+    return 0;
+}
+#endif
+
+#ifdef AVFUZZ_AAC
+#include "../modules/av/aacdec.h"
+
+#include <stdlib.h>
+
+/* d[0] = options (layout, a unit cut short, a reset), d[1] = the config's length (0..15), the config, then
+   units as [2-byte big-endian length][bytes]. A config the decoder refuses -> a plain one by the options, so
+   the units always reach it. */
+int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) {
+    if (n < 2) return 0;
+    uint8_t opt = d[0];
+    size_t clen = d[1] & 15u;
+    if (clen > n - 2) return 0;
+    AacDec *dec = aacdec_open(d + 2, clen, NULL, 0);
+    if (!dec) {
+        static const int rates[4] = {48000, 24000, 44100, 8000};
+        static const int chans[4] = {2, 1, 6, 8};
+        uint8_t asc[2];
+        if (!aacdec_make_config(rates[(opt >> 5) & 3], chans[(opt >> 2) & 3], asc)) return 0;
+        dec = aacdec_open(asc, 2, NULL, 0);
+        if (!dec) return 0;
+    }
+    aacdec_set_layout(dec, (AacDecLayout)(opt & 3));
+    static float out[AACDEC_FRAME * AACDEC_MAX_CHANNELS];
+    const uint8_t *p = d + 2 + clen;
+    size_t left = n - 2 - clen;
+    for (int k = 0; k < 512 && left >= 2; k++) {
+        size_t len = ((size_t)p[0] << 8 | p[1]) % (AACDEC_MAX_AU + 1);
+        p += 2, left -= 2;
+        if (len > left) len = left;
+        size_t give = opt & 0x80 && k == 1 ? len / 2 : len; /* a unit cut short: the decoder must notice */
+        int ch = -1;
+        int rc = aacdec_decode(dec, p, give, out, &ch);
+        if (ch < 0 || ch > AACDEC_MAX_CHANNELS || (rc == AACDEC_OK && ch == 0)) abort();
+        touch((const uint8_t *)out, (size_t)AACDEC_FRAME * (size_t)(ch ? ch : 1) * sizeof out[0]);
+        if (opt & 0x10 && k == 3) aacdec_reset(dec); /* (a seek) */
+        p += len, left -= len;
+    }
+    aacdec_close(dec);
     return 0;
 }
 #endif

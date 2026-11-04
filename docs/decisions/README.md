@@ -21,6 +21,7 @@ replaces the old one, which stays here marked as such.
 | [0013](0013-heavy-conversions-on-the-device-you-choose.md) | HEVC is decoded; a heavy conversion runs where the admin chooses | 2026-10-31 |
 | [0014](0014-power-tiers-and-videos-in-parts.md) | How hard conversions work is chosen; Full throttle makes one video in parts | 2026-11-01 |
 | [0015](0015-the-graphics-card-through-the-browser.md) | The graphics card makes the picture, through the browser (port-forwarded to a secure address) | 2026-11-02 |
+| [0016](0016-intros-found-by-their-sound.md) | Intros are found by their sound, on Hemma's computer, while nobody watches | 2026-11-04 |
 
 New record: copy the shape of one of these (status, context, decision, consequences), number it
 next, add it to the table, and link it from the pull request that acts on it.

@@ -1727,7 +1727,7 @@
   // browser and for a TV's remote. Without this file the video keeps the browser's controls; wired,
   // those go and the overlay shows. Its state, for CSS: data-on (the bar shows: a move, a key, a
   // pause - 3 still seconds of playing put it away), data-paused, data-wait, data-muted. Parts
-  // ([data-p]): play back fwd seek at dur mute vol subs, and [data-sub="<key>"] in the subtitles
+  // ([data-p]): play back fwd seek at dur mute vol subs skip, and [data-sub="<key>"] in the subtitles
   // menu ("" = off; the choice goes on to the next episode; with data-subpic="<cue list>" a picture
   // track, which the player draws itself - see "picture subtitles"). Keys while the player has the focus (or
   // nothing has): Space/K play, Left/Right 10 s, M sound, F full screen; a remote's Up/Down on the
@@ -1795,6 +1795,22 @@
     }
     const vol = pl.querySelector('[data-p="vol"]');
     if (vol && document.activeElement !== vol) vol.value = v.muted ? 0 : v.volume;
+    const skip = pl.querySelector('[data-p="skip"]');
+    if (skip) skipSync(pl, v, skip);
+  }
+  // [data-p="skip"] (2.9, ui_player's skip_from/_to: an episode's intro): "Skip intro" while the video is inside that
+  // stretch (not in its last second); a press goes to its end. On a TV (its bar [data-arrows]) it takes the focus
+  // while it shows - OK skips -, and gives it back to the picture when it goes.
+  function skipSync(pl, v, b) {
+    const from = parseFloat(b.dataset.from), to = parseFloat(b.dataset.to), t = v.currentTime;
+    const show = to > from && t >= from && t < to - 1;
+    if (show === !b.hidden) return;
+    const f = document.activeElement;
+    b.hidden = !show;
+    if (show) {
+      announce(b.textContent);
+      if (pl.querySelector('.pl-bar[data-arrows]') && (unfocused() || f === v || pl.contains(f))) b.focus();
+    } else if (f === b) v.focus();
   }
   let pointer = 'mouse'; // what pressed last: a tap on the picture shows the bar instead of pausing
   // The bar shows or goes; while it shows, subtitles move up above it (as a browser's own controls
@@ -2135,7 +2151,12 @@
     else if (what === 'back') seekBy(v, -10);
     else if (what === 'fwd') seekBy(v, 10);
     else if (what === 'mute') mute(v);
-    else if ((what === 'subs' || what === 'snd') && menu) {
+    else if (what === 'skip') { /* past the intro (2.9) */
+      const to = parseFloat(part.dataset.to);
+      if (to > 0) v.currentTime = to;
+      part.hidden = true;
+      if (document.activeElement === part) v.focus();
+    } else if ((what === 'subs' || what === 'snd') && menu) {
       if (what === 'subs') subTicks(pl, v);
       menu.hidden = !menu.hidden;
       const c = !menu.hidden && !e.detail && menu.querySelector('[aria-checked="true"]'); // (a key, not a pointer)

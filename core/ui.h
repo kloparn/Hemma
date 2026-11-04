@@ -67,6 +67,9 @@ typedef struct {
     bool focus_sound;        /* autofocus the sound button (a live channel on a TV: OK = sound) */
     bool tv;                 /* a remote: arrows move between the bar's buttons (else they're the video's) */
     const char *trouble;     /* shown when the browser can't play it (NULL: "This video won't play in this browser.") */
+    double skip_from, skip_to; /* 2.9: a stretch the player offers to skip, in seconds - an episode's intro (wire.js
+                                  [data-p=skip] shows the button inside it, a press goes to its end); to <= from = none */
+    const char *skip_label;    /* its button's words (NULL: "Skip intro") */
 } UiPlayer;
 void ui_player(Buf *b, const UiPlayer *p);
 

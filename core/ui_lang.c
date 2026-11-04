@@ -61,6 +61,7 @@ static const Tr TR[] = {
     /* the player (ui_player) */
     {"Full screen", "Helskärm", "Pantalla completa"},
     {"Full screen (F)", "Helskärm (F)", "Pantalla completa (F)"},
+    {"Skip intro", "Hoppa över intro", "Saltar intro"},
     {"This video won't play in this browser.", "Den här videon går inte att spela i den här webbläsaren.",
      "Este vídeo no se puede reproducir en este navegador."},
     {"Where in the video", "Var i videon", "Posición en el vídeo"},

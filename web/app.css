@@ -429,6 +429,14 @@ button.tick::before { content: ""; position: absolute; top: -9px; right: -9px; b
 .pl-natfs[aria-pressed="true"] .pl-a { display: none; }
 .pl-natfs[aria-pressed="true"] .pl-b { display: inline-flex; }
 html[data-idle] .pl-natfs { opacity: 0; }
+/* 2.9: "Skip intro" while an episode's intro plays - above the bar's place, there whether the bar shows or not */
+.pl-skip {
+  position: absolute; right: 16px; bottom: 96px; z-index: 5; min-height: 44px; padding: 10px 22px;
+  border: 2px solid rgba(255, 255, 255, .85); border-radius: 10px; background: rgba(20, 22, 26, .8);
+  font-size: 16px; font-weight: 700;
+}
+.pl-skip[hidden], .pl[data-err] .pl-skip, .pl[data-native] .pl-skip { display: none; }
+.pl-skip:hover, .pl-skip:focus-visible { background: #fff; color: #111; outline: none; }
 @keyframes pl-spin { to { transform: rotate(360deg); } }
 html[data-idle], html[data-idle] * { cursor: none; }
 @media (max-width: 600px) {
@@ -436,6 +444,7 @@ html[data-idle], html[data-idle] * { cursor: none; }
   .pl-row button { min-width: 40px; height: 40px; padding: 0 6px; }
   .pl-row .pl-menu button { min-width: 0; height: auto; padding: 9px 12px 9px 30px; } /* (the tick's room) */
   .pl-back, .pl-fwd { display: none; } /* phones: the seek bar and a tap on the picture are enough */
+  .pl-skip { right: 10px; bottom: 74px; padding: 8px 16px; font-size: 15px; }
 }
 
 /* ---------------------------------------------------------------- people */

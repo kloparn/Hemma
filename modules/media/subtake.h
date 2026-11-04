@@ -12,6 +12,7 @@
 void subtake_start(void); /* the done table (its own format), what's done into memory */
 void subtake_tick(int64_t now_ms);
 void subtake_stop(void); /* the file being read is dropped (read again next time) */
+bool subtake_busy(void); /* a file is being read (2.9: the intros' job waits - the same disk) */
 void subtake_card(Ctx *c, Buf *b);           /* Library settings (admins): how far it is, the switch */
 void subtake_act_switch(Ctx *c, Fields *f);  /* media.take_subs: on=1 */
 
