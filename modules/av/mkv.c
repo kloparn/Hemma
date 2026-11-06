@@ -1,5 +1,6 @@
 /* modules/av/mkv.c — see mkv.h */
 #include "mkv.h"
+#include "inflate.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -78,6 +79,11 @@ enum {
 
 #define MAX_PRIVATE (16u << 20) /* CodecPrivate */
 #define MAX_BLOCK (128u << 20)  /* one (Simple)Block */
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+#define MAX_UNPACKED (1u << 20)
+#else
+#define MAX_UNPACKED (32u << 20) /* one zlib-packed frame unpacked (a subtitle's display set: KBs); bigger = skipped */
+#endif
 #define MAX_CUES 2000000
 #define MAX_LACE 256
 #define MAX_TOP_ELEMENTS 100000 /* level-1 elements looked at before the first cluster */
@@ -314,10 +320,11 @@ static void parse_audio(Mkv *m, const Elem *a, MkvTrack *t) {
     }
 }
 
-/* ContentEncodings: header stripping is undone for the caller; anything else
-   (zlib, bzlib, lzo, encryption) marks the track as unusable. */
+/* ContentEncodings: header stripping and (2.9.1) zlib alone are undone for the caller; anything else (bzlib,
+   lzo, encryption, zlib with another encoding) marks the track as unusable. */
 static void parse_encodings(Mkv *m, const Elem *encs, MkvTrack *t, uint8_t **strip, size_t *strip_len) {
     Elem enc;
+    int zlibs = 0;
     for (CHILDREN(m, encs, enc)) {
         if (enc.id != ID_CONTENTENCODING) continue;
         uint64_t scope = 1, type = 0, algo = 0;
@@ -343,10 +350,13 @@ static void parse_encodings(Mkv *m, const Elem *encs, MkvTrack *t, uint8_t **str
             *strip = settings;
             *strip_len = settings_len;
         } else {
-            if (!(type == 0 && algo == 3)) t->compressed = true;
+            if (type == 0 && algo == 0) zlibs++;
+            else if (!(type == 0 && algo == 3)) t->compressed = true;
             free(settings);
         }
     }
+    if (zlibs == 1 && !*strip && !t->compressed) t->zlib = true;
+    else if (zlibs) t->compressed = true; /* (which goes first would matter: not seen in files) */
 }
 
 static void parse_track(Mkv *m, const Elem *te) {
@@ -762,7 +772,8 @@ static void load_group(Mkv *m, const Elem *g) {
     if (have) load_block(m, &blk, false, !ref, dur);
 }
 
-static void emit(Mkv *m, MkvFrame *f) {
+/* The lace's next frame into f; false = it's damaged (a zlib-packed one that doesn't unpack): skip it. */
+static bool emit(Mkv *m, MkvFrame *f) {
     int i = m->lace_i++;
     const MkvTrack *t = m->lace_track;
     *f = m->lace;
@@ -783,9 +794,13 @@ static void emit(Mkv *m, MkvFrame *f) {
             d = m->out;
             n += t->strip_len;
         }
+    } else if (t->zlib) {
+        if (!inflate_zlib(d, n, &m->out, &m->out_cap, MAX_UNPACKED, &n)) return false;
+        d = m->out;
     }
     f->data = d;
     f->size = n;
+    return true;
 }
 
 /* The cluster whose id starts at q looks real: sane size and a cluster child first. */
@@ -829,8 +844,8 @@ int mkv_next(Mkv *m, MkvFrame *f) {
     if (m->mp4) return mp4_next(m, f);
     for (;;) {
         if (m->lace_i < m->lace_n) {
-            emit(m, f);
-            return 1;
+            if (emit(m, f)) return 1;
+            continue;
         }
         m->lace_n = m->lace_i = 0;
         if (m->read_failed) return -1;

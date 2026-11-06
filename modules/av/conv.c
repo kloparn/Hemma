@@ -633,8 +633,9 @@ static bool code_audio(Conv *c, struct ConvAudio *a, const MkvFrame *fr) {
 
 enum { SK_NONE, SK_SRT, SK_ASS, SK_VTT, SK_PGS, SK_VOBSUB };
 
-/* What a track is to us. A compressed one (zlib, bzlib, lzo - mkvmerge can do that to subtitles; header
-   stripping is undone by mkv.c) is left out quietly: none of the household's files were (2026-10-23). */
+/* What a track is to us. Header stripping and zlib (2.9.1: mkvmerge packed subtitle tracks so by default for years -
+   a Blu-ray release's PGS came so) are undone by mkv.c; a track still compressed (bzlib, lzo, encrypted) is left out
+   quietly: no file seen has one. */
 static int sub_kind(const MkvTrack *t) {
     const AvCodec *k = av_conv_codec(t->codec);
     if (t->type != MKV_SUBTITLE || t->compressed || !k || k->type != MKV_SUBTITLE) return SK_NONE;

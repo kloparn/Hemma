@@ -4,6 +4,39 @@ What changed in each version of Hemma. `hemma --version` says which one you run 
 commit it was built from). Downloads, from 0.14.0 on:
 [github.com/kloparn/Hemma/releases](https://github.com/kloparn/Hemma/releases).
 
+## 2.9.1 (2026-11-06)
+
+Subtitles that a file keeps packed go along too.
+
+### Fixed
+
+- **Packed subtitle tracks** (owner: "They have subtitles, even hemma says it will upload them, but it does not?"): an
+  MKV can keep a track packed with zlib - MKVToolNix did that to subtitle tracks by default for years. Hemma left such a
+  track out without a word: a season of Blu-ray rips went up, the upload said the subtitles inside would go along, and
+  not one did. Hemma unpacks them now - when an upload converts or takes subtitles out on your device, when Convert
+  runs on Hemma's computer, and when Hemma takes subtitles out of the library's MKVs by itself. A real episode's
+  Blu-ray subtitles (889 of them) came out byte for byte as ffmpeg takes them out.
+- **The library's MKVs looked at again:** the videos Hemma had found holding no subtitles are looked inside once more
+  (only those - by their headers, unless there's now something to take), so packed tracks already in the library show
+  up by themselves.
+- Videos uploaded before this keep no subtitles: drop the same folder on *Add videos* again - the preview says *Only
+  its subtitles* for what the library has, and only those go.
+
+### For developers
+
+- modules/av/inflate.h (new, header-only): zlib's format undone - RFC 1950 around RFC 1951's stored, fixed and dynamic
+  blocks; canonical codes decoded from their counts per length; code sets checked as zlib checks them; the Adler-32
+  checked; the output grown by realloc up to a limit. Ours (only SQLite and FFmpeg's two DTS tables are third-party).
+  inflate_test.c: zlib's own streams (made by Node's zlib), hand-made ones it must refuse, every cut, mangled and random
+  input. inflate_testmk.h: `zlib_test_pack()` for tests and seeds.
+- modules/av/mkv.c: `MkvTrack.zlib` - a track whose only frame encoding is zlib; `emit()` unpacks each frame (at most
+  32 MB, 1 MB in fuzzing builds), a frame that doesn't unpack is skipped. zlib with another encoding, bzlib, lzo and
+  encryption stay `MkvTrack.compressed`. Test: mkv_unpacks_zlib_frames.
+- modules/av/conv_test.c: conv_cleans_webvtt_into_srt takes its packed track now; the fuzz seed
+  vp9-refused-srt-pgs-vobsub.mkv packs its PGS track (the conv and mkv fuzzers start with one).
+- modules/media/subtake.c: format 2. From format 1 only the rows with no track found go (not the whole table).
+  Test: subtake_format_1_looks_again_where_nothing_was_found.
+
 ## 2.9.0 (2026-11-04)
 
 Skip intro: Hemma listens to the start of every episode while nobody watches, finds the intro the episodes of a season

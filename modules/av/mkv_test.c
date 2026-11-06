@@ -1,10 +1,11 @@
 /* modules/av/mkv_test.c — Matroska files written here in memory: headers via
  * the SeekHead, all lacing kinds, BlockGroups, unknown sizes, header
- * stripping, Cues and cue-less seeking, then mangled copies of them.
+ * stripping, zlib-packed frames (2.9.1), Cues and cue-less seeking, then mangled copies of them.
  * HEMMA_TEST_MKV=/path/file.mkv adds a check against a real file. */
 #include "../../tests/test.h"
 #include "../../core/plat.h"
 #include "mkv.h"
+#include "inflate_testmk.h"
 
 /* ------------------------------------------------------------ EBML writer */
 
@@ -424,6 +425,96 @@ TEST(mkv_bisects_big_files_without_cues) {
         CHECK(mkv_seek(m, targets[i] * 1000 * MS + 500 * MS, 0));
         CHECK_INT(first_video_pts(m), targets[i] * 1000 * MS);
     }
+    mkv_close(m);
+    free(w.p);
+    free(pl.p);
+}
+
+/* 2.9.1: zlib-packed frames (ContentCompression 0 - mkvmerge packed subtitle tracks so by default for years) come out
+   unpacked, laced ones each on its own; one that doesn't unpack is skipped. zlib with another encoding, or bzlib,
+   stays unusable. */
+TEST(mkv_unpacks_zlib_frames) {
+    W w = {0}, pl = {0};
+    ebml_header(&w, "matroska");
+    size_t seg = w_open(&w, 0x18538067);
+    size_t info = w_open(&w, 0x1549A966);
+    w_uint(&w, 0x2AD7B1, 1000000);
+    w_close(&w, info);
+    size_t tracks = w_open(&w, 0x1654AE6B);
+    for (int k = 1; k <= 3; k++) { /* 1: zlib; 2: zlib + header stripping; 3: bzlib */
+        size_t t = w_open(&w, 0xAE);
+        w_uint(&w, 0xD7, (uint64_t)k);
+        w_uint(&w, 0x83, 17);
+        w_str(&w, 0x86, "S_HDMV/PGS");
+        size_t encs = w_open(&w, 0x6D80);
+        for (int e = 0; e < (k == 2 ? 2 : 1); e++) {
+            size_t enc = w_open(&w, 0x6240);
+            w_uint(&w, 0x5031, (uint64_t)e); /* ContentEncodingOrder */
+            size_t comp = w_open(&w, 0x5034);
+            w_uint(&w, 0x4254, k == 3 ? 1 : e ? 3 : 0);
+            if (e) w_bin(&w, 0x4255, "PG", 2);
+            w_close(&w, comp);
+            w_close(&w, enc);
+        }
+        w_close(&w, encs);
+        w_close(&w, t);
+    }
+    w_close(&w, tracks);
+    size_t c = w_open(&w, 0x1F43B675);
+    w_uint(&w, 0xE7, 0);
+    static uint8_t z[4][1024], run[3000];
+    memset(run, 'x', sizeof run);
+    const char *s[3] = {"Hello there", "first of two", "the second of two, longer"};
+    size_t zn[4];
+    for (int i = 0; i < 3; i++) zn[i] = zlib_test_pack(z[i], sizeof z[i], s[i], strlen(s[i]));
+    zn[3] = zlib_test_pack(z[3], sizeof z[3], run, sizeof run);
+    CHECK(zn[0] && zn[1] && zn[2] && zn[3] && zn[1] < 255);
+    w_put(&pl, z[0], zn[0]);
+    w_block(&w, 0xA3, 1, 0, 0x80, &pl);
+    pl.len = 0; /* Xiph lacing: two packed frames */
+    w_byte(&pl, 1), w_byte(&pl, (int)zn[1]);
+    w_put(&pl, z[1], zn[1]), w_put(&pl, z[2], zn[2]);
+    w_block(&w, 0xA3, 1, 10, 0x80 | 0x02, &pl);
+    pl.len = 0; /* damaged: its Adler-32 is wrong */
+    w_put(&pl, z[0], zn[0]);
+    pl.p[pl.len - 1] ^= 1;
+    w_block(&w, 0xA3, 1, 20, 0x80, &pl);
+    pl.len = 0; /* not zlib at all */
+    w_put(&pl, "plain", 5);
+    w_block(&w, 0xA3, 1, 25, 0x80, &pl);
+    pl.len = 0; /* 3,000 bytes from 30-odd */
+    w_put(&pl, z[3], zn[3]);
+    w_block(&w, 0xA3, 1, 30, 0x80, &pl);
+    pl.len = 0; /* the unusable tracks' frames come as they are */
+    w_put(&pl, "raw", 3);
+    w_block(&w, 0xA3, 2, 40, 0x80, &pl);
+    w_block(&w, 0xA3, 3, 50, 0x80, &pl);
+    w_close(&w, c);
+    w_close(&w, seg);
+
+    Mkv *m = open_w(&w);
+    CHECK(m);
+    const MkvTrack *t1 = mkv_track_by_number(m, 1), *t2 = mkv_track_by_number(m, 2), *t3 = mkv_track_by_number(m, 3);
+    CHECK(t1 && t1->zlib && !t1->compressed && !t1->strip_len);
+    CHECK(t2 && t2->compressed && !t2->zlib);
+    CHECK(t3 && t3->compressed && !t3->zlib);
+    MkvFrame f;
+    CHECK_INT(mkv_next(m, &f), 1);
+    CHECK(f.track == 1 && f.pts == 0 && same(&f, "Hello there"));
+    CHECK_INT(mkv_next(m, &f), 1);
+    CHECK(f.pts == 10 * MS && same(&f, "first of two"));
+    CHECK_INT(mkv_next(m, &f), 1);
+    CHECK(same(&f, "the second of two, longer"));
+    CHECK_INT(mkv_next(m, &f), 1); /* (the damaged one and the plain one skipped) */
+    CHECK(f.pts == 30 * MS && f.size == sizeof run && !memcmp(f.data, run, sizeof run));
+    CHECK_INT(mkv_next(m, &f), 1);
+    CHECK(f.track == 2 && same(&f, "PGraw")); /* (its stripped bytes still go back in front) */
+    CHECK_INT(mkv_next(m, &f), 1);
+    CHECK(f.track == 3 && same(&f, "raw"));
+    CHECK_INT(mkv_next(m, &f), 0);
+    mkv_rewind(m); /* again from the start: the same */
+    CHECK_INT(mkv_next(m, &f), 1);
+    CHECK(same(&f, "Hello there"));
     mkv_close(m);
     free(w.p);
     free(pl.p);

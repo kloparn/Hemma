@@ -387,6 +387,33 @@ TEST(subtake_reads_each_mkv_once_and_saves_its_tracks) {
     th_halt();
 }
 
+/* 2.9.1 (format 2): what format 1 found stays, and only the videos that seemed to hold no track it takes - zlib-packed
+   ones were left out then - are looked inside again (by their headers, when there's still nothing). */
+TEST(subtake_format_1_looks_again_where_nothing_was_found) {
+    char data[512], root[512], path[1024];
+    str_copy(data, sizeof data, test_tmpdir());
+    str_copy(root, sizeof root, test_tmpdir());
+    th_boot_in(data);
+    snprintf(path, sizeof path, "%s/Show/Season 1/Show.S01E01.mkv", root);
+    mkv(path, ALL3, 3, false, NULL);
+    snprintf(path, sizeof path, "%s/Show/Season 1/Show.S01E02.mkv", root);
+    mkv(path, NULL, 0, false, NULL);
+    put(root, "Movies/Fake (2002)/Fake (2002).mkv", "not Matroska");
+    setting_set("media.roots", root);
+    media_scan_sync();
+    CHECK_INT(run_all(), 3);
+    CHECK_INT(subtake_test_reads(), 1);
+    setting_set_int("media.subtake_format", 1);
+    th_halt();
+    th_boot_in(data);
+    CHECK_INT(setting_int("media.subtake_format", 0), 2);
+    media_scan_sync();
+    CHECK_INT(run_all(), 2); /* the one without subtitles and the one that isn't Matroska */
+    CHECK_INT(subtake_test_opens(), 2);
+    CHECK_INT(subtake_test_reads(), 0);
+    th_halt();
+}
+
 /* It never gets in the way: someone watching, a conversion queued, a library folder away (an unplugged disk)
    or the switch off - it waits, and goes on after. A file stopped half-way is read again from its start. */
 TEST(subtake_gives_way_and_carries_on) {

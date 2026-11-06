@@ -835,7 +835,8 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  quiet), the first 60 s after a start. A file that isn't readable Matroska = done; one that vanished
                  (an unplugged disk) isn't. Done = raw table media_subtake(rel PK - below the library folder, so a
                  disk mounted elsewhere isn't read again -, size, mtime, tracks, saved, at), format
-                 media.subtake_format (a new one reads everything again); the library rescans at a run's end and
+                 media.subtake_format (a new one reads everything again - but 1 -> 2 (2.9.1, zlib-packed tracks taken)
+                 drops only rows with tracks = 0); the library rescans at a run's end and
                  every 5 min while one goes. Tests: subtake_test_step() (1 looked at / 0 none left / -1 waiting),
                  _reads/_opens, _halt_after(n). It doesn't start while intros.c reads (intros_busy: the same disk).
   media/intros.c SKIP INTRO (2.9; owner, 2026-11-03: "are we able to automatically determine when the intro is? ... a
@@ -1137,7 +1138,13 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  it is). Equal to ffprobe on 7 real m4bs. audiotags_testmk.h = test builders (at_test_m4b takes aac.c's AUs;
                  clips_test.c makes the browser tests' books with it). mkv.* (2.5: AND AN MP4/MOV READER behind the same API - mkv_mp4.h, mkv_open knows an MP4 by its first box,
                  codecs named as Matroska names them; see "Where things stand" 2.5.0) (Matroska demuxer: cues/bisect seeking, lacing, unknown
-                 sizes), mpeg2.* (MPEG-2 MP@ML + MPEG-1 video decoder, display-order frames, IEEE 1180
+                 sizes; header stripping and - 2.9.1 - zlib-packed frames undone: MkvTrack.zlib, emit() unpacks each frame with
+                 inflate.h into m->out, MAX_UNPACKED 32 MB (1 MB fuzzing), one that doesn't unpack is skipped; zlib with another
+                 encoding, bzlib, lzo, encryption = MkvTrack.compressed), inflate.h (2.9.1: header-only, ours after RFC 1950/1951 -
+                 stored/fixed/dynamic blocks, canonical codes decoded bit by bit from counts per length as puff.c explains it, code
+                 sets checked as zlib checks them, Adler-32 checked, output grown by realloc up to a max; inflate_testmk.h =
+                 zlib_test_pack (fixed codes, runs one back) for tests/seeds; inflate_test.c holds zlib's own streams as made by
+                 Node), mpeg2.* (MPEG-2 MP@ML + MPEG-1 video decoder, display-order frames, IEEE 1180
                  IDCT - idct.h, header-only, shared with mpeg4.c since 2.5), mpeg4.* (2.5; owner, 2026-10-31: "the videos
                  on hemma that are not converted" - Solsidan S06E03-04 (Simple Profile MP4s, resync markers, 11.7 fps
                  unevenly) and S07 (XviD 1.3 ASP with B-frames in MKV, 1144/1152x720) played nowhere: MPEG-4 Part 2,
@@ -1236,8 +1243,9 @@ modules/<id>/    one folder per feature; folder name == module id (home book pla
                  timestamp/filepos lines). Clock: 0 = the first video block with a time in file order (find_v0, as
                  survey), clamped at 0. AV_CONV_PIC_BYTES 64 MB a picture track, AV_CONV_PIC_TOTAL 256 MB for all,
                  counted as allocated (pic_room); past either the track goes whole (AvConvJob.pic_bytes lowers both).
-                 Compressed tracks (zlib/bzlib/lzo) left out quietly - none in the household's files; header
-                 stripping is mkv.c's. An `unsupported` refusal runs subs_pass from the start (err stays the
+                 Header stripping and zlib (2.9.1: mkvmerge's old default for subtitle tracks - a Blu-ray release's PGS
+                 came so, and its subtitles went nowhere) are mkv.c's; a track still compressed (bzlib/lzo/encrypted)
+                 is left out quietly. An `unsupported` refusal runs subs_pass from the start (err stays the
                  refusal; skip_refused_subs turns it off - the wasm build, whose refused files go up as originals).
                  av_subtitles(j) = only that pass (reads j->in, writes nothing, stop + progress; for videos never
                  converted) - the same bytes as a conversion's (conv_test and convfuzz check it). av_convert_free
@@ -2388,6 +2396,9 @@ everywhere), av/intro (sound fingerprints and their matching), media/intros.c (t
 watches; Manage's Intro; the Converting tab's "Skip intros" card), the player's "Skip intro" (core/ui UiPlayer.skip_*,
 wire.js skipSync). The twelfth nightly fuzz target (aac). Not done: skip credits (sitcoms play scenes over them), an MP3
 decoder (episodes with MP3 sound get no button: the card counts them), skipping intros by itself (a person's choice).
+2.9.1 (owner, 2026-11-06: an upload said a season's subtitles would go along, and none did) = ZLIB-PACKED TRACKS READ:
+av/inflate.h (our own zlib decoder) and mkv.c unpacking such frames - the converter in the browser and on the server and
+media/subtake.c take those subtitles now (subtake format 2 looks again only where format 1 found nothing).
 
 Keep new work within what's been measured:
 - pisim model 3 (≈Pi 3 CPU, 512 MB): idle 0.2 wake-ups/s; 8 viewers × 8 Mbit/s ≈10% of the core; ceiling
