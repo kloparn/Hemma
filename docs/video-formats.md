@@ -48,8 +48,9 @@ convert yet (TrueHD) is left out when the file has another.
 | Blu-ray subtitles (PGS, which are pictures) | `.sup`, drawn by Hemma's player |
 | DVD subtitles (VobSub, also pictures) | `.idx` + `.sub`, drawn by Hemma's player |
 
-Up to 32 subtitle tracks per file. Hemma takes them out of the MKVs already in your library by
-itself too, a few at a time while nobody is watching.
+Up to 32 subtitle tracks per file, also when the file keeps them packed (zlib - what MKVToolNix
+long did by default). Hemma takes them out of the MKVs already in your library by itself too, a few
+at a time while nobody is watching.
 
 ### Where it happens
 

@@ -4,7 +4,7 @@
  * the SeekHead when they live at the end of the file); mkv_next() then hands
  * out frames in file order: SimpleBlock and BlockGroup, every lacing kind
  * (Xiph, EBML, fixed), unknown-size Segments and Clusters (live/streamed
- * files) and header stripping. mkv_seek() uses Cues when there are any and
+ * files), header stripping and (2.9.1) zlib-packed frames (inflate.h). mkv_seek() uses Cues when there are any and
  * otherwise bisects the file for Clusters.
  *
  * Pure library: libc only (no core/), no mutable globals — one Mkv per thread,
@@ -66,7 +66,9 @@ typedef struct {
     /* content encoding */
     const uint8_t *strip; /* header stripping: these bytes are put back in front of every frame */
     size_t strip_len;
-    bool compressed; /* zlib/bzlib/lzo compressed or encrypted: frames are not usable as they are */
+    bool compressed; /* bzlib/lzo compressed, encrypted, or zlib with another encoding: frames are not usable as they are */
+    bool zlib;       /* 2.9.1: its frames are zlib-packed (ContentCompression 0) - mkv_next hands them out unpacked
+                        (inflate.h; one that doesn't unpack is skipped), so they're as usable as any */
     char fourcc[5];  /* 2.5, an MP4/MOV's: its sample entry ("avc1", "hvc1", "mp4a", "ac-3" ...); "" in Matroska */
     int64_t end;     /* 2.6.1, an MP4/MOV's: where its edit list stops showing it (ns, on the frames' pts clock) - a frame
                         at or past it is there to be decoded, not shown (an encoder's last pictures, a cut); 0 = none */

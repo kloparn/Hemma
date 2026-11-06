@@ -33,7 +33,7 @@
 
 #include <stdatomic.h>
 
-#define SUBTAKE_FORMAT 1          /* raise it when what's taken changes: every file is read again */
+#define SUBTAKE_FORMAT 2          /* raise it when what's taken changes: every file is read again (2: see subtake_start) */
 #define WATCH_QUIET_MS 60000      /* nobody has watched for this long before reading goes on */
 #define START_AFTER_MS 60000      /* a start (a Pi booting) settles first */
 #define RESCAN_MS (5 * 60 * 1000) /* while a run goes, new subtitles join the library this often at most */
@@ -436,9 +436,15 @@ void subtake_start(void) {
     g_started = now_ms();
     g_last_watch = g_dirty_at = 0;
     g_shown = 0;
-    /* the table's own format: an older one goes, and everything is read again */
-    bool current = setting_int("media.subtake_format", SUBTAKE_FORMAT) == SUBTAKE_FORMAT;
-    if (!current && db_exec("DROP TABLE IF EXISTS media_subtake")) {
+    /* the table's own format: an older one goes, and everything is read again - but from format 1 only the files
+       found holding no track we took go (2.9.1: zlib-packed tracks are taken now; a file holding them beside a plain
+       one isn't read again - not seen) */
+    int had = setting_int("media.subtake_format", SUBTAKE_FORMAT);
+    bool current = had == SUBTAKE_FORMAT;
+    if (had == 1 && SUBTAKE_FORMAT == 2 && db_exec(SCHEMA) && db_exec("DELETE FROM media_subtake WHERE tracks = 0")) {
+        log_info("media: subtitles: zlib-packed tracks are taken now - videos that seemed to have none are looked inside again");
+        current = true;
+    } else if (!current && db_exec("DROP TABLE IF EXISTS media_subtake")) {
         log_info("media: subtitles: what's taken out changed - every video is looked inside again");
         current = true;
     }

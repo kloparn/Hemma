@@ -15,6 +15,7 @@
 #include "h264enc.h"
 #include "hevc.h"
 #include "hevc_testenc.h"
+#include "inflate_testmk.h"
 #include "mp4.h"
 #include "mpeg4_testenc.h"
 
@@ -1136,8 +1137,8 @@ static int read_sub(const uint8_t *p, size_t n, Spu *s, int cap, const char **wh
 
 /* WebVTT (S_TEXT/WEBVTT) cues become SubRip: italics, bold and underline stay, the rest of WebVTT's own
    markup goes (voices, classes, languages, ruby readings, karaoke timestamps), entities are unescaped, and
-   what WebVTT keeps in BlockAdditions (cue settings, ids) changes nothing. A zlib-compressed track (none of
-   the household's files have one) is left out quietly. */
+   what WebVTT keeps in BlockAdditions (cue settings, ids) changes nothing. A zlib-packed track (2.9.1: mkv.c unpacks
+   it) is taken like any. */
 TEST(conv_cleans_webvtt_into_srt) {
     W in;
     Tracks t = {"V_MPEG2", NULL, 0, 48, 32, NULL, NULL, 0,
@@ -1168,7 +1169,7 @@ TEST(conv_cleans_webvtt_into_srt) {
         w_uint(&in, 0x9B, 100);
         w_close(&in, g);
     }
-    w_group(&in, 4, 20, 100, "\x78\x9C\xF3\x48\xCD\xC9\xC9\x07\x00", 9); /* (packed bytes, as zlib would leave them) */
+    w_group(&in, 4, 20, 100, "\x78\x9C\xF3\x48\xCD\xC9\xC9\x07\x00\x05\x8C\x01\xF5", 13); /* ("Hello", as zlib packs it) */
     for (int k = 1; k < 9; k++) w_simple(&in, 1, frame_ms(k), true, pic, mpeg2_picture(pic, k));
     w_close(&in, cl);
     w_close(&in, seg);
@@ -1176,9 +1177,10 @@ TEST(conv_cleans_webvtt_into_srt) {
     AvConvJob j = {.want_subs = true};
     Seen s;
     CHECK(run(&in, &out, &j, &s));
-    CHECK_INT(j.nsubs, 1);
+    CHECK_INT(j.nsubs, 2);
     CHECK_INT(j.subs[0].kind, AV_SUB_TEXT);
     CHECK_INT(j.subs[0].cues, 4); /* the last held nothing to show */
+    CHECK_STR(j.subs[1].srt, "1\n00:00:00,020 --> 00:00:00,120\nHello\n\n");
     CHECK_STR(j.subs[0].srt, "1\n00:00:00,010 --> 00:00:00,110\nHello <i>there</i> & you\n\n"
                              "2\n00:00:00,020 --> 00:00:00,120\n\xE6\xBC\xA2\xE5\xAD\x97 <3> \xC2\xA0x\xE2\x80\x8Ey\xE2\x80\x8F\n\n"
                              "3\n00:00:00,030 --> 00:00:00,130\nabc\nhej\n\n"
@@ -3070,11 +3072,12 @@ TEST(conv_fuzz_seeds) {
         W in, out;
         switch (seed) {
         case 11:   /* H.264 with every subtitle kind a conversion carries: WebVTT, PGS (.sup), VobSub (.idx/.sub) */
-        case 12: { /* refused (a VP9 picture) - its subtitles taken alone: SRT, PGS, VobSub with header stripping */
+        case 12: { /* refused (a VP9 picture) - its subtitles taken alone: SRT, PGS zlib-packed (2.9.1), VobSub with
+                      header stripping */
             static const char head[] = "size: 720x480\npalette: 000000, f0f0f0, cccccc, 999999, 3333fa, 1111bb, fa3333, 7b1a1a, "
                                        "3333fa, 1111bb, fa3333, 7b1a1a, 33fa33, 0b7b0b, ffffff, 000000\n";
             static const uint8_t strip[1] = {0x01};
-            static uint8_t set[1024], spu[2][2600];
+            static uint8_t set[1024], packed[2048], spu[2][2600];
             name = seed == 11 ? "h264-webvtt-pgs-vobsub.mkv" : "vp9-refused-srt-pgs-vobsub.mkv";
             if (seed == 11) add_h264(&v, 12, avcc, &avcc_len);
             else
@@ -3084,7 +3087,7 @@ TEST(conv_fuzz_seeds) {
                 }
             t = (Tracks){seed == 11 ? "V_MPEG4/ISO/AVC" : "V_VP9", seed == 11 ? avcc : NULL, avcc_len, 64, 48, NULL, NULL, 0,
                          {{seed == 11 ? "S_TEXT/WEBVTT" : "S_TEXT/UTF8", "eng", NULL, false},
-                          {"S_HDMV/PGS", "eng", "English", false},
+                          {"S_HDMV/PGS", "eng", "English", false, NULL, 0, NULL, 0, seed == 12},
                           {"S_VOBSUB", "fre", NULL, true, head, sizeof head - 1, seed == 12 ? strip : NULL, 1}}};
             size_t seg = start_file(&in, &t, 400), cl = w_open(&in, 0x1F43B675);
             w_uint(&in, 0xE7, 0);
@@ -3093,13 +3096,18 @@ TEST(conv_fuzz_seeds) {
                 if (k == 2) {
                     const char *cue = seed == 11 ? "<v Ann>Hi <i>you</i> &amp; me</v>" : "Hi <i>you</i>";
                     w_group(&in, 3, 70, 200, cue, strlen(cue));
-                    w_simple(&in, 4, 80, true, set, pgs_set(set, 0, 1));
+                }
+                if (k == 2 || k == 8) { /* a PGS display set (seed 12: zlib-packed) */
+                    size_t n = pgs_set(set, k == 8, k == 2), zn = zlib_test_pack(packed, sizeof packed, set, n);
+                    CHECK(zn);
+                    w_simple(&in, 4, k == 2 ? 80 : 270, true, seed == 12 ? packed : set, seed == 12 ? zn : n);
+                }
+                if (k == 2) {
                     spu_of(spu[0], 2600, 0); /* two packs */
                     spu[0][0] = 0x01;        /* (what the stripping takes off) */
                     w_group(&in, 5, 90, 0, spu[0] + (seed == 12), 2600 - (seed == 12));
                 }
                 if (k == 8) {
-                    w_simple(&in, 4, 270, true, set, pgs_set(set, 1, 0));
                     spu_of(spu[1], 300, 1);
                     w_group(&in, 5, 280, 0, spu[1] + (seed == 12), 300 - (seed == 12));
                 }
